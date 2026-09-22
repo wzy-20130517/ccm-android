@@ -61,7 +61,7 @@ object NativeTts {
                     latch.countDown()
                 }
                 tts = engine
-                latch.await(5, TimeUnit.MILLISECONDS.let { 5000L })
+                latch.await(5, TimeUnit.SECONDS)
 
                 if (ok) {
                     ready = true
