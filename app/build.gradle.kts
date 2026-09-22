@@ -14,6 +14,11 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+
+        ndk {
+            // 只保留 arm64（手机都是这个）
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildFeatures { compose = true }
@@ -29,6 +34,14 @@ android {
             isMinifyEnabled = false
         }
     }
+
+    // proot 二进制以 .so 形式打进 jniLibs —— 只有 nativeLibraryDir 才有 exec 权限
+    sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
+
+    packaging {
+        // 不压缩 so，保证解压后可直接 exec
+        jniLibs { useLegacyPackaging = true }
+    }
 }
 
 dependencies {
@@ -36,8 +49,10 @@ dependencies {
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.webkit:webkit:1.12.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.core:core-ktx:1.15.0")
 }

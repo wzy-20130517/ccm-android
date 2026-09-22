@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">CCM</string>
+    <string name="a11y_description">CCM 需要无障碍权限来操作手机界面（点击、输入、滑动），以及读取屏幕上的元素。这是 AI 助手执行任务所必需的，不会收集或上传任何屏幕内容。</string>
 </resources>
