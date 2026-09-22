@@ -187,8 +187,8 @@ class CcmAccessibilityService : AccessibilityService() {
 
     /** 滚动（在指定 ref 上，或全屏） */
     fun scrollByRef(ref: String?, direction: String): Boolean {
-        val node = if (ref != null) findByRef(ref) else rootInActiveWindow
-        ?: return false
+        val node = (if (ref != null) findByRef(ref) else rootInActiveWindow)
+            ?: return false
         val action = when (direction.lowercase()) {
             "down", "up" -> AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
             else -> AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
