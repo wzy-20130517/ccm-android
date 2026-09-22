@@ -243,10 +243,15 @@ class CcmService : Service() {
             return false
         }
 
+        // 内核入口：ccm-start.mjs（会自己拉起 web/server.mjs）
+        val hasKernel = java.io.File(filesDir, "rootfs/root/ccm/ccm-start.mjs").exists()
+        val script = if (hasKernel) "/root/ccm/ccm-start.mjs" else "web/server.mjs"
+        Log.i(TAG, "启动脚本: $script")
+
         return try {
             val args = prootRuntime.buildProotArgs(
                 workDir = "/root/ccm",
-                command = listOf(node, "web/server.mjs")
+                command = listOf(node, script)
             )
             val pb = ProcessBuilder(args)
             pb.redirectErrorStream(true)

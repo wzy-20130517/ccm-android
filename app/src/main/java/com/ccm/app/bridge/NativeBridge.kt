@@ -3,6 +3,8 @@ package com.ccm.app.bridge
 import android.content.Context
 import android.util.Log
 import com.ccm.app.service.CcmAccessibilityService
+import com.ccm.app.tools.ScreenCapture
+import com.ccm.app.tools.NativeTts
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -51,6 +53,8 @@ class NativeBridge(private val context: Context) {
                 "phone.key" -> phoneKey(params)
                 "phone.app" -> phoneApp(params)
                 "phone.screenshot" -> phoneScreenshot(params)
+                "phone.screenshot.base64" -> phoneScreenshotBase64(params)
+                "phone.screenshot.status" -> phoneScreenshotStatus()
                 "phone.status" -> phoneStatus()
 
                 // ── 系统能力 ─────────────────────────────
@@ -63,6 +67,7 @@ class NativeBridge(private val context: Context) {
                 "sys.openUrl" -> sysOpenUrl(params)
                 "sys.share" -> sysShare(params)
                 "sys.tts" -> sysTts(params)
+                "sys.tts.stop" -> sysTtsStop()
 
                 // ── 运行时 ───────────────────────────────
                 "runtime.status" -> runtimeStatus()
@@ -203,10 +208,40 @@ class NativeBridge(private val context: Context) {
     }
 
     private fun phoneScreenshot(p: JSONObject): String {
-        // 无障碍的 GLOBAL_ACTION_TAKE_SCREENSHOT 只能触发系统截图（存到相册），
-        // 拿不到 Bitmap。要真正截屏需要 MediaProjection（要用户授权一次）。
-        // 这里先返回说明，MediaProjection 走另一个入口。
-        return err("截图需要 MediaProjection 授权，见 /native/screenshot 接口")
+        if (!ScreenCapture.isReady()) {
+            return err("截屏未授权。请在 App 主界面点「开启截屏」授权一次（系统会弹「开始录制」确认框）")
+        }
+        val path = p.optString("save_path").ifEmpty { null }
+        val quality = p.optInt("quality", 85)
+        val result = ScreenCapture.capture(path, quality)
+            ?: return err("截图失败（可能是虚拟屏幕未就绪）")
+        return JSONObject().apply {
+            put("ok", true)
+            put("path", result)
+            put("message", "截图已保存: $result")
+        }.toString()
+    }
+
+    private fun phoneScreenshotBase64(p: JSONObject): String {
+        if (!ScreenCapture.isReady()) {
+            return err("截屏未授权")
+        }
+        val b64 = ScreenCapture.captureBase64(p.optInt("quality", 80))
+            ?: return err("截图失败")
+        return JSONObject().apply {
+            put("ok", true)
+            put("base64", b64)
+            put("width", context.resources.displayMetrics.widthPixels)
+            put("height", context.resources.displayMetrics.heightPixels)
+        }.toString()
+    }
+
+    private fun phoneScreenshotStatus(): String {
+        return JSONObject().apply {
+            put("ok", true)
+            put("authorized", ScreenCapture.isReady())
+            put("message", if (ScreenCapture.isReady()) "截屏已就绪" else "未授权")
+        }.toString()
     }
 
     private fun phoneStatus(): String {
@@ -332,8 +367,18 @@ class NativeBridge(private val context: Context) {
     }
 
     private fun sysTts(p: JSONObject): String {
-        // TTS 需要引擎初始化（异步），这里先返回说明
-        return err("TTS 走 Web 端 /voice 或 Node 侧 edge-tts")
+        val text = p.optString("text")
+        if (text.isEmpty()) return err("缺少 text")
+        val flush = p.optBoolean("flush", true)
+        val rate = p.optDouble("rate", 1.0).toFloat()
+        val pitch = p.optDouble("pitch", 1.0).toFloat()
+        val ok = NativeTts.speak(context, text, flush, rate, pitch)
+        return ok2json(ok, if (ok) "已朗读（${text.length} 字）" else "朗读失败（设备可能没装语音引擎）")
+    }
+
+    private fun sysTtsStop(): String {
+        NativeTts.stop()
+        return ok2json(true, "已停止朗读")
     }
 
     // ═══════════════════════════════════════════════════

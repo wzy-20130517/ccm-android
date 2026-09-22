@@ -23,13 +23,26 @@ import com.ccm.app.runtime.ProotRuntime
 import com.ccm.app.runtime.RootfsManager
 import com.ccm.app.service.CcmAccessibilityService
 import com.ccm.app.service.CcmService
+import com.ccm.app.tools.ScreenCapture
+import android.media.projection.MediaProjectionManager
+import android.app.Activity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { CcmApp() }
+    }
+
+    /** 截屏授权回调 */
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == ScreenCapture.REQUEST_CODE) {
+            val ok = ScreenCapture.init(this, resultCode, data)
+            Log.i("MainActivity", if (ok) "截屏授权成功" else "截屏授权失败")
+        }
     }
 }
 
@@ -44,6 +57,7 @@ fun CcmApp() {
     var progress by remember { mutableFloatStateOf(0f) }
     var a11yOn by remember { mutableStateOf(CcmAccessibilityService.isConnected()) }
     var nodeRunning by remember { mutableStateOf(false) }
+    var captureOn by remember { mutableStateOf(ScreenCapture.isReady()) }
 
     val rootfs = remember { RootfsManager(ctx) }
     val proot = remember { ProotRuntime(ctx) }
@@ -61,6 +75,7 @@ fun CcmApp() {
         while (true) {
             kotlinx.coroutines.delay(2000)
             a11yOn = CcmAccessibilityService.isConnected()
+            captureOn = ScreenCapture.isReady()
         }
     }
 
@@ -73,6 +88,42 @@ fun CcmApp() {
                     log = log,
                     onInstall = {
                         stage = Stage.SETTING_UP
+                        // 后台跑安装
+                        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+                            try {
+                                val ok = rootfs.install { phase, done, total ->
+                                    val pct = if (total > 0) done.toFloat() / total else 0f
+                                    progress = when (phase) {
+                                        "download" -> pct * 0.5f
+                                        "extract" -> 0.5f + pct * 0.45f
+                                        else -> 0.95f
+                                    }
+                                    log = when (phase) {
+                                        "download" -> "下载 Linux 环境… ${done / 1024 / 1024}MB / ${total / 1024 / 1024}MB"
+                                        "extract" -> "解压… ${(pct * 100).toInt()}%"
+                                        else -> "配置环境…"
+                                    }
+                                }
+                                if (!ok) {
+                                    log = "❌ 环境安装失败。请检查网络后重试。"
+                                    stage = Stage.NEED_SETUP
+                                    return@launch
+                                }
+                                log = "安装 Node 内核…"
+                                progress = 0.96f
+                                val kok = rootfs.installKernel { done, total ->
+                                    val pct = if (total > 0) done.toFloat() / total else 0f
+                                    progress = 0.96f + pct * 0.04f
+                                }
+                                log = if (kok) "✅ 完成" else "⚠️ 内核安装失败（可稍后重试）"
+                                progress = 1f
+                                kotlinx.coroutines.delay(500)
+                                stage = Stage.READY
+                            } catch (e: Throwable) {
+                                log = "❌ 出错: ${e.message}"
+                                stage = Stage.NEED_SETUP
+                            }
+                        }
                     }
                 )
 
@@ -98,11 +149,24 @@ fun CcmApp() {
 
                 Stage.READY -> ReadyScreen(
                     a11yOn = a11yOn,
+                    captureOn = captureOn,
                     nodeRunning = nodeRunning,
                     rootfsPath = rootfs.rootfsPath.absolutePath,
                     hasNode = proot.hasNode(),
+                    kernelInstalled = rootfs.isKernelInstalled(),
                     onOpenA11ySettings = {
                         ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    },
+                    onRequestCapture = {
+                        try {
+                            val mgr = ctx.getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE)
+                                    as MediaProjectionManager
+                            (ctx as? Activity)?.startActivityForResult(
+                                mgr.createScreenCaptureIntent(), ScreenCapture.REQUEST_CODE
+                            )
+                        } catch (t: Throwable) {
+                            Log.e("MainActivity", "请求截屏失败", t)
+                        }
                     },
                     onStartService = {
                         val i = Intent(ctx, CcmService::class.java)
@@ -154,10 +218,13 @@ fun SetupScreen(log: String, onInstall: () -> Unit) {
 @Composable
 fun ReadyScreen(
     a11yOn: Boolean,
+    captureOn: Boolean,
     nodeRunning: Boolean,
     rootfsPath: String,
     hasNode: Boolean,
+    kernelInstalled: Boolean,
     onOpenA11ySettings: () -> Unit,
+    onRequestCapture: () -> Unit,
     onStartService: () -> Unit,
     onStartNode: () -> Unit,
     onOpenWeb: () -> Unit
@@ -170,7 +237,9 @@ fun ReadyScreen(
 
         StatusRow("Linux 环境", true, rootfsPath.takeLast(30))
         StatusRow("Node 运行时", hasNode, if (hasNode) "已安装" else "未安装（需 apt install nodejs）")
+        StatusRow("Node 内核", kernelInstalled, if (kernelInstalled) "已安装" else "未安装")
         StatusRow("无障碍服务", a11yOn, if (a11yOn) "已开启" else "未开启 —— 手机操作需要它")
+        StatusRow("截屏能力", captureOn, if (captureOn) "已授权" else "未授权 —— 截图需要它")
         StatusRow("核心服务", CcmService.isRunning, if (CcmService.isRunning) "运行中" else "未启动")
 
         Spacer(Modifier.height(24.dp))
@@ -178,6 +247,12 @@ fun ReadyScreen(
         if (!a11yOn) {
             Button(onClick = onOpenA11ySettings, modifier = Modifier.fillMaxWidth()) {
                 Text("去开启无障碍服务")
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+        if (!captureOn) {
+            Button(onClick = onRequestCapture, modifier = Modifier.fillMaxWidth()) {
+                Text("授权截屏能力")
             }
             Spacer(Modifier.height(8.dp))
         }
