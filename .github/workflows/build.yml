@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -39,9 +41,21 @@ jobs:
       - name: Build Debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Upload APK
+      - name: Upload as artifact
         uses: actions/upload-artifact@v4
         with:
           name: ccm-debug
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 30
+
+      # 关键：同时发布到 Release，下载快得多（artifacts 走 S3 很慢）
+      - name: Publish to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="build-${{ github.run_number }}"
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/CCM-${{ github.run_number }}.apk
+          gh release create "$TAG" /tmp/CCM-${{ github.run_number }}.apk \
+            --title "CCM build ${{ github.run_number }}" \
+            --notes "自动构建 · commit ${{ github.sha }}" \
+            || gh release upload "$TAG" /tmp/CCM-${{ github.run_number }}.apk --clobber
