@@ -109,6 +109,23 @@ fun CcmApp() {
                                     stage = Stage.NEED_SETUP
                                     return@launch
                                 }
+                                // 装 Node 运行时（apt，约 30~60 秒）
+                                log = "安装 Node.js 运行时…"
+                                progress = 0.90f
+                                if (!rootfs.hasNode()) {
+                                    val nok = rootfs.installNode(
+                                        prootArgs = { cmd ->
+                                            proot.buildProotArgs(workDir = "/root", command = cmd)
+                                        }
+                                    ) { line ->
+                                        log = line.takeLast(60)
+                                    }
+                                    if (!nok) {
+                                        log = "⚠️ Node 安装失败（可稍后在终端里手动 apt install nodejs）"
+                                    }
+                                }
+
+                                // 装 Node 内核（core + web）
                                 log = "安装 Node 内核…"
                                 progress = 0.96f
                                 val kok = rootfs.installKernel { done, total ->

@@ -349,6 +349,101 @@ class RootfsManager(private val context: Context) {
         }
     }
 
+    // ═══════════════════════════════════════════════════
+    //  Node 运行时安装（在 proot 里跑 apt）
+    // ═══════════════════════════════════════════════════
+
+    /**
+     * 在 rootfs 里安装 Node。
+     *
+     * 【为什么用 apt 而不是打包二进制】
+     * Node 官方 arm64 二进制 23MB，打进 rootfs 包会让它翻倍。
+     * 而 Ubuntu 24.04 自带 nodejs 18.19.1，一条 apt 命令搞定，
+     * 且用户网络通常没问题（rootfs 本来就是联网下载的）。
+     *
+     * 【执行方式】
+     * proot -r rootfs -0 /usr/bin/env ... /bin/bash -c "apt-get install -y nodejs"
+     * 注意要先把 apt 源换成国内（setupBaseConfig 里已做）。
+     *
+     * @param onLine 每行输出回调（给 UI 显示进度）
+     */
+    fun installNode(
+        prootArgs: (List<String>) -> List<String>,
+        onLine: (String) -> Unit = {}
+    ): Boolean {
+        if (!isInstalled()) {
+            Log.w(TAG, "rootfs 未安装")
+            return false
+        }
+        if (hasNode()) {
+            Log.i(TAG, "Node 已存在，跳过安装")
+            return true
+        }
+
+        return try {
+            // 1) 先 apt update
+            onLine("更新软件源…")
+            if (!runInRootfs(prootArgs, "apt-get update -qq", onLine)) {
+                Log.w(TAG, "apt update 失败")
+                // 不致命，继续试 install
+            }
+
+            // 2) 装 nodejs + npm + 常用工具
+            onLine("安装 Node.js 与基础工具…")
+            val ok = runInRootfs(
+                prootArgs,
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs npm git curl ca-certificates",
+                onLine
+            )
+
+            if (ok && hasNode()) {
+                Log.i(TAG, "Node 安装成功")
+                true
+            } else {
+                Log.w(TAG, "Node 安装失败")
+                false
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "安装 Node 异常", t)
+            false
+        }
+    }
+
+    /** 在 rootfs 里执行一条命令，返回是否成功 */
+    private fun runInRootfs(
+        prootArgs: (List<String>) -> List<String>,
+        command: String,
+        onLine: (String) -> Unit
+    ): Boolean {
+        return try {
+            val args = prootArgs(listOf("/bin/bash", "-c", command))
+            val pb = ProcessBuilder(args)
+            pb.redirectErrorStream(true)
+            val p = pb.start()
+
+            val reader = p.inputStream.bufferedReader()
+            while (true) {
+                val line = reader.readLine() ?: break
+                onLine(line)
+            }
+            val code = p.waitFor()
+            Log.i(TAG, "命令退出码: $code")
+            code == 0
+        } catch (t: Throwable) {
+            Log.w(TAG, "执行失败: ${t.message}")
+            onLine("执行失败: ${t.message}")
+            false
+        }
+    }
+
+    /** 检查 rootfs 里有没有 Node */
+    fun hasNode(): Boolean {
+        val candidates = listOf(
+            "usr/bin/node", "usr/local/bin/node", "bin/node"
+        )
+        return candidates.any { File(rootfsPath, it).exists() }
+    }
+
     /** 删除 rootfs（用于重装 / 释放空间） */
     fun uninstall(): Boolean {
         return try {
