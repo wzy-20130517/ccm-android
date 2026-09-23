@@ -187,6 +187,25 @@ object TarExtractor {
                                 }
                             }
                             processed += size
+                            // ⚠️⚠️ 必须补读 512 对齐的 padding ⚠️⚠️
+                            //
+                            // tar 的每个条目 payload 都补齐到 512 边界：size=100 的文件
+                            // 实际占 512 字节（100 数据 + 412 填充）。
+                            //
+                            // 原来这里写完 size 字节就置 consumed=true，末尾那段统一跳
+                            // 就被跳过 —— 于是**每条目少读 (align512(size)-size) 字节**。
+                            // 前几个条目（size 恰好是 512 倍数或 0）看不出问题，
+                            // 一旦遇到 size=100 这种就错位，之后读出的「文件名」全是
+                            // 内存里的任意字节（实测出现 "DPkg::Pre-Install-Pkgs {"）。
+                            //
+                            // 定位方式：在 Termux 里用 kotlinc 把 TarExtractor 单独编译成
+                            // jar，喂真实 rootfs.tar.gz 跑，加 TAR_DEBUG 打每条 header。
+                            // 表现是日志停在第 14 个条目（第一个 size 非 512 倍数的文件）之后。
+                            val pad = align512(size) - size
+                            if (pad > 0) {
+                                skip(gz, pad)
+                                processed += pad
+                            }
                             // 可执行位：只判 owner(0o100)+group(0o010) 会漏掉 other(0o001)，
                             // 而 apt 的 method 是 0111，漏判会让 apt update 静默失败。
                             val mode = readOctal(header, 100, 8)
