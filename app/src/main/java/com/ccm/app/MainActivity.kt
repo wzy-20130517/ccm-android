@@ -233,12 +233,46 @@ fun CcmApp() {
                             Log.e("MainActivity", "启动 Node 失败", t)
                         }
                     },
-                    onOpenWeb = { stage = Stage.WEBVIEW }
+                    onOpenWeb = { stage = Stage.WEBVIEW },
+                    onManageToolchains = { stage = Stage.TOOLCHAIN_MANAGE }
                 )
 
                 Stage.WEBVIEW -> WebViewScreen(
                     webReady = runtime.webReady,
                     onBack = { stage = Stage.READY }
+                )
+
+                Stage.TOOLCHAIN_MANAGE -> ToolchainManageScreen(
+                    installed = rootfs.installedToolchains(),
+                    onBack = { stage = Stage.READY },
+                    onInstall = { chains ->
+                        stage = Stage.SETTING_UP
+                        scope.launch {
+                            try {
+                                val ok = withContext(Dispatchers.IO) {
+                                    rootfs.installToolchains(
+                                        selected = chains,
+                                        exec = { cmd, cb ->
+                                            proot.exec(cmd, "/root") { line ->
+                                                scope.launch { log = line.takeLast(70) }
+                                                cb(line)
+                                            }
+                                        },
+                                        onLine = { line ->
+                                            scope.launch { log = line.takeLast(70) }
+                                        }
+                                    )
+                                }
+                                log = if (ok) "✅ 安装完成" else "⚠️ 部分失败"
+                                delay(800)
+                                stage = Stage.READY
+                            } catch (e: Throwable) {
+                                log = "❌ ${e.message}"
+                                delay(1500)
+                                stage = Stage.READY
+                            }
+                        }
+                    }
                 )
             }
         }
@@ -412,6 +446,116 @@ fun ToolchainRow(
     }
 }
 
+/**
+ * 工具链管理界面 —— 已装的可查看，未装的可以补装。
+ *
+ * 与首次安装时的选择界面区别：
+ * - 这里显示哪些已装（已装的默认勾选，可以取消但不会卸载）
+ * - 支持「全选/全不选」快捷操作
+ */
+@Composable
+fun ToolchainManageScreen(
+    installed: Set<String>,
+    onBack: () -> Unit,
+    onInstall: (Set<String>) -> Unit
+) {
+    var selected by remember { mutableStateOf(installed) }
+    val toInstall = selected - installed
+    val totalMB = if (toInstall.isEmpty()) 0 else ToolchainCatalog.estimatedSizeMB(toInstall)
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = onBack) { Text("← 返回") }
+            Spacer(Modifier.width(8.dp))
+            Text("管理工具链", style = MaterialTheme.typography.titleLarge)
+        }
+
+        Text(
+            if (installed.isEmpty()) "还没有安装任何工具链"
+            else "已安装 ${installed.size} 组：${installed.joinToString("、")}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        LazyColumn(
+            modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            items(ToolchainCatalog.ALL) { tc ->
+                val isInstalled = tc.id in installed
+                val checked = tc.id in selected
+                Surface(
+                    onClick = {
+                        selected = if (checked) selected - tc.id else selected + tc.id
+                    },
+                    color = if (checked) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+                            else MaterialTheme.colorScheme.surface,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(checked = checked, onCheckedChange = {
+                            selected = if (checked) selected - tc.id else selected + tc.id
+                        })
+                        Spacer(Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(tc.name, style = MaterialTheme.typography.bodyLarge)
+                                if (isInstalled) {
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        "已装",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            Text(
+                                tc.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Text(
+                            "${tc.sizeMB}MB",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            item { Spacer(Modifier.height(8.dp)) }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedButton(
+                onClick = { selected = ToolchainCatalog.ALL.map { it.id }.toSet() },
+                modifier = Modifier.weight(1f)
+            ) { Text("全选") }
+
+            Button(
+                onClick = { onInstall(toInstall) },
+                modifier = Modifier.weight(1.5f),
+                enabled = toInstall.isNotEmpty()
+            ) {
+                Text(if (toInstall.isEmpty()) "没有新工具" else "安装 ${toInstall.size} 组（${totalMB}MB）")
+            }
+        }
+    }
+}
+
 @Composable
 fun InstallingScreen(progress: Float, log: String) {
     Column(
@@ -442,7 +586,8 @@ fun ReadyScreen(
     onRequestCapture: () -> Unit,
     onStartService: () -> Unit,
     onStartNode: () -> Unit,
-    onOpenWeb: () -> Unit
+    onOpenWeb: () -> Unit,
+    onManageToolchains: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState())
@@ -496,6 +641,13 @@ fun ReadyScreen(
             enabled = runtime.webReady
         ) {
             Text(if (runtime.webReady) "打开界面" else "等 Node 启动后可打开")
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = onManageToolchains,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("管理工具链")
         }
     }
 }
