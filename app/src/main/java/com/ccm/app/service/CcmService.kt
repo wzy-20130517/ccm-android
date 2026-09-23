@@ -235,7 +235,9 @@ class CcmService : Service() {
         // 检查已有进程是否真活着（可能是残留的僵尸引用）
         nodeProcess?.let { p ->
             if (p.isAlive) {
-                Log.i(TAG, "Node 已在运行 (pid=${p.pid()})")
+                // 注：Process.pid() 是 Java 9+ 的 API，Android 上没有。
+                // 这里用 hashCode 做标识（够用于日志区分不同进程实例）。
+                Log.i(TAG, "Node 已在运行 (ref=${System.identityHashCode(p)})")
                 return true
             }
             Log.w(TAG, "发现已死进程引用，清理后重启")

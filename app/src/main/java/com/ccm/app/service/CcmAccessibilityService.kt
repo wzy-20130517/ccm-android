@@ -224,13 +224,19 @@ class CcmAccessibilityService : AccessibilityService() {
             if (byInputFocus != null) return
 
             if (node.isEditable) {
-                // INPUT_FOCUSED 是输入法焦点（更准确）
-                if (node.isInputFocused && byInputFocus == null) {
-                    byInputFocus = node
-                    return
-                }
-                if (node.isFocused && byFocused == null) {
-                    byFocused = node
+                // ⚠️ Android 的 AccessibilityNodeInfo 没有 isInputFocused()。
+                // 只有 isFocused()（视图焦点）—— 对输入框来说这就够了：
+                // 用户/AI 点了输入框后，它会拿到视图焦点。
+                //
+                // 两级优先：先记下任意 focused 的，同时若有 focused 且可编辑的，
+                // 直接返回（最常见的场景）。
+                if (node.isFocused) {
+                    if (byFocused == null) byFocused = node
+                    // 输入框同时可编辑 + 有焦点 → 就是它
+                    if (node.isEditable) {
+                        byInputFocus = node
+                        return
+                    }
                 }
             }
             for (i in 0 until node.childCount) {
