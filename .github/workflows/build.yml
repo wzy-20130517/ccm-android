@@ -39,7 +39,24 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build Debug APK
+        env:
+          # versionCode 每次构建递增 —— 否则覆盖安装会被 Android 拒（"已存在更高版本"）
+          CCM_VERSION_CODE: ${{ github.run_number }}
+          CCM_VERSION_NAME: "0.1.${{ github.run_number }}"
         run: gradle assembleDebug --no-daemon --stacktrace
+
+      # 校验签名确实是仓库里那把固定 key 签的。
+      # 如果这步失败，说明 signingConfig 没生效（会退化成每次不同的 debug key），
+      # 用户装的时候又会遇到「签名不一致」——所以宁可构建失败也别发出去。
+      - name: Verify signing
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          BT=$(ls $HOME/android-sdk/build-tools/*/apksigner | head -1)
+          FP=$($BT verify --print-certs "$APK" 2>/dev/null | grep -i 'SHA-256 digest' | head -1)
+          echo "签名指纹: $FP"
+          echo "$FP" | grep -qi '6FC9F8FB543EFF18017CDD084FBE09DD5FC4F071D71768AD950068CE212FE659' \
+            && echo "✅ 签名正确（固定 key）" \
+            || { echo "❌ 签名不是固定 key！检查 signingConfigs"; exit 1; }
 
       - name: Upload as artifact
         uses: actions/upload-artifact@v4
