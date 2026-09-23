@@ -24,7 +24,7 @@ import java.util.zip.GZIPInputStream
  *
  * 症状：装完 Ubuntu 后 /bin /usr/bin /lib 全都不存在，根目录却多出 90 多个
  * 名字是乱码的条目（"%s %s)\n" "$DISTRIB_DESCRIPTION"、"* * * root test -e" 之类）。
- * 后果：apt 的 /usr/lib/apt/methods/* 找不到 → node 等包全都装不上。
+ * 后果：apt 的 /usr/lib/apt/methods 下的可执行文件找不到 → node 等包全都装不上。
  *
  * 根因有两个，叠在一起：
  *
