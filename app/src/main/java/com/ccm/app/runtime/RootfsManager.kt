@@ -333,6 +333,134 @@ class RootfsManager(private val context: Context) {
     }
 
     // ═══════════════════════════════════════════════════
+    //  工具链安装（用户勾选）
+    // ═══════════════════════════════════════════════════
+
+    /**
+     * 安装用户勾选的工具链。
+     *
+     * 【为什么不在 rootfs 里预装所有东西】
+     * 全装完要 2GB+，而大多数人只用得到其中几个。
+     * 让用户按需勾选：首次安装快，也省空间。
+     *
+     * 【执行策略】
+     * 所有包合成一条 apt install 命令 —— 比逐个装快得多
+     * （apt 一次性解依赖，不用重复索引）。
+     *
+     * @param selected 勾选的工具链 id 集合
+     * @param exec 执行器（由 ProotRuntime 提供）
+     * @param onLine 输出回调
+     */
+    fun installToolchains(
+        selected: Set<String>,
+        exec: (List<String>, (String) -> Unit) -> Boolean,
+        onLine: (String) -> Unit = {}
+    ): Boolean {
+        if (!isInstalled()) {
+            Log.w(TAG, "rootfs 未安装")
+            return false
+        }
+
+        val packages = ToolchainCatalog.aptPackagesFor(selected)
+        if (packages.isEmpty()) {
+            onLine("没有需要安装的工具")
+            return true
+        }
+
+        val chains = ToolchainCatalog.resolveSelection(selected)
+        onLine("将安装 ${chains.size} 组工具（约 ${ToolchainCatalog.estimatedSizeMB(selected)}MB）：")
+        chains.forEach { onLine("  · ${it.name}") }
+        onLine("")
+
+        return try {
+            // 1) 权限修复（apt 需要）
+            fixPermissionsInternal()
+
+            // 2) apt update（失败重试）
+            onLine("更新软件源…")
+            var updated = false
+            for (attempt in 1..3) {
+                updated = exec(listOf("/bin/bash", "-lc", "apt-get update"), onLine)
+                if (updated) break
+                onLine("  源更新失败，${attempt}/3 重试…")
+                try { Thread.sleep(3000) } catch (_: InterruptedException) {}
+            }
+            if (!updated) onLine("⚠️ 软件源更新失败（网络问题？继续尝试安装）")
+
+            // 3) 一次性装完所有包
+            //
+            // DEBIAN_FRONTEND=noninteractive 避免交互式提问卡住
+            // （某些包会问时区、键盘布局等）
+            val installCmd = buildString {
+                append("DEBIAN_FRONTEND=noninteractive apt-get install -y -q ")
+                append(packages.joinToString(" "))
+            }
+
+            onLine("")
+            onLine("开始安装（可能需要几分钟）…")
+            var ok = false
+            for (attempt in 1..2) {
+                ok = exec(
+                    listOf(
+                        "/usr/bin/env", "-i",
+                        "HOME=/root",
+                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                        "DEBIAN_FRONTEND=noninteractive",
+                        "TERM=dumb",
+                        "/bin/bash", "-lc",
+                        installCmd
+                    ),
+                    onLine
+                )
+                if (ok) break
+                if (attempt < 2) {
+                    onLine("  安装失败，重试…")
+                    try { Thread.sleep(5000) } catch (_: InterruptedException) {}
+                }
+            }
+
+            if (ok) {
+                // 记录已装（供 UI 显示）
+                saveInstalledToolchains(selected)
+                Log.i(TAG, "工具链安装成功: ${chains.map { it.name }}")
+            } else {
+                Log.w(TAG, "工具链安装失败")
+            }
+            ok
+        } catch (t: Throwable) {
+            Log.e(TAG, "安装工具链异常", t)
+            onLine("安装异常: ${t.message}")
+            false
+        }
+    }
+
+    /** 记录已安装的工具链（存 JSON，供 UI 显示） */
+    private fun saveInstalledToolchains(selected: Set<String>) {
+        try {
+            val f = File(rootfsPath, "root/.ccm-toolchains")
+            val existing = if (f.exists()) {
+                f.readText().trim().split(",").filter { it.isNotBlank() }.toMutableSet()
+            } else mutableSetOf()
+            existing.addAll(selected)
+            f.writeText(existing.joinToString(","))
+        } catch (t: Throwable) {
+            Log.w(TAG, "记录工具链失败", t)
+        }
+    }
+
+    /** 读已安装的工具链 id */
+    fun installedToolchains(): Set<String> {
+        return try {
+            val f = File(rootfsPath, "root/.ccm-toolchains")
+            if (f.exists()) {
+                f.readText().trim().split(",").filter { it.isNotBlank() }.toSet()
+            } else emptySet()
+        } catch (t: Throwable) {
+            emptySet()
+        }
+    }
+
+    // ═══════════════════════════════════════════════════
     //  Node 内核安装
     // ═══════════════════════════════════════════════════
 

@@ -11,6 +11,8 @@ import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -22,6 +24,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.ccm.app.runtime.ProotRuntime
+import com.ccm.app.runtime.ToolchainCatalog
 import com.ccm.app.runtime.RootfsManager
 import com.ccm.app.service.CcmAccessibilityService
 import com.ccm.app.service.CcmService
@@ -50,7 +53,7 @@ class MainActivity : ComponentActivity() {
 }
 
 /** 界面状态 */
-enum class Stage { CHECKING, NEED_SETUP, SETTING_UP, READY, WEBVIEW }
+enum class Stage { CHECKING, NEED_SETUP, TOOLCHAIN_PICK, SETTING_UP, READY, WEBVIEW, TOOLCHAIN_MANAGE }
 
 /** 运行状态（供 UI 显示） */
 data class RuntimeState(
@@ -67,6 +70,8 @@ fun CcmApp() {
     val scope = rememberCoroutineScope()
 
     var stage by remember { mutableStateOf(Stage.CHECKING) }
+    // 用户勾选的工具链
+    var selectedChains by remember { mutableStateOf(ToolchainCatalog.defaultSelection()) }
     var log by remember { mutableStateOf("") }
     var progress by remember { mutableFloatStateOf(0f) }
     var runtime by remember { mutableStateOf(RuntimeState()) }
@@ -105,6 +110,17 @@ fun CcmApp() {
 
                 Stage.NEED_SETUP -> SetupScreen(
                     onInstall = {
+                        stage = Stage.TOOLCHAIN_PICK
+                    }
+                )
+
+                Stage.TOOLCHAIN_PICK -> ToolchainPickerScreen(
+                    selected = selectedChains,
+                    onToggle = { id ->
+                        selectedChains = if (id in selectedChains) selectedChains - id
+                                         else selectedChains + id
+                    },
+                    onConfirm = {
                         stage = Stage.SETTING_UP
                         scope.launch {
                             try {
@@ -135,28 +151,24 @@ fun CcmApp() {
                                     return@launch
                                 }
 
-                                // ② 装 Node 运行时（apt）
-                                progress = 0.90f
-                                log = "安装 Node.js 运行时…"
-                                if (!rootfs.hasNode()) {
-                                    val nok = withContext(Dispatchers.IO) {
-                                        rootfs.installNode(
-                                            exec = { cmd, cb ->
-                                                // proot.exec 的 onLine 回调在 IO 线程，
-                                                // 转一手到主线程更新 UI，同时原样透传给 cb
-                                                proot.exec(cmd, "/root") { line ->
-                                                    scope.launch { log = line.takeLast(70) }
-                                                    cb(line)
-                                                }
-                                            },
-                                            onLine = { line ->
-                                                // 这条路径的回调同样在 IO 线程
+                                // ② 装工具链（用户勾选的那些，含 Node）
+                                progress = 0.88f
+                                log = "安装工具链…"
+                                val tok = withContext(Dispatchers.IO) {
+                                    rootfs.installToolchains(
+                                        selected = selectedChains,
+                                        exec = { cmd, cb ->
+                                            proot.exec(cmd, "/root") { line ->
                                                 scope.launch { log = line.takeLast(70) }
+                                                cb(line)
                                             }
-                                        )
-                                    }
-                                    if (!nok) log = "⚠️ Node 安装失败（可稍后重试）"
+                                        },
+                                        onLine = { line ->
+                                            scope.launch { log = line.takeLast(70) }
+                                        }
+                                    )
                                 }
+                                if (!tok) log = "⚠️ 部分工具安装失败（可稍后在「管理工具」里重试）"
 
                                 // ③ 装内核
                                 progress = 0.96f
@@ -277,6 +289,126 @@ fun SetupScreen(onInstall: () -> Unit) {
         )
         Spacer(Modifier.height(24.dp))
         Button(onClick = onInstall) { Text("开始安装") }
+    }
+}
+
+/**
+ * 工具链选择界面。
+ *
+ * 【设计】
+ * - 分组展示（基础 / 语言 / 工具），每组一行
+ * - 必装的（Node）显示为禁用勾选状态
+ * - 底部实时显示预估总大小
+ * - 依赖关系：勾了 cmake 会自动带上 build（在 resolveSelection 里处理）
+ */
+@Composable
+fun ToolchainPickerScreen(
+    selected: Set<String>,
+    onToggle: (String) -> Unit,
+    onConfirm: () -> Unit
+) {
+    val totalMB = ToolchainCatalog.estimatedSizeMB(selected)
+    val chains = ToolchainCatalog.resolveSelection(selected)
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // 标题栏
+        Column(modifier = Modifier.padding(20.dp, 16.dp, 20.dp, 8.dp)) {
+            Text("选择要安装的工具", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "已选 ${chains.size} 组，约 ${totalMB}MB。" +
+                "不选也能用（AI 核心功能不受影响），以后可以随时在设置里加装。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        // 列表
+        LazyColumn(
+            modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            items(ToolchainCatalog.ALL) { tc ->
+                val checked = tc.id in selected
+                val locked = tc.id == "nodejs"   // Node 是内核必需，不能取消
+                ToolchainRow(
+                    toolchain = tc,
+                    checked = checked,
+                    locked = locked,
+                    onToggle = { if (!locked) onToggle(tc.id) }
+                )
+            }
+            item { Spacer(Modifier.height(8.dp)) }
+        }
+
+        // 底部按钮
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedButton(
+                onClick = { onConfirm() },
+                modifier = Modifier.weight(1f)
+            ) { Text("用默认的") }
+
+            Button(
+                onClick = { onConfirm() },
+                modifier = Modifier.weight(1f)
+            ) { Text("开始安装") }
+        }
+    }
+}
+
+@Composable
+fun ToolchainRow(
+    toolchain: ToolchainCatalog.Toolchain,
+    checked: Boolean,
+    locked: Boolean,
+    onToggle: () -> Unit
+) {
+    Surface(
+        onClick = { if (!locked) onToggle() },
+        color = if (checked) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+                else MaterialTheme.colorScheme.surface,
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Checkbox(
+                checked = checked || locked,
+                onCheckedChange = { if (!locked) onToggle() },
+                enabled = !locked
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(toolchain.name, style = MaterialTheme.typography.bodyLarge)
+                    if (locked) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "(必需)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    toolchain.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "${toolchain.sizeMB}MB",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
