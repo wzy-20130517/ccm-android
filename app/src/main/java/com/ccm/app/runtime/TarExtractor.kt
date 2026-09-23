@@ -102,6 +102,41 @@ object TarExtractor {
                                 Log.w(TAG, "symlink 失败: $clean -> $target")
                             }
                         }
+                        '1' -> {  // 硬链接 → 转成符号链接
+                            //
+                            // 【为什么转符号链接】
+                            // Android 的 App 私有目录（filesDir）实际是 ext4，理论上
+                            // 支持硬链接，但实测 tar 解压时报 "Cannot hard link to ...:
+                            // Permission denied"（SELinux 策略限制）。
+                            //
+                            // 影响面很小（Ubuntu base rootfs 里只有 2 个硬链接：
+                            // usr/bin/perl → perl5.38.2、usr/bin/uncompress → gunzip），
+                            // 但缺了别名会让某些脚本找不到解释器。
+                            //
+                            // proot 的 --link2symlink 扩展也是同样的思路：
+                            // 用符号链接模拟硬链接。这里在解压阶段就做掉，
+                            // 不依赖 proot 运行时。
+                            val target = longLink ?: readString(header, 157, 100)
+                            longLink = null
+                            if (target.isNotEmpty()) {
+                                outFile.parentFile?.mkdirs()
+                                try {
+                                    if (outFile.exists()) outFile.delete()
+                                    // 硬链接的 target 是 rootfs 内的相对路径
+                                    val linkTarget = if (target.startsWith("/")) {
+                                        // 绝对路径 → 转成相对于当前文件目录的路径
+                                        val depth = clean.count { it == '/' }
+                                        "../".repeat(depth) + target.trimStart('/')
+                                    } else target
+                                    Runtime.getRuntime().exec(
+                                        arrayOf("ln", "-sf", linkTarget, outFile.absolutePath)
+                                    ).waitFor()
+                                    Log.d(TAG, "硬链接转符号链接: $clean -> $linkTarget")
+                                } catch (t: Throwable) {
+                                    Log.w(TAG, "硬链接转换失败: $clean -> $target (${t.message})")
+                                }
+                            }
+                        }
                         '0', '\u0000', '7' -> {  // 普通文件（'7' 是 contiguous）
                             outFile.parentFile?.mkdirs()
                             FileOutputStream(outFile).use { out ->
