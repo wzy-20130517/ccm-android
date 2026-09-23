@@ -116,6 +116,19 @@ class ProotRuntime(private val context: Context) {
         return args
     }
 
+    /**
+     * proot 进程需要的环境变量。
+     *
+     * 【为什么需要 LD_LIBRARY_PATH】
+     * proot 的 ELF 头里 RUNPATH 原本硬编码了 Termux 的库路径，
+     * 我们已用 patchelf 改成 $ORIGIN（同目录查找）。
+     * 但 Android 的 linker 对 $ORIGIN 支持有限，所以再设一层
+     * LD_LIBRARY_PATH 兜底 —— 双保险，任一生效即可。
+     */
+    fun prootEnv(): Map<String, String> = mapOf(
+        "LD_LIBRARY_PATH" to context.applicationInfo.nativeLibraryDir
+    )
+
     /** 检查 rootfs 里有没有装某个命令 */
     fun hasCommand(name: String): Boolean {
         val paths = listOf(

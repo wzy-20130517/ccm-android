@@ -255,6 +255,8 @@ class CcmService : Service() {
             )
             val pb = ProcessBuilder(args)
             pb.redirectErrorStream(true)
+            // proot 的依赖库在 nativeLibraryDir，用 LD_LIBRARY_PATH 兜底
+            prootRuntime.prootEnv().forEach { (k, v) -> pb.environment()[k] = v }
             val p = pb.start()
             nodeProcess = p
 
