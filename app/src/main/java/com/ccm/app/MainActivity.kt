@@ -131,15 +131,25 @@ fun CcmApp() {
                                         // ⚠️ 回调在 IO 线程，改 state 必须回主线程
                                         scope.launch {
                                             progress = when (phase) {
-                                                "download" -> pct * 0.55f
+                                                "connecting" -> 0.01f      // 给一点点进度，别停在 0
+                                                "download" -> 0.02f + pct * 0.53f
                                                 "extract" -> 0.55f + pct * 0.35f
+                                                "retry" -> progress        // 保持当前进度
                                                 else -> 0.90f
                                             }
                                             log = when (phase) {
-                                                "download" ->
-                                                    "下载 Linux 环境… ${done / 1024 / 1024}MB / ${total / 1024 / 1024}MB"
+                                                "connecting" ->
+                                                    "正在连接服务器…（首次下载约 28MB，请耐心等待）"
+                                                "download" -> {
+                                                    val mb = done / 1024 / 1024
+                                                    val totalMb = total / 1024 / 1024
+                                                    if (totalMb > 0) "下载 Linux 环境… ${mb}MB / ${totalMb}MB（${(pct * 100).toInt()}%）"
+                                                    else "下载 Linux 环境… ${mb}MB"
+                                                }
                                                 "extract" ->
-                                                    "解压… ${(pct * 100).toInt()}%"
+                                                    "解压中… ${(pct * 100).toInt()}%（约需 1~2 分钟）"
+                                                "retry" ->
+                                                    "下载中断，正在重试（第 ${done}/${total} 轮）…"
                                                 else -> "配置环境…"
                                             }
                                         }

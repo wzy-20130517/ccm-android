@@ -159,7 +159,12 @@ class RootfsManager(private val context: Context) {
             for ((idx, url) in MIRRORS.withIndex()) {
                 try {
                     Log.i(TAG, "第 $round 轮，镜像 ${idx + 1}/${MIRRORS.size}: ${url.take(55)}…")
+                    // ⚠️ 连上之前也要给 UI 反馈，否则用户看到「0%」一动不动，
+                    // 以为卡死了（实际是在等 TCP 握手/响应头，可能十几秒）。
+                    // done=0 total=0 → UI 会显示「正在连接…」
+                    onProgress("connecting", 0, 0)
                     if (downloadOne(url, onProgress)) return true
+                    onProgress("retry", round.toLong(), MAX_ROUNDS.toLong())
                 } catch (t: Throwable) {
                     Log.w(TAG, "镜像 ${idx + 1} 失败: ${t.message}")
                 }
@@ -228,6 +233,9 @@ class RootfsManager(private val context: Context) {
             val contentLen = conn.contentLengthLong.takeIf { it > 0 } ?: 0L
             val total = if (contentLen > 0) startAt + contentLen else 29_000_000L
 
+            // 响应头到了 → 立刻报一次（让 UI 从「连接中」切到「下载中 x/y MB」）
+            onProgress("download", startAt, total)
+
             Log.i(TAG, if (append)
                 "续传：从 $startAt 字节继续（共 $total）"
             else
@@ -243,7 +251,7 @@ class RootfsManager(private val context: Context) {
                         if (n <= 0) break
                         out.write(buf, 0, n)
                         done += n
-                        if (done - lastReport > 512 * 1024) {
+                        if (done - lastReport > 128 * 1024) {
                             onProgress("download", done, total)
                             lastReport = done
                         }
