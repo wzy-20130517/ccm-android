@@ -116,9 +116,19 @@ object TarExtractor {
                                 }
                             }
                             processed += size
-                            // 可执行位（tar 的 mode 字段）
+                            // 可执行位（tar 的 mode 字段，12 位八进制）
+                            //
+                            // 【为什么判断 0o111 而不是分别判 owner/group】
+                            // tar 里常见的 mode 是 0755（owner rwx + group/other rx）
+                            // 或 0644（无执行位）。只要任一位是 x，就说明这是可执行文件。
+                            // 之前只判 owner(0o100) 和 group(0o010)，漏掉了 other(0o001)，
+                            // 而 Ubuntu rootfs 里大量文件是 0755，owner 位确实置了 —— 但
+                            // 有些包（如 apt 的 method）是 0111 或 0555，判断不全会漏。
+                            //
+                            // 真机实测：这一步漏判会导致 apt update 静默失败
+                            // （/usr/lib/apt/methods/http 不可执行）。
                             val mode = readOctal(header, 100, 8)
-                            if (mode and 0b001_000_000 != 0L || mode and 0b000_001_000 != 0L) {
+                            if (mode and 0o111L != 0L) {
                                 outFile.setExecutable(true, false)
                             }
                             // 补齐到 512 边界

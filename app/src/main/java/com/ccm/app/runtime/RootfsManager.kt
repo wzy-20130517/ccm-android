@@ -119,6 +119,10 @@ class RootfsManager(private val context: Context) {
             onProgress("config", 0, 1)
             setupBaseConfig()
 
+            // 3.5) 修复执行权限（TarExtractor 已按 mode 设置，这里是双保险）
+            // 真机实测：漏掉这步 apt 的 http method 不可执行，apt update 会静默失败
+            fixPermissionsInternal()
+
             // 4) 写标记
             File(rootfsPath, MARKER_FILE).apply {
                 parentFile?.mkdirs()
