@@ -151,41 +151,93 @@ class RootfsManager(private val context: Context) {
      * 从多个镜像依次尝试下载。
      */
     private fun download(onProgress: (String, Long, Long) -> Unit): Boolean {
-        for ((idx, url) in MIRRORS.withIndex()) {
-            try {
-                Log.i(TAG, "尝试下载（${idx + 1}/${MIRRORS.size}）: ${url.take(60)}…")
-                if (downloadOne(url, onProgress)) return true
-            } catch (t: Throwable) {
-                Log.w(TAG, "镜像 ${idx + 1} 失败: ${t.message}")
+        // 多轮重试：每轮遍历所有镜像。
+        // 单轮可能因网络抖动全挂，多轮能利用已下载的 .part 续传。
+        val MAX_ROUNDS = 5
+
+        for (round in 1..MAX_ROUNDS) {
+            for ((idx, url) in MIRRORS.withIndex()) {
+                try {
+                    Log.i(TAG, "第 $round 轮，镜像 ${idx + 1}/${MIRRORS.size}: ${url.take(55)}…")
+                    if (downloadOne(url, onProgress)) return true
+                } catch (t: Throwable) {
+                    Log.w(TAG, "镜像 ${idx + 1} 失败: ${t.message}")
+                }
+            }
+            // 一轮全失败 → 等一下再试（给网络恢复的时间）
+            if (round < MAX_ROUNDS) {
+                val part = File(context.filesDir, "$ARCHIVE_NAME.part")
+                val have = if (part.exists()) part.length() / 1024 / 1024 else 0
+                Log.w(TAG, "第 $round 轮全部失败，已下载 ${have}MB，10 秒后重试")
+                onProgress("download", have * 1024L * 1024L, 29_000_000L)
+                try { Thread.sleep(10_000) } catch (_: InterruptedException) {}
             }
         }
         return false
     }
 
-    private fun downloadOne(url: String, onProgress: (String, Long, Long) -> Unit): Boolean {
+    /**
+     * 单个 URL 的下载，**支持断点续传**。
+     *
+     * 【为什么必须支持续传】
+     * rootfs 有 28MB，在手机上（尤其移动网络）单次下载经常中断。
+     * 实测：不续传的话用户可能卡在 3~5MB 反复重来，永远装不完。
+     *
+     * 【实现】
+     * - 已下载的部分存在 `.part` 文件里
+     * - 重试时带 `Range: bytes=<已下载>-` 头
+     * - 服务端返回 206（Partial Content）→ 追加写
+     * - 返回 200（不支持 Range）→ 从头写（清空 .part）
+     *
+     * @param resumeFrom 从多少字节开始（默认自动读 .part 大小）
+     */
+    private fun downloadOne(
+        url: String,
+        onProgress: (String, Long, Long) -> Unit,
+        resumeFrom: Long = -1
+    ): Boolean {
         val tmp = File(context.filesDir, "$ARCHIVE_NAME.part")
-        if (tmp.exists()) tmp.delete()
+
+        // 已下载的字节数（续传起点）
+        val already = if (resumeFrom >= 0) resumeFrom
+                      else if (tmp.exists()) tmp.length()
+                      else 0L
 
         var conn: HttpURLConnection? = null
         return try {
             conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 20000
-                readTimeout = 30000
+                readTimeout = 60000        // 手机网络慢，给足时间
                 instanceFollowRedirects = true
                 setRequestProperty("User-Agent", "CCM/0.1 (Android)")
+                if (already > 0) {
+                    setRequestProperty("Range", "bytes=$already-")
+                }
             }
             val code = conn.responseCode
             if (code !in 200..299) {
                 Log.w(TAG, "HTTP $code")
                 return false
             }
-            val total = conn.contentLengthLong.takeIf { it > 0 } ?: 29_000_000L
+
+            // 206 = 服务端支持续传；200 = 从头开始（要清空已下载部分）
+            val append = code == 206 && already > 0
+            val startAt = if (append) already else 0L
+            if (!append && tmp.exists()) tmp.delete()
+
+            val contentLen = conn.contentLengthLong.takeIf { it > 0 } ?: 0L
+            val total = if (contentLen > 0) startAt + contentLen else 29_000_000L
+
+            Log.i(TAG, if (append)
+                "续传：从 $startAt 字节继续（共 $total）"
+            else
+                "新下载：共 ${if (contentLen > 0) contentLen else "?"} 字节")
 
             conn.inputStream.use { input ->
-                FileOutputStream(tmp).use { out ->
+                FileOutputStream(tmp, append).use { out ->
                     val buf = ByteArray(128 * 1024)
-                    var done = 0L
-                    var lastReport = 0L
+                    var done = startAt
+                    var lastReport = startAt
                     while (true) {
                         val n = input.read(buf)
                         if (n <= 0) break
@@ -200,10 +252,9 @@ class RootfsManager(private val context: Context) {
                 }
             }
 
-            // 完整性检查：至少 10MB
+            // 完整性检查：至少 10MB（rootfs 28MB，内核 14MB）
             if (tmp.length() < 10_000_000) {
-                Log.w(TAG, "下载不完整：${tmp.length()} 字节")
-                tmp.delete()
+                Log.w(TAG, "下载不完整：${tmp.length()} 字节（保留 .part 供续传）")
                 return false
             }
 
@@ -215,8 +266,8 @@ class RootfsManager(private val context: Context) {
             }
             true
         } catch (t: Throwable) {
-            Log.w(TAG, "下载异常: ${t.message}")
-            try { tmp.delete() } catch (_: Throwable) {}
+            // ⚠️ 不要删 .part —— 留着下次续传
+            Log.w(TAG, "下载中断（已保留 ${if (tmp.exists()) tmp.length() else 0} 字节供续传）: ${t.message}")
             false
         } finally {
             try { conn?.disconnect() } catch (_: Throwable) {}
@@ -289,12 +340,19 @@ class RootfsManager(private val context: Context) {
             // 下载
             if (!archive.exists() || archive.length() < 100_000) {
                 var ok = false
-                for (url in KERNEL_MIRRORS) {
-                    try {
-                        Log.i(TAG, "下载内核: ${url.take(50)}…")
-                        if (downloadTo(url, archive, onProgress)) { ok = true; break }
-                    } catch (t: Throwable) {
-                        Log.w(TAG, "镜像失败: ${t.message}")
+                // 多轮重试（同 rootfs 的策略：网络抖动时利用 .part 续传）
+                outer@ for (round in 1..5) {
+                    for (url in KERNEL_MIRRORS) {
+                        try {
+                            Log.i(TAG, "内核下载 第 $round 轮: ${url.take(45)}…")
+                            if (downloadTo(url, archive, onProgress)) { ok = true; break@outer }
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "镜像失败: ${t.message}")
+                        }
+                    }
+                    if (round < 5) {
+                        Log.w(TAG, "第 $round 轮内核下载失败，10 秒后重试")
+                        try { Thread.sleep(10_000) } catch (_: InterruptedException) {}
                     }
                 }
                 if (!ok) return false
@@ -319,6 +377,14 @@ class RootfsManager(private val context: Context) {
     }
 
     /** 通用下载到指定文件 */
+    /**
+     * 通用下载（支持断点续传）。
+     *
+     * 与 downloadOne 同样的续传策略：
+     * 已下载的留在 .part，重试时带 Range 头，服务端返回 206 就追加写。
+     *
+     * 中断时**不删 .part** —— 留着下次续传。
+     */
     private fun downloadTo(
         url: String,
         dest: File,
@@ -326,19 +392,33 @@ class RootfsManager(private val context: Context) {
     ): Boolean {
         var conn: HttpURLConnection? = null
         val tmp = File(dest.parentFile, "${dest.name}.part")
+        val already = if (tmp.exists()) tmp.length() else 0L
+
         return try {
             conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 20000
-                readTimeout = 30000
+                readTimeout = 60000
                 instanceFollowRedirects = true
                 setRequestProperty("User-Agent", "CCM/0.1 (Android)")
+                if (already > 0) setRequestProperty("Range", "bytes=$already-")
             }
-            if (conn.responseCode !in 200..299) return false
-            val total = conn.contentLengthLong.takeIf { it > 0 } ?: 1_000_000L
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                Log.w(TAG, "HTTP $code")
+                return false
+            }
+
+            val append = code == 206 && already > 0
+            val startAt = if (append) already else 0L
+            if (!append && tmp.exists()) tmp.delete()
+
+            val contentLen = conn.contentLengthLong.takeIf { it > 0 } ?: 1_000_000L
+            val total = startAt + contentLen
+
             conn.inputStream.use { input ->
-                FileOutputStream(tmp).use { out ->
+                FileOutputStream(tmp, append).use { out ->
                     val buf = ByteArray(64 * 1024)
-                    var done = 0L
+                    var done = startAt
                     while (true) {
                         val n = input.read(buf)
                         if (n <= 0) break
@@ -348,11 +428,12 @@ class RootfsManager(private val context: Context) {
                     }
                 }
             }
+
             if (dest.exists()) dest.delete()
             tmp.renameTo(dest)
         } catch (t: Throwable) {
-            Log.w(TAG, "下载失败: ${t.message}")
-            tmp.delete()
+            // 保留 .part 供续传
+            Log.w(TAG, "下载中断（保留 ${if (tmp.exists()) tmp.length() else 0} 字节）: ${t.message}")
             false
         } finally {
             try { conn?.disconnect() } catch (_: Throwable) {}
