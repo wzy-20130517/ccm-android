@@ -202,6 +202,29 @@ const NATIVE_IMPLS = {
     return { ok: true, output: `截图已保存: ${r.path}`, imagePath: r.path }
   },
 
+  // ── Screencap：截屏 + OCR（原走 rish，CCM 走 MediaProjection）──
+  //
+  // 【注意】CCM 的 MediaProjection 截图返回的是文件路径，
+  // 而原 Screencap 工具返回的是「OCR 文字」。这里保持原语义：
+  // 截屏 → 存文件 → 返回路径 + 提示（Agent 层会注入多模态让模型自己看）。
+  async Screencap(input = {}) {
+    const r = await nativeCall('phone.screenshot', {
+      save_path: input.save_path || '',
+      quality: 85,
+    })
+    if (!r.ok) {
+      return {
+        ok: false,
+        error: `${r.error}\n（CCM 模式：请在 App 主界面点「授权截屏能力」）`,
+      }
+    }
+    // 返回结构带上 imagePath，让 Agent 层的视觉注入逻辑能拿到
+    const out = new String(`截图已保存: ${r.path}`)
+    out.imagePath = r.path
+    out.__vision = true
+    return { ok: true, output: out, imagePath: r.path }
+  },
+
   // ── 系统能力（原 termux-* 命令的替代）────────
   async Notify(input = {}) {
     const r = await nativeCall('sys.notify', {
