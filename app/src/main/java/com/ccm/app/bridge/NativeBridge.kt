@@ -67,6 +67,7 @@ class NativeBridge(private val context: Context) {
                 "sys.openUrl" -> sysOpenUrl(params)
                 "sys.share" -> sysShare(params)
                 "sys.tts" -> sysTts(params)
+                "sys.location" -> sysLocation(params)
                 "sys.tts.stop" -> sysTtsStop()
 
                 // ── 运行时 ───────────────────────────────
@@ -379,6 +380,59 @@ class NativeBridge(private val context: Context) {
     private fun sysTtsStop(): String {
         NativeTts.stop()
         return ok2json(true, "已停止朗读")
+    }
+
+    /**
+     * 定位。
+     *
+     * 【注意】
+     * 这里用 lastKnownLocation（最后已知位置）而不是主动请求 —— 后者要
+     * 异步等回调 + 动态权限申请，会阻塞桥接响应。
+     * lastKnownLocation 通常够用（系统一直在后台更新），且瞬时返回。
+     *
+     * 需要 ACCESS_FINE_LOCATION 权限（Manifest 已声明，运行时需用户授权）。
+     */
+    private fun sysLocation(p: JSONObject): String {
+        return try {
+            val lm = context.getSystemService(Context.LOCATION_SERVICE)
+                    as android.location.LocationManager
+
+            // 优先 GPS，其次网络
+            val provider = p.optString("provider", "network")
+            var loc = lm.getLastKnownLocation(provider)
+
+            if (loc == null) {
+                // 回退：遍历所有 provider 找最新的
+                listOf(
+                    android.location.LocationManager.GPS_PROVIDER,
+                    android.location.LocationManager.NETWORK_PROVIDER,
+                    android.location.LocationManager.PASSIVE_PROVIDER,
+                ).forEach { prov ->
+                    try {
+                        val l = lm.getLastKnownLocation(prov)
+                        if (l != null && (loc == null || l.time > loc!!.time)) loc = l
+                    } catch (_: SecurityException) {}
+                }
+            }
+
+            if (loc == null) {
+                return err("拿不到位置（可能未授权或定位未开启）")
+            }
+
+            JSONObject().apply {
+                put("ok", true)
+                put("latitude", loc!!.latitude)
+                put("longitude", loc!!.longitude)
+                put("accuracy", loc!!.accuracy)
+                put("provider", loc!!.provider)
+                put("time", loc!!.time)
+                put("message", "纬度 ${loc!!.latitude}, 经度 ${loc!!.longitude}")
+            }.toString()
+        } catch (e: SecurityException) {
+            err("定位权限未授予。请在系统设置里给 CCM 开启位置权限")
+        } catch (t: Throwable) {
+            err("定位失败: ${t.message}")
+        }
     }
 
     // ═══════════════════════════════════════════════════

@@ -210,6 +210,76 @@ const NATIVE_IMPLS = {
     return r.ok ? { ok: true, output: `电量: ${r.level}%` } : { ok: false, error: r.error }
   },
 
+  // ── phone_wait：等界面稳定 ──────────────────
+  // 原生实现更简单：无障碍每次拿的都是实时快照，
+  // 轮询两次比较节点数/文本，相同即认为稳定。
+  async phone_wait(input = {}) {
+    const wantText = input.text || ''
+    const wantGone = input.text_gone || ''
+    const maxWait = Math.min(input.max_wait_ms || 8000, 30000)
+    const start = Date.now()
+    let lastSig = null
+    let stableCount = 0
+
+    while (Date.now() - start < maxWait) {
+      const r = await nativeCall('phone.snapshot', { interactive_only: false, max_nodes: 200 })
+      if (!r.ok) {
+        await new Promise(res => setTimeout(res, 300))
+        continue
+      }
+      const allText = (r.nodes || []).map(n => `${n.text || ''}${n.desc || ''}`).join('|')
+
+      // 等文字出现
+      if (wantText && allText.includes(wantText)) {
+        return { ok: true, output: `已出现「${wantText}」（${Date.now() - start}ms）` }
+      }
+      // 等文字消失
+      if (wantGone && !allText.includes(wantGone)) {
+        return { ok: true, output: `「${wantGone}」已消失（${Date.now() - start}ms）` }
+      }
+      // 都没指定 → 等稳定
+      if (!wantText && !wantGone) {
+        const sig = `${r.count}:${allText.slice(0, 200)}`
+        if (sig === lastSig) {
+          stableCount++
+          if (stableCount >= 2) {
+            return { ok: true, output: `界面已稳定（${Date.now() - start}ms，${r.count} 个元素）` }
+          }
+        } else {
+          stableCount = 0
+          lastSig = sig
+        }
+      }
+      await new Promise(res => setTimeout(res, 250))
+    }
+
+    const what = wantText ? `等「${wantText}」` : wantGone ? `等「${wantGone}」消失` : '等界面稳定'
+    return { ok: false, error: `${what}超时（${maxWait}ms）` }
+  },
+
+  // ── say：语音播报 ───────────────────────────
+  // 原生 TTS（离线、快）。音质不如 edge-tts，但可靠。
+  async say(input = {}) {
+    const text = input.text || ''
+    if (!text) return { ok: false, error: '缺少 text' }
+    const r = await nativeCall('sys.tts', {
+      text,
+      flush: input.flush !== false,
+      rate: input.rate || 1.0,
+    })
+    if (r.ok) {
+      return { ok: true, output: input.secret ? `已播报（内容隐藏，${text.length} 字符）` : `已播报：${text}` }
+    }
+    return { ok: false, error: r.error }
+  },
+
+  // ── Location：定位 ──────────────────────────
+  async Location(input = {}) {
+    const r = await nativeCall('sys.location', { provider: input.provider || 'network' })
+    if (!r.ok) return { ok: false, error: r.error }
+    return { ok: true, output: `纬度 ${r.latitude}, 经度 ${r.longitude}${r.accuracy ? `, 精度 ${r.accuracy}m` : ''}` }
+  },
+
   async OpenUrl(input = {}) {
     const r = await nativeCall('sys.openUrl', { url: input.url })
     return r.ok ? { ok: true, output: r.message } : { ok: false, error: r.error }
