@@ -283,18 +283,35 @@ class RootfsManager(private val context: Context) {
             )
 
             // apt 源换国内（Ubuntu 24.04 用新格式）
+            //
+            // ⚠️ 必须用 http 而不是 https！
+            // 真机实测：proot 里 apt 的 https method 会报
+            //   "Method /usr/lib/apt/methods/https did not start correctly"
+            // （proot 对 fork+exec 的限制导致 method 进程起不来），
+            // 而 http method 正常。清华源同时提供 http，所以用 http。
             val sourcesFile = File(rootfsPath, "etc/apt/sources.list.d/ubuntu.sources")
             if (sourcesFile.parentFile?.exists() == true) {
                 sourcesFile.writeText(
                     """
                     Types: deb
-                    URIs: https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports
+                    URIs: http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports
                     Suites: noble noble-updates noble-backports
                     Components: main universe restricted multiverse
                     Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
                     """.trimIndent()
                 )
             }
+
+            // 备选源（清华挂了时用）
+            File(rootfsPath, "etc/apt/sources.list.d/backup.sources").writeText(
+                """
+                Types: deb
+                URIs: http://mirrors.ustc.edu.cn/ubuntu-ports
+                Suites: noble noble-updates noble-backports
+                Components: main universe restricted multiverse
+                Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+                """.trimIndent()
+            )
 
             // root 的 shell 配置
             File(rootfsPath, "root/.bashrc").writeText(
@@ -476,23 +493,40 @@ class RootfsManager(private val context: Context) {
             onLine("修复文件权限…")
             fixPermissionsInternal()
 
-            // 2) apt update
+            // 2) apt update（失败重试 3 次，网络抖动常见）
             onLine("更新软件源…")
-            exec(listOf("/bin/bash", "-lc", "apt-get update"), onLine)
+            var updated = false
+            for (attempt in 1..3) {
+                updated = exec(listOf("/bin/bash", "-lc", "apt-get update"), onLine)
+                if (updated) break
+                onLine("  源更新失败，${attempt}/3 重试…")
+                try { Thread.sleep(3000) } catch (_: InterruptedException) {}
+            }
+            if (!updated) {
+                onLine("⚠️ 软件源更新失败（网络问题？）")
+            }
 
-            // 3) 装 nodejs + 常用工具
+            // 3) 装 nodejs + 常用工具（同样重试）
             onLine("安装 Node.js 与基础工具…")
-            val ok = exec(
-                listOf(
-                    "/usr/bin/env", "-i",
-                    "HOME=/root",
-                    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                    "DEBIAN_FRONTEND=noninteractive",
-                    "/bin/bash", "-lc",
-                    "apt-get install -y nodejs git curl ca-certificates"
-                ),
-                onLine
-            )
+            var ok = false
+            for (attempt in 1..3) {
+                ok = exec(
+                    listOf(
+                        "/usr/bin/env", "-i",
+                        "HOME=/root",
+                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                        "DEBIAN_FRONTEND=noninteractive",
+                        "/bin/bash", "-lc",
+                        "apt-get install -y nodejs git curl ca-certificates"
+                    ),
+                    onLine
+                )
+                if (ok && hasNode()) break
+                if (attempt < 3) {
+                    onLine("  安装失败，${attempt}/3 重试…")
+                    try { Thread.sleep(3000) } catch (_: InterruptedException) {}
+                }
+            }
 
             if (ok && hasNode()) {
                 Log.i(TAG, "Node 安装成功")
