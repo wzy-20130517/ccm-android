@@ -2,6 +2,7 @@ package com.ccm.app
 
 import android.app.Activity
 import android.content.Intent
+import java.io.File
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.provider.Settings
@@ -244,7 +245,36 @@ fun CcmApp() {
                         }
                     },
                     onOpenWeb = { stage = Stage.WEBVIEW },
-                    onManageToolchains = { stage = Stage.TOOLCHAIN_MANAGE }
+                    onManageToolchains = { stage = Stage.TOOLCHAIN_MANAGE },
+                    onUpdateKernel = {
+                        // 复用安装流水线的进度界面：先删旧内核包让 installKernel 重新下载
+                        stage = Stage.SETTING_UP
+                        scope.launch {
+                            try {
+                                progress = 0.05f
+                                log = "更新 Node 内核…"
+                                File(ctx.filesDir, "kernel.tar.gz").delete()
+                                val ok = withContext(Dispatchers.IO) {
+                                    rootfs.installKernel { done, total ->
+                                        val pct = if (total > 0) done.toFloat() / total else 0f
+                                        scope.launch {
+                                            progress = 0.1f + pct * 0.85f
+                                            log = "下载内核… ${done / 1024 / 1024}MB / ${total / 1024 / 1024}MB"
+                                        }
+                                    }
+                                }
+                                log = if (ok) {
+                                    progress = 1f
+                                    "✅ 内核已更新。点「重启 Node 内核」让它生效。"
+                                } else {
+                                    "❌ 内核更新失败。检查网络后重试。"
+                                }
+                            } catch (t: Throwable) {
+                                log = "❌ 内核更新出错：${t.message}"
+                            }
+                            stage = Stage.READY
+                        }
+                    }
                 )
 
                 Stage.WEBVIEW -> WebViewScreen(
@@ -597,7 +627,8 @@ fun ReadyScreen(
     onStartService: () -> Unit,
     onStartNode: () -> Unit,
     onOpenWeb: () -> Unit,
-    onManageToolchains: () -> Unit = {}
+    onManageToolchains: () -> Unit = {},
+    onUpdateKernel: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState())
@@ -643,6 +674,18 @@ fun ReadyScreen(
             enabled = hasNode && kernelInstalled
         ) {
             Text(if (runtime.webReady) "重启 Node 内核" else "启动 Node 内核")
+        }
+        Spacer(Modifier.height(8.dp))
+        // 【2026-09-23 加】内核是**首次安装时**才下载的（见 installKernel），
+        // 之后改内核包不会自动生效 —— 每次都得重装 APK 才能拿到新的 web/dist。
+        // 开发期这太难受，所以给一个显式入口。
+        // ⚠ 更新会覆盖 /root/ccm，用户如果在里面手改过东西会丢。
+        OutlinedButton(
+            onClick = onUpdateKernel,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = hasNode
+        ) {
+            Text("更新 Node 内核（覆盖 /root/ccm）")
         }
         Spacer(Modifier.height(8.dp))
         Button(
