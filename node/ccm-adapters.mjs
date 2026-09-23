@@ -48,17 +48,42 @@ export async function applyNativeAdapters(toolkit) {
     }
   }
 
-  const tools = typeof toolkit.tools === 'function' ? toolkit.tools() : []
+  // ⚠️ 每次调用 tools() 都重新取一遍，不用缓存的结果。
+  //
+  // 【为什么】registry.list() 返回的是**同一批工具实例**，直接改它们的 execute 即可。
+  // 但有些 toolkit 实现的 tools() 每次返回新数组（甚至新对象），
+  // 那就必须在**替换后重新取**才能拿到被改过的实例。
+  // 所以这里取两次：第一次找名字，第二次拿到实例后替换。
   const replaced = []
+  const seen = new Set()
 
-  for (const tool of tools) {
-    const impl = NATIVE_IMPLS[tool.name]
-    if (!impl) continue
+  // 反复取直到没有新的可替换工具（兼容 tools() 返回新对象的实现）
+  for (let round = 0; round < 3; round++) {
+    const tools = typeof toolkit.tools === 'function' ? toolkit.tools() : []
+    let changed = false
 
-    // 保存原实现（便于回退 / 调试）
-    tool._originalExecute = tool.execute
-    tool.execute = impl
-    replaced.push(tool.name)
+    for (const tool of tools) {
+      if (!tool || !tool.name) continue
+      const impl = NATIVE_IMPLS[tool.name]
+      if (!impl) continue
+
+      // 已经是原生实现 → 跳过（避免二次包装）
+      if (tool.execute === impl || tool._ccmNative) continue
+
+      // 保存原实现（便于回退 / 调试）
+      if (!tool._originalExecute) tool._originalExecute = tool.execute
+      tool.execute = impl
+      tool._ccmNative = true
+      changed = true
+
+      if (!seen.has(tool.name)) {
+        seen.add(tool.name)
+        replaced.push(tool.name)
+      }
+    }
+
+    // 这一轮没改动 → 说明 tools() 返回的是稳定实例，结束
+    if (!changed) break
   }
 
   _applied = true
@@ -73,6 +98,7 @@ export function revertNativeAdapters(toolkit) {
     if (tool._originalExecute) {
       tool.execute = tool._originalExecute
       delete tool._originalExecute
+      delete tool._ccmNative
       n++
     }
   }

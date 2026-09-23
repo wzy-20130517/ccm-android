@@ -144,15 +144,20 @@ class CcmService : Service() {
                 }
 
                 // 读 body
+                //
+                // ⚠️ Content-Length 是**字节数**，而 Reader.read 按**字符**算。
+                // 直接 CharArray(contentLength) 读中文会少读（一个汉字 3 字节但算 1 字符），
+                // 导致 JSON 截断解析失败。所以这里按字节读再解码。
                 val body = if (contentLength > 0) {
-                    val buf = CharArray(contentLength)
+                    val buf = ByteArray(contentLength)
                     var read = 0
+                    val input = s.getInputStream()
                     while (read < contentLength) {
-                        val n = reader.read(buf, read, contentLength - read)
+                        val n = input.read(buf, read, contentLength - read)
                         if (n <= 0) break
                         read += n
                     }
-                    String(buf, 0, read)
+                    String(buf, 0, read, Charsets.UTF_8)
                 } else ""
 
                 val response = route(method, path, body)
@@ -227,9 +232,14 @@ class CcmService : Service() {
      *   proot -r rootfs ... /usr/bin/node /root/ccm/web/server.mjs
      */
     fun startNode(): Boolean {
-        if (nodeProcess != null) {
-            Log.i(TAG, "Node 已在运行")
-            return true
+        // 检查已有进程是否真活着（可能是残留的僵尸引用）
+        nodeProcess?.let { p ->
+            if (p.isAlive) {
+                Log.i(TAG, "Node 已在运行 (pid=${p.pid()})")
+                return true
+            }
+            Log.w(TAG, "发现已死进程引用，清理后重启")
+            nodeProcess = null
         }
         if (!rootfsManager.isInstalled()) {
             Log.w(TAG, "rootfs 未安装")
@@ -263,7 +273,7 @@ class CcmService : Service() {
             val p = pb.start()
             nodeProcess = p
 
-            // 读输出到日志
+            // 读输出到日志 + 进程退出时清理状态
             executor.execute {
                 try {
                     val r = BufferedReader(InputStreamReader(p.inputStream))
@@ -271,7 +281,18 @@ class CcmService : Service() {
                         val line = r.readLine() ?: break
                         Log.i("CcmNode", line)
                     }
-                } catch (_: Throwable) {}
+                } catch (_: Throwable) {
+                } finally {
+                    // ⚠️ 必须清理，否则 nodeProcess != null 会让后续 startNode 误判"已在运行"
+                    try {
+                        val code = p.waitFor()
+                        Log.i(TAG, "Node 进程退出，code=$code")
+                        if (nodeProcess === p) {
+                            nodeProcess = null
+                            updateNotification("Node 已退出（code=$code）")
+                        }
+                    } catch (_: Throwable) {}
+                }
             }
 
             updateNotification("Node 已启动")
@@ -285,11 +306,23 @@ class CcmService : Service() {
     }
 
     fun stopNode() {
+        val p = nodeProcess ?: return
+        nodeProcess = null
         try {
-            nodeProcess?.destroy()
-            nodeProcess = null
-            Log.i(TAG, "Node 已停止")
-        } catch (_: Throwable) {}
+            p.destroy()   // SIGTERM，proot 的 --kill-on-exit 会清理子进程
+            // 给 2 秒优雅退出，超时强杀
+            executor.execute {
+                try {
+                    if (!p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                        Log.w(TAG, "Node 未响应 SIGTERM，强杀")
+                        p.destroyForcibly()
+                    }
+                } catch (_: Throwable) {}
+            }
+            Log.i(TAG, "Node 停止中")
+        } catch (t: Throwable) {
+            Log.w(TAG, "停止失败: ${t.message}")
+        }
     }
 
     // ═══════════════════════════════════════════════════

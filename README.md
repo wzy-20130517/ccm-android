@@ -171,8 +171,66 @@ patchelf --set-rpath '$ORIGIN' libandroid-shmem.so
 2. **无障碍服务需用户手动开启**（系统设置 → 无障碍 → CCM）
 3. **MediaProjection 需用户授权一次**（弹「开始录制」确认框）
 4. **首次安装约 3~8 分钟**（取决于网速）
-5. **`RootfsManager` 的 tar 解压没保留原始 mode** —— 靠 `fixPermissions()` 事后修复，
-   更稳妥的做法是解压时直接按 tar 的 mode 设置（`TarExtractor` 已读到 mode，待接）
+
+---
+
+## 内核侧的自适应改造（2026-09-23）
+
+为了让 `claude-code-mobile` 的 36k 行内核能在 proot Ubuntu 里跑，做了这些改造
+（**同一份代码，Termux / CCM 两种环境都能用，不 fork**）：
+
+### 新增 `core/shell-path.mjs`
+
+统一 shell 探测，优先级：
+```
+$SHELL → $PREFIX/bin/sh → /bin/bash → /usr/bin/bash → /bin/sh → /system/bin/sh
+```
+
+**为什么需要**：原 `core/pty.mjs` 硬编码 `shell: '/system/bin/sh'` —— 那是 Android 的
+shell，在 proot Ubuntu 里要么不存在，要么行为不同（缺 PATH 等）。
+实测：不修的话 proot 里跑 `ls` 都报 "command not found"。
+
+`bg-bash.mjs` / `hooks.mjs` 也改用同一模块。
+
+### Termux 路径去硬编码
+
+`edge-tts.mjs` / `voice-read.mjs` / `env-secrets.mjs` 里的
+`/data/data/com.termux/files/home` 改成 `homedir()` —— proot 里自动是 `/root`。
+
+### Termux 命令缺失时的明确提示
+
+`termux-tools.mjs` 的 `termuxExec` 加了路径探测，找不到时给出指引：
+```
+termux-notification 不可用。
+  · Termux 模式：需要安装 termux-api（pkg install termux-api）
+  · CCM 模式：应走原生桥（检查 CCM 核心服务是否启动、无障碍是否开启）
+```
+而不是含糊的 ENOENT。
+
+### 适配层的多轮替换
+
+`ccm-adapters.mjs` 的 `applyNativeAdapters` 改成**多轮替换**，
+兼容 `tools()` 每次返回新数组的 toolkit 实现
+（真实的 `registry.list()` 返回稳定实例，但防御性处理更好）。
+
+---
+
+## 实测记录（2026-09-23）
+
+| 测试项 | 结果 |
+|---|---|
+| proot Ubuntu 启动 | ✅ 24.04.3 LTS |
+| apt update（清华 http 源） | ✅ 全部 Hit |
+| Node.js 安装 | ✅ 18.19.1 |
+| PTY（`script -qfc`） | ✅ `/dev/pts/2` |
+| **shell 探测（proot 里）** | ✅ `shell=/bin/bash`（不是 Android 的 sh） |
+| CCM 内核启动 | ✅ |
+| Web 服务 :3456 | ✅ HTTP 200 |
+| **真实对话** | ✅ "测试成功" |
+| **工具调用（Bash）** | ✅ `echo hello-ccm` → 结果回传 → AI 回复 |
+| linker 警告 | ✅ 绑定 `/linkerconfig` 后消失 |
+| **Node → Kotlin 桥** | ✅ 桥可用 |
+| **适配层替换工具** | ✅ `phone_snapshot` / `Notify` 换成原生实现 |
 
 ---
 
