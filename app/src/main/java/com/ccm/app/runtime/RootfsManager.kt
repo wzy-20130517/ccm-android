@@ -368,7 +368,7 @@ class RootfsManager(private val context: Context) {
      * @param onLine 每行输出回调（给 UI 显示进度）
      */
     fun installNode(
-        prootArgs: (List<String>) -> List<String>,
+        exec: (List<String>, (String) -> Unit) -> Boolean,
         onLine: (String) -> Unit = {}
     ): Boolean {
         if (!isInstalled()) {
@@ -381,18 +381,25 @@ class RootfsManager(private val context: Context) {
         }
 
         return try {
-            // 1) 先 apt update
-            onLine("更新软件源…")
-            if (!runInRootfs(prootArgs, "apt-get update -qq", onLine)) {
-                Log.w(TAG, "apt update 失败")
-                // 不致命，继续试 install
-            }
+            // 1) 修复执行权限（不做这步 apt 会静默失败）
+            onLine("修复文件权限…")
+            fixPermissionsInternal()
 
-            // 2) 装 nodejs + npm + 常用工具
+            // 2) apt update
+            onLine("更新软件源…")
+            exec(listOf("/bin/bash", "-lc", "apt-get update"), onLine)
+
+            // 3) 装 nodejs + 常用工具
             onLine("安装 Node.js 与基础工具…")
-            val ok = runInRootfs(
-                prootArgs,
-                "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs npm git curl ca-certificates",
+            val ok = exec(
+                listOf(
+                    "/usr/bin/env", "-i",
+                    "HOME=/root",
+                    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                    "DEBIAN_FRONTEND=noninteractive",
+                    "/bin/bash", "-lc",
+                    "apt-get install -y nodejs git curl ca-certificates"
+                ),
                 onLine
             )
 
@@ -409,31 +416,21 @@ class RootfsManager(private val context: Context) {
         }
     }
 
-    /** 在 rootfs 里执行一条命令，返回是否成功 */
-    private fun runInRootfs(
-        prootArgs: (List<String>) -> List<String>,
-        command: String,
-        onLine: (String) -> Unit
-    ): Boolean {
-        return try {
-            val args = prootArgs(listOf("/bin/bash", "-c", command))
-            val pb = ProcessBuilder(args)
-            pb.redirectErrorStream(true)
-            val p = pb.start()
-
-            val reader = p.inputStream.bufferedReader()
-            while (true) {
-                val line = reader.readLine() ?: break
-                onLine(line)
+    /** 修复执行权限（apt 的 http method 等需要） */
+    private fun fixPermissionsInternal() {
+        try {
+            val execDirs = listOf(
+                "bin", "sbin", "usr/bin", "usr/sbin",
+                "usr/local/bin", "usr/local/sbin",
+                "usr/lib/apt/methods", "usr/lib/dpkg",
+                "lib/aarch64-linux-gnu", "usr/lib/aarch64-linux-gnu",
+            )
+            execDirs.forEach { d ->
+                File(rootfsPath, d).listFiles()?.forEach { f ->
+                    if (f.isFile && !f.canExecute()) f.setExecutable(true, false)
+                }
             }
-            val code = p.waitFor()
-            Log.i(TAG, "命令退出码: $code")
-            code == 0
-        } catch (t: Throwable) {
-            Log.w(TAG, "执行失败: ${t.message}")
-            onLine("执行失败: ${t.message}")
-            false
-        }
+        } catch (_: Throwable) {}
     }
 
     /** 检查 rootfs 里有没有 Node */

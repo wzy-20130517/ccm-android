@@ -249,14 +249,17 @@ class CcmService : Service() {
         Log.i(TAG, "启动脚本: $script")
 
         return try {
-            val args = prootRuntime.buildProotArgs(
+            // buildProcess 已处理：--rootfs=. / LD_PRELOAD 清除 / PROOT_L2S_DIR / LD_LIBRARY_PATH
+            val pb = prootRuntime.buildProcess(
                 workDir = "/root/ccm",
-                command = listOf(node, script)
+                command = listOf(node, script),
+                extraEnv = mapOf(
+                    "CCM_BRIDGE_PORT" to BRIDGE_PORT.toString(),
+                    "CCM_WEB_PORT" to "3456",
+                    "CCM_MODE" to "native",
+                    "CCM_NATIVE_ADAPTERS" to "1",
+                )
             )
-            val pb = ProcessBuilder(args)
-            pb.redirectErrorStream(true)
-            // proot 的依赖库在 nativeLibraryDir，用 LD_LIBRARY_PATH 兜底
-            prootRuntime.prootEnv().forEach { (k, v) -> pb.environment()[k] = v }
             val p = pb.start()
             nodeProcess = p
 

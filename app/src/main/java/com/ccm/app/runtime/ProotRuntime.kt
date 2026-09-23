@@ -7,34 +7,62 @@ import java.io.File
 /**
  * Proot 运行时 —— 启动并管理 Linux 环境里的进程。
  *
+ * ══════════════════════════════════════════════════════════════
+ *  ⚠️ 这份实现的所有参数都是在真机上实测验证过的，改动前请先读下面的说明
+ * ══════════════════════════════════════════════════════════════
+ *
  * 【原理】
  * proot 用 ptrace 拦截系统调用，把路径重定向到 rootfs 下，
  * 不需要 root 就能跑一个"看起来像完整 Linux"的环境。
  *
- * 【Android 上的两个坑】
+ * 【实测踩过的坑（每一条都是真机验证过的，改前先想清楚）】
  *
- * 1. **exec 权限**：Android 10+ 对 App 私有目录（filesDir）的
- *    W^X 限制 —— 但实际测试表明 filesDir 里的可执行文件**可以** exec，
- *    真正受限的是 sdcard。所以 rootfs 放 filesDir。
+ * 1. **必须清掉 LD_PRELOAD** ← 最隐蔽的坑
+ *    Termux 里 `LD_PRELOAD=libtermux-exec-ld-preload.so` 会导致 proot
+ *    的 execve 报 "Function not implemented"。这个库拦截 exec 相关调用，
+ *    与 proot 的 ptrace 机制冲突。子进程环境里必须 remove 它。
  *
- * 2. **linker 路径**：rootfs 里的 ELF 用 /lib/ld-linux-aarch64.so.1 作为解释器，
- *    而 Android 的 linker 在 /system/bin/linker64。proot 的 -q 参数可以指定，
- *    但更简单的方式是让 proot 用 rootfs 自己的 linker（proot 会处理路径重定向）。
+ * 2. **必须用相对路径 --rootfs=.**
+ *    proot-distro 就是这么做的。用绝对路径会报
+ *    "can't chmod ...: Function not implemented"。
+ *    所以 ProcessBuilder.directory() 必须设成 rootfs。
  *
- * 【启动命令】
- * proot -r <rootfs> -0 -w /root -b /dev -b /proc -b /sys \
- *       -b /sdcard:/mnt/sdcard \
- *       /usr/bin/env -i HOME=/root PATH=... TERM=xterm-256color \
- *       /bin/bash -l
+ * 3. **必须设 PROOT_L2S_DIR 且目录预先创建**
+ *    link2symlink 扩展的工作目录，位置在 rootfs 内部（<rootfs>/.l2s）。
+ *
+ * 4. **必须传 --link2symlink**
+ *    Android 文件系统不支持硬链接，rootfs 里有大量硬链接（perl、gzip 等）。
+ *
+ * 5. **必须传 -L**
+ *    修复 lstat 语义，否则 dpkg 报一堆 symlink 警告。
+ *
+ * 6. **必须传 --kill-on-exit**
+ *    否则退出会话后残留进程阻塞。
+ *
+ * 7. **--kernel-release 要完整格式**
+ *    `\Linux\<hostname>\<version>\<arch>\localdomain\-1\`
+ *    写错会报 "can't find hwcap field"。
+ *
+ * 8. **rootfs 文件执行权限必须保留**
+ *    解压后要恢复可执行位，否则 apt 的 http method 报 "Permission denied"。
+ *
+ * 9. **apt 源用 http 而非 https**
+ *    proot 里 apt 的 https method 启动会失败（fork 受限）。
+ *
+ * 10. **绑定 /linkerconfig/ld.config.txt 等 Android 路径**
+ *    否则某些动态链接场景会失败。
  */
 class ProotRuntime(private val context: Context) {
 
     companion object {
         private const val TAG = "ProotRuntime"
 
-        /** proot 可执行文件在 APK 里的位置（jniLibs 打包，见 build.gradle） */
+        /** proot 可执行文件（jniLibs 打包，nativeLibraryDir 有 exec 权限） */
         private const val PROOT_LIB_NAME = "libproot.so"
-        private const val PROOT_LOADER_NAME = "libproot_loader.so"
+
+        /** 伪造的内核版本（proot-distro 同款格式，改格式会报 hwcap 错误） */
+        private const val FAKE_KERNEL =
+            "\\Linux\\localhost\\6.17.0-PRoot-Distro\\#1 SMP PREEMPT_DYNAMIC Fri, 10 Oct 2025 00:00:00 +0000\\aarch64\\localdomain\\-1\\"
     }
 
     private val rootfs: File get() = File(context.filesDir, "rootfs")
@@ -43,17 +71,19 @@ class ProotRuntime(private val context: Context) {
     val prootBin: File
         get() = File(context.applicationInfo.nativeLibraryDir, PROOT_LIB_NAME)
 
-    val prootLoader: File
-        get() = File(context.applicationInfo.nativeLibraryDir, PROOT_LOADER_NAME)
-
     fun isReady(): Boolean = prootBin.exists() && rootfs.isDirectory
+
+    fun rootfsDir(): File = rootfs
 
     /**
      * 构造 proot 命令行参数。
      *
-     * @param workDir rootfs 内的工作目录
-     * @param command 要执行的命令（rootfs 内的路径）
-     * @param bindExtra 额外挂载，格式 "宿主路径:容器路径"
+     * ⚠️ 返回的是完整 argv（首元素是 proot 路径）。
+     * 调用方必须配合：
+     *   - ProcessBuilder.directory(rootfs)   ← 配合 --rootfs=.
+     *   - 环境里 remove LD_PRELOAD
+     *   - 环境里设 PROOT_L2S_DIR
+     * 这三件事 buildProcess() 已处理好，建议直接用那个方法。
      */
     fun buildProotArgs(
         workDir: String = "/root",
@@ -64,70 +94,111 @@ class ProotRuntime(private val context: Context) {
 
         args += prootBin.absolutePath
 
-        // -r: rootfs 根目录
-        args += "-r"; args += rootfs.absolutePath
+        // 退出时清理残留进程
+        args += "--kill-on-exit"
 
-        // -0: 伪装成 root（uid 0）—— 很多程序要求非 root 会拒绝启动
-        args += "-0"
+        // 硬链接模拟（Android 不支持硬链接，必须）
+        args += "--link2symlink"
 
-        // -w: 工作目录
-        args += "-w"; args += workDir
+        // SysV IPC
+        args += "--sysvipc"
 
-        // -q: 用 rootfs 里的 qemu（同架构时不需要，跳过）
+        // 伪造内核版本
+        args += "--kernel-release=$FAKE_KERNEL"
 
-        // 链接器：让 proot 用 rootfs 自己的 linker
-        // Android 的 linker64 与 glibc 的 ld-linux 不兼容，必须用 rootfs 里的
-        val loader = File(rootfs, "lib/ld-linux-aarch64.so.1")
-        if (loader.exists()) {
-            args += "-q"; args += loader.absolutePath
+        // 修复 lstat 语义（dpkg 需要）
+        args += "-L"
+
+        // 伪装 root
+        args += "--change-id=0:0"
+
+        // ⚠️ 相对路径！配合 ProcessBuilder.directory(rootfs)
+        args += "--rootfs=."
+
+        // 工作目录
+        args += "--cwd=$workDir"
+
+        // 基础挂载
+        args += "--bind=/dev"
+        args += "--bind=/proc"
+        args += "--bind=/sys"
+        args += "--bind=/dev/urandom:/dev/random"
+
+        // Android 运行时路径
+        listOf(
+            "/apex", "/system", "/vendor", "/product", "/system_ext", "/odm",
+            "/data/app", "/data/dalvik-cache",
+            "/linkerconfig/ld.config.txt",
+            "/linkerconfig/com.android.art/ld.config.txt",
+        ).forEach { p ->
+            if (File(p).exists()) args += "--bind=$p"
         }
 
-        // 挂载点：/dev /proc /sys 必须挂，否则很多命令不能用
-        args += "-b"; args += "/dev"
-        args += "-b"; args += "/proc"
-        args += "-b"; args += "/sys"
-
-        // /sdcard —— 让 AI 能读写用户的文件
-        // Android 11+ 上 App 拿不到 /sdcard 直通，但 termux 的 /sdcard 可用
-        // 这里挂 App 自己的外部目录（无需权限）
+        // 外部存储（AI 读写用户文件，App 私有外部目录无需权限）
         val extDir = context.getExternalFilesDir(null)
-        if (extDir != null && extDir.exists()) {
-            args += "-b"; args += "${extDir.absolutePath}:/mnt/ext"
+        if (extDir != null) {
+            try { extDir.mkdirs() } catch (_: Throwable) {}
+            args += "--bind=${extDir.absolutePath}:/mnt/ext"
         }
 
         // 额外挂载
-        bindExtra.forEach { args += "-b"; args += it }
-
-        // 环境变量：用 env -i 清空 Android 继承的环境（避免污染）
-        args += "/usr/bin/env"
-        args += "-i"
-        args += "HOME=/root"
-        args += "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        args += "TERM=xterm-256color"
-        args += "LANG=C.UTF-8"
-        args += "LC_ALL=C.UTF-8"
-        args += "SHELL=/bin/bash"
-        args += "USER=root"
-        args += "LOGNAME=root"
-        args += "TMPDIR=/tmp"
-        args += "ANDROID_ROOT=/system"
+        bindExtra.forEach { args += "--bind=$it" }
 
         args += command
         return args
     }
 
     /**
-     * proot 进程需要的环境变量。
+     * 构造配置好的 ProcessBuilder。
      *
-     * 【为什么需要 LD_LIBRARY_PATH】
-     * proot 的 ELF 头里 RUNPATH 原本硬编码了 Termux 的库路径，
-     * 我们已用 patchelf 改成 $ORIGIN（同目录查找）。
-     * 但 Android 的 linker 对 $ORIGIN 支持有限，所以再设一层
-     * LD_LIBRARY_PATH 兜底 —— 双保险，任一生效即可。
+     * 处理三个必须的环境设置：
+     * 1. 工作目录 = rootfs（配合 --rootfs=.）
+     * 2. 清掉 LD_PRELOAD（Termux 的 exec 拦截库会让 proot 失败）
+     * 3. 设 PROOT_L2S_DIR（并确保目录存在）
      */
-    fun prootEnv(): Map<String, String> = mapOf(
-        "LD_LIBRARY_PATH" to context.applicationInfo.nativeLibraryDir
-    )
+    fun buildProcess(
+        workDir: String = "/root",
+        command: List<String>,
+        bindExtra: List<String> = emptyList(),
+        extraEnv: Map<String, String> = emptyMap()
+    ): ProcessBuilder {
+        val args = buildProotArgs(workDir, command, bindExtra)
+        val pb = ProcessBuilder(args)
+
+        // ⚠️ 必须：工作目录 = rootfs（--rootfs=. 是相对路径）
+        pb.directory(rootfs)
+        pb.redirectErrorStream(true)
+
+        val env = pb.environment()
+
+        // ⚠️ 必须：清掉 LD_PRELOAD
+        env.remove("LD_PRELOAD")
+
+        // proot 依赖库路径（$ORIGIN 的兜底）
+        env["LD_LIBRARY_PATH"] = context.applicationInfo.nativeLibraryDir
+
+        // ⚠️ 必须：link2symlink 工作目录
+        val l2sDir = File(rootfs, ".l2s")
+        if (!l2sDir.exists()) l2sDir.mkdirs()
+        env["PROOT_L2S_DIR"] = l2sDir.absolutePath
+
+        // 终端
+        env["TERM"] = "xterm-256color"
+        env["COLORTERM"] = "truecolor"
+
+        // Android 运行时变量（透传，部分工具需要）
+        listOf(
+            "ANDROID_ROOT", "ANDROID_DATA", "ANDROID_RUNTIME_ROOT",
+            "ANDROID_TZDATA_ROOT", "ANDROID_ART_ROOT", "ANDROID_I18N_ROOT",
+            "BOOTCLASSPATH", "DEX2OATBOOTCLASSPATH", "EXTERNAL_STORAGE",
+        ).forEach { k ->
+            System.getenv(k)?.let { env[k] = it }
+        }
+
+        extraEnv.forEach { (k, v) -> env[k] = v }
+
+        return pb
+    }
 
     /** 检查 rootfs 里有没有装某个命令 */
     fun hasCommand(name: String): Boolean {
@@ -141,17 +212,17 @@ class ProotRuntime(private val context: Context) {
     /** rootfs 里 Node 的路径（如果装了） */
     fun nodePath(): String? {
         val candidates = listOf(
-            "usr/local/bin/node", "usr/bin/node", "opt/node/bin/node",
-            "root/.nvm/versions/node"
+            "usr/local/bin/node", "usr/bin/node", "opt/node/bin/node"
         )
         candidates.forEach { rel ->
-            val f = File(rootfs, rel)
-            if (f.isFile) return "/$rel"
-            if (f.isDirectory) {
-                // nvm 风格：找第一个版本
-                f.listFiles()?.firstOrNull()?.let { v ->
-                    val node = File(v, "bin/node")
-                    if (node.exists()) return "/$rel/${v.name}/bin/node"
+            if (File(rootfs, rel).isFile) return "/$rel"
+        }
+        // nvm 风格
+        val nvmDir = File(rootfs, "root/.nvm/versions/node")
+        if (nvmDir.isDirectory) {
+            nvmDir.listFiles()?.firstOrNull()?.let { v ->
+                if (File(v, "bin/node").exists()) {
+                    return "/root/.nvm/versions/node/${v.name}/bin/node"
                 }
             }
         }
@@ -161,5 +232,62 @@ class ProotRuntime(private val context: Context) {
     /** 环境是否已装 Node */
     fun hasNode(): Boolean = nodePath() != null
 
-    fun rootfsDir(): File = rootfs
+    /**
+     * 在 rootfs 里执行一条命令，输出按行回调。
+     * 用于安装流程（apt update / apt install）。
+     */
+    fun exec(
+        command: List<String>,
+        workDir: String = "/root",
+        onLine: (String) -> Unit = {}
+    ): Boolean {
+        return try {
+            val pb = buildProcess(workDir, command)
+            val p = pb.start()
+            val reader = p.inputStream.bufferedReader()
+            while (true) {
+                val line = reader.readLine() ?: break
+                onLine(line)
+            }
+            val code = p.waitFor()
+            Log.i(TAG, "命令退出码: $code")
+            code == 0
+        } catch (t: Throwable) {
+            Log.w(TAG, "执行失败: ${t.message}")
+            onLine("执行失败: ${t.message}")
+            false
+        }
+    }
+
+    /**
+     * 修复 rootfs 里文件的执行权限。
+     *
+     * 【为什么需要】
+     * 如果 tar 解压没保留 mode，可执行文件会变成 644，
+     * 导致 apt 的 http method 等程序报 "Permission denied"。
+     * 真机实测：这一步不做，apt update 会静默失败。
+     */
+    fun fixPermissions() {
+        try {
+            val execDirs = listOf(
+                "bin", "sbin", "usr/bin", "usr/sbin",
+                "usr/local/bin", "usr/local/sbin",
+                "usr/lib/apt/methods", "usr/lib/dpkg",
+                "lib/aarch64-linux-gnu", "usr/lib/aarch64-linux-gnu",
+            )
+            var fixed = 0
+            execDirs.forEach { d ->
+                val dir = File(rootfs, d)
+                if (!dir.isDirectory) return@forEach
+                dir.listFiles()?.forEach { f ->
+                    if (f.isFile && !f.canExecute()) {
+                        if (f.setExecutable(true, false)) fixed++
+                    }
+                }
+            }
+            Log.i(TAG, "权限修复：$fixed 个文件")
+        } catch (t: Throwable) {
+            Log.w(TAG, "权限修复失败", t)
+        }
+    }
 }

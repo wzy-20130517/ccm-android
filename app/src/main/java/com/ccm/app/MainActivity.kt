@@ -114,9 +114,7 @@ fun CcmApp() {
                                 progress = 0.90f
                                 if (!rootfs.hasNode()) {
                                     val nok = rootfs.installNode(
-                                        prootArgs = { cmd ->
-                                            proot.buildProotArgs(workDir = "/root", command = cmd)
-                                        }
+                                        exec = { cmd, cb -> proot.exec(cmd, "/root", cb) }
                                     ) { line ->
                                         log = line.takeLast(60)
                                     }
