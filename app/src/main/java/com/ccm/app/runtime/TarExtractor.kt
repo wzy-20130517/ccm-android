@@ -128,7 +128,7 @@ object TarExtractor {
                             // 真机实测：这一步漏判会导致 apt update 静默失败
                             // （/usr/lib/apt/methods/http 不可执行）。
                             val mode = readOctal(header, 100, 8)
-                            if (mode and 0o111L != 0L) {
+                            if (mode and 0b001_001_001L != 0L) {
                                 outFile.setExecutable(true, false)
                             }
                             // 补齐到 512 边界
