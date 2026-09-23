@@ -38,27 +38,33 @@ class RootfsManager(private val context: Context) {
         /** rootfs 版本。升级这个值会触发重新安装。 */
         const val ROOTFS_VERSION = "24.04-v1"
 
-        /** 下载地址（GitHub Release） */
+        /**
+         * 下载地址。
+         *
+         * ⚠️ 指向**公开仓库** ccm-assets —— 代码仓库 ccm-android 是私有的，
+         * 裸 URL 下载会 404（GitHub 私有 Release 必须带 token 才能下）。
+         * 所以资源单独放一个公开仓库，代码保持私有。
+         */
         const val ROOTFS_URL =
-            "https://github.com/wzy-20130517/ccm-android/releases/download/rootfs-v1/ubuntu-base-24.04-arm64.tar.gz"
+            "https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ubuntu-base-24.04-arm64.tar.gz"
 
-        /** Node 内核包（core + web） */
+        /** Node 内核包（core + web + 前端 + 配置） */
         const val KERNEL_URL =
-            "https://github.com/wzy-20130517/ccm-android/releases/download/rootfs-v1/ccm-node-kernel.tar.gz"
+            "https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ccm-node-kernel.tar.gz"
 
         /** 内核安装目标（rootfs 内） */
         const val KERNEL_DIR = "root/ccm"
 
         /** 国内加速（GitHub 直连慢时用） */
         private val MIRRORS = listOf(
-            "https://ghfast.top/https://github.com/wzy-20130517/ccm-android/releases/download/rootfs-v1/ubuntu-base-24.04-arm64.tar.gz",
-            "https://gh-proxy.com/https://github.com/wzy-20130517/ccm-android/releases/download/rootfs-v1/ubuntu-base-24.04-arm64.tar.gz",
+            "https://ghfast.top/https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ubuntu-base-24.04-arm64.tar.gz",
+            "https://gh-proxy.com/https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ubuntu-base-24.04-arm64.tar.gz",
             ROOTFS_URL,
         )
 
         private val KERNEL_MIRRORS = listOf(
-            "https://ghfast.top/https://github.com/wzy-20130517/ccm-android/releases/download/rootfs-v1/ccm-node-kernel.tar.gz",
-            "https://gh-proxy.com/https://github.com/wzy-20130517/ccm-android/releases/download/rootfs-v1/ccm-node-kernel.tar.gz",
+            "https://ghfast.top/https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ccm-node-kernel.tar.gz",
+            "https://gh-proxy.com/https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ccm-node-kernel.tar.gz",
             KERNEL_URL,
         )
     }
