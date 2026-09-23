@@ -37,6 +37,17 @@ class CcmAccessibilityService : AccessibilityService() {
     companion object {
         private const val TAG = "CcmA11y"
 
+        /**
+         * ref → 节点 的映射。
+         *
+         * 【为什么不用"重新遍历按索引找"】
+         * 那样每次操作都要遍历整棵树（慢），且界面一变索引就错位。
+         * 存节点引用后直接 performAction，界面变了会返回 false（安全失败），
+         * 不会点到别的元素上。
+         */
+        private val refNodes = mutableListOf<AccessibilityNodeInfo>()
+        private val refLock = Any()
+
         @Volatile
         private var instance: CcmAccessibilityService? = null
 
@@ -82,9 +93,13 @@ class CcmAccessibilityService : AccessibilityService() {
 
         val arr = JSONArray()
         var counter = 0
+        // 收集的节点，snapshot 后用来建立 ref → 节点 的映射
+        val collected = mutableListOf<AccessibilityNodeInfo>()
 
         fun walk(node: AccessibilityNodeInfo?, depth: Int) {
             if (node == null || counter >= maxNodes) return
+            // 深度保护：极端布局（如某些 WebView）可能嵌套上百层
+            if (depth > 50) return
 
             val clickable = node.isClickable
             val editable = node.isEditable
@@ -94,40 +109,60 @@ class CcmAccessibilityService : AccessibilityService() {
             // 过滤：只要"能交互"或"有文字"的节点
             val interesting = clickable || editable || scrollable || hasText
 
-            if (!interactiveOnly || (clickable || editable || scrollable)) {
-                if (interesting) {
-                    val rect = Rect()
-                    node.getBoundsInScreen(rect)
+            // ⚠️ 判断逻辑：interactiveOnly 时只要可交互的；否则还要有文字的
+            val shouldCollect = if (interactiveOnly) {
+                clickable || editable || scrollable
+            } else {
+                interesting
+            }
 
-                    // 跳过不可见 / 零尺寸
-                    if (rect.width() > 0 && rect.height() > 0) {
-                        val o = JSONObject()
-                        o.put("ref", "e${counter}")
-                        o.put("cls", node.className?.toString()?.substringAfterLast('.') ?: "")
-                        o.put("text", node.text?.toString() ?: "")
-                        o.put("desc", node.contentDescription?.toString() ?: "")
-                        o.put("id", node.viewIdResourceName ?: "")
-                        o.put("bounds", "[${rect.left},${rect.top}][${rect.right},${rect.bottom}]")
-                        o.put("cx", (rect.left + rect.right) / 2)
-                        o.put("cy", (rect.top + rect.bottom) / 2)
-                        if (clickable) o.put("clickable", true)
-                        if (editable) o.put("editable", true)
-                        if (scrollable) o.put("scrollable", true)
-                        if (node.isCheckable) o.put("checked", node.isChecked)
-                        arr.put(o)
-                        counter++
-                    }
+            if (shouldCollect) {
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+
+                // 跳过不可见 / 零尺寸
+                if (rect.width() > 0 && rect.height() > 0) {
+                    val o = JSONObject()
+                    o.put("ref", "e${counter}")
+                    o.put("cls", node.className?.toString()?.substringAfterLast('.') ?: "")
+                    // 文本截断：超长文本（如整篇网页）会让响应体爆炸
+                    val rawText = node.text?.toString() ?: ""
+                    o.put("text", if (rawText.length > 200) rawText.take(200) + "…" else rawText)
+                    o.put("desc", node.contentDescription?.toString()?.take(100) ?: "")
+                    o.put("id", node.viewIdResourceName ?: "")
+                    o.put("bounds", "[${rect.left},${rect.top}][${rect.right},${rect.bottom}]")
+                    o.put("cx", (rect.left + rect.right) / 2)
+                    o.put("cy", (rect.top + rect.bottom) / 2)
+                    if (clickable) o.put("clickable", true)
+                    if (editable) o.put("editable", true)
+                    if (scrollable) o.put("scrollable", true)
+                    if (node.isCheckable) o.put("checked", node.isChecked)
+                    arr.put(o)
+                    collected.add(node)
+                    counter++
                 }
             }
 
             // 递归子节点
             for (i in 0 until node.childCount) {
-                walk(node.getChild(i), depth + 1)
                 if (counter >= maxNodes) break
+                walk(node.getChild(i), depth + 1)
             }
         }
 
         walk(root, 0)
+
+        // ⚠️ 关键：把节点引用存起来，供后续 click/type 直接用。
+        //
+        // 【为什么】原来 findByRef 每次操作都重新遍历整棵树 —— 慢，而且
+        // 界面一变（动画、列表滚动）索引就对不上了，ref 会指到别的元素。
+        // 存引用后，点击时直接用当初那个节点（AccessibilityNodeInfo 是
+        // 系统侧对象的句柄，界面变了它会失效，performAction 返回 false，
+        // 比"点错元素"安全）。
+        synchronized(refLock) {
+            refNodes.clear()
+            refNodes.addAll(collected)
+        }
 
         return JSONObject().apply {
             put("ok", true)
@@ -157,10 +192,54 @@ class CcmAccessibilityService : AccessibilityService() {
     /** 按 ref 输入文本（清空后设置） */
     fun typeByRef(ref: String, text: String): Boolean {
         val node = findByRef(ref) ?: return false
+        return typeInto(node, text)
+    }
+
+    /**
+     * 往指定节点写文本。
+     * 优先用 ACTION_SET_TEXT（原子替换），失败则尝试聚焦后粘贴。
+     */
+    fun typeInto(node: AccessibilityNodeInfo, text: String): Boolean {
         val args = android.os.Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         }
         return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    }
+
+    /**
+     * 找当前有焦点的可编辑节点。
+     *
+     * 用途：AI 的常见流程是 click 输入框 → phone_type（不带 ref），
+     * 这时焦点已在输入框上，直接往里写即可，不需要重新 snapshot。
+     *
+     * 遍历顺序：优先 INPUT_FOCUSED 标记的节点，其次 isFocused 的。
+     */
+    fun findFocusedEditable(): AccessibilityNodeInfo? {
+        val root = rootInActiveWindow ?: return null
+        var byInputFocus: AccessibilityNodeInfo? = null
+        var byFocused: AccessibilityNodeInfo? = null
+
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || depth > 40) return
+            if (byInputFocus != null) return
+
+            if (node.isEditable) {
+                // INPUT_FOCUSED 是输入法焦点（更准确）
+                if (node.isInputFocused && byInputFocus == null) {
+                    byInputFocus = node
+                    return
+                }
+                if (node.isFocused && byFocused == null) {
+                    byFocused = node
+                }
+            }
+            for (i in 0 until node.childCount) {
+                walk(node.getChild(i), depth + 1)
+                if (byInputFocus != null) return
+            }
+        }
+        walk(root, 0)
+        return byInputFocus ?: byFocused
     }
 
     /** 按坐标点击（用手势 API） */
@@ -215,33 +294,18 @@ class CcmAccessibilityService : AccessibilityService() {
     //  内部工具
     // ═══════════════════════════════════════════════════
 
-    /** 按 ref 找节点（重新遍历，因为 ref 是快照时的索引） */
+    /**
+     * 按 ref 找节点。
+     *
+     * 直接用 snapshot 时存下的引用（见 refNodes 的注释）。
+     * 如果 snapshot 之后界面大变，节点会失效 —— 那时 performAction 返回 false，
+     * 调用方会提示"重新 snapshot"，比点错元素安全。
+     */
     private fun findByRef(ref: String): AccessibilityNodeInfo? {
         val idx = ref.removePrefix("e").toIntOrNull() ?: return null
-        val root = rootInActiveWindow ?: return null
-        var counter = 0
-        var found: AccessibilityNodeInfo? = null
-
-        fun walk(node: AccessibilityNodeInfo?) {
-            if (node == null || found != null) return
-            val clickable = node.isClickable
-            val editable = node.isEditable
-            val scrollable = node.isScrollable
-            val hasText = !node.text.isNullOrBlank()
-            if (clickable || editable || scrollable || hasText) {
-                val rect = Rect().also { node.getBoundsInScreen(it) }
-                if (rect.width() > 0 && rect.height() > 0) {
-                    if (counter == idx) { found = node; return }
-                    counter++
-                }
-            }
-            for (i in 0 until node.childCount) {
-                walk(node.getChild(i))
-                if (found != null) return
-            }
+        synchronized(refLock) {
+            return refNodes.getOrNull(idx)
         }
-        walk(root)
-        return found
     }
 
     /** 同步等待手势完成（dispatchGesture 是异步的） */

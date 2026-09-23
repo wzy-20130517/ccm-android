@@ -115,13 +115,33 @@ class NativeBridge(private val context: Context) {
     private fun phoneType(p: JSONObject): String {
         val svc = CcmAccessibilityService.get() ?: return err("无障碍服务未开启")
         val text = p.optString("text")
+        if (text.isEmpty()) return err("缺少 text")
         val ref = p.optString("ref")
+
+        // ① 有 ref → 直接往那个节点写
         if (ref.isNotEmpty()) {
             val ok = svc.typeByRef(ref, text)
-            return ok2json(ok, if (ok) "已输入 ${text.length} 字符" else "输入失败")
+            if (ok) return ok2json(true, "已输入 ${text.length} 字符")
+            return err("输入失败（ref 可能已失效，请重新 snapshot）")
         }
-        // 无 ref：往当前焦点输入（用剪贴板 + 粘贴最稳）
-        return err("需要 ref（先 snapshot 拿到输入框的 ref）")
+
+        // ② 无 ref → 找当前有焦点的输入框
+        //
+        // 【为什么需要这条路径】
+        // AI 的常见流程是：snapshot → click 输入框 → phone_type（不带 ref）。
+        // 此时焦点已经在输入框上，但 AI 未必记得 ref（或者 ref 已因界面变化失效）。
+        // 原来直接报错"需要 ref"，会打断这个自然流程。
+        val focused = svc.findFocusedEditable()
+        if (focused != null) {
+            val ok = svc.typeInto(focused, text)
+            if (ok) return ok2json(true, "已输入 ${text.length} 字符（焦点框）")
+        }
+
+        // ③ 兜底：用剪贴板 + 粘贴（需要 IME 支持，成功率取决于输入法）
+        return err(
+            "找不到可输入的框。请先 snapshot 拿到输入框 ref，" +
+            "或先 click 输入框使其获得焦点。"
+        )
     }
 
     private fun phoneSwipe(p: JSONObject): String {
