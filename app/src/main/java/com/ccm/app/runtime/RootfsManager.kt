@@ -384,11 +384,38 @@ class RootfsManager(private val context: Context) {
             // 1) 权限修复（apt 需要）
             fixPermissionsInternal()
 
+            // 【2026-09-23 加】先剔除已经装好的包。
+            //
+            // 用户反馈：「重新进入后又要下一遍不知道什么东西」—— 之前每次点安装
+            // 都把全部包名丢给 apt，虽然 apt 对已装的会跳过，但：
+            //   ① apt update + 解析依赖仍要跑几十秒，看着像"又下了一遍"
+            //   ② 日志把已装的包也列出来，用户以为在重复下载
+            // 现在先用 dpkg -s 筛一遍，只装真正缺的。
+            onLine("检查已安装的包…")
+            val (have, need) = packages.partition { pkg ->
+                exec(listOf("/bin/bash", "-lc", "dpkg -s $pkg >/dev/null 2>&1"), {})
+            }
+            if (have.isNotEmpty()) onLine("  ✓ 已装 ${have.size} 个，跳过：${have.joinToString(" ").take(80)}")
+            if (need.isEmpty()) {
+                onLine("")
+                onLine("✅ 勾选的工具都已装好，无需下载。")
+                saveInstalledToolchains(selected)
+                return true
+            }
+            onLine("  ↓ 待装 ${need.size} 个：${need.joinToString(" ")}")
+            onLine("")
+            val todoPackages = need
+
             // 2) apt update（失败重试）
             onLine("更新软件源…")
             var updated = false
             for (attempt in 1..3) {
-                updated = exec(listOf("/bin/bash", "-lc", "apt-get update"), onLine)
+                updated = exec(
+                    listOf("/bin/bash", "-lc",
+                        "export DEBIAN_FRONTEND=noninteractive; " +
+                        "apt-get update -o Acquire::Retries=3 2>&1 | tail -20"),
+                    onLine
+                )
                 if (updated) break
                 onLine("  源更新失败，${attempt}/3 重试…")
                 try { Thread.sleep(3000) } catch (_: InterruptedException) {}
@@ -401,22 +428,28 @@ class RootfsManager(private val context: Context) {
             // （某些包会问时区、键盘布局等）
             val installCmd = buildString {
                 append("DEBIAN_FRONTEND=noninteractive apt-get install -y -q ")
-                append(packages.joinToString(" "))
+                append(todoPackages.joinToString(" "))
             }
 
             onLine("")
             onLine("开始安装（可能需要几分钟）…")
             var ok = false
             for (attempt in 1..2) {
+                // ⚠️ 不要用 `/usr/bin/env -i` 清空环境再跑 apt！
+                //
+                // 原来这里传的是 ["/usr/bin/env","-i","HOME=/root",...]，本意是
+                // 「apt 别继承 Android 的奇怪变量」，但 env -i 会把
+                // ProcessBuilder 设好的 LD_LIBRARY_PATH / PROOT_L2S_DIR 一起丢掉 ——
+                // 而 proot 的 link2symlink 和它自己的 .so 都依赖那两个变量。
+                // 症状：apt update 成功（它没走 env -i），apt install 静默失败，
+                // 用户看到「完成」但一个包都没装上。
+                //
+                // 现在改为跟 apt update 同一种调用方式（/bin/bash -lc，继承环境），
+                // 非交互靠 DEBIAN_FRONTEND=noninteractive 单独设，不靠 env -i。
                 ok = exec(
                     listOf(
-                        "/usr/bin/env", "-i",
-                        "HOME=/root",
-                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                        "DEBIAN_FRONTEND=noninteractive",
-                        "TERM=dumb",
                         "/bin/bash", "-lc",
-                        installCmd
+                        "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; $installCmd"
                     ),
                     onLine
                 )
@@ -424,6 +457,26 @@ class RootfsManager(private val context: Context) {
                 if (attempt < 2) {
                     onLine("  安装失败，重试…")
                     try { Thread.sleep(5000) } catch (_: InterruptedException) {}
+                }
+            }
+
+            // 【2026-09-23 加校验】只看退出码不够 ——
+            // apt 可能部分失败（某个包不在源里）却仍返回 0，或者反过来
+            // 因为管道/子 shell 掩盖了真实退出码。
+            // 所以装完真去问一次 dpkg，把没装上的名字报给用户。
+            if (ok) {
+                onLine("")
+                onLine("校验安装结果…")
+                val missing = todoPackages.filterNot { pkg ->
+                    exec(listOf("/bin/bash", "-lc", "dpkg -s $pkg >/dev/null 2>&1"), {})
+                }
+                if (missing.isNotEmpty()) {
+                    ok = false
+                    onLine("❌ 以下包没装上：${missing.joinToString(" ")}")
+                    onLine("   常见原因：软件源里没有这个包，或网络中断。")
+                    onLine("   可稍后在「管理工具」里重试，或换源。")
+                } else {
+                    onLine("✅ 本次要装的 ${todoPackages.size} 个包全部就绪")
                 }
             }
 

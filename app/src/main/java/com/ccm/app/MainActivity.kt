@@ -163,6 +163,23 @@ fun CcmApp() {
                                 }
 
                                 // ② 装工具链（用户勾选的那些，含 Node）
+                                //
+                                // 【2026-09-23 修】原来每行日志都 `log = line.takeLast(70)`，
+                                // 屏幕只留最后一行 —— apt 在几百行里打的错误信息全被冲掉，
+                                // 用户只看到「完成」，根本不知道哪个包失败了。
+                                // 现在保留最近 8 行（progress 面板本来就能滚）。
+                                var toolLog = StringBuilder()
+                                val appendLog: (String) -> Unit = { line ->
+                                    scope.launch {
+                                        toolLog.append(line).append('\n')
+                                        // 留最近 8 行，避免 StringBuilder 无限涨
+                                        val ls = toolLog.toString().trimEnd().lines()
+                                        if (ls.size > 8) {
+                                            toolLog = StringBuilder(ls.takeLast(8).joinToString("\n") + "\n")
+                                        }
+                                        log = toolLog.toString().trimEnd()
+                                    }
+                                }
                                 progress = 0.88f
                                 log = "安装工具链…"
                                 val tok = withContext(Dispatchers.IO) {
@@ -170,31 +187,36 @@ fun CcmApp() {
                                         selected = selectedChains,
                                         exec = { cmd, cb ->
                                             proot.exec(cmd, "/root") { line ->
-                                                scope.launch { log = line.takeLast(70) }
+                                                appendLog(line)
                                                 cb(line)
                                             }
                                         },
-                                        onLine = { line ->
-                                            scope.launch { log = line.takeLast(70) }
-                                        }
+                                        onLine = appendLog
                                     )
                                 }
-                                if (!tok) log = "⚠️ 部分工具安装失败（可稍后在「管理工具」里重试）"
 
                                 // ③ 装内核
                                 progress = 0.96f
-                                log = "安装 Node 内核…"
+                                appendLog("")
+                                appendLog("安装 Node 内核…")
                                 val kok = withContext(Dispatchers.IO) {
                                     rootfs.installKernel { done, total ->
                                         val pct = if (total > 0) done.toFloat() / total else 0f
                                         scope.launch { progress = 0.96f + pct * 0.04f }
                                     }
                                 }
-                                if (!kok) log = "⚠️ 内核安装失败（可稍后重试）"
 
                                 progress = 1f
-                                log = "✅ 完成"
-                                delay(600)
+                                // 【2026-09-23】失败要说清楚失败在哪，别一律「✅ 完成」。
+                                // 用户反馈过：「勾选了几个包，只装了 linux，其他根本没下，
+                                // 重新进入又要下一遍」—— 就是因为这里没报失败。
+                                log = when {
+                                    !tok && !kok -> "❌ 工具链和内核都没装成功。看上面的日志，或去「管理工具」重试。"
+                                    !tok -> "⚠️ 工具链没装全（看上面日志）。已装的不会重装，点「管理工具」可补装缺失的。"
+                                    !kok -> "⚠️ Node 内核没装上。点下方「更新 Node 内核」重试。"
+                                    else -> "✅ 全部完成"
+                                }
+                                delay(1200)
                                 stage = Stage.READY
                             } catch (e: Throwable) {
                                 log = "❌ 出错: ${e.message}"
