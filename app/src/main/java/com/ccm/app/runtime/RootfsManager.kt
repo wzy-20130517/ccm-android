@@ -1027,13 +1027,19 @@ class RootfsManager(private val context: Context) {
 
             if (dest.exists()) dest.delete()
             if (!tmp.renameTo(dest)) {
-                // renameTo 在少数情况会失败（跨挂载点等），退回拷贝
+                // renameTo 在少数情况会失败（跨挂载点等），退回拷贝。
+                //
+                // ⚠️ Kotlin 的 File.copyTo 返回目标 File（不是 Boolean），
+                // 失败时抛异常而不是返回 false —— 所以这里用 try/catch 判成败，
+                // 不能写 `if (!tmp.copyTo(...))`（编译报 Unresolved reference 'not'）。
                 Log.w(TAG, "renameTo 失败，改用拷贝")
-                if (!tmp.copyTo(dest, overwrite = true)) {
-                    Log.e(TAG, "拷贝失败")
+                try {
+                    tmp.copyTo(dest, overwrite = true)
+                    tmp.delete()
+                } catch (e: Throwable) {
+                    Log.e(TAG, "拷贝失败: ${e.message}")
                     return false
                 }
-                tmp.delete()
             }
             true
         } catch (t: Throwable) {
