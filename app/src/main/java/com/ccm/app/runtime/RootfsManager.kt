@@ -515,28 +515,34 @@ class RootfsManager(private val context: Context) {
             //   ① apt update + 解析依赖仍要跑几十秒，看着像"又下了一遍"
             //   ② 日志把已装的包也列出来，用户以为在重复下载
             // 现在先用 dpkg -s 筛一遍，只装真正缺的。
-            onLine("检查已安装的包…")
-            val (have, need) = packages.partition { pkg ->
-                exec(listOf("/bin/bash", "-lc", "dpkg -s $pkg >/dev/null 2>&1"), {})
-            }
-            if (have.isNotEmpty()) onLine("  ✓ 已装 ${have.size} 个，跳过：${have.joinToString(" ").take(80)}")
-            if (need.isEmpty()) {
-                // 【2026-09-24 修】原来这里直接 return true，跳过了 downloadSteps。
-                // 后果：用户只勾了 Node.js（aptPackages 为空）时，packages 为空 →
-                // need 也为空 → 直接「✅ 勾选的工具都已装好」返回，
-                // 但 Node 根本没装。而 Node 是内核必须的，症状就是「装了工具链但内核起不来」。
-                if (downloadSteps.isEmpty()) {
-                    onLine("")
-                    onLine("✅ 勾选的工具都已装好，无需下载。")
-                    saveInstalledToolchains(selected)
-                    return true
+            // 【只在真有 apt 包时才检查】
+            // 只勾 Node.js 时 packages 为空 —— 原来还是会跑一遍「检查已安装的包…」
+            // 然后打印「↓ 待装 0 个：（空）」，用户看得莫名其妙。
+            var todoPackages: List<String> = emptyList()
+            if (packages.isNotEmpty()) {
+                onLine("检查已安装的包…")
+                val (have, need) = packages.partition { pkg ->
+                    exec(listOf("/bin/bash", "-lc", "dpkg -s $pkg >/dev/null 2>&1"), {})
+                }
+                if (have.isNotEmpty()) onLine("  ✓ 已装 ${have.size} 个，跳过：${have.joinToString(" ").take(80)}")
+                if (need.isEmpty()) {
+                    // 【2026-09-24 修】原来这里直接 return true，跳过了 downloadSteps。
+                    // 后果：用户只勾了 Node.js（aptPackages 为空）时，packages 为空 →
+                    // need 也为空 → 直接「✅ 勾选的工具都已装好」返回，
+                    // 但 Node 根本没装。而 Node 是内核必须的，症状就是「装了工具链但内核起不来」。
+                    if (downloadSteps.isEmpty()) {
+                        onLine("")
+                        onLine("✅ 勾选的工具都已装好，无需下载。")
+                        saveInstalledToolchains(selected)
+                        return true
+                    }
+                    onLine("  ✓ apt 包都已就绪")
+                } else {
+                    onLine("  ↓ 待装 ${need.size} 个：${need.joinToString(" ")}")
+                    todoPackages = need
                 }
                 onLine("")
-                onLine("apt 包都已就绪，继续处理附加组件…")
             }
-            onLine("  ↓ 待装 ${need.size} 个：${need.joinToString(" ")}")
-            onLine("")
-            val todoPackages = need
 
             // apt 是否成功。声明在 if 外面 —— 因为 need 为空时整段 apt 被跳过，
             // 但下面的 downloadSteps 还要看这个值决定要不要继续。
@@ -547,13 +553,13 @@ class RootfsManager(private val context: Context) {
             // Node 还是装不上（这正是「只勾 Node.js」的场景）。
             var ok = true
 
-            // 2) apt update（失败重试）
+            // 2) apt update + install（只在真有包要装时跑）
             //
-            // 【2026-09-24】need 为空时整段 apt 都跳过 —— 没包要装还跑 apt update
-            // 是纯浪费（几十秒），而且并发锁也白占。
-            // 这种情况下直接进入下面的 downloadSteps 处理。
+            // 【2026-09-24】todoPackages 为空时整段 apt 都跳过 ——
+            // 没包要装还跑 apt update 是纯浪费（几十秒），而且并发锁也白占。
+            // 这种情况（只勾了 Node.js）直接进入下面的 downloadSteps 处理。
             // ⚠️ 注意 ok 必须声明在 if 外（否则 if 跳过时下面引用不到）。
-            if (need.isNotEmpty()) {
+            if (todoPackages.isNotEmpty()) {
                 onLine("更新软件源…")
                 var updated = false
                 for (attempt in 1..3) {
@@ -625,7 +631,7 @@ class RootfsManager(private val context: Context) {
                         onLine("✅ 本次要装的 ${todoPackages.size} 个包全部就绪")
                     }
                 }
-            }  // end if (need.isNotEmpty())
+            }  // end if (todoPackages.isNotEmpty())
 
             // ── App 侧下载步骤（不经过 apt，见 ToolchainCatalog.DownloadStep）──
             //
