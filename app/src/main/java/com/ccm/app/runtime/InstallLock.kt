@@ -1,6 +1,7 @@
 package com.ccm.app.runtime
 
 import android.content.Context
+import android.os.Process as AndroidProcess
 import android.util.Log
 import java.io.File
 
@@ -59,7 +60,7 @@ class InstallLock(private val context: Context, private val name: String) {
         while (System.currentTimeMillis() < deadline) {
             // mkdir 是原子的：只有一个人能成功
             if (lockDir.mkdirs()) {
-                try { pidFile.writeText(Process.myPid().toString()) } catch (_: Throwable) {}
+                try { pidFile.writeText(AndroidProcess.myPid().toString()) } catch (_: Throwable) {}
                 held = true
                 Log.i(TAG, "拿到安装锁：${lockDir.absolutePath}")
                 return true
