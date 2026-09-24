@@ -250,9 +250,22 @@ object ToolchainCatalog {
             id = "cli-tools",
             name = "命令行增强",
             description = "ripgrep / fd / jq / tree —— 搜索与 JSON 处理，AI 常用",
-            aptPackages = listOf("ripgrep", "fd-find", "jq", "tree", "file"),
-            sizeMB = 30,
-            verifyCommand = "command -v jq tree ripgrep fzf",
+            aptPackages = listOf("ripgrep", "fd-find", "jq", "tree", "file", "fzf"),
+            sizeMB = 32,
+            // ⚠️ 两个容易错的点：
+            //   ① fd-find 装出来的命令是 `fdfind` 不是 `fd` ——
+            //      Debian/Ubuntu 为避免与旧的 fd 命令冲突改了名。
+            //      所以验证用 fdfind。（很多教程直接写 fd，会验证失败）
+            //   ② 原来验证命令里查了 fzf，但 aptPackages 里根本没装 fzf ——
+            //      这会让 verifyInstalledToolchains 永远判定「未安装」，
+            //      用户重装也修不好（装的东西和验证的东西不匹配）。
+            //      现在把 fzf 加进 aptPackages，两边对齐。
+            // ⚠️ 命令名和包名不一致的三个：
+            //   ripgrep  → 命令是 `rg`（不是 ripgrep！）
+            //   fd-find  → 命令是 `fdfind`（不是 fd！）
+            //   fzf      → 命令是 `fzf` ✅
+            // 写错的话验证永远失败，用户重装也修不好。
+            verifyCommand = "command -v jq tree rg fzf fdfind",
             defaultChecked = true,
         ),
         Toolchain(
@@ -308,9 +321,18 @@ object ToolchainCatalog {
             id = "db-clients",
             name = "数据库客户端",
             description = "sqlite3 / redis-tools —— 连数据库、操作本地库",
+            // ⚠️ 验证命令里原来还查了 mysql 和 psql —— 那需要
+            // default-mysql-client 和 postgresql-client，而这两个没装。
+            // 后果：verifyInstalledToolchains 永远判定「未安装」，
+            // 用户重装也修不好（装的东西和验证的东西不匹配）。
+            //
+            // 选择：把 mysql/psql 也装上（体积 +60MB），还是从验证里去掉？
+            // 决定：去掉。理由 —— 这个条目的描述就是「连数据库、操作本地库」，
+            // 主要用途是本地 sqlite + redis 调试；真需要连 MySQL/PG 的用户
+            // 会自己 apt install。不为了「验证命令看起来全」而多装 60MB。
             aptPackages = listOf("sqlite3", "redis-tools"),
             sizeMB = 40,
-            verifyCommand = "command -v sqlite3 redis-cli mysql psql",
+            verifyCommand = "command -v sqlite3 redis-cli",
             defaultChecked = false,
         ),
     )
