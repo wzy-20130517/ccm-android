@@ -25,7 +25,7 @@ import java.net.URLDecoder
 import java.util.concurrent.Executors
 
 /**
- * CCM 核心服务 —— 前台服务 + 本地 HTTP 桥接服务器。
+ * Claude Code Mobile 核心服务 —— 前台服务 + 本地 HTTP 桥接服务器。
  *
  * 【职责】
  * 1. 前台服务：让进程常驻（替代 Termux 的 wake-lock + 静音音频那套 hack）
@@ -380,7 +380,7 @@ class CcmService : Service() {
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val ch = NotificationChannel(
-                CHANNEL_ID, "CCM 服务", NotificationManager.IMPORTANCE_LOW
+                CHANNEL_ID, "Claude Code Mobile 服务", NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Claude Code Mobile 运行状态"
                 setShowBadge(false)
@@ -396,7 +396,7 @@ class CcmService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("CCM")
+            .setContentTitle("Claude Code Mobile")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentIntent(pi)

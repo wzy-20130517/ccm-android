@@ -11,7 +11,7 @@ import android.util.Log
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action != Intent.ACTION_BOOT_COMPLETED) return
-        Log.i("BootReceiver", "开机完成，启动 CCM 服务")
+        Log.i("BootReceiver", "开机完成，启动 Claude Code Mobile 服务")
         try {
             val i = Intent(context, CcmService::class.java)
             context.startForegroundService(i)

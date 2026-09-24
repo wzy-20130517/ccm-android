@@ -98,7 +98,7 @@ class NativeBridge(
 
     private fun phoneSnapshot(p: JSONObject): String {
         val svc = CcmAccessibilityService.get()
-            ?: return err("无障碍服务未开启。请在系统设置 → 无障碍 → 已安装的服务 里启用 CCM")
+            ?: return err("无障碍服务未开启。请在系统设置 → 无障碍 → 已安装的服务 里启用 Claude Code Mobile")
         val interactiveOnly = p.optBoolean("interactive_only", true)
         val maxNodes = p.optInt("max_nodes", 300)
         return svc.snapshot(interactiveOnly, maxNodes)
@@ -290,14 +290,14 @@ class NativeBridge(
     // ═══════════════════════════════════════════════════
 
     private fun sysNotify(p: JSONObject): String {
-        val title = p.optString("title", "CCM")
+        val title = p.optString("title", "Claude Code Mobile")
         val content = p.optString("content", "")
         return try {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
                     as android.app.NotificationManager
             if (android.os.Build.VERSION.SDK_INT >= 26) {
                 val ch = android.app.NotificationChannel(
-                    "ccm_main", "CCM", android.app.NotificationManager.IMPORTANCE_DEFAULT
+                    "ccm_main", "Claude Code Mobile", android.app.NotificationManager.IMPORTANCE_DEFAULT
                 )
                 nm.createNotificationChannel(ch)
             }
@@ -460,7 +460,7 @@ class NativeBridge(
                 put("message", "纬度 ${loc!!.latitude}, 经度 ${loc!!.longitude}")
             }.toString()
         } catch (e: SecurityException) {
-            err("定位权限未授予。请在系统设置里给 CCM 开启位置权限")
+            err("定位权限未授予。请在系统设置里给 Claude Code Mobile 开启位置权限")
         } catch (t: Throwable) {
             err("定位失败: ${t.message}")
         }

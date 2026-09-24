@@ -419,13 +419,13 @@ fun SetupScreen(onInstall: () -> Unit) {
         modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.Center
     ) {
-        Text("CCM 首次启动", style = MaterialTheme.typography.headlineSmall)
+        Text("Claude Code Mobile 首次启动", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(12.dp))
         Text(
             "需要安装 Linux 运行环境：\n\n" +
             "• Ubuntu 24.04 base（约 28MB）\n" +
             "• Node.js 运行时（约 50MB，apt 下载）\n" +
-            "• CCM 内核（约 14MB）\n\n" +
+            "• Claude Code Mobile 内核（约 14MB）\n\n" +
             "环境用于运行 AI 的工具链（Node / git / curl 等）。\n" +
             "首次安装约 3~8 分钟，取决于网速。",
             style = MaterialTheme.typography.bodyMedium
@@ -766,7 +766,7 @@ fun ReadyScreen(
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState())
     ) {
-        Text("CCM 环境就绪", style = MaterialTheme.typography.headlineSmall)
+        Text("Claude Code Mobile 环境就绪", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(20.dp))
 
         StatusRow("Linux 环境", true, rootfsPath.takeLast(28))
@@ -914,7 +914,7 @@ fun WebViewScreen(webReady: Boolean, onBack: () -> Unit) {
         ) {
             TextButton(onClick = onBack) { Text("← 返回") }
             Spacer(Modifier.width(8.dp))
-            Text("CCM", style = MaterialTheme.typography.titleMedium)
+            Text("Claude Code Mobile", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.weight(1f))
             if (!webReady) {
                 Text("服务未就绪", style = MaterialTheme.typography.bodySmall,
