@@ -99,7 +99,43 @@ class RootfsManager(private val context: Context) {
      *
      * @param onProgress (阶段, 已完成, 总量)  阶段: "download" / "extract" / "config"
      */
+    /**
+     * 安装 rootfs（下载 → 解压 → 配置）。
+     *
+     * 【2026-09-24 重构：原子替换 + 并发锁】
+     *
+     * 原实现有三个健壮性缺口，都是真会踩到的：
+     *
+     *   ① **无并发锁**：用户连点两次「开始安装」→ 两个任务同时 deleteRecursively()
+     *      同一个目录、同时往里写 → 必然解压出乱七八糟的东西。
+     *      卸载重装这种耗时操作，用户等不及连点很正常。
+     *
+     *   ② **无原子替换**：原来是「先删老 rootfs → 再解压到原地」。
+     *      解压中途失败（网络断、TarExtractor 有 bug、空间不够）就留下一个半成品
+     *      目录 —— 而 isInstalled() 只看标记文件，半成品没有标记所以会判「未安装」，
+     *      但目录里满是垃圾，下次安装的 deleteRecursively 要花很久。
+     *      更糟的是用户看到「装完了」（如果标记写进去了）却用不了。
+     *
+     *   ③ **中途失败丢老数据**：老 rootfs 已经删了，新 rootfs 没解开 → 什么都没了。
+     *      用户从「能用的旧版本」变成「什么都没有」，比不安装还糟。
+     *
+     * 现在改成 OperitTerminalCore 验证过的流程：
+     *   1. 抢锁（mkdir 是原子操作，天然互斥；僵尸锁按 PID 判活）
+     *   2. 解压到 rootfs.install.tmp（**不动老 rootfs**）
+     *   3. 配置 + 写标记（都在 tmp 里做完）
+     *   4. 删老路径 + mv tmp → 正式路径（这一步才动老数据）
+     *   5. 释放锁
+     *
+     * 这样任何一步失败，老 rootfs 都完好无损。
+     */
     fun install(onProgress: (String, Long, Long) -> Unit = { _, _, _ -> }): Boolean {
+        val lock = InstallLock(context, "rootfs")
+        if (!lock.acquire()) {
+            Log.w(TAG, "已有安装在进行中，拒绝重复启动")
+            onProgress("error", 0, 0)
+            return false
+        }
+        val tmpPath = File(context.filesDir, "rootfs.install.tmp")
         return try {
             // 1) 下载（已有就跳过）
             if (!hasArchive()) {
@@ -109,33 +145,44 @@ class RootfsManager(private val context: Context) {
                 }
             }
 
-            // 2) 解压
-            if (rootfsPath.exists()) rootfsPath.deleteRecursively()
-            rootfsPath.mkdirs()
+            // 2) 解压到临时目录（老 rootfs 不动）
+            if (tmpPath.exists()) tmpPath.deleteRecursively()
+            tmpPath.mkdirs()
             onProgress("extract", 0, archiveFile.length())
-            val ok = TarExtractor.extract(archiveFile, rootfsPath) { done, total ->
+            val ok = TarExtractor.extract(archiveFile, tmpPath) { done, total ->
                 onProgress("extract", done, total)
             }
             if (!ok) {
                 Log.e(TAG, "解压失败")
+                tmpPath.deleteRecursively()
                 return false
             }
 
-            // 3) 配置
+            // 3) 配置（在 tmp 里做，用 rootfsPath 之外的路径）
             onProgress("config", 0, 1)
-            setupBaseConfig()
+            setupBaseConfigIn(tmpPath)
+            fixPermissionsIn(tmpPath)
 
-            // 3.5) 修复执行权限（TarExtractor 已按 mode 设置，这里是双保险）
-            // 真机实测：漏掉这步 apt 的 http method 不可执行，apt update 会静默失败
-            fixPermissionsInternal()
-
-            // 4) 写标记
-            File(rootfsPath, MARKER_FILE).apply {
+            // 4) 写标记 —— 注意写进 tmp，随 mv 一起生效
+            File(tmpPath, MARKER_FILE).apply {
                 parentFile?.mkdirs()
                 writeText(ROOTFS_VERSION)
             }
 
-            // 5) 清掉压缩包省空间（28MB）
+            // 5) 原子替换：这一步才动老数据
+            if (rootfsPath.exists()) rootfsPath.deleteRecursively()
+            if (!tmpPath.renameTo(rootfsPath)) {
+                // renameTo 失败（跨文件系统等）→ 退回逐文件拷贝
+                Log.w(TAG, "renameTo 失败，改用拷贝")
+                if (!tmpPath.copyRecursively(rootfsPath, overwrite = true)) {
+                    Log.e(TAG, "拷贝失败")
+                    tmpPath.deleteRecursively()
+                    return false
+                }
+                tmpPath.deleteRecursively()
+            }
+
+            // 6) 清掉压缩包省空间（28MB）—— 只有真装好了才删
             try { archiveFile.delete() } catch (_: Throwable) {}
 
             onProgress("config", 1, 1)
@@ -143,7 +190,10 @@ class RootfsManager(private val context: Context) {
             true
         } catch (t: Throwable) {
             Log.e(TAG, "安装 rootfs 失败", t)
+            try { tmpPath.deleteRecursively() } catch (_: Throwable) {}
             false
+        } finally {
+            lock.release()
         }
     }
 
@@ -283,10 +333,14 @@ class RootfsManager(private val context: Context) {
     }
 
     /** 写入 DNS / apt 源 / profile —— 让环境开箱可用 */
-    private fun setupBaseConfig() {
+    /** 在正式 rootfs 上做基础配置（安装完成后的补配；安装流程用 setupBaseConfigIn） */
+    private fun setupBaseConfig() = setupBaseConfigIn(rootfsPath)
+
+    /** 在指定目录做基础配置（DNS/apt 源/shell 配置/挂载点）。参数化是为了支持原子安装。 */
+    private fun setupBaseConfigIn(target: File) {
         try {
             // DNS（Android 上 /etc/resolv.conf 不可写，proot 里用这个）
-            File(rootfsPath, "etc/resolv.conf").writeText(
+            File(target, "etc/resolv.conf").writeText(
                 "nameserver 223.5.5.5\nnameserver 119.29.29.29\n"
             )
 
@@ -297,7 +351,7 @@ class RootfsManager(private val context: Context) {
             //   "Method /usr/lib/apt/methods/https did not start correctly"
             // （proot 对 fork+exec 的限制导致 method 进程起不来），
             // 而 http method 正常。清华源同时提供 http，所以用 http。
-            val sourcesFile = File(rootfsPath, "etc/apt/sources.list.d/ubuntu.sources")
+            val sourcesFile = File(target, "etc/apt/sources.list.d/ubuntu.sources")
             if (sourcesFile.parentFile?.exists() == true) {
                 sourcesFile.writeText(
                     """
@@ -311,7 +365,7 @@ class RootfsManager(private val context: Context) {
             }
 
             // 备选源（清华挂了时用）
-            File(rootfsPath, "etc/apt/sources.list.d/backup.sources").writeText(
+            File(target, "etc/apt/sources.list.d/backup.sources").writeText(
                 """
                 Types: deb
                 URIs: http://mirrors.ustc.edu.cn/ubuntu-ports
@@ -322,7 +376,7 @@ class RootfsManager(private val context: Context) {
             )
 
             // root 的 shell 配置
-            File(rootfsPath, "root/.bashrc").writeText(
+            File(target, "root/.bashrc").writeText(
                 """
                 export PS1='\[\e[36m\]ccm\[\e[0m\]:\w\$ '
                 export LANG=C.UTF-8
@@ -332,9 +386,9 @@ class RootfsManager(private val context: Context) {
 
             // 常用挂载点
             listOf("dev", "proc", "sys", "tmp", "root", "mnt/ext").forEach {
-                File(rootfsPath, it).mkdirs()
+                File(target, it).mkdirs()
             }
-            File(rootfsPath, "tmp").setExecutable(true, false)
+            File(target, "tmp").setExecutable(true, false)
         } catch (t: Throwable) {
             Log.w(TAG, "写基础配置失败（不致命）", t)
         }
@@ -379,6 +433,15 @@ class RootfsManager(private val context: Context) {
         onLine("将安装 ${chains.size} 组工具（约 ${ToolchainCatalog.estimatedSizeMB(selected)}MB）：")
         chains.forEach { onLine("  · ${it.name}") }
         onLine("")
+
+        // 【并发锁】apt 不能两个任务同时跑 —— dpkg 有自己的锁，撞上会报
+        // "Could not get lock /var/lib/dpkg/lock-frontend"，那个报错用户看不懂，
+        // 而且第二个任务会失败得莫名其妙。这里先挡住。
+        val lock = InstallLock(context, "toolchain")
+        if (!lock.acquire()) {
+            onLine("❌ 另一个安装任务正在进行中，请等它完成再试。")
+            return false
+        }
 
         return try {
             // 1) 权限修复（apt 需要）
@@ -492,6 +555,8 @@ class RootfsManager(private val context: Context) {
             Log.e(TAG, "安装工具链异常", t)
             onLine("安装异常: ${t.message}")
             false
+        } finally {
+            lock.release()
         }
     }
 
@@ -542,6 +607,14 @@ class RootfsManager(private val context: Context) {
         }
         val archive = File(context.filesDir, "kernel.tar.gz")
 
+        // 【并发锁】内核安装会 deleteRecursively + 重新解压 /root/ccm，
+        // 两个任务同时跑必然坏（用户连点「更新内核」就会触发）。
+        val lock = InstallLock(context, "kernel")
+        if (!lock.acquire()) {
+            Log.w(TAG, "另一个内核安装正在进行中")
+            return false
+        }
+
         return try {
             // 下载
             if (!archive.exists() || archive.length() < 100_000) {
@@ -579,6 +652,8 @@ class RootfsManager(private val context: Context) {
         } catch (t: Throwable) {
             Log.e(TAG, "内核安装失败", t)
             false
+        } finally {
+            lock.release()
         }
     }
 
@@ -731,7 +806,11 @@ class RootfsManager(private val context: Context) {
     }
 
     /** 修复执行权限（apt 的 http method 等需要） */
-    private fun fixPermissionsInternal() {
+    /** 修正式 rootfs 的执行权限 */
+    private fun fixPermissionsInternal() = fixPermissionsIn(rootfsPath)
+
+    /** 修指定目录的执行权限（安装流程用，见 fixPermissionsInternal 的说明） */
+    private fun fixPermissionsIn(target: File) {
         try {
             val execDirs = listOf(
                 "bin", "sbin", "usr/bin", "usr/sbin",
@@ -740,7 +819,7 @@ class RootfsManager(private val context: Context) {
                 "lib/aarch64-linux-gnu", "usr/lib/aarch64-linux-gnu",
             )
             execDirs.forEach { d ->
-                File(rootfsPath, d).listFiles()?.forEach { f ->
+                File(target, d).listFiles()?.forEach { f ->
                     if (f.isFile && !f.canExecute()) f.setExecutable(true, false)
                 }
             }
