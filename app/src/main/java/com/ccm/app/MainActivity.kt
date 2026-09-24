@@ -192,17 +192,23 @@ fun CcmApp() {
                                 // 【2026-09-23 修】原来每行日志都 `log = line.takeLast(70)`，
                                 // 屏幕只留最后一行 —— apt 在几百行里打的错误信息全被冲掉，
                                 // 用户只看到「完成」，根本不知道哪个包失败了。
-                                // 现在保留最近 8 行（progress 面板本来就能滚）。
+                                //
+                                // 【2026-09-24 二次修：不再截断行数】
+                                //
+                                // 之前保留「最近 8 行」（后改 30 行），出发点是别让
+                                // StringBuilder 无限涨。但配合「日志区自动滚到底」，
+                                // 结果是**只能看到最新几行，往上翻是空的** ——
+                                // 用户反馈「日志显示根本不完整，吐一步前面都没了」。
+                                //
+                                // 正确做法：**日志全留**，让显示区的滚动条负责历史。
+                                // 内存代价可控：几百行 × 每行 ~100 字符 ≈ 几十 KB。
                                 var toolLog = StringBuilder()
                                 val appendLog: (String) -> Unit = { line ->
                                     scope.launch {
                                         toolLog.append(line).append('\n')
-                                        // 留最近 8 行，避免 StringBuilder 无限涨
-                                        val ls = toolLog.toString().trimEnd().lines()
-                                        if (ls.size > 8) {
-                                            toolLog = StringBuilder(ls.takeLast(8).joinToString("\n") + "\n")
-                                        }
                                         log = toolLog.toString().trimEnd()
+                                    }
+                                }
                                     }
                                 }
                                 progress = 0.88f
@@ -356,19 +362,37 @@ fun CcmApp() {
                         onInstall = { chains ->
                             stage = Stage.SETTING_UP
                             scope.launch {
+                                // 【2026-09-24 修】这里原来是
+                                //     scope.launch { log = line.takeLast(70) }
+                                // 的重复写法，有两个毛病：
+                                //   ① `log = ` 是**覆盖**不是追加 —— 屏幕只显示最后一行
+                                //   ② takeLast(70) 把行截断，apt 的报错（常带 URL 和包名）
+                                //      被砍掉一半，配上「覆盖」行为，用户几乎看不到有效信息
+                                //
+                                // 这与「首次安装」那条路径（约 192 行）原来犯的是同一个错，
+                                // 那边 2026-09-23 修过（改成保留最近 N 行），但**这条路径漏了**
+                                // ——「管理工具」里重装工具链走的就是这里。
+                                //
+                                // 现在两边统一：**日志全留**，不截断行数。
+                                // 显示区自动滚到底负责「看最新」，滚动条负责「翻历史」。
+                                var toolLog = StringBuilder()
+                                val appendLog: (String) -> Unit = { line ->
+                                    scope.launch {
+                                        toolLog.append(line).append('\n')
+                                        log = toolLog.toString().trimEnd()
+                                    }
+                                }
                                 try {
                                     val ok = withContext(Dispatchers.IO) {
                                         rootfs.installToolchains(
                                             selected = chains,
                                             exec = { cmd, cb ->
                                                 proot.exec(cmd, "/root") { line ->
-                                                    scope.launch { log = line.takeLast(70) }
+                                                    appendLog(line)
                                                     cb(line)
                                                 }
                                             },
-                                            onLine = { line ->
-                                                scope.launch { log = line.takeLast(70) }
-                                            }
+                                            onLine = appendLog
                                         )
                                     }
                                     log = if (ok) "✅ 安装完成" else "⚠️ 部分失败"
@@ -704,8 +728,20 @@ fun InstallingScreen(progress: Float, log: String) {
     //
     // 现在每次日志变化就滚到底（LaunchedEffect(log) 是正确做法：
     // 直接在组合里调 scrollTo 会触发重组循环）。
+    //
+    // 【2026-09-24 二次修：别在用户翻历史时把他拽回底部】
+    // 无条件滚底有个副作用：用户往上翻看错误 → 新日志一来就被拉回底部，
+    // 根本读不完。现在只在「用户本来就在底部附近」时才跟随。
+    var autoFollow by remember { mutableStateOf(true) }
     LaunchedEffect(log) {
-        try { scrollState.scrollTo(scrollState.maxValue) } catch (_: Throwable) {}
+        try {
+            if (autoFollow) scrollState.scrollTo(scrollState.maxValue)
+        } catch (_: Throwable) {}
+    }
+    // 监听滚动位置：离开底部就停止跟随，回到底部（或拉不动）就恢复
+    LaunchedEffect(scrollState.value, scrollState.maxValue) {
+        val fromBottom = scrollState.maxValue - scrollState.value
+        autoFollow = fromBottom < 40
     }
 
     Column(
