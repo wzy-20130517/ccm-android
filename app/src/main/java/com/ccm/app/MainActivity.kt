@@ -76,6 +76,10 @@ fun CcmApp() {
     var log by remember { mutableStateOf("") }
     var progress by remember { mutableFloatStateOf(0f) }
     var runtime by remember { mutableStateOf(RuntimeState()) }
+    // proot 自检结果。null=未跑或通过；非 null=诊断文本。
+    var prootCheckError by remember { mutableStateOf<String?>(null) }
+    // 自检只在「rootfs 已装 + 还没跑过」时执行一次（探针要起进程，别每帧跑）
+    var prootChecked by remember { mutableStateOf(false) }
 
     val rootfs = remember { RootfsManager(ctx) }
     val proot = remember { ProotRuntime(ctx) }
@@ -85,6 +89,20 @@ fun CcmApp() {
         withContext(Dispatchers.IO) {
             delay(200)
             stage = if (rootfs.isInstalled()) Stage.READY else Stage.NEED_SETUP
+        }
+    }
+
+    // proot 自检：rootfs 装好后跑一次。
+    //
+    // 【为什么值得单独一段逻辑】proot 起不来时的报错极具误导性
+    // （"Function not implemented" 看着像 rootfs 里的二进制坏了，实际是
+    //  proot 自己的 loader 找不到）。在这里跑一次探针，把真实诊断提前显示，
+    // 用户就不用等到点「安装工具链」失败了才知道。
+    LaunchedEffect(stage) {
+        if (stage != Stage.READY || prootChecked) return@LaunchedEffect
+        prootChecked = true
+        prootCheckError = withContext(Dispatchers.IO) {
+            try { proot.selfCheck() } catch (t: Throwable) { "自检异常：${t.message}" }
         }
     }
 
@@ -268,6 +286,7 @@ fun CcmApp() {
                     },
                     onOpenWeb = { stage = Stage.WEBVIEW },
                     onManageToolchains = { stage = Stage.TOOLCHAIN_MANAGE },
+                    prootCheckError = prootCheckError,
                     onUpdateKernel = {
                         // 复用安装流水线的进度界面：先删旧内核包让 installKernel 重新下载
                         stage = Stage.SETTING_UP
@@ -650,7 +669,9 @@ fun ReadyScreen(
     onStartNode: () -> Unit,
     onOpenWeb: () -> Unit,
     onManageToolchains: () -> Unit = {},
-    onUpdateKernel: () -> Unit = {}
+    onUpdateKernel: () -> Unit = {},
+    /** proot 自检结果：null=正常，否则是诊断文本（见 ProotRuntime.selfCheck） */
+    prootCheckError: String? = null
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState())
@@ -669,6 +690,26 @@ fun ReadyScreen(
             if (runtime.serviceRunning) "运行中" else "未启动")
         StatusRow("Node 服务", runtime.webReady,
             if (runtime.webReady) "运行中 :3456" else "未启动")
+        // proot 自检：这一行能把「工具链装不上」的真实原因暴露出来
+        StatusRow("proot 运行时", prootCheckError == null,
+            if (prootCheckError == null) "自检通过" else "自检失败 —— 见下方")
+
+        if (prootCheckError != null) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("proot 自检失败", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        prootCheckError,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                    )
+                }
+            }
+        }
 
         Spacer(Modifier.height(24.dp))
 

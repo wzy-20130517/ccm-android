@@ -60,6 +60,28 @@ class ProotRuntime(private val context: Context) {
         /** proot 可执行文件（jniLibs 打包，nativeLibraryDir 有 exec 权限） */
         private const val PROOT_LIB_NAME = "libproot.so"
 
+        /**
+         * proot 的 loader。
+         *
+         * 【为什么必须有这个文件】
+         * proot 靠 ptrace 注入 loader 来虚拟化 chroot/路径。加载的流程是：
+         *   proot 自己 fork → 在子进程里 ptrace → 把 loader 写进目标进程 → 执行
+         * 「把 loader 写进去」这一步要读一个 loader 文件。
+         *
+         * loader 路径的解析优先级：
+         *   ① 环境变量 PROOT_LOADER（我们走这条）
+         *   ② 编译期硬编码的默认值
+         *
+         * 【踩过的坑】原先用的 libproot.so 是 Termux 编译版，硬编码默认值指向
+         * /data/data/com.termux/files/usr/libexec/proot/loader —— App 沙箱里不存在，
+         * 于是 proot 一启动就报 execve(...): Function not implemented（ENOSYS 是
+         * ptrace 注入失败的返回值），误导性极强：看起来像「rootfs 里的二进制坏了」，
+         * 实际是 proot 自己的 loader 找不到。
+         *
+         * 现在换成自编译的 proot（无硬编码路径，官方源码 + NDK），并显式提供 loader。
+         */
+        private const val PROOT_LOADER_NAME = "libproot-loader.so"
+
         /** 伪造的内核版本（proot-distro 同款格式，改格式会报 hwcap 错误） */
         private const val FAKE_KERNEL =
             "\\Linux\\localhost\\6.17.0-PRoot-Distro\\#1 SMP PREEMPT_DYNAMIC Fri, 10 Oct 2025 00:00:00 +0000\\aarch64\\localdomain\\-1\\"
@@ -70,6 +92,25 @@ class ProotRuntime(private val context: Context) {
     /** proot 二进制路径（从 nativeLibraryDir 取，那里有 exec 权限） */
     val prootBin: File
         get() = File(context.applicationInfo.nativeLibraryDir, PROOT_LIB_NAME)
+
+    /** proot loader 路径（见 PROOT_LOADER_NAME 的说明） */
+    val prootLoaderBin: File
+        get() = File(context.applicationInfo.nativeLibraryDir, PROOT_LOADER_NAME)
+
+    /**
+     * proot 的临时目录。
+     *
+     * 【为什么必须显式设置】proot 要在 TMPDIR 下 mkdtemp 一个 proot-XXXXXX 目录，
+     * 往里写 loader 和临时文件。默认它读 TMPDIR 环境变量，而 App 进程的 TMPDIR
+     * 通常指向 /data/local/tmp 或压根没设 —— 两者都不可写。
+     *
+     * 症状：`proot error: can't chmod '/data/local/tmp/proot-XXXX': No such file or directory`
+     * （实测复现）。这个错误同样很误导 —— 看着像权限问题，实际是「目录建不出来」。
+     *
+     * 用 App 自己的 cacheDir 下的子目录，权限一定够。
+     */
+    val prootTmpDir: File
+        get() = File(context.cacheDir, "proot-tmp").apply { if (!exists()) mkdirs() }
 
     fun isReady(): Boolean = prootBin.exists() && rootfs.isDirectory
 
@@ -177,6 +218,17 @@ class ProotRuntime(private val context: Context) {
         // proot 依赖库路径（$ORIGIN 的兜底）
         env["LD_LIBRARY_PATH"] = context.applicationInfo.nativeLibraryDir
 
+        // ⚠️ 必须：显式指定 loader（否则 proot 去找编译期默认路径，App 里不存在）
+        val loader = prootLoaderBin
+        if (loader.exists()) {
+            env["PROOT_LOADER"] = loader.absolutePath
+        }
+
+        // ⚠️ 必须：显式指定临时目录（默认的 TMPDIR 在 App 里不可写）
+        val tmp = prootTmpDir
+        env["PROOT_TMP_DIR"] = tmp.absolutePath
+        env["TMPDIR"] = tmp.absolutePath
+
         // ⚠️ 必须：link2symlink 工作目录
         val l2sDir = File(rootfs, ".l2s")
         if (!l2sDir.exists()) l2sDir.mkdirs()
@@ -198,6 +250,63 @@ class ProotRuntime(private val context: Context) {
         extraEnv.forEach { (k, v) -> env[k] = v }
 
         return pb
+    }
+
+    /**
+     * proot 自检：真跑一次最小命令，确认能起来。
+     *
+     * 【为什么要自检而不是「能启动就算好」】
+     * proot 的失败模式很隐蔽：进程能 fork、能打印日志，但 execve 目标程序失败，
+     * 报错还极具误导性（"Function not implemented" 看起来像 rootfs 坏了）。
+     * 与其等用户点了「安装工具链」再失败，不如在界面加载时就跑一次探针，
+     * 把真实原因直接显示出来。
+     *
+     * @return null 表示正常；否则返回给用户看的诊断文本
+     */
+    fun selfCheck(): String? {
+        if (!prootBin.exists()) {
+            return "proot 可执行文件不存在：${prootBin.absolutePath}\n（jniLibs 打包缺失？）"
+        }
+        if (!prootBin.canExecute()) {
+            return "proot 没有执行权限：${prootBin.absolutePath}"
+        }
+        val loader = prootLoaderBin
+        if (!loader.exists()) {
+            return "proot loader 缺失：${loader.absolutePath}\n" +
+                   "没有它 proot 无法注入，会报 'Function not implemented'（这个报错是误导，别往 rootfs 上找）"
+        }
+        if (!rootfs.isDirectory) {
+            return "rootfs 不存在：${rootfs.absolutePath}"
+        }
+
+        // 用 rootfs 里一定有的 /bin/echo 做探针（比 /usr/bin/env 更简单，少一层 exec）
+        val probeCmd = listOf("/bin/echo", "proot-selfcheck-ok")
+        return try {
+            val pb = buildProcess("/", probeCmd)
+            pb.redirectErrorStream(true)
+            val p = pb.start()
+            val out = p.inputStream.bufferedReader().readText()
+            val finished = p.waitFor(20, java.util.concurrent.TimeUnit.SECONDS)
+            if (!finished) {
+                p.destroyForcibly()
+                return "proot 自检超时（20s）。可能是 loader 卡在 ptrace 注入。\n输出：${out.take(300)}"
+            }
+            val code = p.exitValue()
+            if (code == 0 && out.contains("proot-selfcheck-ok")) {
+                null   // 正常
+            } else {
+                buildString {
+                    append("proot 自检失败（退出码 $code）\n")
+                    append("proot: ${prootBin.absolutePath}\n")
+                    append("loader: ${loader.absolutePath}\n")
+                    append("tmp: ${prootTmpDir.absolutePath}\n")
+                    append("输出：\n")
+                    append(out.take(600))
+                }
+            }
+        } catch (t: Throwable) {
+            "proot 自检异常：${t.message}"
+        }
     }
 
     /** 检查 rootfs 里有没有装某个命令 */
