@@ -384,6 +384,44 @@ class RootfsManager(private val context: Context) {
                 """.trimIndent()
             )
 
+            // ── 其他包管理器的国内镜像 ──
+            //
+            // 【为什么安装时就写好，而不是等用户敲命令】
+            // 用户在 AI 里让它「pip 装个包」时，python 会直接去 pypi.org ——
+            // 国内访问经常几 KB/s 甚至超时，而用户根本不知道要配镜像。
+            // 提前写好配置文件，后面无论谁调 pip 都自动走清华源。
+            //
+            // 这套配置从 OperitTerminalCore 的 SetupScreen 学来（它同时配
+            // apt / pip / uv / npm / rust 五套源）。这里覆盖最常用的三套。
+            try {
+                // pip：全局配置（所有用户、所有 venv 都生效）
+                File(target, "root/.config/pip").mkdirs()
+                File(target, "root/.config/pip/pip.conf").writeText(
+                    """
+                    [global]
+                    index-url = https://pypi.tuna.tsinghua.edu.cn/simple
+                    trusted-host = pypi.tuna.tsinghua.edu.cn
+                    """.trimIndent()
+                )
+                // uv（比 pip 快很多的现代替代品，越来越多项目用它）
+                File(target, "root/.config/uv").mkdirs()
+                File(target, "root/.config/uv/uv.toml").writeText(
+                    """
+                    index-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+                    """.trimIndent()
+                )
+                // npm：淘宝镜像（registry.npmmirror.com 是官方认可的同步镜像）
+                File(target, "root/.npmrc").writeText(
+                    """
+                    registry=https://registry.npmmirror.com/
+                    """.trimIndent()
+                )
+                // 也放一份到 /etc，这样非 root 用户跑 npm 也走镜像
+                File(target, "etc/npmrc").writeText("registry=https://registry.npmmirror.com/\n")
+            } catch (t: Throwable) {
+                Log.w(TAG, "写包管理器镜像配置失败（不致命）", t)
+            }
+
             // 常用挂载点
             listOf("dev", "proc", "sys", "tmp", "root", "mnt/ext").forEach {
                 File(target, it).mkdirs()
@@ -465,88 +503,102 @@ class RootfsManager(private val context: Context) {
             }
             if (have.isNotEmpty()) onLine("  ✓ 已装 ${have.size} 个，跳过：${have.joinToString(" ").take(80)}")
             if (need.isEmpty()) {
+                // 【2026-09-24 修】原来这里直接 return true，跳过了 downloadSteps。
+                // 后果：用户只勾了 Node.js（aptPackages 为空）时，packages 为空 →
+                // need 也为空 → 直接「✅ 勾选的工具都已装好」返回，
+                // 但 Node 根本没装。而 Node 是内核必须的，症状就是「装了工具链但内核起不来」。
+                if (downloadSteps.isEmpty()) {
+                    onLine("")
+                    onLine("✅ 勾选的工具都已装好，无需下载。")
+                    saveInstalledToolchains(selected)
+                    return true
+                }
                 onLine("")
-                onLine("✅ 勾选的工具都已装好，无需下载。")
-                saveInstalledToolchains(selected)
-                return true
+                onLine("apt 包都已就绪，继续处理附加组件…")
             }
             onLine("  ↓ 待装 ${need.size} 个：${need.joinToString(" ")}")
             onLine("")
             val todoPackages = need
 
             // 2) apt update（失败重试）
-            onLine("更新软件源…")
-            var updated = false
-            for (attempt in 1..3) {
-                updated = exec(
-                    listOf("/bin/bash", "-lc",
-                        "export DEBIAN_FRONTEND=noninteractive; " +
-                        "apt-get update -o Acquire::Retries=3 2>&1 | tail -20"),
-                    onLine
-                )
-                if (updated) break
-                onLine("  源更新失败，${attempt}/3 重试…")
-                try { Thread.sleep(3000) } catch (_: InterruptedException) {}
-            }
-            if (!updated) onLine("⚠️ 软件源更新失败（网络问题？继续尝试安装）")
-
-            // 3) 一次性装完所有包
             //
-            // DEBIAN_FRONTEND=noninteractive 避免交互式提问卡住
-            // （某些包会问时区、键盘布局等）
-            val installCmd = buildString {
-                append("DEBIAN_FRONTEND=noninteractive apt-get install -y -q ")
-                append(todoPackages.joinToString(" "))
-            }
-
-            onLine("")
-            onLine("开始安装（可能需要几分钟）…")
-            var ok = false
-            for (attempt in 1..2) {
-                // ⚠️ 不要用 `/usr/bin/env -i` 清空环境再跑 apt！
-                //
-                // 原来这里传的是 ["/usr/bin/env","-i","HOME=/root",...]，本意是
-                // 「apt 别继承 Android 的奇怪变量」，但 env -i 会把
-                // ProcessBuilder 设好的 LD_LIBRARY_PATH / PROOT_L2S_DIR 一起丢掉 ——
-                // 而 proot 的 link2symlink 和它自己的 .so 都依赖那两个变量。
-                // 症状：apt update 成功（它没走 env -i），apt install 静默失败，
-                // 用户看到「完成」但一个包都没装上。
-                //
-                // 现在改为跟 apt update 同一种调用方式（/bin/bash -lc，继承环境），
-                // 非交互靠 DEBIAN_FRONTEND=noninteractive 单独设，不靠 env -i。
-                ok = exec(
-                    listOf(
-                        "/bin/bash", "-lc",
-                        "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; $installCmd"
-                    ),
-                    onLine
-                )
-                if (ok) break
-                if (attempt < 2) {
-                    onLine("  安装失败，重试…")
-                    try { Thread.sleep(5000) } catch (_: InterruptedException) {}
+            // 【2026-09-24】need 为空时整段 apt 都跳过 —— 没包要装还跑 apt update
+            // 是纯浪费（几十秒），而且并发锁也白占。
+            // 这种情况下直接进入下面的 downloadSteps 处理。
+            if (need.isNotEmpty()) {
+                onLine("更新软件源…")
+                var updated = false
+                for (attempt in 1..3) {
+                    updated = exec(
+                        listOf("/bin/bash", "-lc",
+                            "export DEBIAN_FRONTEND=noninteractive; " +
+                            "apt-get update -o Acquire::Retries=3 2>&1 | tail -20"),
+                        onLine
+                    )
+                    if (updated) break
+                    onLine("  源更新失败，${attempt}/3 重试…")
+                    try { Thread.sleep(3000) } catch (_: InterruptedException) {}
                 }
-            }
+                if (!updated) onLine("⚠️ 软件源更新失败（网络问题？继续尝试安装）")
 
-            // 【2026-09-23 加校验】只看退出码不够 ——
-            // apt 可能部分失败（某个包不在源里）却仍返回 0，或者反过来
-            // 因为管道/子 shell 掩盖了真实退出码。
-            // 所以装完真去问一次 dpkg，把没装上的名字报给用户。
-            if (ok) {
+                // 3) 一次性装完所有包
+                //
+                // DEBIAN_FRONTEND=noninteractive 避免交互式提问卡住
+                // （某些包会问时区、键盘布局等）
+                val installCmd = buildString {
+                    append("DEBIAN_FRONTEND=noninteractive apt-get install -y -q ")
+                    append(todoPackages.joinToString(" "))
+                }
+
                 onLine("")
-                onLine("校验安装结果…")
-                val missing = todoPackages.filterNot { pkg ->
-                    exec(listOf("/bin/bash", "-lc", "dpkg -s $pkg >/dev/null 2>&1"), {})
+                onLine("开始安装（可能需要几分钟）…")
+                var ok = false
+                for (attempt in 1..2) {
+                    // ⚠️ 不要用 `/usr/bin/env -i` 清空环境再跑 apt！
+                    //
+                    // 原来这里传的是 ["/usr/bin/env","-i","HOME=/root",...]，本意是
+                    // 「apt 别继承 Android 的奇怪变量」，但 env -i 会把
+                    // ProcessBuilder 设好的 LD_LIBRARY_PATH / PROOT_L2S_DIR 一起丢掉 ——
+                    // 而 proot 的 link2symlink 和它自己的 .so 都依赖那两个变量。
+                    // 症状：apt update 成功（它没走 env -i），apt install 静默失败，
+                    // 用户看到「完成」但一个包都没装上。
+                    //
+                    // 现在改为跟 apt update 同一种调用方式（/bin/bash -lc，继承环境），
+                    // 非交互靠 DEBIAN_FRONTEND=noninteractive 单独设，不靠 env -i。
+                    ok = exec(
+                        listOf(
+                            "/bin/bash", "-lc",
+                            "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; $installCmd"
+                        ),
+                        onLine
+                    )
+                    if (ok) break
+                    if (attempt < 2) {
+                        onLine("  安装失败，重试…")
+                        try { Thread.sleep(5000) } catch (_: InterruptedException) {}
+                    }
                 }
-                if (missing.isNotEmpty()) {
-                    ok = false
-                    onLine("❌ 以下包没装上：${missing.joinToString(" ")}")
-                    onLine("   常见原因：软件源里没有这个包，或网络中断。")
-                    onLine("   可稍后在「管理工具」里重试，或换源。")
-                } else {
-                    onLine("✅ 本次要装的 ${todoPackages.size} 个包全部就绪")
+
+                // 【2026-09-23 加校验】只看退出码不够 ——
+                // apt 可能部分失败（某个包不在源里）却仍返回 0，或者反过来
+                // 因为管道/子 shell 掩盖了真实退出码。
+                // 所以装完真去问一次 dpkg，把没装上的名字报给用户。
+                if (ok) {
+                    onLine("")
+                    onLine("校验安装结果…")
+                    val missing = todoPackages.filterNot { pkg ->
+                        exec(listOf("/bin/bash", "-lc", "dpkg -s $pkg >/dev/null 2>&1"), {})
+                    }
+                    if (missing.isNotEmpty()) {
+                        ok = false
+                        onLine("❌ 以下包没装上：${missing.joinToString(" ")}")
+                        onLine("   常见原因：软件源里没有这个包，或网络中断。")
+                        onLine("   可稍后在「管理工具」里重试，或换源。")
+                    } else {
+                        onLine("✅ 本次要装的 ${todoPackages.size} 个包全部就绪")
+                    }
                 }
-            }
+            }  // end if (need.isNotEmpty())
 
             // ── App 侧下载步骤（不经过 apt，见 ToolchainCatalog.DownloadStep）──
             //
