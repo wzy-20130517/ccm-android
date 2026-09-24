@@ -57,14 +57,31 @@ class RootfsManager(private val context: Context) {
 
         /** 国内加速（GitHub 直连慢时用） */
         private val MIRRORS = listOf(
-            "https://ghfast.top/https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ubuntu-base-24.04-arm64.tar.gz",
+            // 同上：gh-proxy.com 实测可靠，排第一
             "https://gh-proxy.com/https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ubuntu-base-24.04-arm64.tar.gz",
+            "https://ghfast.top/https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ubuntu-base-24.04-arm64.tar.gz",
             ROOTFS_URL,
         )
 
+        /**
+         * 内核下载镜像，按「实测可靠性」排序。
+         *
+         * 【2026-09-24 调整顺序】原来 ghfast.top 排第一，但实测它会**返回 200
+         * 却只传 81KB 就断**（不是网络抖动，是稳定的截断行为）。
+         * 虽然下游有完整性校验会重试下一个镜像，但每次都要白等一轮超时。
+         *
+         * 实测数据（15.9MB 的 APK，同链路）：
+         *   gh-proxy.com   ✅ 完整，6.7 秒
+         *   ghproxy.net    ⚠️ 200 但截断到 1.8MB
+         *   ghfast.top     ⚠️ 200 但截断到 81KB
+         *   gh.llkk.cc / github.moeyy.xyz  ❌ 连不上
+         *
+         * ⚠ 注意：这些镜像**都返回 HTTP 200** —— 不能只看状态码，
+         * 必须比对 Content-Length 和实际字节数（下游 download() 已做）。
+         */
         private val KERNEL_MIRRORS = listOf(
-            "https://ghfast.top/https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ccm-node-kernel.tar.gz",
             "https://gh-proxy.com/https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ccm-node-kernel.tar.gz",
+            "https://ghfast.top/https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ccm-node-kernel.tar.gz",
             KERNEL_URL,
         )
     }
