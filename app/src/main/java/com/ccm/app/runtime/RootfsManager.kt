@@ -775,6 +775,12 @@ class RootfsManager(private val context: Context) {
     }
 
     /** 读已安装的工具链 id */
+    /**
+     * 读「记录里声称已装」的工具链（快速路径，不验证）。
+     *
+     * ⚠️ 这个结果**可能不准** —— 见 Toolchain.verifyCommand 的说明。
+     * 需要在界面显示「已安装」状态时，用 verifyInstalledToolchains()。
+     */
     fun installedToolchains(): Set<String> {
         return try {
             val f = File(rootfsPath, "root/.ccm-toolchains")
@@ -784,6 +790,63 @@ class RootfsManager(private val context: Context) {
         } catch (t: Throwable) {
             emptySet()
         }
+    }
+
+    /**
+     * 实测验证：对记录里的每个工具链跑它的 verifyCommand，只返回真的能用的。
+     *
+     * 【为什么值得多花这几秒】
+     * 界面显示「已安装」但实际没装上，是最容易让用户困惑的状态 ——
+     * 他会以为「我装过了」，然后发现命令跑不了、内核起不来，来问为什么。
+     * 与其让他踩这个坑，不如显示状态时多花几秒实测。
+     *
+     * 实测开销：每个工具链一次 proot 启动 + command -v，约 200~500ms。
+     * 18 个全跑 ~5 秒 —— 而这只在打开「管理工具」界面时发生一次。
+     *
+     * @param exec 与 installToolchains 同一个 exec 回调（复用 proot 实例）
+     * @param onProgress 可选，用于显示「正在检查 xxx」
+     */
+    fun verifyInstalledToolchains(
+        exec: (List<String>, (String) -> Unit) -> Boolean,
+        onProgress: (String) -> Unit = {},
+    ): Set<String> {
+        val claimed = installedToolchains()
+        if (claimed.isEmpty()) return emptySet()
+
+        val verified = mutableSetOf<String>()
+        for (id in claimed) {
+            val tc = ToolchainCatalog.ALL.find { it.id == id } ?: continue
+            val cmd = tc.verifyCommand
+            if (cmd == null) {
+                // 没写验证命令的（新增工具链时可能漏）→ 退回信记录，并记日志
+                Log.w(TAG, "工具链 $id 没有 verifyCommand，按记录认为已装")
+                verified.add(id)
+                continue
+            }
+            onProgress("检查 ${tc.name}…")
+            val ok = try {
+                exec(listOf("/bin/bash", "-lc", cmd), {})
+            } catch (t: Throwable) {
+                Log.w(TAG, "验证 $id 异常: ${t.message}")
+                false
+            }
+            if (ok) {
+                verified.add(id)
+            } else {
+                Log.i(TAG, "工具链 $id 记录已装但实测不通（$cmd）")
+            }
+        }
+
+        // 顺手修正记录文件，避免每次都白跑一遍验证
+        if (verified != claimed) {
+            try {
+                File(rootfsPath, "root/.ccm-toolchains").writeText(verified.joinToString(","))
+                Log.i(TAG, "已修正工具链记录：${claimed.size} → ${verified.size}")
+            } catch (t: Throwable) {
+                Log.w(TAG, "修正记录失败", t)
+            }
+        }
+        return verified
     }
 
     // ═══════════════════════════════════════════════════

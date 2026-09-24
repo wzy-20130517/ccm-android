@@ -78,6 +78,9 @@ fun CcmApp() {
     var runtime by remember { mutableStateOf(RuntimeState()) }
     // proot 自检结果。null=未跑或通过；非 null=诊断文本。
     var prootCheckError by remember { mutableStateOf<String?>(null) }
+    // 工具链实测结果。null=正在验证；非 null=已验证的集合。
+    // 打开「管理工具」时异步跑（见 ToolchainManageScreen 的调用点）。
+    var verifiedChains by remember { mutableStateOf<Set<String>?>(null) }
     // 自检只在「rootfs 已装 + 还没跑过」时执行一次（探针要起进程，别每帧跑）
     var prootChecked by remember { mutableStateOf(false) }
 
@@ -323,38 +326,59 @@ fun CcmApp() {
                     onBack = { stage = Stage.READY }
                 )
 
-                Stage.TOOLCHAIN_MANAGE -> ToolchainManageScreen(
-                    installed = rootfs.installedToolchains(),
-                    onBack = { stage = Stage.READY },
-                    onInstall = { chains ->
-                        stage = Stage.SETTING_UP
-                        scope.launch {
-                            try {
-                                val ok = withContext(Dispatchers.IO) {
-                                    rootfs.installToolchains(
-                                        selected = chains,
-                                        exec = { cmd, cb ->
-                                            proot.exec(cmd, "/root") { line ->
-                                                scope.launch { log = line.takeLast(70) }
-                                                cb(line)
-                                            }
-                                        },
-                                        onLine = { line ->
-                                            scope.launch { log = line.takeLast(70) }
-                                        }
+                Stage.TOOLCHAIN_MANAGE -> {
+                    // 【实测验证】打开界面时异步跑一次 —— 记录文件可能不准
+                    // （中途失败/用户手删/rootfs 部分损坏），见 verifyInstalledToolchains 的说明。
+                    // 验证期间 verifiedChains 为 null，界面显示加载态。
+                    LaunchedEffect(stage) {
+                        if (verifiedChains == null) {
+                            val v = withContext(Dispatchers.IO) {
+                                try {
+                                    rootfs.verifyInstalledToolchains(
+                                        exec = { cmd, cb -> proot.exec(cmd, "/root", cb) }
                                     )
+                                } catch (t: Throwable) {
+                                    Log.w("MainActivity", "工具链验证失败，退回记录值", t)
+                                    rootfs.installedToolchains()
                                 }
-                                log = if (ok) "✅ 安装完成" else "⚠️ 部分失败"
-                                delay(800)
-                                stage = Stage.READY
-                            } catch (e: Throwable) {
-                                log = "❌ ${e.message}"
-                                delay(1500)
-                                stage = Stage.READY
                             }
+                            verifiedChains = v
                         }
                     }
-                )
+                    ToolchainManageScreen(
+                        installed = verifiedChains ?: rootfs.installedToolchains(),
+                        verifying = verifiedChains == null,
+                        onBack = { stage = Stage.READY },
+                        onInstall = { chains ->
+                            stage = Stage.SETTING_UP
+                            scope.launch {
+                                try {
+                                    val ok = withContext(Dispatchers.IO) {
+                                        rootfs.installToolchains(
+                                            selected = chains,
+                                            exec = { cmd, cb ->
+                                                proot.exec(cmd, "/root") { line ->
+                                                    scope.launch { log = line.takeLast(70) }
+                                                    cb(line)
+                                                }
+                                            },
+                                            onLine = { line ->
+                                                scope.launch { log = line.takeLast(70) }
+                                            }
+                                        )
+                                    }
+                                    log = if (ok) "✅ 安装完成" else "⚠️ 部分失败"
+                                    delay(800)
+                                    stage = Stage.READY
+                                } catch (e: Throwable) {
+                                    log = "❌ ${e.message}"
+                                    delay(1500)
+                                    stage = Stage.READY
+                                }
+                            }
+                        }
+                    )
+                }
             }
         }
     }
@@ -538,7 +562,9 @@ fun ToolchainRow(
 fun ToolchainManageScreen(
     installed: Set<String>,
     onBack: () -> Unit,
-    onInstall: (Set<String>) -> Unit
+    onInstall: (Set<String>) -> Unit,
+    /** true = 正在实测验证（记录文件可能不准，见 RootfsManager.verifyInstalledToolchains）*/
+    verifying: Boolean = false,
 ) {
     var selected by remember { mutableStateOf(installed) }
     val toInstall = selected - installed
@@ -552,6 +578,30 @@ fun ToolchainManageScreen(
             TextButton(onClick = onBack) { Text("← 返回") }
             Spacer(Modifier.width(8.dp))
             Text("管理工具链", style = MaterialTheme.typography.titleLarge)
+            if (verifying) {
+                Spacer(Modifier.width(10.dp))
+                // 转圈 + 说明：为什么要等
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "实测检查中…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        // 验证期间提醒用户：这里显示的「已安装」是实测结果，不是记录文件
+        if (verifying) {
+            Text(
+                "正在逐个跑命令确认哪些真的装上了（约 5 秒）——\n" +
+                "记录文件可能不准（中途失败/手动删除/rootfs 损坏）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp)
+            )
         }
 
         Text(
