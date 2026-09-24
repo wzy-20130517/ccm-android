@@ -424,12 +424,17 @@ class RootfsManager(private val context: Context) {
         }
 
         val packages = ToolchainCatalog.aptPackagesFor(selected)
-        if (packages.isEmpty()) {
+        val chains = ToolchainCatalog.resolveSelection(selected)
+        // 【2026-09-24】把「App 侧下载」的步骤单独收集出来。
+        // 这些不经过 apt（见 ToolchainCatalog.DownloadStep 的说明），
+        // 所以即使 packages 为空、只勾了 Node.js 也要继续往下走。
+        val downloadSteps = chains.flatMap { it.downloadSteps }
+
+        if (packages.isEmpty() && downloadSteps.isEmpty()) {
             onLine("没有需要安装的工具")
             return true
         }
 
-        val chains = ToolchainCatalog.resolveSelection(selected)
         onLine("将安装 ${chains.size} 组工具（约 ${ToolchainCatalog.estimatedSizeMB(selected)}MB）：")
         chains.forEach { onLine("  · ${it.name}") }
         onLine("")
@@ -543,6 +548,30 @@ class RootfsManager(private val context: Context) {
                 }
             }
 
+            // ── App 侧下载步骤（不经过 apt，见 ToolchainCatalog.DownloadStep）──
+            //
+            // 【为什么在 apt 之后做】有些工具需要 apt 装的运行库（如 Node 需要
+            // libstdc++）。先 apt 后解压，顺序更稳。虽然 Node 官方 tarball 其实
+            // 是自带的，但保持这个顺序对未来加别的工具更安全。
+            if (ok && downloadSteps.isNotEmpty()) {
+                onLine("")
+                onLine("下载附加组件（不经过 apt）…")
+                for (step in downloadSteps) {
+                    val done = installDownloadStep(step, onLine) { done, total ->
+                        // 进度转成 onLine 文本，复用现有 UI
+                        if (total > 0 && done % (2 * 1024 * 1024) < 128 * 1024) {
+                            onLine("  ${step.label}: ${done / 1024 / 1024}MB / ${total / 1024 / 1024}MB")
+                        }
+                    }
+                    if (!done) {
+                        ok = false
+                        onLine("❌ ${step.label} 安装失败")
+                        break
+                    }
+                    onLine("  ✅ ${step.label}")
+                }
+            }
+
             if (ok) {
                 // 记录已装（供 UI 显示）
                 saveInstalledToolchains(selected)
@@ -557,6 +586,116 @@ class RootfsManager(private val context: Context) {
             false
         } finally {
             lock.release()
+        }
+    }
+
+    /**
+     * 执行一个「App 侧下载 → 解压进 rootfs」的步骤。
+     *
+     * 【为什么在 App 侧下载而不是进 rootfs 里用 curl】
+     * 鸡生蛋：用户可能没勾「基础工具」（不含 curl），此时 rootfs 里没有任何
+     * 下载工具。而 Node.js 是内核自己必须的 —— 不能因为用户没勾 git/curl 就装不上。
+     *
+     * 所以走 App 的 HttpURLConnection（一定可用，走系统网络栈），下到 App 私有目录，
+     * 再用 TarExtractor 解压到 rootfs 的指定路径。
+     *
+     * 【支持 .tar.xz 吗】
+     * TarExtractor 只认 gzip。xz 需要额外解压器 —— Android 没有内置 xz 支持。
+     * 所以这里优先选 gzip 格式的资源；Node 官方提供 .tar.gz（体积大一点但通用）。
+     *
+     * @param onProgress (已下载字节, 总字节)
+     */
+    private fun installDownloadStep(
+        step: ToolchainCatalog.DownloadStep,
+        onLine: (String) -> Unit,
+        onProgress: (Long, Long) -> Unit,
+    ): Boolean {
+        return try {
+            // 1) 下载（多镜像 + 断点续传，复用 downloadTo）
+            val suffix = step.url.substringAfterLast('.', "tar.gz").let {
+                // 要区分 .tar.gz / .tar.xz —— 取最后两个后缀段
+                val parts = step.url.split('.')
+                if (parts.size >= 2) parts.takeLast(2).joinToString(".") else it
+            }
+            val archive = File(context.filesDir, "toolchain-dl.$suffix")
+
+            var downloaded = false
+            // 支持多镜像：URL 列表在 ToolchainCatalog 里（step.url 是首选）
+            val urls = listOf(step.url) + ToolchainCatalog.NODE_MIRRORS.drop(1).filter { it != step.url }
+            outer@ for (url in urls) {
+                for (attempt in 1..3) {
+                    try {
+                        if (downloadTo(url, archive, onProgress)) { downloaded = true; break@outer }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "下载 ${step.label} 失败（第 $attempt 次）: ${t.message}")
+                    }
+                    try { Thread.sleep(2000) } catch (_: InterruptedException) {}
+                }
+                onLine("  换个镜像重试…")
+            }
+            if (!downloaded || !archive.exists() || archive.length() < 100_000) {
+                onLine("  ❌ 下载失败")
+                return false
+            }
+
+            // 2) 解压到 rootfs 的指定目录
+            val destRoot = File(rootfsPath, step.extractTo)
+            destRoot.mkdirs()
+            onLine("  解压到 /${step.extractTo} …")
+
+            // stripComponents：tarball 通常有个顶层目录（node-v24.x-linux-arm64/），
+            // 用临时目录解压后再移动其内容，效果等价于 tar --strip-components=1
+            val tmpDir = File(context.cacheDir, "toolchain-extract")
+            if (tmpDir.exists()) tmpDir.deleteRecursively()
+            tmpDir.mkdirs()
+
+            val extracted = TarExtractor.extract(archive, tmpDir) { done, total ->
+                if (total > 0 && done % (5L * 1024 * 1024) < 256 * 1024) {
+                    onLine("  解压 ${done * 100 / total}%")
+                }
+            }
+            if (!extracted) {
+                onLine("  ❌ 解压失败")
+                tmpDir.deleteRecursively()
+                return false
+            }
+
+            // 找到顶层目录（可能不止一个，取第一个目录）
+            val topEntries = tmpDir.listFiles() ?: emptyArray()
+            val sourceDir = if (step.stripComponents > 0 && topEntries.size == 1 && topEntries[0].isDirectory) {
+                topEntries[0]
+            } else {
+                tmpDir
+            }
+
+            // 移动到目标位置（覆盖同名）
+            var moved = 0
+            sourceDir.listFiles()?.forEach { f ->
+                val target = File(destRoot, f.name)
+                try {
+                    if (target.exists()) target.deleteRecursively()
+                    if (f.renameTo(target) || f.copyRecursively(target, overwrite = true)) {
+                        if (!f.exists()) moved++ else moved++
+                    }
+                } catch (t: Throwable) {
+                    Log.w(TAG, "移动 ${f.name} 失败: ${t.message}")
+                }
+            }
+            onLine("  已安装 $moved 个顶层条目到 /${step.extractTo}")
+
+            // 3) 清理
+            tmpDir.deleteRecursively()
+            try { archive.delete() } catch (_: Throwable) {}
+
+            // 4) 修执行权限（node/npm 必须是可执行的）
+            // TarExtractor 已按 mode 设置，但 tarball 里如果有 0644 的二进制就废了
+            fixPermissionsIn(destRoot)
+
+            moved > 0
+        } catch (t: Throwable) {
+            Log.e(TAG, "安装 ${step.label} 异常", t)
+            onLine("  ❌ ${t.message}")
+            false
         }
     }
 

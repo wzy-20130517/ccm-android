@@ -4,6 +4,7 @@ import android.util.Log
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import org.tukaani.xz.XZInputStream
 import java.util.zip.GZIPInputStream
 
 /**
@@ -65,7 +66,12 @@ object TarExtractor {
         var processed = 0L
 
         try {
-            GZIPInputStream(FileInputStream(archive), 64 * 1024).use { gz ->
+            // 【2026-09-24】按 magic bytes 自动识别压缩格式。
+            // 原来只认 gzip，而 Node.js 官方发的是 .tar.xz（比 .tar.gz 小一半）。
+            // 靠文件名后缀判断不可靠（下载时可能改名），所以读前 6 字节看魔数：
+            //   gzip: 1f 8b
+            //   xz:   fd 37 7a 58 5a 00  ("\xFD7zXZ\0")
+            openDecompressed(archive).use { gz ->
                 val header = ByteArray(BLOCK)
                 var longName: String? = null
                 var longLink: String? = null
@@ -236,6 +242,26 @@ object TarExtractor {
         } catch (t: Throwable) {
             Log.e(TAG, "解压失败", t)
             return false
+        }
+    }
+
+    /**
+     * 按魔数打开合适的解压流。
+     *
+     * gzip 和 xz 都支持 —— see extract() 里的说明。
+     * zstd 不在 Android 的常见发行物里，暂不支持（用不到）。
+     */
+    private fun openDecompressed(archive: File): java.io.InputStream {
+        val head = ByteArray(6)
+        FileInputStream(archive).use { it.read(head) }
+        return when {
+            head[0] == 0x1F.toByte() && head[1] == 0x8B.toByte() ->
+                GZIPInputStream(FileInputStream(archive), 64 * 1024)
+            head[0] == 0xFD.toByte() && head[1] == 0x37.toByte() &&
+            head[2] == 0x7A.toByte() && head[3] == 0x58.toByte() &&
+            head[4] == 0x5A.toByte() && head[5] == 0x00.toByte() ->
+                XZInputStream(FileInputStream(archive), 64 * 1024)
+            else -> GZIPInputStream(FileInputStream(archive), 64 * 1024)
         }
     }
 

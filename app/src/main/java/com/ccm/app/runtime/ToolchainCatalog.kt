@@ -17,6 +17,33 @@ package com.ccm.app.runtime
  */
 object ToolchainCatalog {
 
+    /**
+     * Node.js 版本。
+     *
+     * 【为什么固定版本号而不是「latest」】
+     * 可重现。用户装出来的东西应该跟你测试过的一致 ——
+     * 用 latest 的话今天装的和下个月装的可能是两个大版本，
+     * 出问题时无法复现。升级是一个显式动作（改这一行）。
+     *
+     * v24 是当前 LTS（代号 Krypton），2026-09-07 发布。
+     */
+    const val NODE_VERSION = "v24.21.0"
+
+    /**
+     * Node 官方 tarball 地址。
+     *
+     * 【镜像策略】官方优先，国内慢就切 npmmirror（淘宝维护，内容一致，CDN 在国内）。
+     *
+     * 【为什么用 .tar.xz 而不是 .tar.gz】
+     * xz 是 29MB，gz 是 55MB —— 差 26MB，手机流量下不是小数目。
+     * Android 没内置 xz 解压器，所以 app/build.gradle.kts 里加了
+     * org.tukaani:xz（纯 Java，165KB）。TarExtractor 按魔数自动识别格式。
+     */
+    val NODE_MIRRORS = listOf(
+        "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-linux-arm64.tar.xz",
+        "https://registry.npmmirror.com/-/binary/node/$NODE_VERSION/node-$NODE_VERSION-linux-arm64.tar.xz",
+    )
+
     /** 单个工具链组 */
     data class Toolchain(
         val id: String,
@@ -29,6 +56,41 @@ object ToolchainCatalog {
         val defaultChecked: Boolean = false,
         /** 依赖的其他工具链 id */
         val dependsOn: List<String> = emptyList(),
+        /**
+         * 自定义安装脚本（shell）。非空时**替代** aptPackages，不再走 apt install。
+         *
+         * 【为什么需要这个】
+         * 有些东西 apt 装不到想要的版本：
+         *   · Node.js —— noble 源里是 18.19.1（2025-04 已 EOL），
+         *     而 AI 内核大量使用 AbortSignal.timeout（Node 17.3+）等较新 API，
+         *     18 能跑但不是长久之计，安全更新也停了。
+         *     官方做法是加 NodeSource 源，但那需要 rootfs 里先有 curl + gnupg ——
+         *     用户如果没勾「基础工具」就会失败（鸡生蛋）。
+         *   · 有些工具只有官方安装脚本（如 rustup、uv）
+         *
+         * 【为什么不用 apt 的「添加第三方源」方式】
+         * 见上：依赖 curl/gnupg。而我们的安装流程是「App 侧下载好 → 塞进 rootfs」，
+         * 不依赖 rootfs 里有没有下载工具。更稳。
+         */
+        val customScript: String? = null,
+        /** 自定义脚本的下载步骤（App 侧执行，见 RootfsManager.installToolchains） */
+        val downloadSteps: List<DownloadStep> = emptyList(),
+    )
+
+    /**
+     * 一个「App 侧下载 → 写进 rootfs」的步骤。
+     *
+     * 用途：避开「rootfs 里还没装 curl」的鸡生蛋问题。
+     * App 用 HttpURLConnection 下载，直接解压/落地到 rootfs 对应位置。
+     */
+    data class DownloadStep(
+        val url: String,
+        /** 解压到 rootfs 的哪个相对路径（如 "usr/local"） */
+        val extractTo: String,
+        /** 解压后要去掉的顶层目录名（tarball 通常有个 node-v24.x-linux-arm64 前缀） */
+        val stripComponents: Int = 1,
+        /** 人类可读的说明，显示在日志里 */
+        val label: String,
     )
 
     /**
@@ -50,11 +112,24 @@ object ToolchainCatalog {
         // ═══ 语言运行时 ═══
         Toolchain(
             id = "nodejs",
-            name = "Node.js",
-            description = "AI 内核自己要用，无法取消",
-            aptPackages = listOf("nodejs"),
-            sizeMB = 40,
+            name = "Node.js 24",
+            description = "AI 内核自己要用（官方 LTS 版，比 apt 的新）",
+            aptPackages = emptyList(),
+            sizeMB = 50,
             defaultChecked = true,
+            // 【为什么不用 apt 的 nodejs】
+            // noble 源里是 18.19.1 —— 2025-04 已 EOL，安全更新停止。
+            // 官方做法（NodeSource）需要 rootfs 先有 curl + gnupg，会鸡生蛋。
+            // 这里改成 App 侧直接下官方 tarball，解压到 /usr/local（在 PATH 里，
+            // 且优先于 /usr/bin 的 apt 版）。
+            downloadSteps = listOf(
+                DownloadStep(
+                    url = NODE_MIRRORS.first(),
+                    extractTo = "usr/local",
+                    stripComponents = 1,
+                    label = "Node.js ${NODE_VERSION} (官方 tarball)",
+                ),
+            ),
         ),
         Toolchain(
             id = "python",

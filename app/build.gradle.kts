@@ -85,4 +85,12 @@ dependencies {
     implementation("androidx.webkit:webkit:1.12.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.core:core-ktx:1.15.0")
+    // XZ 解压（纯 Java，165KB）。
+    //
+    // 【为什么需要】Node.js 官方发 .tar.xz（29MB），而 .tar.gz 是 55MB ——
+    // 差 26MB，在手机流量下不是小数目。但 Android 没内置 xz 解压器：
+    //   · toybox 不带 xz（实测 /system/bin 下没有 xzcat/unxz）
+    //   · rootfs 里的 xz-utils 要装完「基础工具」才有 —— 鸡生蛋
+    // 所以用纯 Java 实现。1.12 是当前版本，无传递依赖。
+    implementation("org.tukaani:xz:1.12")
 }
