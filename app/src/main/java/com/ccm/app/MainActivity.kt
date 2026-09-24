@@ -209,8 +209,6 @@ fun CcmApp() {
                                         log = toolLog.toString().trimEnd()
                                     }
                                 }
-                                    }
-                                }
                                 progress = 0.88f
                                 log = "安装工具链…"
                                 val tok = withContext(Dispatchers.IO) {
