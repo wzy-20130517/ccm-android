@@ -210,6 +210,23 @@ class ProotRuntime(private val context: Context) {
         pb.directory(rootfs)
         pb.redirectErrorStream(true)
 
+        // 【2026-09-24 加：stdin 重定向到 /dev/null】
+        //
+        // 【为什么必须】ProcessBuilder 默认给子进程一个**管道** stdin。
+        // 如果子进程读它而没人写（我们只读输出，从不写输入），read 会一直阻塞 ——
+        // 表现为「命令卡死，日志不动，超时看门狗才把它杀掉」。
+        //
+        // 哪些程序会读 stdin：
+        //   · apt 的某些 maintainer script（问 yes/no）
+        //   · dpkg 的配置文件冲突提示
+        //   · 任何 `read` 调用
+        // 虽然我们设了 DEBIAN_FRONTEND=noninteractive，但实测有些包不听话
+        // （尤其是三方源里的包，或 postinst 脚本自己 read）。
+        //
+        // 重定向到 /dev/null 后，这些 read 立刻返回 EOF ——
+        // 程序要么走默认分支继续，要么明确报错退出，总之**不会卡住**。
+        pb.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
+
         val env = pb.environment()
 
         // ⚠️ 必须：清掉 LD_PRELOAD
@@ -234,9 +251,22 @@ class ProotRuntime(private val context: Context) {
         if (!l2sDir.exists()) l2sDir.mkdirs()
         env["PROOT_L2S_DIR"] = l2sDir.absolutePath
 
-        // 终端
-        env["TERM"] = "xterm-256color"
-        env["COLORTERM"] = "truecolor"
+        // 【TERM：用 dumb 而不是 xterm-256color】
+        //
+        // 原来设 xterm-256color，程序会认为终端支持颜色和光标控制 →
+        // 输出大量 ANSI 转义序列（\x1b[32m、\x1b[2K 之类）。
+        // 而我们的输出是**按行捕获给 UI 显示的日志流**，这些序列混在里面
+        // 就是乱码（界面上会出现 [0m[32m 这样的东西）。
+        //
+        // TERM=dumb 告诉程序「别整花活，纯文本」—— 与我们的用途一致。
+        // （安装流程里 apt 调用已经单独 export TERM=dumb 了，这里是全局对齐）
+        env["TERM"] = "dumb"
+        // COLORTERM 显式清掉 —— 它和 TERM 是配套的「支持真彩色」信号，
+        // 从进程环境继承下来的话，某些程序仍会输出 24 位色转义序列。
+        env.remove("COLORTERM")
+        // NO_COLOR 是事实标准（no-color.org）：设了它，支持的程序一律不上色。
+        // 比逐个清 TERM/COLORTERM 更彻底。
+        env["NO_COLOR"] = "1"
 
         // Android 运行时变量（透传，部分工具需要）
         listOf(
