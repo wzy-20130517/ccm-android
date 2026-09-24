@@ -57,23 +57,22 @@ object ToolchainCatalog {
         /** 依赖的其他工具链 id */
         val dependsOn: List<String> = emptyList(),
         /**
-         * 自定义安装脚本（shell）。非空时**替代** aptPackages，不再走 apt install。
+         * 「App 侧下载 → 解压进 rootfs」的步骤（不经过 apt）。
          *
-         * 【为什么需要这个】
+         * 【为什么需要它】
          * 有些东西 apt 装不到想要的版本：
          *   · Node.js —— noble 源里是 18.19.1（2025-04 已 EOL），
-         *     而 AI 内核大量使用 AbortSignal.timeout（Node 17.3+）等较新 API，
-         *     18 能跑但不是长久之计，安全更新也停了。
-         *     官方做法是加 NodeSource 源，但那需要 rootfs 里先有 curl + gnupg ——
-         *     用户如果没勾「基础工具」就会失败（鸡生蛋）。
-         *   · 有些工具只有官方安装脚本（如 rustup、uv）
+         *     而 AI 内核大量使用 AbortSignal.timeout（Node 17.3+）等较新 API。
+         *   · 有些工具只有官方 tarball（rustup、uv 之类）。
          *
-         * 【为什么不用 apt 的「添加第三方源」方式】
-         * 见上：依赖 curl/gnupg。而我们的安装流程是「App 侧下载好 → 塞进 rootfs」，
-         * 不依赖 rootfs 里有没有下载工具。更稳。
+         * 【为什么不用「加第三方 apt 源」的方式（如 NodeSource）】
+         * 那需要 rootfs 里先有 curl + gnupg —— 用户没勾「基础工具」就失败（鸡生蛋）。
+         * 而 App 侧下载走系统网络栈，一定可用。
+         *
+         * ⚠️ 曾有一个 customScript 字段（跑 shell 脚本的通用方案），
+         * 但从未被实现也没被任何条目使用 —— 已删除。留死字段会误导后来人
+         * 以为「有这个能力」。真要加，走 downloadSteps 就够了。
          */
-        val customScript: String? = null,
-        /** 自定义脚本的下载步骤（App 侧执行，见 RootfsManager.installToolchains） */
         val downloadSteps: List<DownloadStep> = emptyList(),
         /**
          * 验证命令：装完后跑它，退出码 0 = 真的装上了。
