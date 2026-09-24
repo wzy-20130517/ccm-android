@@ -75,6 +75,22 @@ object ToolchainCatalog {
         val customScript: String? = null,
         /** 自定义脚本的下载步骤（App 侧执行，见 RootfsManager.installToolchains） */
         val downloadSteps: List<DownloadStep> = emptyList(),
+        /**
+         * 验证命令：装完后跑它，退出码 0 = 真的装上了。
+         *
+         * 【为什么不能只靠 /root/.ccm-toolchains 记录】
+         * 那是个纯文本记录，写进去了不代表东西真在。可能的情况：
+         *   · 安装中途失败但记录已经写了（早期版本有这个问题）
+         *   · 用户手动删了 /usr/local/bin/node
+         *   · rootfs 被部分损坏
+         * 只读记录的后果：界面显示「已安装」，用户点安装却不装，
+         * 然后来问「为什么勾了没反应」。
+         *
+         * 这个字段从 OperitTerminalCore 学来：它的 checkPackageInstalled()
+         * 对每个包用定制命令实测（command -v / dpkg -s / node -v），
+         * 而不是查它自己的记录文件。
+         */
+        val verifyCommand: String? = null,
     )
 
     /**
@@ -106,6 +122,7 @@ object ToolchainCatalog {
             description = "git / curl / wget / ca-certificates —— AI 干活的最低配置",
             aptPackages = listOf("git", "curl", "wget", "ca-certificates", "less", "unzip", "xz-utils"),
             sizeMB = 60,
+            verifyCommand = "command -v git curl wget",
             defaultChecked = true,
         ),
 
@@ -116,6 +133,7 @@ object ToolchainCatalog {
             description = "AI 内核自己要用（官方 LTS 版，比 apt 的新）",
             aptPackages = emptyList(),
             sizeMB = 50,
+            verifyCommand = "command -v node npm",
             defaultChecked = true,
             // 【为什么不用 apt 的 nodejs】
             // noble 源里是 18.19.1 —— 2025-04 已 EOL，安全更新停止。
@@ -137,6 +155,7 @@ object ToolchainCatalog {
             description = "python3 + pip + venv，跑脚本、数据处理、爬虫",
             aptPackages = listOf("python3", "python3-pip", "python3-venv", "python3-dev"),
             sizeMB = 120,
+            verifyCommand = "command -v python3 pip3",
             defaultChecked = true,
         ),
         Toolchain(
@@ -145,6 +164,7 @@ object ToolchainCatalog {
             description = "php-cli，跑 PHP 脚本",
             aptPackages = listOf("php-cli", "php-mbstring", "php-curl", "php-xml"),
             sizeMB = 60,
+            verifyCommand = "command -v php",
             defaultChecked = false,
         ),
         Toolchain(
@@ -153,6 +173,7 @@ object ToolchainCatalog {
             description = "rustc + cargo，编译 Rust 项目（较大）",
             aptPackages = listOf("rustc", "cargo"),
             sizeMB = 400,
+            verifyCommand = "command -v rustc cargo",
             defaultChecked = false,
         ),
         Toolchain(
@@ -161,6 +182,7 @@ object ToolchainCatalog {
             description = "golang-go，编译 Go 项目",
             aptPackages = listOf("golang-go"),
             sizeMB = 200,
+            verifyCommand = "command -v go",
             defaultChecked = false,
         ),
         Toolchain(
@@ -169,6 +191,7 @@ object ToolchainCatalog {
             description = "default-jdk-headless，编译/运行 Java",
             aptPackages = listOf("default-jdk-headless"),
             sizeMB = 250,
+            verifyCommand = "command -v java",
             defaultChecked = false,
         ),
 
@@ -179,6 +202,7 @@ object ToolchainCatalog {
             description = "gcc / g++ / make —— 编译 C/C++ 项目、装需要编译的 pip 包",
             aptPackages = listOf("gcc", "g++", "make", "pkg-config"),
             sizeMB = 250,
+            verifyCommand = "command -v gcc make",
             defaultChecked = true,
         ),
         Toolchain(
@@ -187,6 +211,7 @@ object ToolchainCatalog {
             description = "cmake，构建复杂 C/C++ 项目",
             aptPackages = listOf("cmake"),
             sizeMB = 120,
+            verifyCommand = "command -v cmake",
             defaultChecked = false,
             dependsOn = listOf("build"),
         ),
@@ -198,6 +223,7 @@ object ToolchainCatalog {
             description = "openssh-client —— 连远程服务器、git over ssh",
             aptPackages = listOf("openssh-client"),
             sizeMB = 30,
+            verifyCommand = "command -v ssh",
             defaultChecked = true,
         ),
         Toolchain(
@@ -206,6 +232,7 @@ object ToolchainCatalog {
             description = "openssh-server —— 让别的设备连进来（需手动启动）",
             aptPackages = listOf("openssh-server"),
             sizeMB = 30,
+            verifyCommand = "command -v sshd",
             defaultChecked = false,
         ),
 
@@ -216,6 +243,7 @@ object ToolchainCatalog {
             description = "ripgrep / fd / jq / tree —— 搜索与 JSON 处理，AI 常用",
             aptPackages = listOf("ripgrep", "fd-find", "jq", "tree", "file"),
             sizeMB = 30,
+            verifyCommand = "command -v jq tree ripgrep fzf",
             defaultChecked = true,
         ),
         Toolchain(
@@ -224,6 +252,7 @@ object ToolchainCatalog {
             description = "vim / nano —— 手动改文件时用",
             aptPackages = listOf("vim", "nano"),
             sizeMB = 30,
+            verifyCommand = "command -v vim nano",
             defaultChecked = false,
         ),
         Toolchain(
@@ -232,6 +261,7 @@ object ToolchainCatalog {
             description = "终端复用，长任务放后台不被断",
             aptPackages = listOf("tmux"),
             sizeMB = 10,
+            verifyCommand = "command -v tmux",
             defaultChecked = true,
         ),
         Toolchain(
@@ -240,6 +270,7 @@ object ToolchainCatalog {
             description = "进程/资源监控",
             aptPackages = listOf("htop", "procps"),
             sizeMB = 10,
+            verifyCommand = "command -v htop",
             defaultChecked = false,
         ),
 
@@ -250,6 +281,7 @@ object ToolchainCatalog {
             description = "音视频处理（转码、抽帧、合成）",
             aptPackages = listOf("ffmpeg"),
             sizeMB = 150,
+            verifyCommand = "command -v ffmpeg ffprobe",
             defaultChecked = true,
         ),
         Toolchain(
@@ -258,6 +290,7 @@ object ToolchainCatalog {
             description = "convert / identify —— 图片处理",
             aptPackages = listOf("imagemagick"),
             sizeMB = 80,
+            verifyCommand = "command -v convert identify",
             defaultChecked = false,
         ),
 
@@ -268,6 +301,7 @@ object ToolchainCatalog {
             description = "sqlite3 / redis-tools —— 连数据库、操作本地库",
             aptPackages = listOf("sqlite3", "redis-tools"),
             sizeMB = 40,
+            verifyCommand = "command -v sqlite3 redis-cli mysql psql",
             defaultChecked = false,
         ),
     )
