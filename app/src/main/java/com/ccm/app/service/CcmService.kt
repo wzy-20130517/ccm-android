@@ -101,9 +101,12 @@ class CcmService : Service() {
     override fun onCreate() {
         super.onCreate()
         isRunning = true
-        bridge = NativeBridge(this)
         rootfsManager = RootfsManager(this)
+        // ⚠️ prootRuntime 必须在 bridge 之前初始化 —— bridge 的构造要拿它
+        // （第一次改的时候顺序反了，Kotlin 直接报 "variable must be initialized"）
         prootRuntime = ProotRuntime(this)
+        // 传 proot 实例：让 /runtime/status 能报 Node 状态（见 NativeBridge 的说明）
+        bridge = NativeBridge(this, prootRuntime)
 
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotification("服务运行中"))

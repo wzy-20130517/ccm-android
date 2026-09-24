@@ -31,7 +31,17 @@ import org.json.JSONObject
  *   sys.tts / sys.vibrate / sys.battery / sys.share / sys.openUrl
  *   runtime.exec / runtime.status
  */
-class NativeBridge(private val context: Context) {
+class NativeBridge(
+    private val context: Context,
+    /**
+     * proot 实例（可选）。
+     *
+     * 【为什么可选而不是必传】NativeBridge 的历史调用点只传 context，
+     * 硬加重载会让所有调用点都要改。而 runtimeStatus() 里用 proot 只是
+     * 为了查 Node 路径 —— 没有它也能降级（用 RootfsManager 的等价实现）。
+     */
+    private val proot: ProotRuntime? = null,
+) {
 
     companion object {
         private const val TAG = "NativeBridge"
@@ -459,6 +469,17 @@ class NativeBridge(private val context: Context) {
     //  运行时状态
     // ═══════════════════════════════════════════════════
 
+    /**
+     * 运行时状态（给 Web UI 的「环境面板」用）。
+     *
+     * 【2026-09-24 补充】
+     * 原来只查 libproot.so 文件在不在 —— 但「文件在」不代表「proot 能用」。
+     * 我们刚踩过的坑：proot 二进制在、rootfs 完整，但因为缺 loader，
+     * 一跑就报 `execve: Function not implemented`（报错还极具误导性）。
+     *
+     * 现在把 loader 存在性、rootfs 关键目录、Node 都报出来，
+     * 让「环境面板」能反映真实可用性而不是文件清单。
+     */
     private fun runtimeStatus(): String {
         val rootfs = java.io.File(context.filesDir, "rootfs")
         val nativeLib = java.io.File(context.applicationInfo.nativeLibraryDir)
@@ -466,8 +487,25 @@ class NativeBridge(private val context: Context) {
             put("ok", true)
             put("rootfs_installed", java.io.File(rootfs, "root/.ccm-installed").exists())
             put("rootfs_path", rootfs.absolutePath)
+            // 关键目录抽查：解压错位时这些会缺失（历史 bug：PAX 头导致 /usr 全没了）
+            put("rootfs_has_usr_bin", java.io.File(rootfs, "usr/bin").isDirectory)
             put("native_lib", nativeLib.absolutePath)
             put("proot_exists", java.io.File(nativeLib, "libproot.so").exists())
+            // loader 缺失 = proot 必失败，但原来的检查发现不了
+            put("proot_loader_exists", java.io.File(nativeLib, "libproot-loader.so").exists())
+            // Node：内核的运行前提。
+            // proot 实例没传时（老调用点）退回直接查文件，逻辑与 ProotRuntime.nodePath 一致。
+            val nodeOk = proot?.nodePath() != null || listOf(
+                "usr/local/bin/node", "usr/bin/node", "opt/node/bin/node"
+            ).any { java.io.File(rootfs, it).isFile }
+            put("node_exists", nodeOk)
+            // 内核包完整性（四个关键路径，与 RootfsManager.isKernelInstalled 一致）
+            val kernelDir = java.io.File(rootfs, "root/ccm")
+            put("kernel_installed",
+                java.io.File(kernelDir, "ccm-start.mjs").exists() &&
+                java.io.File(kernelDir, "web/server.mjs").exists() &&
+                java.io.File(kernelDir, "node_modules").isDirectory &&
+                java.io.File(kernelDir, "web/dist").isDirectory)
             put("accessibility", CcmAccessibilityService.isConnected())
             put("sdk", android.os.Build.VERSION.SDK_INT)
         }.toString()
