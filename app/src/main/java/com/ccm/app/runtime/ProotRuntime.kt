@@ -285,14 +285,33 @@ class ProotRuntime(private val context: Context) {
             val pb = buildProcess("/", probeCmd)
             pb.redirectErrorStream(true)
             val p = pb.start()
-            val out = p.inputStream.bufferedReader().readText()
+            // ⚠️ 必须边读边等，不能先 readText() 再 waitFor()。
+            // readText() 会阻塞到父进程的管道关闭 —— 也就是子进程真正退出。
+            // 如果 proot 卡死（ptrace 注入失败时就会），readText 永远不返回，
+            // 后面那个 20 秒超时根本没机会执行 → 整个自检把界面卡住。
+            // 现在先把读放到线程里，主线程只负责带超时地等。
+            val out = StringBuilder()
+            val reader = Thread {
+                try {
+                    p.inputStream.bufferedReader().forEachLine { line ->
+                        synchronized(out) { out.append(line).append('\n') }
+                    }
+                } catch (_: Throwable) {}
+            }
+            reader.isDaemon = true
+            reader.start()
             val finished = p.waitFor(20, java.util.concurrent.TimeUnit.SECONDS)
             if (!finished) {
                 p.destroyForcibly()
-                return "proot 自检超时（20s）。可能是 loader 卡在 ptrace 注入。\n输出：${out.take(300)}"
+                reader.interrupt()
+                val partial = synchronized(out) { out.toString() }
+                return "proot 自检超时（20s）—— 大概率是 loader 卡在 ptrace 注入。\n" +
+                       "已知输出：${partial.take(300).ifEmpty { "(无)" }}"
             }
+            reader.join(1000)
+            val outStr = synchronized(out) { out.toString() }
             val code = p.exitValue()
-            if (code == 0 && out.contains("proot-selfcheck-ok")) {
+            if (code == 0 && outStr.contains("proot-selfcheck-ok")) {
                 null   // 正常
             } else {
                 buildString {
@@ -301,7 +320,7 @@ class ProotRuntime(private val context: Context) {
                     append("loader: ${loader.absolutePath}\n")
                     append("tmp: ${prootTmpDir.absolutePath}\n")
                     append("输出：\n")
-                    append(out.take(600))
+                    append(outStr.take(600))
                 }
             }
         } catch (t: Throwable) {
@@ -345,20 +364,83 @@ class ProotRuntime(private val context: Context) {
      * 在 rootfs 里执行一条命令，输出按行回调。
      * 用于安装流程（apt update / apt install）。
      */
+    /**
+     * 在 proot 里执行命令，逐行回调输出。
+     *
+     * 【2026-09-24 加超时】
+     *
+     * 原实现是「while (readLine()) 直到 EOF → waitFor()」，没有超时。
+     * 这在 apt 上是真会卡的：
+     *   · apt 等 dpkg 的锁（另一个安装任务没退出）
+     *   · 网络半死状态（TCP 连上了但不传数据）
+     *   · 某个包在等输入（虽然设了 DEBIAN_FRONTEND=noninteractive，但不是所有包都听话）
+     * 卡住时用户看到的是「进度条不动、日志不刷新、按钮点不动」，
+     * 而且**没有超时机制的话它会永远卡下去**，只能杀 App。
+     *
+     * 现在的策略：
+     *   · 总超时（默认 30 分钟，apt 装大包够用）
+     *   · 静默超时（默认 10 分钟没有新输出，判为卡死）
+     * 触发时 destroyForcibly 并返回 false，让上层能给出明确提示。
+     *
+     * @param timeoutMs  总超时
+     * @param idleMs     无输出超时（0 = 不检查）
+     */
     fun exec(
         command: List<String>,
         workDir: String = "/root",
-        onLine: (String) -> Unit = {}
+        onLine: (String) -> Unit = {},
+        timeoutMs: Long = 30 * 60_000L,
+        idleMs: Long = 10 * 60_000L,
     ): Boolean {
         return try {
             val pb = buildProcess(workDir, command)
             val p = pb.start()
+
+            // 用「最后输出时间」判断静默，由读线程更新、看门狗线程检查。
+            // 用 atomic 是防可见性问题（读线程写、看门狗读）。
+            val lastOutputAt = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
+            val startAt = System.currentTimeMillis()
+            // 用 AtomicReference 而不是 @Volatile 局部变量 —— Kotlin 不允许后者
+            val timedOut = java.util.concurrent.atomic.AtomicReference("")
+
+            // 看门狗：总超时 + 静默超时
+            val watchdog = Thread {
+                while (p.isAlive) {
+                    try { Thread.sleep(2000) } catch (_: InterruptedException) { break }
+                    val now = System.currentTimeMillis()
+                    if (now - startAt > timeoutMs) {
+                        timedOut.set("总超时（${timeoutMs / 60000} 分钟）")
+                        break
+                    }
+                    if (idleMs > 0 && now - lastOutputAt.get() > idleMs) {
+                        timedOut.set("无输出 ${idleMs / 60000} 分钟，疑似卡死")
+                        break
+                    }
+                }
+                val reason = timedOut.get()
+                if (reason.isNotEmpty() && p.isAlive) {
+                    Log.w(TAG, "命令超时，强制结束: $reason")
+                    try { p.destroyForcibly() } catch (_: Throwable) {}
+                }
+            }
+            watchdog.isDaemon = true
+            watchdog.start()
+
             val reader = p.inputStream.bufferedReader()
             while (true) {
                 val line = reader.readLine() ?: break
+                lastOutputAt.set(System.currentTimeMillis())
                 onLine(line)
             }
             val code = p.waitFor()
+            watchdog.interrupt()
+
+            val finalReason = timedOut.get()
+            if (finalReason.isNotEmpty()) {
+                onLine("❌ 命令被强制结束：$finalReason")
+                Log.w(TAG, "命令超时结束: $finalReason")
+                return false
+            }
             Log.i(TAG, "命令退出码: $code")
             code == 0
         } catch (t: Throwable) {
