@@ -205,10 +205,28 @@ class RootfsManager(private val context: Context) {
         // 单轮可能因网络抖动全挂，多轮能利用已下载的 .part 续传。
         val MAX_ROUNDS = 5
 
+        // 记录上一轮用的是哪个镜像 —— 换了 host 就丢弃 .part
+        //
+        // 【为什么要判 host 而不是无脑清】
+        // 同一轮内重试同一个镜像时保留 .part 是有益的（断点续传省流量）。
+        // 但不同镜像可能内容有差异（CDN 同步延迟、一个是旧版），
+        // 把两个版本的数据用 Range 拼起来会得到损坏文件 —— 而损坏要等
+        // 解压或运行时才暴露，极难归因。所以只在换 host 时清。
+        var lastHost: String? = null
+
         for (round in 1..MAX_ROUNDS) {
             for ((idx, url) in MIRRORS.withIndex()) {
                 try {
                     Log.i(TAG, "第 $round 轮，镜像 ${idx + 1}/${MIRRORS.size}: ${url.take(55)}…")
+                    val host = try { java.net.URI(url).host } catch (_: Throwable) { null }
+                    if (host != null && lastHost != null && host != lastHost) {
+                        val part = File(context.filesDir, "$ARCHIVE_NAME.part")
+                        if (part.exists()) {
+                            Log.i(TAG, "换镜像（$lastHost → $host），丢弃已下载部分")
+                            part.delete()
+                        }
+                    }
+                    lastHost = host
                     // ⚠️ 连上之前也要给 UI 反馈，否则用户看到「0%」一动不动，
                     // 以为卡死了（实际是在等 TCP 握手/响应头，可能十几秒）。
                     // done=0 total=0 → UI 会显示「正在连接…」
@@ -683,7 +701,18 @@ class RootfsManager(private val context: Context) {
             var downloaded = false
             // 支持多镜像：URL 列表在 ToolchainCatalog 里（step.url 是首选）
             val urls = listOf(step.url) + ToolchainCatalog.NODE_MIRRORS.drop(1).filter { it != step.url }
-            outer@ for (url in urls) {
+            val partFile = File(archive.parentFile, "${archive.name}.part")
+            outer@ for ((idx, url) in urls.withIndex()) {
+                // ⚠️ 换镜像前清掉 .part
+                //
+                // 不同镜像的文件理论上内容一致，但：
+                //   · 可能一个是当前版、一个是缓存的旧版（CDN 同步延迟）
+                //   · Range 续传会把两个版本的数据拼在一起 → 文件损坏
+                // 而 corrupted 的文件要等解压或运行时才暴露，很难归因。
+                // 宁可重下也不冒这个险 —— 只在不同 host 之间切换时清。
+                if (idx > 0) {
+                    try { if (partFile.exists()) { partFile.delete(); onLine("  （换了镜像，丢弃已下载的部分重来）") } } catch (_: Throwable) {}
+                }
                 for (attempt in 1..3) {
                     try {
                         if (downloadTo(url, archive, onProgress)) { downloaded = true; break@outer }
@@ -692,7 +721,7 @@ class RootfsManager(private val context: Context) {
                     }
                     try { Thread.sleep(2000) } catch (_: InterruptedException) {}
                 }
-                onLine("  换个镜像重试…")
+                if (idx < urls.size - 1) onLine("  换个镜像重试…")
             }
             if (!downloaded || !archive.exists() || archive.length() < 100_000) {
                 onLine("  ❌ 下载失败")
@@ -884,8 +913,16 @@ class RootfsManager(private val context: Context) {
                 var ok = false
                 // 多轮重试（同 rootfs 的策略：网络抖动时利用 .part 续传）
                 outer@ for (round in 1..5) {
+                    // 换 host 时丢弃 .part（理由同 rootfs 下载，见那边的注释）
+                    var lastKernelHost: String? = null
                     for (url in KERNEL_MIRRORS) {
                         try {
+                            val host = try { java.net.URI(url).host } catch (_: Throwable) { null }
+                            if (host != null && lastKernelHost != null && host != lastKernelHost) {
+                                val part = File(archive.parentFile, "${archive.name}.part")
+                                if (part.exists()) { Log.i(TAG, "换镜像，丢弃内核 .part"); part.delete() }
+                            }
+                            lastKernelHost = host
                             Log.i(TAG, "内核下载 第 $round 轮: ${url.take(45)}…")
                             if (downloadTo(url, archive, onProgress)) { ok = true; break@outer }
                         } catch (t: Throwable) {
@@ -973,8 +1010,32 @@ class RootfsManager(private val context: Context) {
                 }
             }
 
+            // 【2026-09-24 加完整性校验】
+            // 原来下完就 rename，不检查字节数。HTTP 连接被中间设备掐断时，
+            // read 会正常返回 0（EOF）而不是抛异常 —— 也就是**截断的下载会被
+            // 当成成功**。后续解压报错，用户看到的却是「解压失败」，
+            // 完全想不到是下载没下完。
+            //
+            // 现在比对期望字节数。服务端给了 content-length 就必须对得上；
+            // 没给（chunked 或 1MB 兜底值）就跳过检查。
+            val expected = if (contentLen > 1_000_000L) startAt + contentLen else 0L
+            val actual = tmp.length()
+            if (expected > 0 && actual < expected) {
+                Log.w(TAG, "下载不完整：$actual / $expected 字节（保留 .part 供续传）")
+                return false
+            }
+
             if (dest.exists()) dest.delete()
-            tmp.renameTo(dest)
+            if (!tmp.renameTo(dest)) {
+                // renameTo 在少数情况会失败（跨挂载点等），退回拷贝
+                Log.w(TAG, "renameTo 失败，改用拷贝")
+                if (!tmp.copyTo(dest, overwrite = true)) {
+                    Log.e(TAG, "拷贝失败")
+                    return false
+                }
+                tmp.delete()
+            }
+            true
         } catch (t: Throwable) {
             // 保留 .part 供续传
             Log.w(TAG, "下载中断（保留 ${if (tmp.exists()) tmp.length() else 0} 字节）: ${t.message}")
