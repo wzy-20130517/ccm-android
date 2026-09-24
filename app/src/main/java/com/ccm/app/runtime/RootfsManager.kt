@@ -883,9 +883,25 @@ class RootfsManager(private val context: Context) {
     // ═══════════════════════════════════════════════════
 
     /** 内核是否已安装 */
+    /**
+     * 内核是否已安装（完整）。
+     *
+     * 【2026-09-24 加严判定】
+     * 原来只查 ccm-start.mjs 和 web/server.mjs 两个文件。
+     * 但内核跑起来还需要：
+     *   · node_modules —— server.mjs 会 import diff / markdown-it 等
+     *   · web/dist      —— 前端构建产物，WebView 加载的就是它
+     * 少了这些，两个入口文件在但服务起不来，而界面显示「已安装」——
+     * 用户点「启动 Node」失败，还以为是自己网络问题。
+     *
+     * 现在四个都查。比「启动后再报错」友好。
+     */
     fun isKernelInstalled(): Boolean {
-        return File(rootfsPath, "$KERNEL_DIR/ccm-start.mjs").exists() &&
-               File(rootfsPath, "$KERNEL_DIR/web/server.mjs").exists()
+        val d = File(rootfsPath, KERNEL_DIR)
+        return File(d, "ccm-start.mjs").exists() &&
+               File(d, "web/server.mjs").exists() &&
+               File(d, "node_modules").isDirectory &&
+               File(d, "web/dist").isDirectory
     }
 
     /**
@@ -937,17 +953,56 @@ class RootfsManager(private val context: Context) {
                 if (!ok) return false
             }
 
-            // 解压到 rootfs/root/ccm
+            // 解压到临时目录，成功后再原子替换 —— 跟 rootfs 安装同一套做法。
+            //
+            // 【为什么不能先删后解压】
+            // 原来是这样：
+            //   if (dest.exists()) dest.deleteRecursively()
+            //   dest.mkdirs()
+            //   TarExtractor.extract(archive, dest)
+            // 解压失败（下载不完整、空间不够）就留下一个**残缺的 /root/ccm** ——
+            // 而 isKernelInstalled() 只要 ccm-start.mjs 和 web/server.mjs 存在就返回 true，
+            // 于是「更新内核失败」被显示成成功，用户点「启动 Node」才发现起不来。
+            //
+            // 现在：解压到 .tmp → 成功后删旧的 → rename。任何一步失败老内核都完好，
+            // 用户还能继续用旧版。
             val dest = File(rootfsPath, KERNEL_DIR)
-            if (dest.exists()) dest.deleteRecursively()
-            dest.mkdirs()
+            val tmpDest = File(rootfsPath, "$KERNEL_DIR.install.tmp")
+            if (tmpDest.exists()) tmpDest.deleteRecursively()
+            tmpDest.mkdirs()
 
-            val ok = TarExtractor.extract(archive, dest)
-            if (!ok) return false
+            val ok = TarExtractor.extract(archive, tmpDest)
+            if (!ok) {
+                Log.e(TAG, "内核解压失败，保留旧版本")
+                tmpDest.deleteRecursively()
+                return false
+            }
+
+            // 校验解压结果：关键文件必须在
+            val hasStart = File(tmpDest, "ccm-start.mjs").exists()
+            val hasServer = File(tmpDest, "web/server.mjs").exists()
+            if (!hasStart || !hasServer) {
+                Log.e(TAG, "内核解压不完整（ccm-start.mjs=$hasStart, web/server.mjs=$hasServer）")
+                tmpDest.deleteRecursively()
+                return false
+            }
+
+            // 原子替换
+            if (dest.exists()) dest.deleteRecursively()
+            if (!tmpDest.renameTo(dest)) {
+                Log.w(TAG, "renameTo 失败，改用拷贝")
+                try {
+                    tmpDest.copyRecursively(dest, overwrite = true)
+                    tmpDest.deleteRecursively()
+                } catch (e: Throwable) {
+                    Log.e(TAG, "拷贝失败: ${e.message}")
+                    return false
+                }
+            }
 
             // 清理
             archive.delete()
-            Log.i(TAG, "内核安装完成")
+            Log.i(TAG, "内核安装完成（${dest.absolutePath}）")
             true
         } catch (t: Throwable) {
             Log.e(TAG, "内核安装失败", t)
