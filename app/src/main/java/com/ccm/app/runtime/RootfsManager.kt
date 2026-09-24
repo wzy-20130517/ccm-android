@@ -525,6 +525,10 @@ class RootfsManager(private val context: Context) {
             // 1) 权限修复（apt 需要）
             fixPermissionsInternal()
 
+            // 1.5) 补 debconf —— 见 repairBaseSystem 的说明，这是 ubuntu-base
+            //      最小镜像的已知缺陷，不修的话 apt install 必失败。
+            repairBaseSystem(exec, onLine)
+
             // 【2026-09-23 加】先剔除已经装好的包。
             //
             // 用户反馈：「重新进入后又要下一遍不知道什么东西」—— 之前每次点安装
@@ -1266,6 +1270,114 @@ class RootfsManager(private val context: Context) {
 
     /** 修复执行权限（apt 的 http method 等需要） */
     /** 修正式 rootfs 的执行权限 */
+    /**
+     * 修复 ubuntu-base 最小镜像的 dpkg 残缺状态。
+     *
+     * ═══════════════════════════════════════════════════════════
+     * 【问题现象】（2026-09-24 用户实测日志）
+     *
+     *   Setting up libc6:arm64 (2.39-0ubuntu8.9) ...
+     *   /var/lib/dpkg/info/libc6:arm64.postinst: 17: exec:
+     *       /usr/share/debconf/frontend: not found
+     *   dpkg: error processing package libc6:arm64 (--configure):
+     *       installed libc6:arm64 package post-installation script
+     *       subprocess returned error exit status 127
+     *   E: Sub-process /usr/bin/dpkg returned an error code (1)
+     *
+     * 以及同源的：
+     *   /bin/sh: 1: /usr/sbin/dpkg-preconfigure: not found
+     *   29 not fully installed or removed.
+     *
+     * 【根因】
+     * ubuntu-base-24.04 是最小系统，**不带 debconf**。
+     * 但很多基础包（libc6、perl-base……）的 postinst 会调
+     * /usr/share/debconf/frontend —— 找不到就 exit 127，
+     * dpkg 判定「这个包没配置成功」→ 后续所有 apt install 全部失败。
+     *
+     * 日志里那句 `29 not fully installed or removed` 就是证据：
+     * rootfs 本身出厂时 dpkg 状态就是残缺的。
+     *
+     * 【为什么不能直接 `apt install debconf`】
+     * apt 现在就是坏的（dpkg 配置卡住），用它修自己是死循环。
+     * 正确做法见下：先 `dpkg --configure -a` 把已解包的配置掉，
+     * 再 apt 装 debconf（此时 apt 已可用）。
+     *
+     * 【为什么用 --force-confold】
+     * 避免 conffile 冲突时卡在交互提示（非交互环境下会直接失败）。
+     *
+     * @return true 表示修复动作执行了（不代表一定成功 —— 后续 apt 会验证）
+     */
+    private fun repairBaseSystem(
+        exec: (List<String>, (String) -> Unit) -> Boolean,
+        onLine: (String) -> Unit = {},
+    ): Boolean {
+        // 缓存标记：修成功过就不再重复探测。
+        // rootfs 是持久的，修一次就够 —— 而每次装工具链都跑一遍 dpkg --configure -a
+        // 要几十秒，用户会以为「又在下一遍」。
+        val stamp = File(rootfsPath, ".base-repaired")
+        if (stamp.exists()) return true
+
+        // 探一下：debconf 在不在？在就标记一下直接返回
+        //
+        // ⚠️ exec 返回 Boolean 表示退出码，**不是抛异常** ——
+        //    最早写成 try { exec(...); hasDebconf = true } 是错的：
+        //    那样只要不抛异常就认为「有 debconf」，检测恒真、修复永不执行。
+        val hasDebconf = try {
+            exec(listOf("/bin/bash", "-lc", "test -x /usr/share/debconf/frontend"), {})
+        } catch (_: Throwable) { false }
+
+        if (hasDebconf) {
+            try { stamp.writeText("ok") } catch (_: Throwable) {}
+            return true
+        }
+
+        onLine("检测到系统基础组件不全（缺 debconf），先修复…")
+
+        // ① 把已经解包但没配置完的包配置掉（--force-confold 避免交互卡住）
+        //    ⚠️ 这一步会因为缺 debconf 而部分失败，但 dpkg 会把状态往前推，
+        //       让下一步的 apt 能跑起来。
+        exec(
+            listOf(
+                "/bin/bash", "-lc",
+                "export DEBIAN_FRONTEND=noninteractive TERM=dumb; " +
+                    "dpkg --configure -a --force-confold 2>&1 | tail -20"
+            ),
+            { line -> if (line.isNotBlank()) onLine("  $line") }
+        )
+
+        // ② 现在 apt 能用了，装 debconf 本体
+        exec(
+            listOf(
+                "/bin/bash", "-lc",
+                "export DEBIAN_FRONTEND=noninteractive TERM=dumb; " +
+                    "apt-get update -qq 2>&1 | tail -3; " +
+                    "apt-get install -y -q --fix-broken debconf 2>&1 | tail -15"
+            ),
+            { line -> if (line.isNotBlank()) onLine("  $line") }
+        )
+
+        // ③ 再配一遍，把之前卡住的包收尾
+        exec(
+            listOf(
+                "/bin/bash", "-lc",
+                "export DEBIAN_FRONTEND=noninteractive TERM=dumb; " +
+                    "dpkg --configure -a --force-confold 2>&1 | tail -10"
+            ),
+            { line -> if (line.isNotBlank()) onLine("  $line") }
+        )
+
+        // 验证（同样看返回码，不靠异常）
+        val ok = try {
+            exec(listOf("/bin/bash", "-lc", "test -x /usr/share/debconf/frontend"), {})
+        } catch (_: Throwable) { false }
+        onLine(if (ok) "  ✓ 基础组件已修复" else "  ⚠️ 修复未完全成功，继续尝试安装")
+        if (ok) {
+            // 只有真修好才写标记 —— 否则下次会被跳过，永远修不上
+            try { stamp.writeText("ok") } catch (_: Throwable) {}
+        }
+        return ok
+    }
+
     private fun fixPermissionsInternal() = fixPermissionsIn(rootfsPath)
 
     /** 修指定目录的执行权限（安装流程用，见 fixPermissionsInternal 的说明） */
