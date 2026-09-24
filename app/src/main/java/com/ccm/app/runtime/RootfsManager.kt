@@ -866,13 +866,28 @@ class RootfsManager(private val context: Context) {
             }
         }
 
-        // 顺手修正记录文件，避免每次都白跑一遍验证
+        // 顺手修正记录文件，避免每次都白跑一遍验证。
+        //
+        // 【但要先抢锁】验证本身要跑几秒，这期间用户完全可能点「安装」——
+        // 那次安装会拿 toolchain 锁并写入新记录。如果这里不持锁就写回，
+        // 会把安装刚写的记录覆盖掉（用户装完发现界面显示「未安装」）。
+        //
+        // 抢不到锁就**不写回**（说明有安装在进行，那次安装的记录更新更权威）。
+        // 这只影响下次是否白跑一遍验证，不影响正确性。
         if (verified != claimed) {
-            try {
-                File(rootfsPath, "root/.ccm-toolchains").writeText(verified.joinToString(","))
-                Log.i(TAG, "已修正工具链记录：${claimed.size} → ${verified.size}")
-            } catch (t: Throwable) {
-                Log.w(TAG, "修正记录失败", t)
+            val lock = InstallLock(context, "toolchain")
+            // waitMs=0：锁忙就跳过，不要把界面卡住
+            if (lock.acquire(waitMs = 0)) {
+                try {
+                    File(rootfsPath, "root/.ccm-toolchains").writeText(verified.joinToString(","))
+                    Log.i(TAG, "已修正工具链记录：${claimed.size} → ${verified.size}")
+                } catch (t: Throwable) {
+                    Log.w(TAG, "修正记录失败", t)
+                } finally {
+                    lock.release()
+                }
+            } else {
+                Log.i(TAG, "有安装在跑，跳过记录修正（下次验证会重跑）")
             }
         }
         return verified

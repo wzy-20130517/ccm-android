@@ -50,11 +50,15 @@ class InstallLock(private val context: Context, private val name: String) {
 
     /**
      * 抢锁。阻塞直到拿到或超时。
+     *
+     * @param waitMs 最多等多久（默认 120 秒，够 apt 装完一批包）。
+     *   调用方如果只需「锁不忙就做、忙就跳过」，传一个短值（如 0）——
+     *   比如界面上的验证写回，抢不到就跳过，不该让用户等两分钟。
      * @return true=拿到锁（调用方最后必须 release）；false=超时
      */
-    fun acquire(): Boolean {
+    fun acquire(waitMs: Long = WAIT_TIMEOUT_MS): Boolean {
         if (held) return true
-        val deadline = System.currentTimeMillis() + WAIT_TIMEOUT_MS
+        val deadline = System.currentTimeMillis() + waitMs
         var attempt = 0
 
         while (System.currentTimeMillis() < deadline) {
@@ -82,7 +86,7 @@ class InstallLock(private val context: Context, private val name: String) {
             try { Thread.sleep(POLL_MS) } catch (_: InterruptedException) { return false }
         }
 
-        Log.w(TAG, "等锁超时（${WAIT_TIMEOUT_MS}ms）")
+        Log.w(TAG, "等锁超时（${waitMs}ms）")
         return false
     }
 
