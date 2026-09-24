@@ -520,11 +520,21 @@ class RootfsManager(private val context: Context) {
             onLine("")
             val todoPackages = need
 
+            // apt 是否成功。声明在 if 外面 —— 因为 need 为空时整段 apt 被跳过，
+            // 但下面的 downloadSteps 还要看这个值决定要不要继续。
+            //
+            // 【初始值 true 而不是 false】need 为空 = 没有 apt 包要装 = apt 部分
+            // 天然成功。如果初始化为 false，跳过 apt 时 ok 保持 false，
+            // 下面 `if (ok && downloadSteps.isNotEmpty())` 就永远不成立 →
+            // Node 还是装不上（这正是「只勾 Node.js」的场景）。
+            var ok = true
+
             // 2) apt update（失败重试）
             //
             // 【2026-09-24】need 为空时整段 apt 都跳过 —— 没包要装还跑 apt update
             // 是纯浪费（几十秒），而且并发锁也白占。
             // 这种情况下直接进入下面的 downloadSteps 处理。
+            // ⚠️ 注意 ok 必须声明在 if 外（否则 if 跳过时下面引用不到）。
             if (need.isNotEmpty()) {
                 onLine("更新软件源…")
                 var updated = false
@@ -552,7 +562,6 @@ class RootfsManager(private val context: Context) {
 
                 onLine("")
                 onLine("开始安装（可能需要几分钟）…")
-                var ok = false
                 for (attempt in 1..2) {
                     // ⚠️ 不要用 `/usr/bin/env -i` 清空环境再跑 apt！
                     //
