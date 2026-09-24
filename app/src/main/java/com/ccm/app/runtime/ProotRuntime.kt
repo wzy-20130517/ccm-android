@@ -362,30 +362,43 @@ class ProotRuntime(private val context: Context) {
 
     /**
      * 在 rootfs 里执行一条命令，输出按行回调。
-     * 用于安装流程（apt update / apt install）。
+     *
+     * 等价于 execWithTimeout(command, workDir, onLine)（用默认超时）。
+     * 之所以分成两个函数，见 execWithTimeout 的说明。
      */
+    fun exec(
+        command: List<String>,
+        workDir: String = "/root",
+        onLine: (String) -> Unit = {},
+    ): Boolean = execWithTimeout(command, workDir, onLine)
+
     /**
-     * 在 proot 里执行命令，逐行回调输出。
+     * 带超时的命令执行。
      *
      * 【2026-09-24 加超时】
      *
      * 原实现是「while (readLine()) 直到 EOF → waitFor()」，没有超时。
-     * 这在 apt 上是真会卡的：
+     * 这在 apt 上真会卡：
      *   · apt 等 dpkg 的锁（另一个安装任务没退出）
      *   · 网络半死状态（TCP 连上了但不传数据）
      *   · 某个包在等输入（虽然设了 DEBIAN_FRONTEND=noninteractive，但不是所有包都听话）
-     * 卡住时用户看到的是「进度条不动、日志不刷新、按钮点不动」，
-     * 而且**没有超时机制的话它会永远卡下去**，只能杀 App。
+     * 卡住时用户看到「进度条不动、日志不刷新、按钮点不动」，
+     * 而且没有超时的话会永远卡下去，只能杀 App。
      *
-     * 现在的策略：
-     *   · 总超时（默认 30 分钟，apt 装大包够用）
-     *   · 静默超时（默认 10 分钟没有新输出，判为卡死）
+     * 现在有二级超时：总超时 + 静默超时（无新输出）。
      * 触发时 destroyForcibly 并返回 false，让上层能给出明确提示。
      *
-     * @param timeoutMs  总超时
+     * 【为什么单独一个函数，不给 exec 加默认参数】
+     * 会破坏现有调用点的尾随 lambda 解析：
+     *   proot.exec(cmd, "/root") { line -> ... }
+     * 这行里 lambda 落到「最后一个参数」。在 onLine 后面再加参数，
+     * lambda 就去填新参数了 → 类型不匹配。
+     * （实测编译报 "Argument type mismatch: actual type is Function1, but Long was expected"）
+     *
+     * @param timeoutMs  总超时（默认 30 分钟，apt 装大包够用）
      * @param idleMs     无输出超时（0 = 不检查）
      */
-    fun exec(
+    fun execWithTimeout(
         command: List<String>,
         workDir: String = "/root",
         onLine: (String) -> Unit = {},
