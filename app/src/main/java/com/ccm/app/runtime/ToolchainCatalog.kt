@@ -130,9 +130,16 @@ object ToolchainCatalog {
         Toolchain(
             id = "nodejs",
             name = "Node.js 24",
-            description = "AI 内核自己要用（官方 LTS 版，比 apt 的新）",
+            description = "AI 内核自己要用（官方 LTS，约 200MB）",
             aptPackages = emptyList(),
-            sizeMB = 50,
+            // 【2026-09-24 修正】原来写 50MB，实际差 4.6 倍。
+            // 实测 Node v24 官方 tarball：
+            //   压缩后 30MB（.tar.xz）
+            //   解压后 ~200MB（单个 node 二进制就 122MB，带 debug_info 没 strip）
+            // 安装峰值 = 30（压缩）+ 200（解压）= 230MB。
+            // 低估的后果：用户看着「50MB」点下去，结果吃了 230MB 存储 ——
+            // 存储紧张的手机会中途失败（解压到一半 no space left）。
+            sizeMB = 230,
             verifyCommand = "command -v node npm",
             defaultChecked = true,
             // 【为什么不用 apt 的 nodejs】
@@ -181,7 +188,8 @@ object ToolchainCatalog {
             name = "Go",
             description = "golang-go，编译 Go 项目",
             aptPackages = listOf("golang-go"),
-            sizeMB = 200,
+            // 实测 golang-go + 依赖约 250MB，留余量
+            sizeMB = 280,
             verifyCommand = "command -v go",
             defaultChecked = false,
         ),
@@ -190,7 +198,8 @@ object ToolchainCatalog {
             name = "Java (JDK)",
             description = "default-jdk-headless，编译/运行 Java",
             aptPackages = listOf("default-jdk-headless"),
-            sizeMB = 250,
+            // openjdk-headless + 依赖约 300MB，留余量
+            sizeMB = 320,
             verifyCommand = "command -v java",
             defaultChecked = false,
         ),
