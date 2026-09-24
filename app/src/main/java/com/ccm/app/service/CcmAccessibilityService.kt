@@ -14,7 +14,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * CCM 无障碍服务 —— 替代 Shizuku/rish，提供手机操作能力。
+ * Claude Code Mobile 无障碍服务 —— 替代 Shizuku/rish，提供手机操作能力。
  *
  * 【为什么用无障碍而不是 Shizuku】
  * | 能力        | 无障碍          | Shizuku(rish)      |
