@@ -750,28 +750,64 @@ class RootfsManager(private val context: Context) {
                 return false
             }
 
-            // 找到顶层目录（可能不止一个，取第一个目录）
-            val topEntries = tmpDir.listFiles() ?: emptyArray()
+            // 找到顶层目录（等价于 tar --strip-components=1）
+            //
+            // 【为什么不能简单判 `topEntries.size == 1`】
+            // 有些 tarball 会带隐藏文件（macOS 打的包有 ._xxx、解压工具可能留
+            // .DS_Store），此时 size 会是 2 → 判定失败 → 走 else → 把整个
+            // 顶层目录**当成内容**装进 /usr/local（结果是 /usr/local/node-v24.../bin/node，
+            // 而不是 /usr/local/bin/node）—— 而 verifyCommand 查不到命令，
+            // 用户看到「装完了但用不了」。
+            //
+            // 现在：忽略隐藏文件后再判；若仍有多个条目，说明这个包结构不是
+            // 「单一顶层目录」形态，走 else 是合理的（直接把内容摊开）。
+            val topEntries = (tmpDir.listFiles() ?: emptyArray())
+                .filterNot { it.name.startsWith(".") }
             val sourceDir = if (step.stripComponents > 0 && topEntries.size == 1 && topEntries[0].isDirectory) {
                 topEntries[0]
             } else {
+                if (step.stripComponents > 0 && topEntries.size > 1) {
+                    Log.w(TAG, "解压出 ${topEntries.size} 个顶层条目，无法安全剥离 —— 直接摊开安装")
+                }
                 tmpDir
             }
 
             // 移动到目标位置（覆盖同名）
             var moved = 0
+            var copied = 0
             sourceDir.listFiles()?.forEach { f ->
                 val target = File(destRoot, f.name)
                 try {
                     if (target.exists()) target.deleteRecursively()
-                    if (f.renameTo(target) || f.copyRecursively(target, overwrite = true)) {
-                        if (!f.exists()) moved++ else moved++
+                    // 优先 renameTo（同文件系统上是原子的、瞬时的 ——
+                    // filesDir 和 cacheDir 都在 /data/data/<pkg>/ 下，一定同挂载点）。
+                    // 失败才退回 copyRecursively（那会真的复制 200MB，很慢）。
+                    //
+                    // ⚠️ 原来这里写的是 `if (f.renameTo(target) || f.copyRecursively(...))`
+                    // 然后在里面判 `if (!f.exists()) moved++ else moved++` ——
+                    // 两个分支都是 moved++，等于什么都没判。现在改成分别计数，
+                    // 并且区分日志（rename 快、copy 慢，出慢的时候能看出走了哪条路）。
+                    val ok = if (f.renameTo(target)) {
+                        moved++
+                        true
+                    } else {
+                        Log.i(TAG, "renameTo 失败（${f.name}），退回拷贝")
+                        try {
+                            f.copyRecursively(target, overwrite = true)
+                            copied++
+                            true
+                        } catch (e: Throwable) {
+                            Log.w(TAG, "拷贝 ${f.name} 失败: ${e.message}")
+                            false
+                        }
                     }
+                    if (!ok) Log.w(TAG, "顶层条目 ${f.name} 未安装成功")
                 } catch (t: Throwable) {
                     Log.w(TAG, "移动 ${f.name} 失败: ${t.message}")
                 }
             }
-            onLine("  已安装 $moved 个顶层条目到 /${step.extractTo}")
+            onLine("  已安装 $moved 个顶层条目到 /${step.extractTo}" +
+                if (copied > 0) "（其中 $copied 个走了拷贝，较慢）" else "")
 
             // 3) 清理
             tmpDir.deleteRecursively()
