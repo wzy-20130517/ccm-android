@@ -51,6 +51,42 @@ class CcmService : Service() {
         @Volatile
         var isRunning = false
             private set
+
+        /**
+         * Node 内核的最近输出（环形缓冲，最多 [NODE_LOG_LIMIT] 行）。
+         *
+         * 【为什么要暴露给界面】内核启动失败的原因都在它的 stdout/stderr 里：
+         *   · 模块缺失（MODULE_NOT_FOUND）
+         *   · 语法错误（进程直接退出）
+         *   · 端口被占（EADDRINUSE）
+         *   · proot 层的路径问题
+         * 但原来这些只进 logcat —— 用户在界面上只看到「Node 服务未启动」，
+         * 完全不知道为什么，也无法自助排查（手机上看 logcat 门槛太高）。
+         *
+         * 现在缓存最近 200 行，ReadyScreen 提供「查看内核日志」入口。
+         * 用 @Volatile + 同步块：写在线程池、读在 UI 线程。
+         */
+        private const val NODE_LOG_LIMIT = 200
+        private val nodeLogLines = ArrayDeque<String>()
+
+        @Volatile
+        var nodeLogText: String = ""
+            private set
+
+        fun appendNodeLog(line: String) {
+            synchronized(nodeLogLines) {
+                nodeLogLines.addLast(line)
+                while (nodeLogLines.size > NODE_LOG_LIMIT) nodeLogLines.removeFirst()
+                nodeLogText = nodeLogLines.joinToString("\n")
+            }
+        }
+
+        fun clearNodeLog() {
+            synchronized(nodeLogLines) {
+                nodeLogLines.clear()
+                nodeLogText = ""
+            }
+        }
     }
 
     private var serverSocket: ServerSocket? = null
@@ -252,8 +288,12 @@ class CcmService : Service() {
         if (node == null) {
             Log.w(TAG, "rootfs 里没有 Node")
             updateNotification("环境里没有 Node，请先安装")
+            appendNodeLog("❌ 环境里没有 Node —— 请先在「管理工具链」里装 Node.js")
             return false
         }
+        // 新一轮启动：清掉上次的日志，避免混淆
+        clearNodeLog()
+        appendNodeLog("启动 Node：$node")
 
         // 内核入口：ccm-start.mjs（会自己拉起 web/server.mjs）
         val hasKernel = java.io.File(filesDir, "rootfs/root/ccm/ccm-start.mjs").exists()
@@ -282,6 +322,8 @@ class CcmService : Service() {
                     while (true) {
                         val line = r.readLine() ?: break
                         Log.i("CcmNode", line)
+                        // 同时进缓冲区，供界面「查看内核日志」显示
+                        appendNodeLog(line)
                     }
                 } catch (_: Throwable) {
                 } finally {

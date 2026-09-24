@@ -762,6 +762,7 @@ fun ReadyScreen(
     /** proot 自检结果：null=正常，否则是诊断文本（见 ProotRuntime.selfCheck） */
     prootCheckError: String? = null
 ) {
+    var showNodeLog by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState())
     ) {
@@ -782,6 +783,37 @@ fun ReadyScreen(
         // proot 自检：这一行能把「工具链装不上」的真实原因暴露出来
         StatusRow("proot 运行时", prootCheckError == null,
             if (prootCheckError == null) "自检通过" else "自检失败 —— 见下方")
+
+        // 【查看内核日志】入口。
+        // Node 启动失败的原因都在它的 stdout/stderr 里（模块缺失/语法错误/端口占用），
+        // 而原来这些只进 logcat —— 用户在手机上根本看不到（logcat 门槛太高）。
+        // ⚠️ 不加 nodeRunning 条件 —— 失败时正是最需要看日志的时候。
+        // （我第一版写成 if (runtime.nodeRunning) 了，那等于「能跑的时候才给看日志」，
+        //  恰恰把最有价值的场景挡在外面）
+        val nodeLog = CcmService.nodeLogText
+        TextButton(onClick = { showNodeLog = !showNodeLog }) {
+            Text(
+                when {
+                    showNodeLog -> "收起内核日志"
+                    nodeLog.isEmpty() -> "查看内核日志（暂无）"
+                    else -> "查看内核日志（${nodeLog.lines().size} 行）"
+                }
+            )
+        }
+        if (showNodeLog) {
+            val logText = CcmService.nodeLogText
+            Surface(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = MaterialTheme.shapes.small
+            ) {
+                Text(
+                    logText.ifEmpty { "（暂无日志）" },
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(8.dp)
+                )
+            }
+        }
 
         if (prootCheckError != null) {
             Card(
