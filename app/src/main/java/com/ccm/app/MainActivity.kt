@@ -78,6 +78,14 @@ fun CcmApp() {
     // 用户勾选的工具链
     var selectedChains by remember { mutableStateOf(ToolchainCatalog.defaultSelection()) }
     var log by remember { mutableStateOf("") }
+    /**
+     * 工具链安装失败标志。
+     *
+     * 【为什么需要】安装失败时不能像原来那样「覆盖日志 + 自动跳页」——
+     * 用户根本看不到是哪一步错了。现在失败时停在本页，
+     * 由这个标志控制「返回」按钮的出现（用户主动走）。
+     */
+    var toolchainFailed by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
     var runtime by remember { mutableStateOf(RuntimeState()) }
     // proot 自检结果。null=未跑或通过；非 null=诊断文本。
@@ -239,23 +247,49 @@ fun CcmApp() {
                                 // 【2026-09-23】失败要说清楚失败在哪，别一律「✅ 完成」。
                                 // 用户反馈过：「勾选了几个包，只装了 linux，其他根本没下，
                                 // 重新进入又要下一遍」—— 就是因为这里没报失败。
-                                log = when {
-                                    !tok && !kok -> "❌ 工具链和内核都没装成功。看上面的日志，或去「管理工具」重试。"
-                                    !tok -> "⚠️ 工具链没装全（看上面日志）。已装的不会重装，点「管理工具」可补装缺失的。"
-                                    !kok -> "⚠️ Node 内核没装上。点下方「更新 Node 内核」重试。"
-                                    else -> "✅ 全部完成"
+                                // 【2026-09-24 修】原来无论成败都覆盖 log 再自动跳走：
+                                //     log = when { ... }        ← 覆盖掉几百行日志
+                                //     delay(1200); stage = READY ← 想截图都来不及
+                                // 用户反馈「弹了『部分失败』后就清屏，且自动退出日志页」。
+                                //
+                                // 失败时最需要日志（要截图反馈），偏偏那时候把页面收走。
+                                // 现在：成功照旧自动走；失败停住，保留完整日志，
+                                // 底部出「看完了，返回」按钮，用户主动走。
+                                val allOk = tok && kok
+                                if (allOk) {
+                                    log = "✅ 全部完成"
+                                    delay(1200)
+                                    stage = Stage.READY
+                                } else {
+                                    val summary = when {
+                                        !tok && !kok -> "❌ 工具链和内核都没装成功"
+                                        !tok -> "⚠️ 工具链没装全"
+                                        else -> "⚠️ Node 内核没装上"
+                                    }
+                                    toolLog.append('\n').append("$summary —— 上面是完整日志，可点「复制日志」发我。")
+                                    if (!tok) toolLog.append('\n').append("   已装成功的不会重装，修复后回来可补装缺失的。")
+                                    if (!kok) toolLog.append('\n').append("   内核可在主界面点「更新 Node 内核」重试。")
+                                    log = toolLog.toString().trimEnd()
+                                    toolchainFailed = true   // 停在本页，等用户看完
                                 }
-                                delay(1200)
-                                stage = Stage.READY
                             } catch (e: Throwable) {
-                                log = "❌ 出错: ${e.message}"
-                                stage = Stage.NEED_SETUP
+                                log = "❌ 出错: ${e.message}\n\n（日志已保留在上方）"
+                                toolchainFailed = true
                             }
                         }
                     }
                 )
 
-                Stage.SETTING_UP -> InstallingScreen(progress = progress, log = log)
+                Stage.SETTING_UP -> InstallingScreen(
+                    progress = progress,
+                    log = log,
+                    failed = toolchainFailed,
+                    onBack = {
+                        // 用户看完日志主动返回 —— 顺便清掉失败标志，下次安装重新开始
+                        toolchainFailed = false
+                        stage = Stage.READY
+                    },
+                )
 
                 Stage.READY -> ReadyScreen(
                     runtime = runtime,
@@ -393,13 +427,32 @@ fun CcmApp() {
                                             onLine = appendLog
                                         )
                                     }
-                                    log = if (ok) "✅ 安装完成" else "⚠️ 部分失败"
-                                    delay(800)
-                                    stage = Stage.READY
+                                    // 【2026-09-24 修】原来是：
+                                    //     log = if (ok) "✅ 安装完成" else "⚠️ 部分失败"
+                                    //     delay(800); stage = Stage.READY
+                                    // 两个问题叠加，用户根本看不到日志：
+                                    //   ① `log = ` 把累积的几百行日志**整个覆盖**掉
+                                    //   ② 800ms 后自动切页面 —— 想截图都来不及
+                                    // 用户反馈：「弹了『部分失败』后就清屏，且自动退出日志页」。
+                                    //
+                                    // 现在：
+                                    //   · 成功 → 覆盖成一行「✅ 安装完成」，1.2 秒后回主界面（正常）
+                                    //   · 失败 → **保留完整日志**，停在本页等用户看完，
+                                    //            底部出现「返回」按钮（用户主动走）
+                                    if (ok) {
+                                        log = "✅ 安装完成"
+                                        delay(1200)
+                                        stage = Stage.READY
+                                    } else {
+                                        toolLog.append('\n').append("⚠️ 部分工具没装上 —— 上面是完整日志，可点「复制日志」发我。")
+                                        toolLog.append('\n').append("   已装成功的不会重装，可修复后回来补装缺失的。")
+                                        log = toolLog.toString().trimEnd()
+                                        toolchainFailed = true   // 触发底部的「返回」按钮
+                                    }
                                 } catch (e: Throwable) {
-                                    log = "❌ ${e.message}"
-                                    delay(1500)
-                                    stage = Stage.READY
+                                    toolLog.append('\n').append("❌ 出错: ${e.message}")
+                                    log = toolLog.toString().trimEnd()
+                                    toolchainFailed = true
                                 }
                             }
                         }
@@ -714,7 +767,22 @@ fun ToolchainManageScreen(
 }
 
 @Composable
-fun InstallingScreen(progress: Float, log: String) {
+/**
+ * 安装进度页。
+ *
+ * @param failed 安装失败时置 true —— 页面**停住不自动跳走**，
+ *               底部出现「返回」按钮，让用户能看完日志再走。
+ *
+ * 【为什么需要这个参数】原来是「装完 delay(800) 就 stage = READY」，
+ * 失败时也一样 —— 用户反馈「弹了『部分失败』后就清屏，且自动退出日志页」，
+ * 想看日志截图都来不及。失败时最需要日志，偏偏那时候把页面收走了。
+ */
+fun InstallingScreen(
+    progress: Float,
+    log: String,
+    failed: Boolean = false,
+    onBack: () -> Unit = {},
+) {
     val scrollState = rememberScrollState()
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
@@ -747,7 +815,11 @@ fun InstallingScreen(progress: Float, log: String) {
         verticalArrangement = Arrangement.Center
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("正在安装…", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (failed) "⚠️ 安装未完成" else "正在安装…",
+                style = MaterialTheme.typography.titleMedium,
+                color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+            )
             Spacer(Modifier.weight(1f))
             // 【复制日志】按钮：出错时用户能一键复制完整日志发给开发者。
             // 手选长文本在手机上极难（日志区还会自动滚动）。
@@ -775,6 +847,29 @@ fun InstallingScreen(progress: Float, log: String) {
                     .fillMaxWidth()
                     .verticalScroll(scrollState)
                     .padding(8.dp)
+            )
+        }
+
+        // 【2026-09-24 加】失败时才出现的「返回」按钮。
+        //
+        // 原来失败和成功一样 delay 一下自动跳走 —— 用户反馈
+        //「弹了『部分失败』后就清屏，且自动退出日志页」，
+        // 而失败时恰恰最需要日志（要截图反馈）。
+        //
+        // 现在失败就停住，用户看完/复制完日志，自己点返回。
+        if (failed) {
+            Spacer(Modifier.height(16.dp))
+            Button(
+                onClick = onBack,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("看完了，返回")
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "提示：上面的日志可以往上翻（自动跟随已暂停），或点「复制日志」发给我。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
