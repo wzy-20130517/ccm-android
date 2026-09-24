@@ -254,7 +254,7 @@ fun CcmApp() {
                                 //
                                 // 失败时最需要日志（要截图反馈），偏偏那时候把页面收走。
                                 // 现在：成功照旧自动走；失败停住，保留完整日志，
-                                // 底部出「看完了，返回」按钮，用户主动走。
+                                // 底部出「返回」按钮，用户主动走。
                                 val allOk = tok && kok
                                 if (allOk) {
                                     log = "✅ 全部完成"
@@ -266,9 +266,9 @@ fun CcmApp() {
                                         !tok -> "⚠️ 工具链没装全"
                                         else -> "⚠️ Node 内核没装上"
                                     }
-                                    toolLog.append('\n').append("$summary —— 上面是完整日志，可点「复制日志」发我。")
-                                    if (!tok) toolLog.append('\n').append("   已装成功的不会重装，修复后回来可补装缺失的。")
-                                    if (!kok) toolLog.append('\n').append("   内核可在主界面点「更新 Node 内核」重试。")
+                                    toolLog.append('\n').append(summary)
+                                    if (!tok) toolLog.append('\n').append("   已安装的不会重复安装，可稍后重试补装缺失项。")
+                                    if (!kok) toolLog.append('\n').append("   可在主界面点「更新 Node 内核」重试。")
                                     log = toolLog.toString().trimEnd()
                                     toolchainFailed = true   // 停在本页，等用户看完
                                 }
@@ -444,8 +444,8 @@ fun CcmApp() {
                                         delay(1200)
                                         stage = Stage.READY
                                     } else {
-                                        toolLog.append('\n').append("⚠️ 部分工具没装上 —— 上面是完整日志，可点「复制日志」发我。")
-                                        toolLog.append('\n').append("   已装成功的不会重装，可修复后回来补装缺失的。")
+                                        toolLog.append('\n').append("⚠️ 部分工具未安装完成。")
+                                        toolLog.append('\n').append("   已安装的不会重复安装，可稍后重试补装缺失项。")
                                         log = toolLog.toString().trimEnd()
                                         toolchainFailed = true   // 触发底部的「返回」按钮
                                     }
@@ -863,14 +863,8 @@ fun InstallingScreen(
                 onClick = onBack,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("看完了，返回")
+                Text("返回")
             }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "提示：上面的日志可以往上翻（自动跟随已暂停），或点「复制日志」发给我。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }
