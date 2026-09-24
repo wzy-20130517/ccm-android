@@ -17,6 +17,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import android.widget.Toast
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -689,21 +693,56 @@ fun ToolchainManageScreen(
 
 @Composable
 fun InstallingScreen(progress: Float, log: String) {
+    val scrollState = rememberScrollState()
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+
+    // 【2026-09-24 加自动滚底】
+    // 原来日志区固定 200dp 上限且不自动滚动 —— 安装时日志一直在涨，
+    // 用户看到的是最早的几行，最新进度（也就是最关键的错误信息）看不到。
+    // 出问题时想截图反馈，截到的还是开头那几行。
+    //
+    // 现在每次日志变化就滚到底（LaunchedEffect(log) 是正确做法：
+    // 直接在组合里调 scrollTo 会触发重组循环）。
+    LaunchedEffect(log) {
+        try { scrollState.scrollTo(scrollState.maxValue) } catch (_: Throwable) {}
+    }
+
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.Center
     ) {
-        Text("正在安装…", style = MaterialTheme.typography.titleMedium)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("正在安装…", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.weight(1f))
+            // 【复制日志】按钮：出错时用户能一键复制完整日志发给开发者。
+            // 手选长文本在手机上极难（日志区还会自动滚动）。
+            TextButton(onClick = {
+                clipboard.setText(AnnotatedString(log))
+                Toast.makeText(context, "日志已复制", Toast.LENGTH_SHORT).show()
+            }) {
+                Text("复制日志", style = MaterialTheme.typography.bodySmall)
+            }
+        }
         Spacer(Modifier.height(16.dp))
         LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
         Text("${(progress * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(16.dp))
-        Text(
-            log,
-            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-            modifier = Modifier.heightIn(max = 200.dp).verticalScroll(rememberScrollState())
-        )
+        Surface(
+            modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = MaterialTheme.shapes.small
+        ) {
+            Text(
+                log.ifEmpty { "（等待输出…）" },
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(scrollState)
+                    .padding(8.dp)
+            )
+        }
     }
 }
 
