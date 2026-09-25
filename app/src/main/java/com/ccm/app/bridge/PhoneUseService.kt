@@ -636,6 +636,39 @@ class PhoneUseService : IPhoneUseService.Stub {
         }, Handler(drainThread.looper))
 
         // 0x609 = PUBLIC | OWN_CONTENT_ONLY | SHOULD_SHOW_SYSTEM_DECORATIONS | TRUSTED
+        //
+        // ⚠️ DisplayManager 必须用【调用进程自己的包名】构造。
+        //
+        // 这个进程是 Shizuku 以 shell uid(2000) 起的，但传进来的 Context 是 CCM 的
+        // （packageName=com.ccm.app，uid 10349）。Android 16 的 system_server 新增了校验：
+        //   SecurityException: packageName must match the calling uid
+        // 因为 DisplayManager 会把 Context 的包名一起透传给 IDisplayManager.createVirtualDisplay。
+        //
+        // 修法：查当前进程 uid 对应的包名（shell 是 com.android.shell），用它建一个 Context，
+        // 拿到的 DisplayManager 才会带对包名。实测这是 Android 16 上建 TRUSTED 虚拟屏的硬要求。
+        val dm = displayManagerForSelf(context)
         display = dm.createVirtualDisplay("CCMVirtualDisplay", w, h, dpi, reader?.surface, 1545)
+    }
+
+    /**
+     * 拿一个「包名与当前进程 uid 匹配」的 DisplayManager。
+     *
+     * Android 16 的 system_server 在建虚拟屏时会校验
+     * `packageName must match the calling uid`。
+     * DisplayManager 从哪个 Context 取，就把那个 Context 的包名传下去 ——
+     * 所以直接传 CCM 的 Context（包名 com.ccm.app）在 shell 进程里必定被拒。
+     *
+     * 这里反过来：先查当前 uid 有哪个包，再用它 createPackageContext。
+     * shell uid 对应 com.android.shell，正好是系统允许建虚拟屏的身份。
+     * 查不到就退回传入的 context（至少不会崩，报错也更清楚）。
+     */
+    private fun displayManagerForSelf(context: Context): DisplayManager {
+        val fallback = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+        return try {
+            val pkgs = context.packageManager.getPackagesForUid(android.os.Process.myUid())
+            val selfPkg = pkgs?.firstOrNull() ?: return fallback
+            val selfCtx = context.createPackageContext(selfPkg, 0)
+            selfCtx.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: fallback
+        } catch (_: Throwable) { fallback }
     }
 }
