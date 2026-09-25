@@ -24,7 +24,7 @@ android {
         }
     }
 
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; aidl = true }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -93,4 +93,8 @@ dependencies {
     //   · rootfs 里的 xz-utils 要装完「基础工具」才有 —— 鸡生蛋
     // 所以用纯 Java 实现。1.12 是当前版本，无传递依赖。
     implementation("org.tukaani:xz:1.12")
+    // Shizuku：在 shell uid 下跑虚拟副屏守护和元素树抓取。
+    // API 负责授权和 binder，provider 提供 manifest 合并项（权限声明）。
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 }
