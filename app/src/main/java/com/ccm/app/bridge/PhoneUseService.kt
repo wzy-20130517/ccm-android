@@ -7,7 +7,7 @@ import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.view.KeyEvent
-import android.view.PixelFormat
+import android.graphics.PixelFormat
 import androidx.annotation.Keep
 import java.io.ByteArrayOutputStream
 

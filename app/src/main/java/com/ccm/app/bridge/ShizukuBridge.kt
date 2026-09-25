@@ -81,11 +81,16 @@ object ShizukuBridge {
             val args = Shizuku.UserServiceArgs(
                 ComponentName(context, PhoneUseService::class.java)
             ).daemon(false).processNameSuffix("phoneuse")
-            val binder: IBinder = Shizuku.bindUserService(args, object : ServiceConnection {
-                override fun onServiceConnected(name: ComponentName, b: IBinder) {}
+            val latch = java.util.concurrent.CountDownLatch(1)
+            Shizuku.bindUserService(args, object : ServiceConnection {
+                override fun onServiceConnected(name: ComponentName, b: IBinder) {
+                    phone = IPhoneUseService.Stub.asInterface(b)
+                    latch.countDown()
+                }
                 override fun onServiceDisconnected(name: ComponentName) { phone = null }
             })
-            IPhoneUseService.Stub.asInterface(binder).also { phone = it }
+            latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            phone
         } catch (_: Throwable) { null }
     }
 
