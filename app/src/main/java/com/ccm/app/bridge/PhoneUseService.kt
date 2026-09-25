@@ -59,8 +59,26 @@ class PhoneUseService : IPhoneUseService.Stub {
     private var lastFrameAt = 0L
 
     /** 最近一次 dump 的节点 id → 点击中心。tapRef/scroll 靠它。 */
-    private val refCenters = HashMap<String, Pair<Int, Int>>()
+    /**
+     * ref(id) → 节点信息。
+     *
+     * 【为什么存节点而不只存坐标】agent-mobile-use 的做法值得抄：
+     * 点击用中心坐标，但**输入文字必须拿到节点本身**（要 performAction(SET_TEXT)，
+     * 还要回读校验）。只存坐标的话，输入就得靠「点一下再粘剪贴板」——
+     * 那条路在节点已失效时会变成在别处误操作，比直接失败糟得多。
+     *
+     * 这里同时存 raw（可空，UiAutomation 节点会随界面刷新失效）和中心坐标：
+     * raw 失效时点击还能用坐标兜底，但输入会明确报「节点已失效」让模型重新 dump。
+     */
+    private val refTable = HashMap<String, RefEntry>()
     private val refLock = Any()
+
+    private class RefEntry(
+        val cx: Int,
+        val cy: Int,
+        @Volatile var raw: android.view.accessibility.AccessibilityNodeInfo?,
+        val editable: Boolean,
+    )
 
     constructor()
 
@@ -111,8 +129,8 @@ class PhoneUseService : IPhoneUseService.Stub {
     override fun tap(x: Int, y: Int): Boolean = input("tap", x.toString(), y.toString())
 
     override fun tapRef(ref: String): Boolean {
-        val c = synchronized(refLock) { refCenters[ref] } ?: return false
-        return tap(c.first, c.second)
+        val e = synchronized(refLock) { refTable[ref] } ?: return false
+        return tap(e.cx, e.cy)
     }
 
     override fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int): Boolean =
@@ -142,9 +160,9 @@ class PhoneUseService : IPhoneUseService.Stub {
      */
     override fun scroll(ref: String, direction: String): Boolean {
         if (ref.isNotEmpty()) {
-            val c = synchronized(refLock) { refCenters[ref] }
-            if (c != null) {
-                val node = findScrollableAt(c) ?: return false
+            val e = synchronized(refLock) { refTable[ref] }
+            if (e != null) {
+                val node = e.raw?.takeIf { it.isScrollable } ?: findScrollableAt(e.cx to e.cy) ?: return false
                 val action = if (direction.lowercase() == "up")
                     android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
                 else
@@ -165,31 +183,91 @@ class PhoneUseService : IPhoneUseService.Stub {
      *   ② idx:N —— 第 N 个可输入节点（N 从 0 起，按 dump 顺序）
      * 找到后：一次 ACTION_SET_TEXT → 回读 → 分类返回。
      */
-    override fun typeText(text: String): String {
+    /**
+     * 文字注入。目标解析仿 agent-mobile-use 的 smartType，双轨 + 明确分类：
+     *
+     *   ① 空 / "focused"  → 当前有焦点的输入框
+     *      （焦点节点本身不可编辑时，往下找它的第一个可编辑子孙 ——
+     *        安卓里带焦点的常是外层容器，真正能写的是里面那个 EditText）
+     *   ② "e12" / "12"    → 上次 dumpTree 里的节点 id
+     *      （节点失效就明确报 target_stale，让模型重新 dump，不猜、不兜底点击）
+     *
+     * 定位到之后：一次 ACTION_SET_TEXT → 回读 → 分类。
+     * 绝不退回「点中心再粘剪贴板」—— 那会把「定位错了」变成「在别处误操作」。
+     */
+    override fun typeText(text: String): String = typeTextAt(text, "")
+
+    override fun typeTextAt(text: String, targetSpec: String): String {
         val result = org.json.JSONObject().apply {
             put("ok", false)
             put("mode", "none")
             put("verified", false)
         }
+        return doType(text, targetSpec, result)
+    }
+
+    private fun doType(text: String, targetSpec: String, result: org.json.JSONObject): String {
         val pair = ui()
         if (pair == null) {
             result.put("error", "ui_unavailable")
-            result.put("reason", "UiAutomation 连接失败")
-            return result.toString()
-        }
-        val editable = findFocusedEditable(pair)
-        if (editable == null) {
-            result.put("error", "no_target")
-            result.put("reason", "没有获得焦点的输入框。先 click 输入框再试。")
+            result.put("reason", "UiAutomation 连接失败（Shizuku 授权或虚拟屏异常）")
             return result.toString()
         }
 
-        val before = try { editable.text?.toString() } catch (_: Throwable) { null }
+        val focusMode = targetSpec.isBlank() || targetSpec.equals("focused", ignoreCase = true)
+        var targetNode: android.view.accessibility.AccessibilityNodeInfo? = null
+
+        if (focusMode) {
+            targetNode = findFocusedEditable(pair)
+            if (targetNode == null) {
+                val focusedAny = findFocusedAny(pair)
+                result.put("error", "no_focused_input")
+                result.put(
+                    "focus_hint",
+                    if (focusedAny == null) "nothing"
+                    else "${simpleClass(focusedAny)}@${rectStr(focusedAny)}",
+                )
+                result.put("reason", "没有获得焦点的输入框。先点击输入框再输入。")
+                return result.toString()
+            }
+        } else {
+            // e12 / node:12 / 12 都能认
+            val clean = targetSpec.removePrefix("node:").trim().removePrefix("e")
+            val id = clean.toIntOrNull()
+            if (id == null) {
+                result.put("error", "invalid_target")
+                result.put("reason", "target 只能是 dump 里的节点 id（如 e12 或 12），或省略表示用当前焦点框")
+                return result.toString()
+            }
+            val key = "e$id"
+            val entry = synchronized(refLock) { refTable[key] }
+            if (entry == null) {
+                result.put("error", "target_not_found")
+                result.put("reason", "节点 $key 不在上次 dump 里（界面可能已刷新）。重新 phone_snapshot 再试。")
+                return result.toString()
+            }
+            // raw 会随界面刷新失效 —— 失效时明确指出，不退回坐标点击
+            val raw = entry.raw
+            if (raw == null) {
+                result.put("error", "target_stale")
+                result.put("reason", "节点 $key 已失效（界面刷新过）。重新 phone_snapshot 再试。")
+                return result.toString()
+            }
+            targetNode = if (raw.isEditable) raw else findEditable(raw)
+            if (targetNode == null) {
+                result.put("error", "target_not_editable")
+                result.put("reason", "节点 $key 及其子节点都不是输入框，换个可输入的元素。")
+                return result.toString()
+            }
+        }
+
+        val node = targetNode!!
+        val before = try { node.text?.toString() } catch (_: Throwable) { null }
         val ok = try {
             val args = android.os.Bundle().apply {
                 putCharSequence(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
             }
-            editable.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+            node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, args)
         } catch (t: Throwable) {
             result.put("error", "internal_error")
             result.put("reason", t.toString())
@@ -198,31 +276,65 @@ class PhoneUseService : IPhoneUseService.Stub {
 
         if (!ok) {
             result.put("error", "inject_rejected")
-            result.put("reason", "ACTION_SET_TEXT 被拒绝（输入框可能是只读或已失效）")
+            result.put("reason", "ACTION_SET_TEXT 被拒绝（输入框只读，或节点刚失效）")
             return result.toString()
         }
 
-        // 回读校验：节点可能已失效，拿不到就明确说 unavailable，不含糊过去
-        val after = try { editable.text?.toString() } catch (_: Throwable) { null }
-        result.put("mode", "set_text")
+        // 回读校验。拿不到就明确说 unavailable —— 不含糊过去（模型需要知道到底写没写进去）
+        val after = try { node.text?.toString() } catch (_: Throwable) { null }
+        result.put("mode", if (focusMode) "focused" else "node")
         result.put("before_text", before ?: "")
-        if (after == null) {
-            result.put("ok", true)
-            result.put("verified", false)
-            result.put("error", "verify_unavailable")
-            result.put("reason", "已写入但读不回（节点失效或被遮挡）")
-        } else if (after == text) {
-            result.put("ok", true)
-            result.put("verified", true)
-            result.put("verified_text", after)
-        } else {
-            result.put("ok", true)
-            result.put("verified", false)
-            result.put("error", "verify_mismatch")
-            result.put("verified_text", after)
-            result.put("reason", "回读内容与写入不一致（可能被输入法过滤）")
+        when {
+            after == null -> {
+                result.put("ok", true)
+                result.put("verified", false)
+                result.put("error", "verify_unavailable")
+                result.put("reason", "已写入但读不回（节点失效或被遮挡）")
+            }
+            after == text -> {
+                result.put("ok", true)
+                result.put("verified", true)
+                result.put("verified_text", after)
+            }
+            else -> {
+                result.put("ok", true)
+                result.put("verified", false)
+                result.put("error", "verify_mismatch")
+                result.put("verified_text", after)
+                result.put("reason", "回读与写入不一致（可能被输入法过滤，或字段有长度/格式限制）")
+            }
         }
         return result.toString()
+    }
+
+    private fun simpleClass(node: android.view.accessibility.AccessibilityNodeInfo): String =
+        try { node.className?.toString()?.substringAfterLast('.') ?: "View" } catch (_: Throwable) { "View" }
+
+    private fun rectStr(node: android.view.accessibility.AccessibilityNodeInfo): String {
+        val r = android.graphics.Rect()
+        return try { node.getBoundsInScreen(r); "${r.left},${r.top},${r.right},${r.bottom}" }
+        catch (_: Throwable) { "?,?,?,?" }
+    }
+
+    /** 当前有焦点的任意节点（焦点框不是输入框时，用来给失败提示）。 */
+    private fun findFocusedAny(pair: Pair<Class<*>, Any>): android.view.accessibility.AccessibilityNodeInfo? {
+        val ws = windowsOnDisplay() ?: return null
+        for (w in ws) {
+            val root = try {
+                w?.javaClass?.getMethod("getRoot")?.invoke(w) as? android.view.accessibility.AccessibilityNodeInfo
+            } catch (_: Throwable) { null } ?: continue
+            findFocusedAnyIn(root)?.let { return it }
+        }
+        return null
+    }
+
+    private fun findFocusedAnyIn(node: android.view.accessibility.AccessibilityNodeInfo): android.view.accessibility.AccessibilityNodeInfo? {
+        if (try { node.isFocused } catch (_: Throwable) { false }) return node
+        for (i in 0 until (try { node.childCount } catch (_: Throwable) { 0 })) {
+            val ch = try { node.getChild(i) } catch (_: Throwable) { null } ?: continue
+            findFocusedAnyIn(ch)?.let { return it }
+        }
+        return null
     }
 
     // ── 帧 ──────────────────────────────────────────────────
@@ -302,31 +414,77 @@ class PhoneUseService : IPhoneUseService.Stub {
      *   ② 没在跑 → am start --display 直接在副屏起
      * 只做 ② 的话，用户主屏开着的微信会被重启，聊天界面全丢。
      */
+    /**
+     * 在副屏启动应用。仿 agent-mobile-use 的 /api/launch 三分支：
+     *
+     *   ① 已在副屏且在跑        → 直接返回，不动它（重启会把用户进度清掉）
+     *   ② 已在别的屏（如主屏）在跑 → cmd activity display move-stack 平滑搬过来
+     *                             —— 不重启、不丢状态。这是它最有价值的一招：
+     *                                用户在主屏开着的微信，AI 要操作时搬过去而不是重开。
+     *   ③ 没在跑              → am start --display 冷启动
+     *
+     * 注意不要用 monkey：不支持 --display（会在主屏起），且不主动退出会挂住。
+     */
     private fun launchOnDisplay(pkg: String): String {
         val id = displayId()
         if (id < 0) return errJson("副屏未就绪")
 
-        // ⚠️ 不要用 monkey。
-        //   · monkey 不支持 --display，只会在主屏启动（实测：报「成功」但副屏空的）
-        //   · 而且 `monkey ... | tail -2` 会挂住（monkey 不主动退出），把 binder 线程咬死，
-        //     后续所有 phone 调用跟着排队超时 —— 这个坑排查了很久
-        // 正确做法是 am start --display，且必须指定 -n <组件> 或 -p <包名> 之一。
+        // 查这个包在哪个 display 的 stack 里（RootTask 列表）
+        val stack = findStackOfPackage(pkg)
+        if (stack != null) {
+            val (stackId, stackDisplay) = stack
+            if (stackDisplay == id) {
+                return """{"ok":true,"message":"$pkg 已在副屏运行","display_id":$id,"stack_id":$stackId,"already":true}"""
+            }
+            // 在别的屏 → 搬过来
+            val mv = runShell("cmd activity display move-stack $stackId $id 2>&1; echo \"__exit=$?\"", 20000)
+            val mb = mv.substringAfter('\n')
+            val mExit = Regex("""__exit=(\d+)""").find(mb)?.groupValues?.get(1)?.toIntOrNull() ?: -1
+            if (mExit == 0) {
+                return """{"ok":true,"message":"已把 $pkg 从 display $stackDisplay 平滑移到副屏（未重启）","display_id":$id,"stack_id":$stackId,"moved":true}"""
+            }
+            // 搬运失败就继续走冷启动，别把路堵死
+        }
+
+        // 冷启动：am start --display
         val out = runShell(
             "am start --display $id --user 0 -a android.intent.action.MAIN " +
                 "-c android.intent.category.LAUNCHER -p $pkg 2>&1; echo \"__exit=$?\"",
             20000,
         )
-
-        // runShell 返回 "exitCode\n---\nstdout"，这里直接从 stdout 里找我们打的标记
         val body = out.substringAfter('\n')
         val exit = Regex("""__exit=(\d+)""").find(body)?.groupValues?.get(1)?.toIntOrNull() ?: -1
         val started = body.contains("Starting: Intent") || body.contains("Status: ok")
-
         if (exit != 0 || !started) {
             val firstErr = body.lines().firstOrNull { it.isNotBlank() && !it.startsWith("Warning") } ?: body
             return errJson("在副屏启动 $pkg 失败：${firstErr.take(200)}")
         }
         return """{"ok":true,"message":"已在副屏启动 $pkg","display_id":$id}"""
+    }
+
+    /**
+     * 找某个包所在的 activity stack。
+     * 输出形如：
+     *   RootTask id=14555 displayId=8 type=standard
+     *   ...  mResumedActivity ... com.android.settings/.MiuiSettings ...
+     * 返回 (stackId, displayId)，找不到返回 null。
+     */
+    private fun findStackOfPackage(pkg: String): Pair<Int, Int>? {
+        val out = runShell("dumpsys activity activities 2>/dev/null | grep -E 'RootTask id=|mResumedActivity|topResumedActivity' | head -120", 15000)
+        val body = out.substringAfter('\n')
+        var curStack = -1
+        var curDisplay = -1
+        for (line in body.lines()) {
+            val rt = Regex("""RootTask id=(\d+) displayId=(-?\d+)""").find(line)
+            if (rt != null) {
+                curStack = rt.groupValues[1].toIntOrNull() ?: -1
+                curDisplay = rt.groupValues[2].toIntOrNull() ?: -1
+                continue
+            }
+            // 这一行提到我们的包 → 就是它
+            if (curStack >= 0 && line.contains(pkg)) return curStack to curDisplay
+        }
+        return null
     }
 
     // ═══ 内部实现 ═══════════════════════════════════════════
@@ -419,14 +577,22 @@ class PhoneUseService : IPhoneUseService.Stub {
         if (rows.isEmpty()) return "display=$id 副屏上暂时没有可交互元素"
 
         // 排序：可点的排前面（模型从上往下读，先看到能用的）
-        rows.sortBy { if (it.clickable || it.editable) 0 else 1 }
+        // 排序仿 agent-mobile-use 的 priorityOf + Ranked：
+        //   先按「有用程度」分层，同层内可操作的优先，再按文档顺序（保持界面上下关系）。
+        // 目的是让模型从上往下读时，真正能点的元素排在前面 —— 免得有价值的操作
+        // 被一堆装饰性文本挤到 maxNodes 之外。
+        rows.sortWith(compareBy(
+            { priorityOf(it) },
+            { if (it.clickable) 0 else 1 },
+            { it.seq },
+        ))
         val total = rows.size
         val capped = rows.take(maxNodes.coerceAtLeast(1))
 
         // 重建 id → 中心 的映射（排序后 id 不变，仍指向同一节点）
         synchronized(refLock) {
-            refCenters.clear()
-            for (r in capped) refCenters[r.id] = r.cx to r.cy
+            refTable.clear()
+            for (r in capped) refTable[r.id] = RefEntry(r.cx, r.cy, r.raw, r.editable)
         }
 
         val sb = StringBuilder()
@@ -460,6 +626,8 @@ class PhoneUseService : IPhoneUseService.Stub {
 
     private class NodeRow(
         val id: String,
+        val raw: android.view.accessibility.AccessibilityNodeInfo?,
+        val seq: Int,
         val cls: String,
         val name: String,
         val resId: String,
@@ -491,6 +659,8 @@ class PhoneUseService : IPhoneUseService.Stub {
         if (take && r.width() > 0 && r.height() > 0 && visible) {
             out.add(NodeRow(
                 id = "e${c}",
+                raw = node,
+                seq = c,
                 cls = (try { node.className?.toString() } catch (_: Throwable) { null } ?: "")
                     .substringAfterLast('.'),
                 name = name,
@@ -511,6 +681,26 @@ class PhoneUseService : IPhoneUseService.Stub {
             c = walkCollect(ch, out, c, depth + 1, interactiveOnly)
         }
         return c
+    }
+
+    /**
+     * 有用程度分层（0 最有用）。
+     * 仿 agent-mobile-use 的 priorityOf：
+     *   0 可操作且是「真元素」（不是包着可点子节点的空壳容器）
+     *   1 可操作但是容器
+     *   2 有操作但当前不可见
+     *   3 可操作但被禁用
+     *   4 纯展示且可见
+     *   5 纯展示且不可见
+     */
+    private fun priorityOf(n: NodeRow): Int {
+        val interactive = n.clickable || n.editable
+        if (!interactive) return if (n.visible) 4 else 5
+        if (!n.enabled) return 3
+        if (!n.visible) return 2
+        // 「空壳容器」判定：自己可点、但没有文本也没有资源 id —— 多半只是包着一堆子元素
+        val shell = n.name.isEmpty() && n.resId.isEmpty()
+        return if (shell) 1 else 0
     }
 
     /** 系统外壳窗口判定（状态栏/导航栏/输入法）。仿 agent-mobile-use 的双判：窗口标题 + 包名。 */

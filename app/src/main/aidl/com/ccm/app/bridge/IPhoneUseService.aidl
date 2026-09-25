@@ -51,10 +51,17 @@ interface IPhoneUseService {
 
     /**
      * 文字注入。确定性单路径（仿 agent-mobile-use，不做多级兜底）：
-     *   解析目标（聚焦框 / id:res / idx:N）→ 一次 ACTION_SET_TEXT → 回读校验。
-     * 返回 JSON：{ok, mode, target, verified, verified_text, error, reason}
+     *   定位目标 → 一次 ACTION_SET_TEXT → 回读校验 → 分类返回。
+     * 返回 JSON：{ok, mode, verified, verified_text, error, reason, focus_hint}
      */
     String typeText(String text) = 6;
+
+    /**
+     * 带目标定位的注入。
+     * target 空/"focused" = 用当前焦点框；"e12"/"12"/"node:12" = 上次 dump 里的节点。
+     * 节点失效会明确报 target_stale/target_not_found，不退回坐标点击。
+     */
+    String typeTextAt(String text, String target) = 15;
 
     /** 副屏最新帧的 JPEG 字节（守护侧持续更新，调用方几乎零等待）。 */
     byte[] latestFrame() = 7;
