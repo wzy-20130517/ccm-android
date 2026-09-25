@@ -6,6 +6,7 @@ import android.util.Log
 import com.ccm.app.service.CcmAccessibilityService
 import com.ccm.app.tools.ScreenCapture
 import com.ccm.app.tools.NativeTts
+import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -255,6 +256,22 @@ class NativeBridge(
     }
 
     private fun phoneScreenshot(p: JSONObject): String {
+        val remote = ShizukuBridge.phoneService(context)
+        if (remote != null) {
+            val bytes = try { remote.latestFrame() } catch (_: Throwable) { null }
+            if (bytes != null && bytes.isNotEmpty()) {
+                val path = p.optString("save_path").ifEmpty { null }
+                    ?: File(context.cacheDir, "ccm-vd-shot.jpg").absolutePath
+                return try {
+                    File(path).writeBytes(bytes)
+                    JSONObject().apply {
+                        put("ok", true)
+                        put("path", path)
+                        put("message", "截图已保存: $path")
+                    }.toString()
+                } catch (t: Throwable) { err("写截图失败: ${t.message}") }
+            }
+        }
         if (!ScreenCapture.isReady()) {
             return err("截屏未授权。请在 App 主界面点「开启截屏」授权一次（系统会弹「开始录制」确认框）")
         }
@@ -293,10 +310,20 @@ class NativeBridge(
 
     private fun phoneStatus(): String {
         val connected = CcmAccessibilityService.isConnected()
+        val remote = ShizukuBridge.phoneService(context)
+        val vd = try { remote?.displayId() ?: -1 } catch (_: Throwable) { -1 }
+        val reason = ShizukuBridge.unavailableReason()
+        val mode = if (vd >= 0) "虚拟副屏" else if (connected) "无障碍（物理屏）" else "不可用"
         return JSONObject().apply {
             put("ok", true)
             put("accessibility", connected)
-            put("message", if (connected) "无障碍服务运行中" else "无障碍服务未开启")
+            put("virtual_display_id", vd)
+            put("mode", mode)
+            put("message", when {
+                vd >= 0 -> "虚拟副屏运行中（display $vd），操作不占物理屏"
+                connected -> "无障碍服务运行中（操作物理屏）${if (reason != null) "；Shizuku $reason" else ""}"
+                else -> "无障碍服务未开启，且 Shizuku 不可用"
+            })
         }.toString()
     }
 

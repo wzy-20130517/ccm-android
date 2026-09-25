@@ -39,6 +39,11 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Shizuku user service：在 shell uid 下操作虚拟副屏 -->
+        <service
+            android:name=".bridge.PhoneUseService"
+            android:exported="false" />
+
         <!-- 无障碍服务：手机操作能力 -->
         <service
             android:name=".service.CcmAccessibilityService"
