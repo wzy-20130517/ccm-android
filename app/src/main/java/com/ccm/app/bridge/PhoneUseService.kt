@@ -112,6 +112,82 @@ class PhoneUseService : IPhoneUseService.Stub {
 
     override fun latestFrame(): ByteArray = synchronized(frameLock) { frameJpeg }
 
+    /**
+     * 以 shell 身份跑一条命令。
+     *
+     * 【返回格式】"<exitCode>\n<stdout>"。用固定前缀而不是直接回 stdout，
+     * 是因为调用方（Node 侧 device 层）要区分「命令成功但没输出」和「命令失败」。
+     *
+     * 【为什么要限时】这里跑在 Binder 线程上，命令卡住会拖住整个服务。
+     * 超时就 destroyForcibly，宁可这一条失败也不让服务僵住。
+     */
+    override fun runShell(cmd: String, timeoutMs: Int): String {
+        return try {
+            val proc = ProcessBuilder("/system/bin/sh", "-c", cmd)
+                .redirectErrorStream(true)
+                .start()
+            // 【顺序很重要】不能先 readText() 再 waitFor —— readText 会一直阻塞到流关闭，
+            // 命令若卡住就永远等不到 waitFor，超时形同虚设（这里踩过一次）。
+            // 正确做法：把读取丢到后台线程，主线程只管计时。
+            val out = StringBuilder()
+            val reader = Thread {
+                try { proc.inputStream.bufferedReader().use { r -> out.append(r.readText()) } } catch (_: Throwable) {}
+            }.apply { isDaemon = true; start() }
+
+            val finished = proc.waitFor(timeoutMs.toLong().coerceAtLeast(1000), java.util.concurrent.TimeUnit.MILLISECONDS)
+            if (!finished) {
+                proc.destroyForcibly()
+                return "-1\n命令超时（${timeoutMs}ms）"
+            }
+            reader.join(1000)
+            "${proc.exitValue()}\n$out"
+        } catch (t: Throwable) {
+            "-1\n$t"
+        }
+    }
+
+    override fun scroll(ref: String, direction: String): Boolean {
+        // 有 ref 且缓存里有 → 在副屏上直接滚那个节点（更精确，不依赖坐标）
+        if (ref.isNotEmpty()) {
+            val c = refCenters[ref]
+            if (c != null) {
+                val ui = ui()
+                if (ui != null) {
+                    val id = displayId()
+                    if (id >= 0) {
+                        val ws = windowsOnDisplay(ui.first, ui.second, id)
+                        for (w in ws ?: emptyList<Any>()) {
+                            val root = w?.javaClass?.getMethod("getRoot")?.invoke(w)
+                                as? android.view.accessibility.AccessibilityNodeInfo ?: continue
+                            val node = findByCenter(root, c) ?: continue
+                            val action = when (direction.lowercase()) {
+                                "up" -> android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                                "down" -> android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                                else -> android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                            }
+                            if (node.performAction(action)) return true
+                        }
+                    }
+                }
+            }
+        }
+        // 退回「按方向滑副屏」——大多数滚动靠手势就能完成
+        val dir = if (direction.lowercase() == "up") "down" else "up"
+        return swipeDir(dir, 300)
+    }
+
+    /** 按 ref 中心点找节点（scroll 用）。 */
+    private fun findByCenter(node: android.view.accessibility.AccessibilityNodeInfo, c: Pair<Int, Int>): android.view.accessibility.AccessibilityNodeInfo? {
+        val r = android.graphics.Rect()
+        node.getBoundsInScreen(r)
+        if (r.contains(c.first, c.second) && node.isScrollable) return node
+        for (i in 0 until node.childCount) {
+            val ch = node.getChild(i) ?: continue
+            findByCenter(ch, c)?.let { return it }
+        }
+        return null
+    }
+
     private fun input(vararg args: String): Boolean {
         val id = displayId()
         if (id < 0) return false
