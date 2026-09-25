@@ -306,16 +306,25 @@ class PhoneUseService : IPhoneUseService.Stub {
         val id = displayId()
         if (id < 0) return errJson("副屏未就绪")
 
-        // am start --display 需要明确的 Activity 或 MONKEY 方式
-        val r = runShell("monkey -p $pkg -c android.intent.category.LAUNCHER 1 2>&1 | tail -2", 20000)
-        val code = r.substringBefore('\n').trim().toIntOrNull() ?: -1
-        if (code != 0) {
-            // monkey 失败就退回 am start --display
-            val r2 = runShell("am start --display $id -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p $pkg 2>&1 | tail -2", 20000)
-            val c2 = r2.substringBefore('\n').trim().toIntOrNull() ?: -1
-            if (c2 != 0) {
-                return errJson("启动失败：${r2.substringAfter('\n').take(200)}")
-            }
+        // ⚠️ 不要用 monkey。
+        //   · monkey 不支持 --display，只会在主屏启动（实测：报「成功」但副屏空的）
+        //   · 而且 `monkey ... | tail -2` 会挂住（monkey 不主动退出），把 binder 线程咬死，
+        //     后续所有 phone 调用跟着排队超时 —— 这个坑排查了很久
+        // 正确做法是 am start --display，且必须指定 -n <组件> 或 -p <包名> 之一。
+        val out = runShell(
+            "am start --display $id --user 0 -a android.intent.action.MAIN " +
+                "-c android.intent.category.LAUNCHER -p $pkg 2>&1; echo \"__exit=$?\"",
+            20000,
+        )
+
+        // runShell 返回 "exitCode\n---\nstdout"，这里直接从 stdout 里找我们打的标记
+        val body = out.substringAfter('\n')
+        val exit = Regex("""__exit=(\d+)""").find(body)?.groupValues?.get(1)?.toIntOrNull() ?: -1
+        val started = body.contains("Starting: Intent") || body.contains("Status: ok")
+
+        if (exit != 0 || !started) {
+            val firstErr = body.lines().firstOrNull { it.isNotBlank() && !it.startsWith("Warning") } ?: body
+            return errJson("在副屏启动 $pkg 失败：${firstErr.take(200)}")
         }
         return """{"ok":true,"message":"已在副屏启动 $pkg","display_id":$id}"""
     }
@@ -386,9 +395,12 @@ class PhoneUseService : IPhoneUseService.Stub {
         if (id < 0) return "错误：副屏未就绪（display_id=$id）"
 
         var windows: List<*>? = null
-        repeat(3) {
+        // ⚠️ 不能用 repeat(3) { ... return@repeat }：那是 continue 不是 break，
+        // 拿到窗口后还会白 sleep 两次（各 350ms）。副屏刚建好时窗口要等一会儿才有，
+        // 但一旦拿到就该立刻走。
+        for (attempt in 0 until 3) {
             windows = windowsOnDisplay()
-            if (!windows.isNullOrEmpty()) return@repeat
+            if (!windows.isNullOrEmpty()) break
             Thread.sleep(350)
         }
         val ws = windows ?: return "错误：拿不到窗口列表（UiAutomation 可能没连上）"
