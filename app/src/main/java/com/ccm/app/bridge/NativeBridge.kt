@@ -165,19 +165,24 @@ class NativeBridge(
     private fun phoneType(p: JSONObject): String {
         val text = p.optString("text")
         if (text.isEmpty()) return err("缺少 text")
+        val target = p.optString("target", p.optString("ref", ""))
         val remote = ShizukuBridge.phoneService(context) ?: return err(shizukuHint())
         return try {
-            // 服务端返回的 JSON 已经是 {ok, mode, verified, error, reason}。
+            // 服务端返回的 JSON 已经是 {ok, mode, verified, error, reason, focus_hint}。
             // 但它的 ok 指的是「SET_TEXT 调用被接受」，而调用方关心的是「到底写进去没有」——
             // 所以这里把 ok 重新按 verified 口径给出，同时保留原始字段供排查。
-            val raw = remote.typeText(text)
+            // target 走 typeTextAt：空 = 当前焦点框，e12/12 = dump 里的节点。
+            val raw = if (target.isBlank()) remote.typeText(text) else remote.typeTextAt(text, target)
             val o = JSONObject(raw)
             val verified = o.optBoolean("verified", false)
             val errName = o.optString("error", "")
             // 只有「SET_TEXT 被拒 / 内部错 / 定位不到」才算失败；
             // verify_unavailable 算成功（写进去了，只是读不回）。
-            val hardFail = errName == "inject_rejected" || errName == "internal_error" ||
-                errName == "no_target" || errName == "ui_unavailable"
+            val hardFail = errName in setOf(
+                "inject_rejected", "internal_error", "ui_unavailable",
+                "no_focused_input", "invalid_target", "target_not_found",
+                "target_stale", "target_not_editable",
+            )
             o.put("ok", !hardFail)
             o.toString()
         } catch (t: Throwable) { err("输入失败：${t.message}") }
