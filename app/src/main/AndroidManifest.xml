@@ -44,6 +44,30 @@
             android:name=".bridge.PhoneUseService"
             android:exported="false" />
 
+        <!--
+          Shizuku 的 binder 接收点。
+
+          【为什么必须声明】
+          Shizuku 不是通过 bindService 把 binder 给应用的，而是**由 Shizuku 端主动推**：
+          它按 uid 找到应用，调用应用自己声明的 ShizukuProvider，把 binder 塞进去，
+          应用再存起来给 Shizuku.pingBinder() 用。
+
+          没有这个 provider 的后果实测过：Shizuku.pingBinder() 恒为 false，
+          界面上的授权按钮永远不出现（因为 available() 就是 false），
+          而 logcat 里唯一的线索是
+            ContentProviderHelper: No provider info for content provider com.ccm.app.shizuku
+          —— 光看「Shizuku 在跑、CCM 也在授权列表里」会完全摸不着头脑。
+
+          authority 必须是 <包名>.shizuku，这是 Shizuku 硬编码的前缀规则。
+        -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
         <!-- 开机自启 -->
         <receiver
             android:name=".service.BootReceiver"
