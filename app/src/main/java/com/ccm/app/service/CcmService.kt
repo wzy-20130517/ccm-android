@@ -59,6 +59,18 @@ class CcmService : Service() {
         private const val NOTIF_ID = 1001
         const val BRIDGE_PORT = 3457
 
+        /**
+         * 单次桥调用的硬超时。
+         *
+         * 【为什么需要】phone* 系列会经 Shizuku binder 进 phoneuse 进程执行，
+         * 那边卡住时（实测：写文件到不可写路径）调用方会永远等下去。
+         * 更糟的是处理线程被占住后，后续请求也排不上队 —— 整个桥连 /ping 都死。
+         * 给个上限，卡住就返回错误，让调用方拿到明确失败而不是干等。
+         *
+         * 45 秒：要覆盖最慢的正常操作（副屏冷启动应用 + 首次建 UiAutomation）。
+         */
+        const val BRIDGE_CALL_TIMEOUT_MS = 45_000L
+
         @Volatile
         var isRunning = false
             private set
@@ -229,11 +241,37 @@ class CcmService : Service() {
                     String(buf, 0, read, Charsets.UTF_8)
                 } else ""
 
-                val response = route(method, path, body)
+                // 【必须加超时】route() 里最终会走到 phone* 方法，而它们经 Shizuku
+                // binder 调进 phoneuse 进程。那边任何一个调用卡住（实测写文件到不可写
+                // 路径就会），这个工作线程就永久占住，客户端超时断开后再来的请求
+                // 也一起排队 —— 表现是整个桥连 /ping 都不响应，只能重启 App。
+                // 这里把 route 丢到独立线程并限时，卡住也只影响这一个请求。
+                val response = runWithTimeout(BRIDGE_CALL_TIMEOUT_MS) { route(method, path, body) }
                 writeResponse(s.getOutputStream(), response)
             }
         } catch (t: Throwable) {
             Log.w(TAG, "连接处理失败: ${t.message}")
+        }
+    }
+
+    /**
+     * 限时执行。超时返回 JSON 错误（而不是抛异常，调用方拿到的仍是合法响应体）。
+     */
+    private fun runWithTimeout(timeoutMs: Long, block: () -> String): String {
+        val pool = Executors.newSingleThreadExecutor()
+        val future = pool.submit<String> { block() }
+        return try {
+            future.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (e: java.util.concurrent.TimeoutException) {
+            future.cancel(true)
+            Log.w(TAG, "桥调用超时（${timeoutMs}ms）")
+            """{"ok":false,"error":"调用超时（${timeoutMs / 1000}s）。可能是 Shizuku 掉线或 phone use 服务卡住，试试重启 App 或检查 Shizuku 是否在运行。"}"""
+        } catch (e: Throwable) {
+            val cause = e.cause ?: e
+            Log.w(TAG, "桥调用失败: ${cause.message}")
+            """{"ok":false,"error":"${cause.message ?: "内部错误"}"}"""
+        } finally {
+            pool.shutdownNow()
         }
     }
 

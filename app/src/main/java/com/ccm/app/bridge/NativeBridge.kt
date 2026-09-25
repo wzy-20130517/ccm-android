@@ -308,7 +308,12 @@ class NativeBridge(
                 val path = p.optString("save_path").ifEmpty { null }
                     ?: File(context.cacheDir, "ccm-vd-shot.jpg").absolutePath
                 return try {
-                    File(path).writeBytes(bytes)
+                    // 先建父目录 —— 传了不存在的目录时 writeBytes 会失败；
+                    // 父目录也不可写就立刻抛，别让调用方干等（实测卡死过整个桥）
+                    val f = File(path)
+                    f.parentFile?.let { if (!it.exists()) it.mkdirs() }
+                    if (!f.parentFile!!.canWrite()) return err("目标目录不可写：${f.parentFile?.absolutePath}")
+                    f.writeBytes(bytes)
                     val m = try { remote.displayMetrics() } catch (_: Throwable) { null }
                     JSONObject().apply {
                         put("ok", true)
