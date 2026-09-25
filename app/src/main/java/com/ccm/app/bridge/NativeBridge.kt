@@ -263,6 +263,31 @@ class NativeBridge(
     }
 
     /**
+     * 通用 shell 出口。
+     *
+     * 给「既不是点一下、也不是读元素树」的能力用（前台应用、dumpsys 类查询、
+     * 未来的 pm/am 操作）。有它就不必每加一个能力改一次 AIDL。
+     */
+    private fun phoneRunShell(p: JSONObject): String {
+        val cmd = p.optString("cmd")
+        if (cmd.isEmpty()) return err("缺少 cmd")
+        val remote = ShizukuBridge.phoneService(context) ?: return err(shizukuHint())
+        val timeout = p.optInt("timeout_ms", 15000)
+        val raw = try { remote.runShell(cmd, timeout) } catch (t: Throwable) {
+            return err("执行失败：${t.message}")
+        }
+        val nl = raw.indexOf('\n')
+        val code = if (nl > 0) raw.substring(0, nl) else raw
+        val body = if (nl > 0) raw.substring(nl + 1) else ""
+        return JSONObject().apply {
+            put("ok", code.trim() == "0")
+            put("exit_code", code.trim().toIntOrNull() ?: -1)
+            put("stdout", body)
+            if (code.trim() != "0") put("error", body.ifEmpty { "退出码 $code" })
+        }.toString()
+    }
+
+    /**
      * 截图。首选副屏帧缓存 —— 守护侧一直在把最新帧编成 JPEG，
      * 这里只是取一份内存拷贝，实测 ~60ms；而 MediaProjection 那条路要 ~1.8s。
      *
