@@ -174,34 +174,53 @@ class CcmService : Service() {
         try {
             socket.use { s ->
                 s.soTimeout = 30000
-                val reader = BufferedReader(InputStreamReader(s.getInputStream(), Charsets.UTF_8))
 
-                // 读请求行
-                val requestLine = reader.readLine() ?: return
+                // ⚠️ 这里刻意【不用 BufferedReader】。
+                //
+                // 两个坑都是实测踩出来的：
+                //  1) BufferedReader 会预读 8KB —— headers 读完时 body 可能已被它吞进内部缓冲，
+                //     之后再用 s.getInputStream() 读 body 什么都读不到，while 循环空转到超时。
+                //     表现：POST 带 body 全部卡死，GET 和无 body 的 POST 正常。
+                //  2) 改用 reader.readLine() 读 body 也不行 —— body 未必带尾部换行
+                //     （curl -d '{}' 就不带），readLine 会一直等换行等到超时。
+                // 所以按字节手工解析：先读 headers 到 CRLFCRLF，再按 Content-Length 精确读 body。
+                val input = s.getInputStream()
+                val headerBuf = java.io.ByteArrayOutputStream()
+                var state = 0   // 匹配 \r\n\r\n 的进度
+                while (state < 4) {
+                    val b = input.read()
+                    if (b == -1) return
+                    headerBuf.write(b)
+                    state = when {
+                        state == 0 && b == '\r'.code -> 1
+                        state == 1 && b == '\n'.code -> 2
+                        state == 2 && b == '\r'.code -> 3
+                        state == 3 && b == '\n'.code -> 4
+                        b == '\r'.code -> 1
+                        else -> 0
+                    }
+                    if (headerBuf.size() > 64 * 1024) return   // headers 过大，直接断
+                }
+
+                val headerText = String(headerBuf.toByteArray(), Charsets.ISO_8859_1)
+                val lines = headerText.split("\r\n")
+                val requestLine = lines.firstOrNull() ?: return
                 val parts = requestLine.split(" ")
                 if (parts.size < 2) return
                 val method = parts[0]
                 val path = parts[1]
 
-                // 读 headers（找 Content-Length）
                 var contentLength = 0
-                while (true) {
-                    val line = reader.readLine() ?: break
-                    if (line.isEmpty()) break
+                for (line in lines) {
                     if (line.startsWith("Content-Length:", ignoreCase = true)) {
                         contentLength = line.substringAfter(":").trim().toIntOrNull() ?: 0
                     }
                 }
 
-                // 读 body
-                //
-                // ⚠️ Content-Length 是**字节数**，而 Reader.read 按**字符**算。
-                // 直接 CharArray(contentLength) 读中文会少读（一个汉字 3 字节但算 1 字符），
-                // 导致 JSON 截断解析失败。所以这里按字节读再解码。
+                // 按【字节数】精确读 body —— Content-Length 就是字节数，这里正好对上
                 val body = if (contentLength > 0) {
                     val buf = ByteArray(contentLength)
                     var read = 0
-                    val input = s.getInputStream()
                     while (read < contentLength) {
                         val n = input.read(buf, read, contentLength - read)
                         if (n <= 0) break
