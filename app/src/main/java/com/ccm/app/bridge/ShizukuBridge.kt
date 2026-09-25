@@ -99,8 +99,10 @@ object ShizukuBridge {
         phone?.let { if (it.asBinder().isBinderAlive) return it }
         if (!granted()) {
             lastPhoneError = unavailableReason() ?: "Shizuku 未授权"
+            android.util.Log.w("ShizukuBridge", "phoneService: 未授权 → ${'$'}{lastPhoneError}")
             return null
         }
+        android.util.Log.i("ShizukuBridge", "phoneService: 开始绑定（主线程=${'$'}{android.os.Looper.myLooper() == android.os.Looper.getMainLooper()}）")
         // 已有别的线程在绑 → 等它，不重复 bind（否则会拉起多个服务进程）
         if (!binding.compareAndSet(false, true)) {
             val deadline = System.currentTimeMillis() + 8000
@@ -119,10 +121,9 @@ object ShizukuBridge {
 
             val latch = java.util.concurrent.CountDownLatch(1)
             val errHolder = arrayOfNulls<String>(1)
-            val appContext = context.applicationContext
 
             // 投到主线程执行 —— 这是关键，工作线程上 bind 收不到回调
-            CcmService.mainHandler.post {
+            val posted = CcmService.mainHandler.post {
                 try {
                     Shizuku.bindUserService(args, object : ServiceConnection {
                         override fun onServiceConnected(name: ComponentName, b: IBinder) {
@@ -141,8 +142,10 @@ object ShizukuBridge {
                     latch.countDown()
                 }
             }
+            android.util.Log.i("ShizukuBridge", "phoneService: 已投递到主线程=$posted，等待回调")
             // 超时给足：Shizuku 要 fork 出一个新进程再加载 dex，冷启动可能几秒
             val ok = latch.await(15, java.util.concurrent.TimeUnit.SECONDS)
+            android.util.Log.i("ShizukuBridge", "phoneService: 等待结束 ok=$ok err=${'$'}{errHolder[0]} phone=${'$'}{phone != null}")
             if (!ok) {
                 lastPhoneError = "绑定超时（15s）—— Shizuku 可能没在运行，或服务进程起不来"
                 null
