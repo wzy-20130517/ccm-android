@@ -897,8 +897,15 @@ fun ReadyScreen(
         StatusRow("Node 内核", kernelInstalled, if (kernelInstalled) "已安装" else "未安装")
         StatusRow("无障碍服务", runtime.a11yOn,
             if (runtime.a11yOn) "已开启" else "未开启 —— 手机操作需要它")
+        val shizuku = com.ccm.app.bridge.ShizukuBridge
+        val szState = when {
+            shizuku.granted() -> "已授权 —— 手机操作走虚拟副屏，不占物理屏"
+            shizuku.available() -> "已运行但未授权 —— 点下方按钮授权"
+            else -> "未运行（可选）—— 装上后手机操作不占物理屏"
+        }
+        StatusRow("Shizuku", shizuku.granted(), szState)
         StatusRow("截屏能力", runtime.captureOn,
-            if (runtime.captureOn) "已授权" else "未授权 —— 截图需要它")
+            if (runtime.captureOn) "已授权" else "未授权 —— 无 Shizuku 时截图需要它")
         StatusRow("核心服务", runtime.serviceRunning,
             if (runtime.serviceRunning) "运行中" else "未启动")
         StatusRow("Node 服务", runtime.webReady,
@@ -960,6 +967,16 @@ fun ReadyScreen(
         if (!runtime.a11yOn) {
             Button(onClick = onOpenA11ySettings, modifier = Modifier.fillMaxWidth()) {
                 Text("去开启无障碍服务")
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+        // Shizuku 授权入口。没授权时虚拟副屏起不来，手机操作会落到物理屏上。
+        if (shizuku.available() && !shizuku.granted()) {
+            Button(
+                onClick = { com.ccm.app.bridge.ShizukuBridge.requestIfNeeded() },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("授权 Shizuku（手机操作不占屏幕）")
             }
             Spacer(Modifier.height(8.dp))
         }
