@@ -238,7 +238,8 @@ class NativeBridge(
                         remote.runShell("dumpsys window 2>/dev/null | grep -E 'mCurrentFocus' | head -1", 8000)
                     } catch (t: Throwable) { return err("查询前台失败：${t.message}") }
                     // 输出形如 "1\n  mCurrentFocus=Window{xxx u0 com.pkg/.Act}"
-                    val m = Regex("u\d+\s+([\w.]+)/").find(out)
+                    // 正则用原始字符串（三引号）——普通字符串里 \d \s 是非法转义，Kotlin 编译不过
+                    val m = Regex("""u\d+\s+([\w.]+)/""").find(out)
                     val pkgName = m?.groupValues?.get(1) ?: ""
                     ok2json(pkgName.isNotEmpty(), pkgName.ifEmpty { "（读不到前台应用）" })
                 }
