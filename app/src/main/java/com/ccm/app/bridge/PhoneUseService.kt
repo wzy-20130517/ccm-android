@@ -588,7 +588,6 @@ class PhoneUseService : IPhoneUseService.Stub {
      * 节流到 66ms 一帧（约 15fps）—— 够用，且省 CPU。
      */
     private fun startDisplay(context: Context) {
-        val dm = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         val metrics = context.resources.displayMetrics
         val w = metrics.widthPixels.takeIf { it > 0 } ?: 1080
         val h = metrics.heightPixels.takeIf { it > 0 } ?: 2400
