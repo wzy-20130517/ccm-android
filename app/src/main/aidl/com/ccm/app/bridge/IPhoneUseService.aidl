@@ -7,6 +7,12 @@ package com.ccm.app.bridge;
  * 因为它有 shell uid 才能建 TRUSTED 虚拟屏、连 UiAutomation。
  * 普通 app 进程没有这些权限。
  *
+ * 【为什么要 runShell】
+ * 无障碍服务已移除，而有些能力（当前前台应用、dumpsys 类查询）既不是
+ * 「虚拟屏上点一下」也不是「读元素树」，本质就是「跑条 shell 命令」。
+ * 给它一条通用出口，比每加一个能力就改一次 AIDL 省事得多，
+ * 也让 APK 侧和 Termux 侧（rash/adb 通道）的能力面保持一致。
+ *
  * destroy() 的 code 必须是 16777114，这是 Shizuku 服务端约定的销毁方法编号。
  */
 interface IPhoneUseService {
@@ -39,4 +45,10 @@ interface IPhoneUseService {
 
     /** 副屏最新帧的 JPEG 字节。 */
     byte[] latestFrame() = 7;
+
+    /** 以 shell 身份跑一条命令，返回 "exitCode\n---stdout---\n<内容>"。 */
+    String runShell(String cmd, int timeoutMs) = 10;
+
+    /** 滚动：有 ref 就滚那个节点，没有就按方向滑副屏。 */
+    boolean scroll(String ref, String direction) = 11;
 }

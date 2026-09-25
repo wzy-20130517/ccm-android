@@ -10,9 +10,10 @@ import rikka.shizuku.Shizuku
 /**
  * Shizuku 授权桥。
  *
- * phone use 的新实现跑在虚拟副屏上，虚拟屏创建和 UiAutomation 都需要
- * shell uid，无障碍服务（普通 app uid）做不到。Shizuku 提供这个身份，
- * 不需要 root。
+ * phone use 跑在虚拟副屏上，虚拟屏创建和 UiAutomation 都需要 shell uid。
+ * Shizuku 提供这个身份，不需要 root。
+ * （2026-09-25：原「无障碍兜底」已删除 —— 普通 app uid 做不了虚屏，
+ *   留着只会让能力面看起来比实际大。）
  *
  * 这里只负责「能不能用」的判断和授权请求，不持有具体服务连接。
  * 服务绑定在调用方做，因为虚拟屏守护是长生命周期，应该由前台服务持有。
@@ -63,7 +64,7 @@ object ShizukuBridge {
     /**
      * 给 phone use 调用方的状态文本。
      * 返回 null 表示 Shizuku 可用，可以走虚拟副屏。
-     * 返回非 null 是原因，调用方据此回落到无障碍实现。
+     * 返回非 null 是不可用的原因（Shizuku 已是唯一通道，没有兜底可回落）。
      */
     fun unavailableReason(): String? {
         if (granted()) return null

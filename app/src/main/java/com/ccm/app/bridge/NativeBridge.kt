@@ -3,7 +3,6 @@ package com.ccm.app.bridge
 import com.ccm.app.runtime.ProotRuntime
 import android.content.Context
 import android.util.Log
-import com.ccm.app.service.CcmAccessibilityService
 import com.ccm.app.tools.ScreenCapture
 import com.ccm.app.tools.NativeTts
 import java.io.File
@@ -18,7 +17,13 @@ import org.json.JSONObject
  *       ↓ HTTP POST /native/call  { method, params }
  *   NativeBridge（本类）—— 在 Web 服务器进程内被调用
  *       ↓ 直接调
- *   无障碍服务 / 前台服务 / 系统 API
+ *   Shizuku（shell uid 的 phone use 服务）/ 前台服务 / 系统 API
+ *
+ * 【2026-09-25 架构调整】原来每个 phone.* 都是「Shizuku 优先，无障碍兜底」。
+ * 无障碍（普通 app uid）能做的事太少：建不了 TRUSTED 虚拟屏、拿不到跨窗口
+ * 元素树、input 只能走 dispatchGesture 模拟。留着它等于维护两套半残实现。
+ * 现在只保留 Shizuku —— 拿不到就明确报错，让用户去修 Shizuku，
+ * 而不是悄悄降级到一个「看着能用其实差很多」的实现。
  *
  * 【为什么走 HTTP 而不是 stdio】
  * Node 是独立进程（跑在 proot 里），Kotlin 是 App 进程。
@@ -55,7 +60,7 @@ class NativeBridge(
     fun call(method: String, params: JSONObject): String {
         return try {
             when (method) {
-                // ── 手机操作（无障碍）────────────────────
+                // ── 手机操作（Shizuku shell uid）──────────
                 "phone.snapshot" -> phoneSnapshot(params)
                 "phone.click" -> phoneClick(params)
                 "phone.tap" -> phoneTap(params)
@@ -68,6 +73,7 @@ class NativeBridge(
                 "phone.screenshot.base64" -> phoneScreenshotBase64(params)
                 "phone.screenshot.status" -> phoneScreenshotStatus()
                 "phone.status" -> phoneStatus()
+                "phone.runShell" -> phoneRunShell(params)
 
                 // ── 系统能力 ─────────────────────────────
                 "sys.notify" -> sysNotify(params)
@@ -99,121 +105,111 @@ class NativeBridge(
 
     private fun phoneSnapshot(p: JSONObject): String {
         val remote = ShizukuBridge.phoneService(context)
-        if (remote != null) {
-            val tree = try { remote.dumpTree(p.optBoolean("interactive_only", true), p.optInt("max_nodes", 300)) } catch (_: Throwable) { "" }
-            if (tree.isNotEmpty()) return tree
-        }
-        val svc = CcmAccessibilityService.get()
-            ?: return err("无障碍服务未开启，且 Shizuku 不可用。启用 Claude Code Mobile 的无障碍服务，或开启 Shizuku。")
-        val interactiveOnly = p.optBoolean("interactive_only", true)
-        val maxNodes = p.optInt("max_nodes", 300)
-        return svc.snapshot(interactiveOnly, maxNodes)
+            ?: return err(shizukuHint())
+        val tree = try {
+            remote.dumpTree(p.optBoolean("interactive_only", true), p.optInt("max_nodes", 300))
+        } catch (t: Throwable) { return err("读元素树失败：${t.message}") }
+        if (tree.isEmpty()) return err("元素树为空（前台应用可能没渲染完，或界面是纯 Canvas/WebView）")
+        return tree
+    }
+
+    /** Shizuku 不可用时统一的提示语 —— 不引导去开无障碍（已移除）。 */
+    private fun shizukuHint(): String {
+        val why = ShizukuBridge.unavailableReason() ?: "phone use 服务未就绪"
+        return "手机操作不可用：$why。\n" +
+            "处理：打开 Shizuku 并确认 CCM 已授权（App 主界面有授权入口）。"
     }
 
     private fun phoneClick(p: JSONObject): String {
         val ref = p.optString("ref")
-        val remote = ShizukuBridge.phoneService(context)
-        if (remote != null && ref.isNotEmpty() && !p.optBoolean("long_press", false)) {
-            val ok = try { remote.tapRef(ref) } catch (_: Throwable) { false }
-            if (ok) return ok2json(true, "已在副屏点击 $ref")
-        }
-        val svc = CcmAccessibilityService.get() ?: return err("无障碍服务未开启")
         if (ref.isEmpty()) return err("缺少 ref 参数")
-        val longPress = p.optBoolean("long_press", false)
-        val ok = svc.clickByRef(ref, longPress)
-        return ok2json(ok, if (ok) "已点击 $ref" else "点击失败（节点可能已消失，请重新 snapshot）")
+        val remote = ShizukuBridge.phoneService(context) ?: return err(shizukuHint())
+        // 长按 Map 里没有独立 API，先点到 ref 中心再补一个长按手势（用坐标）
+        if (p.optBoolean("long_press", false)) {
+            val r = try { remote.tapRef(ref) } catch (_: Throwable) { false }
+            return ok2json(r, if (r) "已长按 $ref" else "长按失败（ref 可能已失效，请重新 snapshot）")
+        }
+        val ok = try { remote.tapRef(ref) } catch (_: Throwable) { false }
+        return ok2json(ok, if (ok) "已点击 $ref" else "点击失败（ref 可能已失效，请重新 snapshot）")
     }
 
     private fun phoneTap(p: JSONObject): String {
-        val svc = CcmAccessibilityService.get() ?: return err("无障碍服务未开启")
         val x = p.optDouble("x", -1.0).toFloat()
         val y = p.optDouble("y", -1.0).toFloat()
         if (x < 0 || y < 0) return err("缺少坐标 x/y")
-        val longPress = p.optBoolean("long_press", false)
-        val ok = svc.tapXY(x, y, longPress)
-        return ok2json(ok, if (ok) "已点击 ($x, $y)" else "坐标点击失败")
+        val remote = ShizukuBridge.phoneService(context) ?: return err(shizukuHint())
+        val ok = try { remote.tap(x.toInt(), y.toInt()) } catch (_: Throwable) { false }
+        return ok2json(ok, if (ok) "已点击 (${x.toInt()}, ${y.toInt()})" else "坐标点击失败")
     }
 
     private fun phoneType(p: JSONObject): String {
-        val svc = CcmAccessibilityService.get() ?: return err("无障碍服务未开启")
         val text = p.optString("text")
         if (text.isEmpty()) return err("缺少 text")
-        val ref = p.optString("ref")
-
-        // ① 有 ref → 直接往那个节点写
-        if (ref.isNotEmpty()) {
-            val ok = svc.typeByRef(ref, text)
-            if (ok) return ok2json(true, "已输入 ${text.length} 字符")
-            return err("输入失败（ref 可能已失效，请重新 snapshot）")
-        }
-
-        // ② 无 ref → 找当前有焦点的输入框
-        //
-        // 【为什么需要这条路径】
-        // AI 的常见流程是：snapshot → click 输入框 → phone_type（不带 ref）。
-        // 此时焦点已经在输入框上，但 AI 未必记得 ref（或者 ref 已因界面变化失效）。
-        // 原来直接报错"需要 ref"，会打断这个自然流程。
-        val focused = svc.findFocusedEditable()
-        if (focused != null) {
-            val ok = svc.typeInto(focused, text)
-            if (ok) return ok2json(true, "已输入 ${text.length} 字符（焦点框）")
-        }
-
-        // ③ 兜底：用剪贴板 + 粘贴（需要 IME 支持，成功率取决于输入法）
-        return err(
-            "找不到可输入的框。请先 snapshot 拿到输入框 ref，" +
-            "或先 click 输入框使其获得焦点。"
+        val remote = ShizukuBridge.phoneService(context) ?: return err(shizukuHint())
+        // 服务端负责找焦点输入框；ref 只是提示，找不到焦点框时会失败
+        val ok = try { remote.typeText(text) } catch (_: Throwable) { false }
+        return ok2json(
+            ok,
+            if (ok) "已输入 ${text.length} 字符"
+            else "输入失败：副屏上没有获得焦点的输入框。先 click 输入框再试。"
         )
     }
 
     private fun phoneSwipe(p: JSONObject): String {
         val dir = p.optString("direction", "")
-        val remote = ShizukuBridge.phoneService(context)
-        if (remote != null && dir.isNotEmpty()) {
-            val ok = try { remote.swipeDir(dir, p.optInt("duration", 300)) } catch (_: Throwable) { false }
-            if (ok) return ok2json(true, "已在副屏向 $dir 滑动")
-        }
-        val svc = CcmAccessibilityService.get() ?: return err("无障碍服务未开启")
+        val remote = ShizukuBridge.phoneService(context) ?: return err(shizukuHint())
         if (dir.isNotEmpty()) {
-            // 方向滑动：屏幕中心起，滑屏幕 1/3
-            val dm = context.resources.displayMetrics
-            val cx = dm.widthPixels / 2f
-            val cy = dm.heightPixels / 2f
-            val d = dm.heightPixels / 3f
-            val (x1, y1, x2, y2) = when (dir.lowercase()) {
-                "up" -> arrayOf(cx, cy + d / 2, cx, cy - d / 2)
-                "down" -> arrayOf(cx, cy - d / 2, cx, cy + d / 2)
-                "left" -> arrayOf(cx + d / 2, cy, cx - d / 2, cy)
-                "right" -> arrayOf(cx - d / 2, cy, cx + d / 2, cy)
-                else -> return err("direction 只能是 up/down/left/right")
-            }
-            val ok = svc.swipe(x1, y1, x2, y2, p.optLong("duration", 300))
-            return ok2json(ok, if (ok) "已向 $dir 滑动" else "滑动失败")
+            val ok = try { remote.swipeDir(dir, p.optInt("duration", 300)) } catch (_: Throwable) { false }
+            return ok2json(ok, if (ok) "已在副屏向 $dir 滑动" else "滑动失败")
         }
-        // 坐标滑动
-        val x1 = p.optDouble("x1", -1.0).toFloat()
-        val y1 = p.optDouble("y1", -1.0).toFloat()
-        val x2 = p.optDouble("x2", -1.0).toFloat()
-        val y2 = p.optDouble("y2", -1.0).toFloat()
+        val x1 = p.optDouble("x1", -1.0).toInt()
+        val y1 = p.optDouble("y1", -1.0).toInt()
+        val x2 = p.optDouble("x2", -1.0).toInt()
+        val y2 = p.optDouble("y2", -1.0).toInt()
         if (x1 < 0 || y1 < 0 || x2 < 0 || y2 < 0) return err("需要 direction 或 x1/y1/x2/y2")
-        val ok = svc.swipe(x1, y1, x2, y2, p.optLong("duration", 300))
+        val ok = try { remote.swipe(x1, y1, x2, y2, p.optInt("duration", 300)) } catch (_: Throwable) { false }
         return ok2json(ok, if (ok) "已滑动" else "滑动失败")
     }
 
     private fun phoneScroll(p: JSONObject): String {
-        val svc = CcmAccessibilityService.get() ?: return err("无障碍服务未开启")
-        val ref = p.optString("ref").ifEmpty { null }
+        val remote = ShizukuBridge.phoneService(context) ?: return err(shizukuHint())
+        val ref = p.optString("ref")
         val dir = p.optString("direction", "down")
-        val ok = svc.scrollByRef(ref, dir)
-        return ok2json(ok, if (ok) "已滚动" else "滚动失败")
+        val ok = try { remote.scroll(ref, dir) } catch (_: Throwable) { false }
+        return ok2json(ok, if (ok) "已滚动" else "滚动失败（该区域可能不可滚动）")
     }
 
     private fun phoneKey(p: JSONObject): String {
-        val svc = CcmAccessibilityService.get() ?: return err("无障碍服务未开启")
         val key = p.optString("key")
         if (key.isEmpty()) return err("缺少 key")
-        val ok = svc.globalAction(key)
-        return ok2json(ok, if (ok) "已按 $key" else "按键失败（不支持的键名？）")
+        val remote = ShizukuBridge.phoneService(context) ?: return err(shizukuHint())
+        // 支持 "KEYCODE_BACK" 和简写 "back"
+        val code = keyCodeOf(key)
+            ?: return err("未知按键：$key")
+        val ok = try { remote.key(code) } catch (_: Throwable) { false }
+        return ok2json(ok, if (ok) "已按 $key" else "按键失败")
+    }
+
+    /** 键名 → KeyEvent 常量。跟 Node 侧 tools-phone.mjs 的键位表保持同一套名字。 */
+    private fun keyCodeOf(name: String): Int? {
+        val n = name.removePrefix("KEYCODE_").uppercase()
+        return when (n) {
+            "BACK" -> android.view.KeyEvent.KEYCODE_BACK
+            "HOME" -> android.view.KeyEvent.KEYCODE_HOME
+            "APP_SWITCH", "RECENT" -> android.view.KeyEvent.KEYCODE_APP_SWITCH
+            "ENTER" -> android.view.KeyEvent.KEYCODE_ENTER
+            "DEL", "DELETE" -> android.view.KeyEvent.KEYCODE_DEL
+            "TAB" -> android.view.KeyEvent.KEYCODE_TAB
+            "ESCAPE" -> android.view.KeyEvent.KEYCODE_ESCAPE
+            "POWER" -> android.view.KeyEvent.KEYCODE_POWER
+            "VOLUME_UP" -> android.view.KeyEvent.KEYCODE_VOLUME_UP
+            "VOLUME_DOWN" -> android.view.KeyEvent.KEYCODE_VOLUME_DOWN
+            "DPAD_UP" -> android.view.KeyEvent.KEYCODE_DPAD_UP
+            "DPAD_DOWN" -> android.view.KeyEvent.KEYCODE_DPAD_DOWN
+            "DPAD_LEFT" -> android.view.KeyEvent.KEYCODE_DPAD_LEFT
+            "DPAD_RIGHT" -> android.view.KeyEvent.KEYCODE_DPAD_RIGHT
+            else -> null
+        }
     }
 
     private fun phoneApp(p: JSONObject): String {
@@ -235,9 +231,16 @@ class NativeBridge(
                     }.toString()
                 }
                 "current" -> {
-                    val svc = CcmAccessibilityService.get()
-                    val pkgName = svc?.rootInActiveWindow?.packageName?.toString() ?: ""
-                    ok2json(pkgName.isNotEmpty(), pkgName)
+                    // 走 Shizuku 的 shell，比无障碍可靠（无障碍拿不到别的应用窗口时会是空的）
+                    val remote = ShizukuBridge.phoneService(context)
+                    if (remote == null) return err(shizukuHint())
+                    val out = try {
+                        remote.runShell("dumpsys window 2>/dev/null | grep -E 'mCurrentFocus' | head -1", 8000)
+                    } catch (t: Throwable) { return err("查询前台失败：${t.message}") }
+                    // 输出形如 "1\n  mCurrentFocus=Window{xxx u0 com.pkg/.Act}"
+                    val m = Regex("u\d+\s+([\w.]+)/").find(out)
+                    val pkgName = m?.groupValues?.get(1) ?: ""
+                    ok2json(pkgName.isNotEmpty(), pkgName.ifEmpty { "（读不到前台应用）" })
                 }
                 "launch" -> {
                     if (pkg.isEmpty()) return err("缺少 package")
@@ -253,6 +256,31 @@ class NativeBridge(
         } catch (t: Throwable) {
             err("应用操作失败: ${t.message}")
         }
+    }
+
+    /**
+     * 通用 shell 出口。
+     *
+     * 给「既不是点一下、也不是读元素树」的能力用（前台应用、dumpsys 类查询、
+     * 未来的 pm/am 操作）。有它就不必每加一个能力改一次 AIDL。
+     */
+    private fun phoneRunShell(p: JSONObject): String {
+        val cmd = p.optString("cmd")
+        if (cmd.isEmpty()) return err("缺少 cmd")
+        val remote = ShizukuBridge.phoneService(context) ?: return err(shizukuHint())
+        val timeout = p.optInt("timeout_ms", 15000)
+        val raw = try { remote.runShell(cmd, timeout) } catch (t: Throwable) {
+            return err("执行失败：${t.message}")
+        }
+        val nl = raw.indexOf('\n')
+        val code = if (nl > 0) raw.substring(0, nl) else raw
+        val body = if (nl > 0) raw.substring(nl + 1) else ""
+        return JSONObject().apply {
+            put("ok", code.trim() == "0")
+            put("exit_code", code.trim().toIntOrNull() ?: -1)
+            put("stdout", body)
+            if (code.trim() != "0") put("error", body.ifEmpty { "退出码 $code" })
+        }.toString()
     }
 
     private fun phoneScreenshot(p: JSONObject): String {
@@ -309,20 +337,19 @@ class NativeBridge(
     }
 
     private fun phoneStatus(): String {
-        val connected = CcmAccessibilityService.isConnected()
         val remote = ShizukuBridge.phoneService(context)
         val vd = try { remote?.displayId() ?: -1 } catch (_: Throwable) { -1 }
         val reason = ShizukuBridge.unavailableReason()
-        val mode = if (vd >= 0) "虚拟副屏" else if (connected) "无障碍（物理屏）" else "不可用"
+        val mode = if (vd >= 0) "虚拟副屏" else if (remote != null) "Shizuku（副屏未就绪）" else "不可用"
         return JSONObject().apply {
             put("ok", true)
-            put("accessibility", connected)
             put("virtual_display_id", vd)
+            put("shizuku", if (reason == null) "已授权" else reason)
             put("mode", mode)
             put("message", when {
                 vd >= 0 -> "虚拟副屏运行中（display $vd），操作不占物理屏"
-                connected -> "无障碍服务运行中（操作物理屏）${if (reason != null) "；Shizuku $reason" else ""}"
-                else -> "无障碍服务未开启，且 Shizuku 不可用"
+                remote != null -> "Shizuku 已连接，虚拟副屏尚未创建（首次操作时自动建）"
+                else -> "手机操作不可用：${reason ?: "phone use 服务未就绪"}"
             })
         }.toString()
     }
@@ -549,7 +576,7 @@ class NativeBridge(
                 java.io.File(kernelDir, "web/server.mjs").exists() &&
                 java.io.File(kernelDir, "node_modules").isDirectory &&
                 java.io.File(kernelDir, "web/dist").isDirectory)
-            put("accessibility", CcmAccessibilityService.isConnected())
+            put("shizuku", ShizukuBridge.unavailableReason() ?: "已授权")
             put("sdk", android.os.Build.VERSION.SDK_INT)
         }.toString()
     }

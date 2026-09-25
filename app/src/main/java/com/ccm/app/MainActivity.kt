@@ -31,7 +31,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.ccm.app.runtime.ProotRuntime
 import com.ccm.app.runtime.ToolchainCatalog
 import com.ccm.app.runtime.RootfsManager
-import com.ccm.app.service.CcmAccessibilityService
 import com.ccm.app.service.CcmService
 import com.ccm.app.tools.ScreenCapture
 import kotlinx.coroutines.Dispatchers
@@ -62,7 +61,6 @@ enum class Stage { CHECKING, NEED_SETUP, TOOLCHAIN_PICK, SETTING_UP, READY, WEBV
 
 /** 运行状态（供 UI 显示） */
 data class RuntimeState(
-    val a11yOn: Boolean = false,
     val captureOn: Boolean = false,
     val serviceRunning: Boolean = false,
     val nodeRunning: Boolean = false,
@@ -121,12 +119,11 @@ fun CcmApp() {
         }
     }
 
-    // 定期刷新运行状态（无障碍/截屏/服务/Node）
+    // 定期刷新运行状态（Shizuku/截屏/服务/Node）
     LaunchedEffect(Unit) {
         while (true) {
             val webOk = withContext(Dispatchers.IO) { pingWeb() }
             runtime = runtime.copy(
-                a11yOn = CcmAccessibilityService.isConnected(),
                 captureOn = ScreenCapture.isReady(),
                 serviceRunning = CcmService.isRunning,
                 webReady = webOk,
@@ -296,9 +293,6 @@ fun CcmApp() {
                     rootfsPath = rootfs.rootfsPath.absolutePath,
                     hasNode = proot.hasNode(),
                     kernelInstalled = rootfs.isKernelInstalled(),
-                    onOpenA11ySettings = {
-                        ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                    },
                     onRequestCapture = {
                         try {
                             val mgr = ctx.getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE)
@@ -875,7 +869,6 @@ fun ReadyScreen(
     rootfsPath: String,
     hasNode: Boolean,
     kernelInstalled: Boolean,
-    onOpenA11ySettings: () -> Unit,
     onRequestCapture: () -> Unit,
     onStartService: () -> Unit,
     onStartNode: () -> Unit,
@@ -896,8 +889,6 @@ fun ReadyScreen(
         StatusRow("Linux 环境", true, rootfsPath.takeLast(28))
         StatusRow("Node 运行时", hasNode, if (hasNode) "已安装" else "未安装")
         StatusRow("Node 内核", kernelInstalled, if (kernelInstalled) "已安装" else "未安装")
-        StatusRow("无障碍服务", runtime.a11yOn,
-            if (runtime.a11yOn) "已开启" else "未开启 —— 手机操作需要它")
         val shizuku = com.ccm.app.bridge.ShizukuBridge
         val szState = when {
             shizuku.granted() -> "已授权 —— 手机操作走虚拟副屏，不占物理屏"
@@ -907,6 +898,7 @@ fun ReadyScreen(
         StatusRow("Shizuku", shizuku.granted(), szState)
         StatusRow("截屏能力", runtime.captureOn,
             if (runtime.captureOn) "已授权" else "未授权 —— 无 Shizuku 时截图需要它")
+        // 2026-09-25：无障碍服务已移除。手机操作统一走 Shizuku（shell uid）。
         StatusRow("核心服务", runtime.serviceRunning,
             if (runtime.serviceRunning) "运行中" else "未启动")
         StatusRow("Node 服务", runtime.webReady,
@@ -965,13 +957,7 @@ fun ReadyScreen(
 
         Spacer(Modifier.height(24.dp))
 
-        if (!runtime.a11yOn) {
-            Button(onClick = onOpenA11ySettings, modifier = Modifier.fillMaxWidth()) {
-                Text("去开启无障碍服务")
-            }
-            Spacer(Modifier.height(8.dp))
-        }
-        // Shizuku 授权入口。没授权时虚拟副屏起不来，手机操作会落到物理屏上。
+        // Shizuku 授权入口。没授权时虚拟副屏起不来，手机操作不可用。
         if (shizuku.available() && !shizuku.granted()) {
             Button(
                 onClick = { com.ccm.app.bridge.ShizukuBridge.requestIfNeeded(szCtx) },
