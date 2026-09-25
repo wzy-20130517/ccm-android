@@ -2,6 +2,9 @@ package com.ccm.app.bridge
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.ComponentName
+import android.content.ServiceConnection
+import android.os.IBinder
 import rikka.shizuku.Shizuku
 
 /**
@@ -68,4 +71,22 @@ object ShizukuBridge {
         if (denied) return "Shizuku 授权被拒绝"
         return "Shizuku 未授权"
     }
+
+    private var phone: IPhoneUseService? = null
+
+    fun phoneService(context: Context): IPhoneUseService? {
+        phone?.let { if (it.asBinder().isBinderAlive) return it }
+        if (!granted()) return null
+        return try {
+            val args = Shizuku.UserServiceArgs(
+                ComponentName(context, PhoneUseService::class.java)
+            ).daemon(false).processNameSuffix("phoneuse")
+            val binder: IBinder = Shizuku.bindUserService(args, object : ServiceConnection {
+                override fun onServiceConnected(name: ComponentName, b: IBinder) {}
+                override fun onServiceDisconnected(name: ComponentName) { phone = null }
+            })
+            IPhoneUseService.Stub.asInterface(binder).also { phone = it }
+        } catch (_: Throwable) { null }
+    }
+
 }

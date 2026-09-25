@@ -97,16 +97,26 @@ class NativeBridge(
     // ═══════════════════════════════════════════════════
 
     private fun phoneSnapshot(p: JSONObject): String {
+        val remote = ShizukuBridge.phoneService(context)
+        if (remote != null) {
+            val tree = try { remote.dumpTree(p.optBoolean("interactive_only", true), p.optInt("max_nodes", 300)) } catch (_: Throwable) { "" }
+            if (tree.isNotEmpty()) return tree
+        }
         val svc = CcmAccessibilityService.get()
-            ?: return err("无障碍服务未开启。请在系统设置 → 无障碍 → 已安装的服务 里启用 Claude Code Mobile")
+            ?: return err("无障碍服务未开启，且 Shizuku 不可用。启用 Claude Code Mobile 的无障碍服务，或开启 Shizuku。")
         val interactiveOnly = p.optBoolean("interactive_only", true)
         val maxNodes = p.optInt("max_nodes", 300)
         return svc.snapshot(interactiveOnly, maxNodes)
     }
 
     private fun phoneClick(p: JSONObject): String {
-        val svc = CcmAccessibilityService.get() ?: return err("无障碍服务未开启")
         val ref = p.optString("ref")
+        val remote = ShizukuBridge.phoneService(context)
+        if (remote != null && ref.isNotEmpty() && !p.optBoolean("long_press", false)) {
+            val ok = try { remote.tapRef(ref) } catch (_: Throwable) { false }
+            if (ok) return ok2json(true, "已在副屏点击 $ref")
+        }
+        val svc = CcmAccessibilityService.get() ?: return err("无障碍服务未开启")
         if (ref.isEmpty()) return err("缺少 ref 参数")
         val longPress = p.optBoolean("long_press", false)
         val ok = svc.clickByRef(ref, longPress)
@@ -156,8 +166,13 @@ class NativeBridge(
     }
 
     private fun phoneSwipe(p: JSONObject): String {
-        val svc = CcmAccessibilityService.get() ?: return err("无障碍服务未开启")
         val dir = p.optString("direction", "")
+        val remote = ShizukuBridge.phoneService(context)
+        if (remote != null && dir.isNotEmpty()) {
+            val ok = try { remote.swipeDir(dir, p.optInt("duration", 300)) } catch (_: Throwable) { false }
+            if (ok) return ok2json(true, "已在副屏向 $dir 滑动")
+        }
+        val svc = CcmAccessibilityService.get() ?: return err("无障碍服务未开启")
         if (dir.isNotEmpty()) {
             // 方向滑动：屏幕中心起，滑屏幕 1/3
             val dm = context.resources.displayMetrics

@@ -22,8 +22,14 @@ interface IPhoneUseService {
     /** 在副屏上点击。 */
     boolean tap(int x, int y) = 3;
 
+    /** 按上次 dump 缓存的 ref 点击，ref 失效返回 false。 */
+    boolean tapRef(String ref) = 8;
+
     /** 在副屏上滑动。 */
     boolean swipe(int x1, int y1, int x2, int y2, int durationMs) = 4;
+
+    /** 按方向滑动，方向 up/down/left/right，坐标由服务按副屏尺寸算。 */
+    boolean swipeDir(String direction, int durationMs) = 9;
 
     /** 在副屏上按键，keyCode 用 Android KeyEvent 常量。 */
     boolean key(int keyCode) = 5;
