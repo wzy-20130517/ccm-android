@@ -596,6 +596,45 @@ class RootfsManager(private val context: Context) {
                 }
                 if (!updated) onLine("⚠️ 软件源更新失败（网络问题？继续尝试安装）")
 
+                // 2.5) 先升级基础系统再装用户包。
+                //
+                // ubuntu-base 出厂后源里的基础包版本会往前走（比如 perl-base
+                // 5.38.2-3.2ubuntu0.2 → 0.6）。用户勾选的包（git、curl、python3）
+                // 都依赖新版本，apt 会在同一次安装里升级它们。
+                //
+                // 实测：直接 apt-get install 时，dpkg 在「升级 perl-base」这一步失败
+                //   error setting ownership of '/usr/bin/perl5.38.2.dpkg-new':
+                //       No such file or directory
+                //   dpkg-deb: zstd write error: Broken pipe
+                // 报错发生在 dpkg 自己依赖的包被替换的过程中。
+                //
+                // Operit 的做法是先 dpkg --configure -a、再 apt upgrade，
+                // 然后才 apt install 用户勾的包。照这个顺序拆开两步，
+                // 基础包升级失败时单独报，不和用户包混在一起。
+                if (updated) {
+                    onLine("")
+                    onLine("同步基础系统版本…")
+                    val configured = exec(
+                        listOf(
+                            "/bin/bash", "-lc",
+                            "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; " +
+                                "dpkg --configure -a --force-confold 2>&1 | tail -15"
+                        ),
+                        onLine
+                    )
+                    if (!configured) onLine("  基础包收尾未完成，继续")
+                    val upgraded = exec(
+                        listOf(
+                            "/bin/bash", "-lc",
+                            "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; " +
+                                "apt-get upgrade -y -q -o Dpkg::Options::=--force-confold " +
+                                "-o APT::Get::Allow-Downgrades=true 2>&1 | tail -25"
+                        ),
+                        onLine
+                    )
+                    if (!upgraded) onLine("  基础系统升级未完成，继续安装所选工具")
+                }
+
                 // 3) 一次性装完所有包
                 //
                 // DEBIAN_FRONTEND=noninteractive 避免交互式提问卡住
