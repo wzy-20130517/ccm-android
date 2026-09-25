@@ -886,6 +886,7 @@ fun ReadyScreen(
     prootCheckError: String? = null
 ) {
     var showNodeLog by remember { mutableStateOf(false) }
+    val szCtx = LocalContext.current
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState())
     ) {
@@ -973,7 +974,7 @@ fun ReadyScreen(
         // Shizuku 授权入口。没授权时虚拟副屏起不来，手机操作会落到物理屏上。
         if (shizuku.available() && !shizuku.granted()) {
             Button(
-                onClick = { com.ccm.app.bridge.ShizukuBridge.requestIfNeeded() },
+                onClick = { com.ccm.app.bridge.ShizukuBridge.requestIfNeeded(szCtx) },
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("授权 Shizuku（手机操作不占屏幕）")
