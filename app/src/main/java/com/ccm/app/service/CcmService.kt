@@ -44,6 +44,17 @@ class CcmService : Service() {
 
     companion object {
         private const val TAG = "CcmService"
+
+        /**
+         * 主线程 Handler。
+         *
+         * 【为什么需要】Shizuku 的 bindUserService 内部用 ServiceConnection 回调，
+         * 而回调是投递到【主线程 Looper】的。桥服务器跑在 CachedThreadPool 的工作线程上，
+         * 从工作线程直接调 bindUserService → 回调永远送不到 → CountDownLatch 白等。
+         * 实测后果：phone.use 的首次调用静默卡死，还会把线程池线程逐个咬住，
+         * 最后整个桥连 /ping 都不响应。
+         */
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
         private const val CHANNEL_ID = "ccm_service"
         private const val NOTIF_ID = 1001
         const val BRIDGE_PORT = 3457

@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.ServiceConnection
 import android.os.IBinder
 import rikka.shizuku.Shizuku
+import com.ccm.app.service.CcmService
 
 /**
  * Shizuku 授权桥。
@@ -75,24 +76,92 @@ object ShizukuBridge {
 
     private var phone: IPhoneUseService? = null
 
+    /** 上次绑定失败的原因（供状态显示/排查，不吞掉信息）。 */
+    @Volatile
+    var lastPhoneError: String? = null
+        private set
+
+    /** 绑定进行中标记：并发调用时不要各自去 bind 一遍（Shizuku 会重复拉起服务）。 */
+    private val binding = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * 拿到 phone use 服务。
+     *
+     * 【必须在主线程 bind】Shizuku 的 bindUserService 通过 ServiceConnection 回调回来，
+     * 而 ServiceConnection 的回调固定投递到主线程 Looper。桥服务器跑在工作线程上，
+     * 从工作线程直接 bind 会导致回调永远到不了 —— latch 白等到超时，
+     * 而且每次调用都会这么等一遍，把线程池咬死（实测：连 /ping 都不响应了）。
+     *
+     * 【失败要留原因】原来 catch 里直接吞掉返回 null，调用方只看到「手机操作不可用」，
+     * 到底是没授权、服务起不来、还是超时完全看不出来。
+     */
     fun phoneService(context: Context): IPhoneUseService? {
         phone?.let { if (it.asBinder().isBinderAlive) return it }
-        if (!granted()) return null
+        if (!granted()) {
+            lastPhoneError = unavailableReason() ?: "Shizuku 未授权"
+            return null
+        }
+        // 已有别的线程在绑 → 等它，不重复 bind（否则会拉起多个服务进程）
+        if (!binding.compareAndSet(false, true)) {
+            val deadline = System.currentTimeMillis() + 8000
+            while (System.currentTimeMillis() < deadline) {
+                phone?.let { if (it.asBinder().isBinderAlive) return it }
+                try { Thread.sleep(50) } catch (_: InterruptedException) { break }
+            }
+            lastPhoneError = "等待其它线程绑定超时"
+            return null
+        }
+
         return try {
             val args = Shizuku.UserServiceArgs(
                 ComponentName(context, PhoneUseService::class.java)
             ).daemon(false).processNameSuffix("phoneuse")
+
             val latch = java.util.concurrent.CountDownLatch(1)
-            Shizuku.bindUserService(args, object : ServiceConnection {
-                override fun onServiceConnected(name: ComponentName, b: IBinder) {
-                    phone = IPhoneUseService.Stub.asInterface(b)
+            val errHolder = arrayOfNulls<String>(1)
+            val appContext = context.applicationContext
+
+            // 投到主线程执行 —— 这是关键，工作线程上 bind 收不到回调
+            CcmService.mainHandler.post {
+                try {
+                    Shizuku.bindUserService(args, object : ServiceConnection {
+                        override fun onServiceConnected(name: ComponentName, b: IBinder) {
+                            try {
+                                phone = IPhoneUseService.Stub.asInterface(b)
+                                latch.countDown()
+                            } catch (t: Throwable) {
+                                errHolder[0] = "asInterface 失败：${t.message}"
+                                latch.countDown()
+                            }
+                        }
+                        override fun onServiceDisconnected(name: ComponentName) { phone = null }
+                    })
+                } catch (t: Throwable) {
+                    errHolder[0] = "bindUserService 抛异常：${t.message}"
                     latch.countDown()
                 }
-                override fun onServiceDisconnected(name: ComponentName) { phone = null }
-            })
-            latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
-            phone
-        } catch (_: Throwable) { null }
+            }
+            // 超时给足：Shizuku 要 fork 出一个新进程再加载 dex，冷启动可能几秒
+            val ok = latch.await(15, java.util.concurrent.TimeUnit.SECONDS)
+            if (!ok) {
+                lastPhoneError = "绑定超时（15s）—— Shizuku 可能没在运行，或服务进程起不来"
+                null
+            } else if (errHolder[0] != null) {
+                lastPhoneError = errHolder[0]
+                null
+            } else if (phone == null) {
+                lastPhoneError = "回调到了但 binder 为空"
+                null
+            } else {
+                lastPhoneError = null
+                phone
+            }
+        } catch (t: Throwable) {
+            lastPhoneError = "绑定异常：${t.message}"
+            null
+        } finally {
+            binding.set(false)
+        }
     }
 
 }
