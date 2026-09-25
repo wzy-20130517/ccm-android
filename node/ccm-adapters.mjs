@@ -1,11 +1,15 @@
 /**
- * 原生桥适配层 —— 让现有工具在 CCM 原生环境下自动走无障碍服务。
+ * 原生桥适配层 —— 让现有工具在 CCM 原生环境下自动走 Shizuku（shell uid）。
  *
  * 【设计原则：包装而非重写】
  *
- * 现有 core/tools-phone.mjs 的实现是「rish + dumpsys/uiautomator」路线，
+ * 现有 core/tools-phone.mjs 的实现是「shell 通道 + dumpsys/uiautomator」路线，
  * 它在 Termux 里工作良好。我们不想删掉它（Termux 模式还要用），
  * 也不想 fork 一份（两份代码会漂移）。
+ *
+ * 【2026-09-25 调整】CCM 里原来的兜底是无障碍服务 —— 已移除（普通 app uid
+ * 建不了 TRUSTED 虚拟屏，能做的事太少）。现在 CCM 走 Kotlin 原生桥直连
+ * Shizuku；桥不可用时保持原实现（core/device.mjs 的通道层会试 rish / adb）。
  *
  * 所以用**运行时适配**：
  *   1. 启动时探测原生桥
@@ -29,6 +33,37 @@ import { hasNativeBridge, nativeCall } from './ccm-bridge.mjs'
 let _applied = false
 
 /**
+ * 上次探测失败的时间戳 + 连续失败次数。
+ *
+ * 【为什么需要】原生桥（Kotlin 侧 127.0.0.1:3457）可能比 Node 后起来 ——
+ * Node 由 CcmService 启动，而桥服务器也在同一个 Service 里，两者有竞态。
+ * 如果启动那一刻桥还没就绪，applyNativeAdapters 会返回 applied:false，
+ * 然后 toolkit 就**一直**用 Termux 实现（sed/am 那些在 proot 里不存在的命令）。
+ *
+ * 更糟的是：buildAgent 有缓存（runtime.agent 存在就直接返回），
+ * 所以不会重新走适配逻辑 —— 除非用户改配置触发 invalidateRuntimeEngine。
+ *
+ * 现在记录失败时间，允许在 [RETRY_WINDOW_MS] 内重试。
+ * 调用方（buildAgent）每次新建 toolkit 时都会调 applyNativeAdapters，
+ * 只要还在重试窗口内且尚未成功，就会再探测一次。
+ */
+let _lastProbeFailAt = 0
+let _probeFailCount = 0
+const RETRY_WINDOW_MS = 5 * 60_000   // 5 分钟内允许重试
+
+/** 是否值得再试一次（供 server.mjs 判断要不要重建 toolkit） */
+export function shouldRetryNativeAdapters() {
+  if (_applied) return false
+  if (_lastProbeFailAt === 0) return true          // 从没试过
+  return Date.now() - _lastProbeFailAt < RETRY_WINDOW_MS
+}
+
+/** 诊断信息（/doctor 用） */
+export function nativeAdapterStatus() {
+  return { applied: _applied, failCount: _probeFailCount, lastFailAt: _lastProbeFailAt || null }
+}
+
+/**
  * 把 toolkit 里的 phone 工具替换成原生实现。
  *
  * @param {object} toolkit 引擎工具集（有 .tools() 方法返回工具数组）
@@ -41,10 +76,13 @@ export async function applyNativeAdapters(toolkit) {
 
   const available = await hasNativeBridge()
   if (!available) {
+    _lastProbeFailAt = Date.now()
+    _probeFailCount++
     return {
       applied: false,
       replaced: [],
-      reason: '原生桥不可用（127.0.0.1:3457 无响应），保持 Termux 实现',
+      reason: `原生桥不可用（127.0.0.1:3457 无响应，第 ${_probeFailCount} 次探测），保持 Termux 实现`,
+      retryable: shouldRetryNativeAdapters(),
     }
   }
 
@@ -70,9 +108,9 @@ export async function applyNativeAdapters(toolkit) {
       // 已经是原生实现 → 跳过（避免二次包装）
       if (tool.execute === impl || tool._ccmNative) continue
 
-      // 保存原实现（便于回退 / 调试）
+      // 保存原实现（便于回退 / 调试 + Shizuku 不可用时兜底）
       if (!tool._originalExecute) tool._originalExecute = tool.execute
-      tool.execute = impl
+      tool.execute = makeWithAdbFallback(impl, tool._originalExecute)
       tool._ccmNative = true
       changed = true
 
@@ -87,7 +125,52 @@ export async function applyNativeAdapters(toolkit) {
   }
 
   _applied = true
+  _lastProbeFailAt = 0
+  _probeFailCount = 0
   return { applied: true, replaced, reason: `已用原生实现替换 ${replaced.length} 个工具` }
+}
+
+/**
+ * 给原生实现套一层「Shizuku 不可用 → 落 adb」的兜底。
+ *
+ * 【为什么需要】
+ * CCM 里手机操作的**主通道**是 Kotlin 原生桥直连 Shizuku（binder，最快最稳）。
+ * 但 Shizuku 可能没启动 / 没授权 / 用户关了它 —— 那时：
+ *   · 原生桥返回「手机操作不可用：Shizuku 未运行」
+ *   · 直接把这个错误抛给模型，等于整个 phone use 全废
+ * 而设备上如果开着无线调试，**adb 通道**（shell uid，权限等价）还能用。
+ *
+ * 所以：原生桥因 Shizuku 不可用而失败时，悄悄改用原实现 ——
+ * 它会走 core/device.mjs 的通道层（Shizuku → adb）。
+ * 两条通道都断才把错误抛出去（并带上两边的原因，方便定位）。
+ *
+ * 【为什么不无脑兜底】
+ * 只有「Shizuku 类」错误才兜底。工具用法错误（ref 失效、参数缺失）
+ * 落 adb 是白费一轮且结果一样，还掩盖了真实原因。
+ */
+function makeWithAdbFallback(impl, original) {
+  return async function (input = {}, ...rest) {
+    const out = await impl.call(this, input, ...rest)
+    if (out && out.ok !== false) return out
+    const msg = String(out?.error || '')
+    const shizukuDown = /Shizuku|手机操作不可用|未授权|未运行|phone use 服务未就绪/i.test(msg)
+    if (!shizukuDown) return out
+    if (typeof original !== 'function') return out
+    try {
+      const fb = await original.call(this, input, ...rest)
+      if (fb && fb.ok !== false) {
+        return typeof fb === 'string'
+          ? { ok: true, output: fb + '\n（Shizuku 不可用，已改走 adb 通道）' }
+          : { ...fb, output: String(fb.output || '') + '\n（Shizuku 不可用，已改走 adb 通道）' }
+      }
+      return {
+        ok: false,
+        error: `${msg}\nadb 通道也没成功：${fb?.error || '未知原因'}\n（用 /device 看两条通道的状态）`,
+      }
+    } catch (e) {
+      return { ok: false, error: `${msg}\n兜底到 adb 时异常：${e.message}` }
+    }
+  }
 }
 
 /** 撤销适配（回退到原实现） */
@@ -113,28 +196,39 @@ export function revertNativeAdapters(toolkit) {
 const NATIVE_IMPLS = {
 
   // ── 界面快照 ────────────────────────────────
+  //
+  // Kotlin 侧返回的已经是【平铺文本】（仿 agent-mobile-use 的格式）：
+  //   首行状态 · 次行列头 · 之后一行一元素（#id type name 坐标 flags）
+  // 这里直接透传 —— 再包一层 JSON 解析只会把信息揉回去，
+  // 而且模型读平铺文本比读嵌套结构不容易看漏。
   async phone_snapshot(input = {}) {
     const r = await nativeCall('phone.snapshot', {
       interactive_only: input.interactive_only !== false,
       max_nodes: input.max_nodes || 300,
+      no_system_ui: input.no_system_ui !== false,
     })
     if (!r.ok) return { ok: false, error: r.error }
-
-    const lines = [`包名: ${r.package}`, `元素数: ${r.count}`, '']
-    for (const n of r.nodes || []) {
-      const parts = [`[${n.ref}]`, n.cls]
-      if (n.text) parts.push(`"${n.text}"`)
-      if (n.desc) parts.push(`(${n.desc})`)
-      if (n.id) parts.push(`#${String(n.id).split('/').pop()}`)
-      parts.push(n.bounds)
-      if (n.clickable) parts.push('可点击')
-      if (n.editable) parts.push('可输入')
-      if (n.scrollable) parts.push('可滚动')
-      if (n.checked !== undefined) parts.push(n.checked ? '已选中' : '未选中')
-      lines.push(parts.join(' '))
+    // 兼容两种返回：字符串（平铺文本）或对象（老格式）
+    if (typeof r === 'string') return { ok: true, output: r }
+    if (typeof r.text === 'string') return { ok: true, output: r.text }
+    if (typeof r.output === 'string') return { ok: true, output: r.output }
+    // 老格式（带 nodes 数组）走原渲染
+    if (Array.isArray(r.nodes)) {
+      const lines = [`包名: ${r.package}`, `元素数: ${r.count}`, '']
+      for (const n of r.nodes) {
+        const parts = [`#${n.id || n.ref}`, n.cls]
+        if (n.text) parts.push(`"${n.text}"`)
+        if (n.desc) parts.push(`(${n.desc})`)
+        if (n.id) parts.push(`id=${String(n.id).split('/').pop()}`)
+        parts.push(n.bounds)
+        if (n.clickable) parts.push('c')
+        if (n.editable) parts.push('e')
+        if (n.scrollable) parts.push('s')
+        lines.push(parts.join(' '))
+      }
+      return { ok: true, output: lines.join('\n') }
     }
-    if (!r.count) lines.push('（没有找到可交互元素）')
-    return { ok: true, output: lines.join('\n') }
+    return { ok: true, output: JSON.stringify(r) }
   },
 
   // ── 点击 ────────────────────────────────────
@@ -155,12 +249,30 @@ const NATIVE_IMPLS = {
   },
 
   // ── 输入 ────────────────────────────────────
+  //
+  // 服务端走确定性单路径：一次 ACTION_SET_TEXT + 回读校验。
+  // 返回里的 error 字段是有信息的（no_target / inject_rejected /
+  // verify_mismatch / verify_unavailable），如实转述给模型 ——
+  // 特别是 mismatch：那说明「写了但没写进去」，不报出来模型会以为成功了。
   async phone_type(input = {}) {
-    const r = await nativeCall('phone.type', {
-      text: input.text,
-      ref: input.ref || '',
-    })
-    return r.ok ? { ok: true, output: r.message } : { ok: false, error: r.error }
+    const r = await nativeCall('phone.type', { text: input.text })
+    if (!r.ok) return { ok: false, error: r.error || r.message }
+
+    const n = String(input.text || '').length
+    if (r.verified) {
+      return { ok: true, output: `已输入 ${n} 字符（回读校验通过）` }
+    }
+    if (r.error === 'verify_unavailable') {
+      return { ok: true, output: `已写入 ${n} 字符（读不回，无法校验：${r.reason || ''}）` }
+    }
+    if (r.error === 'verify_mismatch') {
+      return {
+        ok: false,
+        error: `写入后回读不一致 —— 输入框实际内容是「${r.verified_text || ''}」。`
+          + `可能是输入法过滤，或该字段有长度/格式限制。`,
+      }
+    }
+    return { ok: true, output: r.reason || `已输入 ${n} 字符` }
   },
 
   // ── 滑动 / 按键 ─────────────────────────────
@@ -190,16 +302,6 @@ const NATIVE_IMPLS = {
     if (!r.ok) return { ok: false, error: r.error }
     if (r.apps) return { ok: true, output: r.apps.join('\n') }
     return { ok: true, output: r.message }
-  },
-
-  // ── 截图 ────────────────────────────────────
-  async phone_screenshot(input = {}) {
-    const r = await nativeCall('phone.screenshot', {
-      save_path: input.save_path || '',
-      quality: input.quality || 85,
-    })
-    if (!r.ok) return { ok: false, error: r.error }
-    return { ok: true, output: `截图已保存: ${r.path}`, imagePath: r.path }
   },
 
   // ── Screencap：截屏 + OCR（原走 rish，CCM 走 MediaProjection）──
@@ -259,8 +361,34 @@ const NATIVE_IMPLS = {
     return r.ok ? { ok: true, output: `电量: ${r.level}%` } : { ok: false, error: r.error }
   },
 
+  // ── 滚动 ────────────────────────────────────
+  async phone_scroll(input = {}) {
+    const r = await nativeCall('phone.scroll', {
+      ref: input.ref || '',
+      direction: input.direction || 'down',
+    })
+    return r.ok
+      ? { ok: true, output: r.message || '已滚动' }
+      : { ok: false, error: r.error || '滚动失败（该区域可能不可滚动）' }
+  },
+
+  // ── 副屏截图（走帧缓存，~60ms）──────────────
+  async phone_screenshot(input = {}) {
+    const r = await nativeCall('phone.screenshot', {
+      save_path: input.save_path || '',
+      quality: input.quality || 85,
+    })
+    if (!r.ok) return { ok: false, error: r.error }
+    const size = r.width && r.height ? `（${r.width}x${r.height}）` : ''
+    return {
+      ok: true,
+      output: `截图已保存${size}${r.source === 'virtual_display_frame' ? '（副屏帧缓存）' : ''}: ${r.path}`,
+      imagePath: r.path,
+    }
+  },
+
   // ── phone_wait：等界面稳定 ──────────────────
-  // 原生实现更简单：无障碍每次拿的都是实时快照，
+  // 原生实现更简单：Shizuku 每次拿的都是实时快照，
   // 轮询两次比较节点数/文本，相同即认为稳定。
   async phone_wait(input = {}) {
     const wantText = input.text || ''

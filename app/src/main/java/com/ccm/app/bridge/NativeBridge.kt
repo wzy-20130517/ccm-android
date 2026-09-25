@@ -74,6 +74,7 @@ class NativeBridge(
                 "phone.screenshot.status" -> phoneScreenshotStatus()
                 "phone.status" -> phoneStatus()
                 "phone.runShell" -> phoneRunShell(params)
+                "phone.displayInfo" -> phoneDisplayInfo()
 
                 // ── 系统能力 ─────────────────────────────
                 "sys.notify" -> sysNotify(params)
@@ -103,14 +104,29 @@ class NativeBridge(
     //  手机操作
     // ═══════════════════════════════════════════════════
 
+    /**
+     * 元素树。返回平铺文本（仿 agent-mobile-use）：
+     *   首行状态 · 次行列头 · 之后一行一元素（#id type name 坐标 flags）
+     * 模型直接读文本，不用解析 JSON，也不会自己算坐标。
+     */
     private fun phoneSnapshot(p: JSONObject): String {
         val remote = ShizukuBridge.phoneService(context)
             ?: return err(shizukuHint())
         val tree = try {
-            remote.dumpTree(p.optBoolean("interactive_only", true), p.optInt("max_nodes", 300))
+            remote.dumpTree(
+                p.optBoolean("interactive_only", true),
+                p.optInt("max_nodes", 300),
+                p.optBoolean("no_system_ui", true),
+            )
         } catch (t: Throwable) { return err("读元素树失败：${t.message}") }
         if (tree.isEmpty()) return err("元素树为空（前台应用可能没渲染完，或界面是纯 Canvas/WebView）")
-        return tree
+        // 必须包成 JSON：桥这条链路（Kotlin HTTP → Node fetch）两端都按 JSON 解析，
+        // 直接把平铺文本裸着返回会让 Node 侧 res.json() 抛错。
+        // 文本放 text 字段，Node 侧取出来照原样交给模型（不做二次结构化）。
+        return JSONObject().apply {
+            put("ok", true)
+            put("text", tree)
+        }.toString()
     }
 
     /** Shizuku 不可用时统一的提示语 —— 不引导去开无障碍（已移除）。 */
@@ -142,17 +158,29 @@ class NativeBridge(
         return ok2json(ok, if (ok) "已点击 (${x.toInt()}, ${y.toInt()})" else "坐标点击失败")
     }
 
+    /**
+     * 文字注入。服务端走确定性单路径（一次 SET_TEXT + 回读校验），
+     * 返回 JSON 里带 verified / verified_text / error，调用方据此如实转述给模型。
+     */
     private fun phoneType(p: JSONObject): String {
         val text = p.optString("text")
         if (text.isEmpty()) return err("缺少 text")
         val remote = ShizukuBridge.phoneService(context) ?: return err(shizukuHint())
-        // 服务端负责找焦点输入框；ref 只是提示，找不到焦点框时会失败
-        val ok = try { remote.typeText(text) } catch (_: Throwable) { false }
-        return ok2json(
-            ok,
-            if (ok) "已输入 ${text.length} 字符"
-            else "输入失败：副屏上没有获得焦点的输入框。先 click 输入框再试。"
-        )
+        return try {
+            // 服务端返回的 JSON 已经是 {ok, mode, verified, error, reason}。
+            // 但它的 ok 指的是「SET_TEXT 调用被接受」，而调用方关心的是「到底写进去没有」——
+            // 所以这里把 ok 重新按 verified 口径给出，同时保留原始字段供排查。
+            val raw = remote.typeText(text)
+            val o = JSONObject(raw)
+            val verified = o.optBoolean("verified", false)
+            val errName = o.optString("error", "")
+            // 只有「SET_TEXT 被拒 / 内部错 / 定位不到」才算失败；
+            // verify_unavailable 算成功（写进去了，只是读不回）。
+            val hardFail = errName == "inject_rejected" || errName == "internal_error" ||
+                errName == "no_target" || errName == "ui_unavailable"
+            o.put("ok", !hardFail)
+            o.toString()
+        } catch (t: Throwable) { err("输入失败：${t.message}") }
     }
 
     private fun phoneSwipe(p: JSONObject): String {
@@ -212,78 +240,36 @@ class NativeBridge(
         }
     }
 
+    /**
+     * 应用操作。转发给服务端，因为「在副屏启动」需要 shell 权限 + 副屏 displayId。
+     *
+     * 重点在 launch：如果应用已在主屏跑着，服务端会用 move-stack 平滑搬过来，
+     * 而不是重启 —— 重启会把用户主屏上的进度全丢掉（微信聊天界面回到列表）。
+     */
     private fun phoneApp(p: JSONObject): String {
+        val remote = ShizukuBridge.phoneService(context) ?: return err(shizukuHint())
         val action = p.optString("action", "launch")
         val pkg = p.optString("package")
+        val filter = p.optString("filter", "")
         return try {
-            val pm = context.packageManager
-            when (action) {
-                "list" -> {
-                    val filter = p.optString("filter", "")
-                    val apps = pm.getInstalledApplications(0)
-                        .filter { it.packageName.contains(filter, true) }
-                        .map { it.packageName }
-                        .sorted()
-                    JSONObject().apply {
-                        put("ok", true)
-                        put("count", apps.size)
-                        put("apps", JSONArray(apps))
-                    }.toString()
-                }
-                "current" -> {
-                    // 走 Shizuku 的 shell，比无障碍可靠（无障碍拿不到别的应用窗口时会是空的）
-                    val remote = ShizukuBridge.phoneService(context)
-                    if (remote == null) return err(shizukuHint())
-                    val out = try {
-                        remote.runShell("dumpsys window 2>/dev/null | grep -E 'mCurrentFocus' | head -1", 8000)
-                    } catch (t: Throwable) { return err("查询前台失败：${t.message}") }
-                    // 输出形如 "1\n  mCurrentFocus=Window{xxx u0 com.pkg/.Act}"
-                    // 正则用原始字符串（三引号）——普通字符串里 \d \s 是非法转义，Kotlin 编译不过
-                    val m = Regex("""u\d+\s+([\w.]+)/""").find(out)
-                    val pkgName = m?.groupValues?.get(1) ?: ""
-                    ok2json(pkgName.isNotEmpty(), pkgName.ifEmpty { "（读不到前台应用）" })
-                }
-                "launch" -> {
-                    if (pkg.isEmpty()) return err("缺少 package")
-                    val intent = pm.getLaunchIntentForPackage(pkg)
-                        ?: return err("找不到应用: $pkg")
-                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                    context.startActivity(intent)
-                    ok2json(true, "已启动 $pkg")
-                }
-                "stop" -> err("stop 需要 root 权限，暂不支持")
-                else -> err("未知 action: $action")
-            }
-        } catch (t: Throwable) {
-            err("应用操作失败: ${t.message}")
-        }
+            remote.app(action, pkg, filter)
+        } catch (t: Throwable) { err("应用操作失败：${t.message}") }
+    }
+
+    /** 副屏尺寸与帧缓存状态（诊断用，也让模型知道坐标范围）。 */
+    private fun phoneDisplayInfo(): String {
+        val remote = ShizukuBridge.phoneService(context) ?: return err(shizukuHint())
+        return try { remote.status() } catch (t: Throwable) { err("查询失败：${t.message}") }
     }
 
     /**
-     * 通用 shell 出口。
+     * 截图。首选副屏帧缓存 —— 守护侧一直在把最新帧编成 JPEG，
+     * 这里只是取一份内存拷贝，实测 ~60ms；而 MediaProjection 那条路要 ~1.8s。
      *
-     * 给「既不是点一下、也不是读元素树」的能力用（前台应用、dumpsys 类查询、
-     * 未来的 pm/am 操作）。有它就不必每加一个能力改一次 AIDL。
+     * 【为什么帧缓存是全分辨率】
+     * 调用方按像素尺寸算模型侧的缩放比例（图会被缩到 2048 长边省 token）。
+     * 缓存若缩过，比例就错，模型按图上坐标点击会系统性偏掉。
      */
-    private fun phoneRunShell(p: JSONObject): String {
-        val cmd = p.optString("cmd")
-        if (cmd.isEmpty()) return err("缺少 cmd")
-        val remote = ShizukuBridge.phoneService(context) ?: return err(shizukuHint())
-        val timeout = p.optInt("timeout_ms", 15000)
-        val raw = try { remote.runShell(cmd, timeout) } catch (t: Throwable) {
-            return err("执行失败：${t.message}")
-        }
-        val nl = raw.indexOf('\n')
-        val code = if (nl > 0) raw.substring(0, nl) else raw
-        val body = if (nl > 0) raw.substring(nl + 1) else ""
-        return JSONObject().apply {
-            put("ok", code.trim() == "0")
-            put("exit_code", code.trim().toIntOrNull() ?: -1)
-            put("stdout", body)
-            if (code.trim() != "0") put("error", body.ifEmpty { "退出码 $code" })
-        }.toString()
-    }
-
     private fun phoneScreenshot(p: JSONObject): String {
         val remote = ShizukuBridge.phoneService(context)
         if (remote != null) {
@@ -293,10 +279,15 @@ class NativeBridge(
                     ?: File(context.cacheDir, "ccm-vd-shot.jpg").absolutePath
                 return try {
                     File(path).writeBytes(bytes)
+                    val m = try { remote.displayMetrics() } catch (_: Throwable) { null }
                     JSONObject().apply {
                         put("ok", true)
                         put("path", path)
-                        put("message", "截图已保存: $path")
+                        put("source", "virtual_display_frame")
+                        if (m != null && m.size >= 3) {
+                            put("width", m[0]); put("height", m[1]); put("dpi", m[2])
+                        }
+                        put("message", "截图已保存（副屏帧缓存）: $path")
                     }.toString()
                 } catch (t: Throwable) { err("写截图失败: ${t.message}") }
             }
