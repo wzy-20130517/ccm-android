@@ -351,31 +351,28 @@ class ProotRuntime(private val context: Context) {
         // 放在 rootfs 外面（App filesDir 下）就没这个问题：proot 的宿主观
         // 和客户机观在这里是一致的。
         // ═══════════════════════════════════════════════════════════
-        // ⚠️ 只有当目录**确实存在且可写**时才设 PROOT_L2S_DIR。
+        // ⚠️ PROOT_L2S_DIR 必须给**宿主机路径**（proot 靠它找自己的工作目录）。
         //
-        // 【实测结论·2026-09-26】proot 遇到不存在的 PROOT_L2S_DIR 时
-        // **不会报错、也不会自己创建** —— 它只是静默地让 link2symlink 失效，
-        // 然后硬链接创建回归到内核，撞上 Android 沙箱限制：
-        //   tar: ./usr/bin/perl5.38.2: Cannot hard link to './usr/bin/perl':
-        //        Operation not permitted
-        //   dpkg-deb: error: tar subprocess returned error exit status 2
-        //   → 再往上就是 "zstd write error: Broken pipe"（管道对端已死）
-        //   → 再往上就是 "error setting ownership of '...dpkg-new': No such file"
+        // 【实测对照 · 2026-09-26，用 CCM 自带的 proot 二进制，同一个 rootfs】
+        //   PROOT_L2S_DIR=<宿主机绝对路径>  → link2symlink 生效
+        //       /usr/bin 下 ln h1 h2 → EXIT=0，链接正常建立
+        //   PROOT_L2S_DIR=/.l2s（客户机路径）→ link2symlink **失效**
+        //       /usr/bin 下 ln h1 h2 → "Operation not permitted"
+        //   两者都不带该变量时 → 也是 Operation not permitted
         //
-        // 【本地对照实验（同一个 perl-base.deb）】
-        //   .l2s 目录不存在 → ln 失败，退出码 1，文件没建出来
-        //   .l2s 目录存在   → ln 成功，退出码 0
-        //   完全不设 PROOT_L2S_DIR → proot 用默认位置，同样成功
+        // 结论：这个变量是**给 proot 进程本身**看的（宿主机视角），
+        // 不是给客户机里的程序看的。写成客户机路径，proot 找不到工作目录，
+        // 整个 link2symlink 扩展静默失效 —— 然后硬链接创建落到内核，
+        // 撞上 Android 沙箱「禁止普通应用建硬链接」的限制。
         //
-        // 所以策略是：**建不出来就别设**，让 proot 走它自己的默认路径。
-        // 原来只写了 mkdirs() 却不检查结果 —— 建失败（权限/竞态/被清理）
-        // 之后照样设进去，等于把一条本来能用的路堵死。
-        val l2sDir = prootL2sDir
-        val l2sReady = l2sDir.isDirectory || l2sDir.mkdirs()
-        if (l2sReady && l2sDir.canWrite()) {
-            env["PROOT_L2S_DIR"] = l2sDir.absolutePath
+        // 曾担心「链接目标会不会是宿主机路径、在客户机里变成断链」——
+        // 实测不会：proot 自己会做路径转换（/usr/bin 下的测试链接可正常访问）。
+        val l2sHostDir = File(rootfs, ".l2s")
+        if (!l2sHostDir.isDirectory) l2sHostDir.mkdirs()
+        if (l2sHostDir.isDirectory && l2sHostDir.canWrite()) {
+            env["PROOT_L2S_DIR"] = l2sHostDir.absolutePath
         } else {
-            env.remove("PROOT_L2S_DIR")   // 交给 proot 默认位置
+            env.remove("PROOT_L2S_DIR")
         }
 
         // 【TERM：用 dumb 而不是 xterm-256color】
