@@ -166,9 +166,11 @@ class RootfsManager(private val context: Context) {
             if (tmpPath.exists()) tmpPath.deleteRecursively()
             tmpPath.mkdirs()
             onProgress("extract", 0, archiveFile.length())
-            val ok = TarExtractor.extract(archiveFile, tmpPath) { done, total ->
-                onProgress("extract", done, total)
-            }
+            val ok = TarExtractor.extract(
+                archiveFile, tmpPath,
+                { done, total -> onProgress("extract", done, total) },
+                { reason -> Log.e(TAG, "解压 rootfs 失败：$reason") }
+            )
             if (!ok) {
                 Log.e(TAG, "解压失败")
                 tmpPath.deleteRecursively()
