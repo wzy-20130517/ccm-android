@@ -186,3 +186,61 @@ libc6:  Status: install ok installed     ← dpkg 数据库说装了
 
 **方案 D**：用 Termux 自己的环境跑 Node（不用 Linux 容器）——
 但这样就失去了 proot 隔离的意义。
+
+---
+
+# 【重要】最终可行方案（2026-09-26 晚）
+
+## 找到了可行路径：关掉 link2symlink + 手动补相对符号链接
+
+### 实测成功的操作序列
+```bash
+# 1. 清掉之前 link2symlink 留下的断链
+rm -f $R/usr/bin/perl $R/usr/bin/perl5.38.2
+
+# 2. 不带 --link2symlink 解包（硬链接会失败，但主文件正常解出）
+proot -0 -L --rootfs=$R ... dpkg-deb -x perl-base.deb /
+#    → tar: Cannot hard link to './usr/bin/perl': Permission denied（预期内，可忽略）
+#    → /usr/bin/perl 正常解出（3942240 字节，真文件）✅
+
+# 3. 手动补相对符号链接（替硬链接）
+cd /usr/bin && ln -sfn perl perl5.38.2
+
+# 4. 验证
+/usr/bin/perl -v
+#    → This is perl 5, version 38, subversion 2 (v5.38.2) ✅✅✅
+```
+
+**关键点**：
+- **不要用 `--link2symlink`** —— 它建的是指向宿主机路径的**断链**
+- 硬链接失败**不影响主文件**解出，只是同一个 inode 的别名少一个
+- 用**相对符号链接**补上别名，客户机里必定可达
+
+## 但 dpkg -i / apt-get install 依然不行
+
+dpkg **自己**需要建硬链接来做两件事：
+1. 升级前**备份旧文件**：`unable to make backup link of './usr/bin/perl': Permission denied`
+2. 备份自己的数据库：`error creating new backup file '/var/lib/dpkg/status-old': Permission denied`
+
+**这两处 dpkg 用的是裸 `link()`，不经过 tar** —— 所以 link2symlink 帮不上，
+我们自己补链接也帮不上。**这是 dpkg 的硬性依赖。**
+
+## 结论：必须绕开 dpkg/apt
+
+现有可行路径（已验证一半）：
+```
+对每个 .deb：
+  1. proot（不带 link2symlink）dpkg-deb -x 解包到 /
+  2. 记下 tar 报的硬链接失败项 → 手动补相对符号链接
+  3. 跑 postinst / postrm（大部分能跑）
+  4. 手工往 /var/lib/dpkg/status 追加 Package 条目
+  5. apt 只用来下载 .deb（apt-get download），不用它安装
+```
+第 1、2 步**已验证成功**（perl 跑起来了）。
+第 3-5 步需要写代码，但技术上没有障碍。
+
+## 另一条更简单的路（未验证）
+**换一个 rootfs** —— 找一个**已经把基础包都装好**的镜像。
+因为整个泥潭的根源是「从 20MB 的最小镜像开始装」，
+而用户要的只是能跑 Node。如果有一个 200MB 的、装好 git/perl/curl 的
+Ubuntu 镜像，上面所有问题都不存在。
