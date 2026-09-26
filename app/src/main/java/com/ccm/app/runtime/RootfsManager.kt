@@ -537,19 +537,33 @@ class RootfsManager(private val context: Context) {
             // 看着像权限/磁盘/包损坏，实际只是硬链接建不出来 —— 用户重试多少次都一样。
             // （2026-09-26 定位：本地实测「同包 + 不带 link2symlink = 必失败，
             //   带上就全解出」，而 APK 的 PROOT_L2S_DIR 曾指向 rootfs 内部导致静默失效。）
+            // ⚠️ 这个自检**测不出真问题**，别再依赖它。
+            //
+            // 它是在 proot **内部**跑 ln：带了 --link2symlink 时 proot 会把 ln
+            // 解释成建符号链接并返回成功，所以这里永远打印 HARDLINK_OK ——
+            // 哪怕真实解包时仍然失败（实测就是这么被误导的，见 build-83 的日志）。
+            //
+            // 真正的判据是**解包能不能过**：dpkg-deb -x 一个含硬链接的真实包。
+            // 用 perl-base（它有 usr/bin/perl → perl5.38.2 的硬链接），
+            // 失败时给出明确指引，而不是让用户对着 zstd/Broken pipe 之类的
+            // 二级错误发呆。
             run {
                 val probe = exec(
                     listOf(
                         "/bin/bash", "-lc",
                         "cd /tmp 2>/dev/null || cd /; " +
-                            "echo probe > .hla; rm -f .hlb; " +
-                            "if ln .hla .hlb 2>/dev/null; then echo HARDLINK_OK; else echo HARDLINK_NO; fi; " +
-                            "rm -f .hla .hlb"
+                            "d=$(ls /var/cache/apt/archives/perl-base_*.deb 2>/dev/null | head -1); " +
+                            "if [ -z \"$d\" ]; then echo NO_PKG; exit 0; fi; " +
+                            "rm -rf .l2sprobe; " +
+                            "if dpkg-deb -x \"$d\" .l2sprobe >/dev/null 2>&1; then echo UNPACK_OK; " +
+                            "else echo UNPACK_FAIL; fi; rm -rf .l2sprobe"
                     ),
                     {}
                 )
                 if (!probe) {
-                    onLine("  ⚠️ 硬链接自检未通过（这不一定是问题，proot 会自动兜底）")
+                    onLine("  ⚠️ 解包自检未通过：link2symlink 可能没生效，")
+                    onLine("     装包时会在 perl-base 这类含硬链接的包上失败（zstd Broken pipe）。")
+                    onLine("     检查 filesDir/l2s 是否存在且可写。")
                 }
             }
 
