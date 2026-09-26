@@ -1501,6 +1501,40 @@ class RootfsManager(private val context: Context) {
         // 早期 perl-base 解包失败（硬链接建不出来的那个 bug）→ perl 残缺 →
         // frontend 跑不起来 → confmodule 加载失败 → postinst 直接 exit 127。
         //
+        // ②.4) 【破循环依赖】先把 perl-base 单独装上 —— 绕过 apt、跳过依赖检查。
+        //
+        // 【死锁长什么样】build-87 的实测日志：
+        //   /var/lib/dpkg/info/debconf.postinst: 17: exec:
+        //       /usr/share/debconf/frontend: not found        → exit 127
+        //   dpkg: error processing package debconf (--configure)
+        //   libpam0g:arm64 depends on debconf (>= 0.5); however:
+        //     Package debconf is not configured yet.
+        //   E: Internal Error, No file name for debconf:arm64
+        //
+        // debconf 的 postinst 要加载 confmodule → confmodule 会 exec
+        // /usr/share/debconf/frontend，而它是个 **perl 脚本**；
+        // 可这个 rootfs 里的 perl 是坏的（早期硬链接 bug 导致解包失败）。
+        // 于是：debconf 要 perl 才能装好，perl 要 debconf 才能被 apt 修好 ——
+        // 互相等对方，永远解不开。apt 一看到「30 not fully installed」
+        // 就拒绝动手，连 --reinstall 都不给走。
+        //
+        // 【破法】perl-base 的 postinst **不依赖 debconf**
+        // （实测：只调 dpkg-maintscript-helper 和 set -e）。所以单独直接把它
+        // 装上，让 perl 先可用，debconf 的死锁自然就解了。
+        //
+        // 用 **dpkg -i --force-depends** 而不是 apt：
+        // apt 会做依赖求解并拒绝，dpkg 不求解、只听指令 —— 这正是破循环需要的。
+        exec(
+            listOf(
+                "/bin/bash", "-lc",
+                "export DEBIAN_FRONTEND=noninteractive TERM=dumb; " +
+                    "d=\$(ls /var/cache/apt/archives/perl-base_*.deb 2>/dev/null | head -1); " +
+                    "if [ -n \"\$d\" ]; then dpkg -i --force-depends \"\$d\" 2>&1 | tail -8; " +
+                    "else echo '（缓存无 perl-base.deb，跳过）'; fi"
+            ),
+            { line -> if (line.isNotBlank()) onLine("  $line") }
+        )
+
         // 【为什么必须强制重装】修好 link2symlink 之后，**旧包不会自动重来** ——
         // dpkg 记着 perl-base 是 "installed"，apt 不会重试解包。
         // 所以坏掉的 perl 会一直坏下去，表现为「换了个错误但依然装不上」。
