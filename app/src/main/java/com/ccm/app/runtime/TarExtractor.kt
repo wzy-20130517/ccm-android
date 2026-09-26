@@ -264,10 +264,21 @@ object TarExtractor {
         return when {
             head[0] == 0x1F.toByte() && head[1] == 0x8B.toByte() ->
                 GZIPInputStream(FileInputStream(archive), 64 * 1024)
+            // ⚠️ XZInputStream 的第二个参数是**内存限制（单位 KiB）**，不是缓冲区大小！
+            //
+            // build-99 实测报错：
+            //   MemoryLimitException: 65640 KiB of memory would be needed;
+            //   limit was 65536 KiB (BlockInputStream.java:186)
+            // 原来传的是 64 * 1024 —— 看上去像「64KB 缓冲」，实际是「64MiB 内存上限」，
+            // 而 Node 的 tarball 恰好需要 65640 KiB，**差 104 KiB 就撞墙**。
+            // 这种「差一点点」的失败最容易被误判成文件损坏/格式不支持。
+            //
+            // 改传 -1 = 不限制。我们的场景是解压自己下载的官方 tarball，
+            // 不存在恶意构造的 xz bomb 风险（真要防也该在下载校验那层做）。
             head[0] == 0xFD.toByte() && head[1] == 0x37.toByte() &&
             head[2] == 0x7A.toByte() && head[3] == 0x58.toByte() &&
             head[4] == 0x5A.toByte() && head[5] == 0x00.toByte() ->
-                XZInputStream(FileInputStream(archive), 64 * 1024)
+                XZInputStream(FileInputStream(archive), -1)
             else -> GZIPInputStream(FileInputStream(archive), 64 * 1024)
         }
     }
