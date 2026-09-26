@@ -468,7 +468,7 @@ done
 # tar -tvf 输出格式（硬链接行）：
 #   hrwxr-xr-x root/root 0 2024-10-02 13:29 ./usr/bin/zipinfo link to ./usr/bin/unzip
 #     $1        $2      $3    $4       $5      $6（链接名）    $7  $8  $9（目标）
-# ⚠️ 早期版本写的是 `print $NF, $(NF-2)` —— 取成了「目标」和单词 "link"，
+# ⚠️ 早期版本用的是相对索引（awk 的 NF 相对字段）—— 取成了「目标」和单词 "link"，
 #    两个字段全错位，结果建出 /usr/bin/unzip -> /（目标解析成空串）这种废链接。
 #    字段位置是固定的，不要用 NF 相对索引（"link to" 可能缺失）。
 fix_hardlinks() {
