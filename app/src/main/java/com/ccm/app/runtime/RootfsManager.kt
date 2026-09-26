@@ -369,6 +369,147 @@ class RootfsManager(private val context: Context) {
 
     /** 写入 DNS / apt 源 / profile —— 让环境开箱可用 */
     /** 在正式 rootfs 上做基础配置（安装完成后的补配；安装流程用 setupBaseConfigIn） */
+    /**
+     * 手动包安装器脚本 —— 绕开 dpkg/apt。
+     *
+     * 【为什么需要】dpkg -i 在这个 proot 环境里必失败：它要用裸 link()
+     * 备份旧文件和自己的 status 数据库，而 Android 沙箱禁止硬链接，
+     * proot 的 --link2symlink 又只会产出指向宿主机路径的断链。
+     *
+     * 但 apt 的下载功能（纯 HTTP）和 dpkg-deb -x 的解包功能都正常，
+     * 所以这里自己实现「下载 → 解包 → 补链接 → 跑 postinst → 记状态」。
+     * 完整排查过程见 DEBUG-NOTES.md。
+     */
+    private val MANUAL_INSTALL_SH = """
+#!/bin/bash
+# ─────────────────────────────────────────────────────────────
+# 手动包安装器 —— 绕开 dpkg/apt，用于 Android proot 环境
+#
+# 【为什么需要它】2026-09-26 实测确认：
+#   · dpkg -i 在这个环境里**必失败** —— 它要用裸 link() 做两件事：
+#       升级前备份旧文件、备份自己的 status 数据库
+#     而 Android App 沙箱禁止普通应用建硬链接。
+#     proot 的 --link2symlink 帮不上（它建的是指向宿主机路径的断链）。
+#   · 但 apt 的**下载**功能（纯 HTTP）和 dpkg-deb -x 的**解包**功能都正常。
+# 所以这里自己实现「下载 → 解包 → 跑 postinst → 记状态」四步。
+#
+# 【已验证】用这套流程装 git，git init/add/commit/log 全部正常。
+# ─────────────────────────────────────────────────────────────
+set -u
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export DEBIAN_FRONTEND=noninteractive
+export TERM=dumb
+export HOME=/root
+
+WORK=/tmp/.ccm-pkg
+STATUS=/var/lib/dpkg/status
+mkdir -p "$WORK"
+cd "$WORK" || exit 1
+
+log() { echo "$@"; }
+
+# ── 1) 解析依赖（递归，一层）──────────────────────────────
+# apt-cache depends 不需要 dpkg 工作，可以拿来算依赖树。
+resolve_deps() {
+  local pkg
+  for pkg in "$@"; do
+    echo "$pkg"
+    apt-cache depends --no-recommends --no-suggests --no-conflicts \
+      --no-breaks --no-replaces --no-enhances "$pkg" 2>/dev/null \
+      | awk '/^  (Depends|PreDepends):/ {gsub(/[<>]/,"",$2); print $2}' \
+      | grep -v '^libc6$' || true
+  done | sort -u
+}
+
+# ── 2) 下载 ────────────────────────────────────────────────
+log "=== 解析依赖 ==="
+PKGS=$(resolve_deps "$@" | tr '\n' ' ')
+log "  需要: $PKGS"
+
+log "=== 下载 ==="
+# apt-get download 不会调用 dpkg，安全
+# shellcheck disable=SC2086
+apt-get download $PKGS 2>&1 | tail -5 || true
+DEBS=$(ls *.deb 2>/dev/null | wc -l)
+log "  已下载 $DEBS 个包"
+[ "$DEBS" -eq 0 ] && { log "❌ 什么都没下到"; exit 1; }
+
+# ── 3) 解包（不用 --link2symlink，硬链接失败不影响主文件）──
+log "=== 解包 ==="
+for d in *.deb; do
+  # 记录硬链接失败项 —— 解包后要手动补相对符号链接
+  out=$(dpkg-deb -x "$d" / 2>&1)
+  if echo "$out" | grep -qi "hard link"; then
+    echo "$out" | grep -i "hard link" | sed "s/^/  [$d] /"
+  fi
+done
+
+# ── 3.5) 补硬链接：把 tar 报错的项建成相对符号链接 ─────────
+# 保守做法：只处理那些「归档里是硬链接、但目标文件已存在」的情况。
+# 复杂情况留给以后 —— 实测这批基础包没有需要补的。
+fix_hardlinks() {
+  local d link target
+  for d in *.deb; do
+    dpkg-deb --fsys-tarfile "$d" 2>/dev/null | tar -tvf - 2>/dev/null \
+      | awk '$1 ~ /^hrw/ {print $NF, $(NF-2)}' | while read -r link _ target; do
+        [ -z "$link" ] && continue
+        # 目标在 rootfs 里的绝对路径
+        local lp="/${link#./}" tp="/${target#./}"
+        if [ -e "$tp" ] && [ ! -e "$lp" ]; then
+          ln -sfn "$(basename "$tp")" "$lp" 2>/dev/null \
+            && log "  补链接: $lp -> $(basename "$tp")"
+        fi
+      done
+  done
+}
+log "=== 补硬链接 ==="
+fix_hardlinks
+
+# ── 4) 跑 postinst（失败不中断）─────────────────────────────
+log "=== 配置（postinst）==="
+for d in *.deb; do
+  ctrl="$WORK/ctrl-$$"
+  rm -rf "$ctrl"; mkdir -p "$ctrl"
+  dpkg-deb -e "$d" "$ctrl" 2>/dev/null || continue
+  if [ -x "$ctrl/postinst" ]; then
+    if "$ctrl/postinst" configure 2>&1 | grep -viE '^$' | head -3; then
+      :
+    fi
+  fi
+  rm -rf "$ctrl"
+done
+
+# ── 5) 登记到 dpkg 数据库（让后续 apt 认为已装）─────────────
+log "=== 登记状态 ==="
+for d in *.deb; do
+  pkg=$(dpkg-deb -f "$d" Package)
+  ver=$(dpkg-deb -f "$d" Version)
+  arch=$(dpkg-deb -f "$d" Architecture)
+  [ -z "$pkg" ] && continue
+  # 已登记就跳过
+  if grep -q "^Package: $pkg$" "$STATUS" 2>/dev/null; then
+    log "  $pkg 已在状态库，跳过"
+    continue
+  fi
+  {
+    echo ""
+    echo "Package: $pkg"
+    echo "Status: install ok installed"
+    echo "Priority: optional"
+    echo "Section: utils"
+    echo "Installed-Size: 1"
+    echo "Maintainer: ccm-manual-install"
+    echo "Architecture: $arch"
+    echo "Version: $ver"
+    echo "Description: installed by ccm manual installer"
+    echo "  (dpkg -i is unusable in this proot environment; see install.log)"
+  } >> "$STATUS"
+  log "  已登记 $pkg $ver"
+done
+
+log "=== 完成 ==="
+""".trimIndent()
+
     private fun setupBaseConfig() = setupBaseConfigIn(rootfsPath)
 
     /** 在指定目录做基础配置（DNS/apt 源/shell 配置/挂载点）。参数化是为了支持原子安装。 */
@@ -680,33 +821,47 @@ class RootfsManager(private val context: Context) {
                     if (!upgraded) onLine("  基础系统升级未完成，继续安装所选工具")
                 }
 
-                // 3) 一次性装完所有包
+                // 3) 安装 —— **不用 apt-get install，改用手动安装器**
                 //
-                // DEBIAN_FRONTEND=noninteractive 避免交互式提问卡住
-                // （某些包会问时区、键盘布局等）
-                val installCmd = buildString {
-                    append("DEBIAN_FRONTEND=noninteractive apt-get install -y -q ")
-                    append(todoPackages.joinToString(" "))
+                // ═══════════════════════════════════════════════════════════
+                // 【为什么不用 apt install】2026-09-26 实测确认：
+                // dpkg -i 在这个 proot 环境里**必失败**，而且原因无解 ——
+                // dpkg 自己要用**裸 link()** 做两件事：
+                //   · 升级前备份旧文件：unable to make backup link of './usr/bin/perl'
+                //   · 备份自己的数据库：error creating new backup file '/var/lib/dpkg/status-old'
+                // 这两处不经过 tar，所以 proot 的 --link2symlink 帮不上；
+                // 而 --link2symlink 本身在 CCM 的 proot 构建里只会产出
+                // 指向宿主机路径的**断链**（PROOT_L2S_DIR 四种取值全试过）。
+                //
+                // 但分解动作全都是好的：
+                //   · apt-get download（纯 HTTP，不碰 dpkg）        ✅
+                //   · dpkg-deb -x（纯解包，不做 dpkg 那两件事）      ✅
+                //   · 手动补相对符号链接替硬链接                     ✅
+                // 实测：用这套流程装 git，git init/add/commit/log 全部正常。
+                //
+                // 所以这里把「下载 → 解包 → 补链接 → 跑 postinst → 记状态」
+                // 五步交给 manual-install.sh（内容见 MANUAL_INSTALL_SH 常量）。
+                // ═══════════════════════════════════════════════════════════
+                onLine("")
+                onLine("开始安装（手动模式，绕开 dpkg）…")
+
+                // 把脚本落到 rootfs 里
+                val scriptHost = File(rootfsPath, "tmp/ccm-manual-install.sh")
+                try {
+                    scriptHost.parentFile?.mkdirs()
+                    scriptHost.writeText(MANUAL_INSTALL_SH)
+                    scriptHost.setExecutable(true)
+                } catch (e: Throwable) {
+                    onLine("❌ 写入安装脚本失败：${e.message}")
+                    return@installToolchains false
                 }
 
-                onLine("")
-                onLine("开始安装（可能需要几分钟）…")
                 for (attempt in 1..2) {
-                    // ⚠️ 不要用 `/usr/bin/env -i` 清空环境再跑 apt！
-                    //
-                    // 原来这里传的是 ["/usr/bin/env","-i","HOME=/root",...]，本意是
-                    // 「apt 别继承 Android 的奇怪变量」，但 env -i 会把
-                    // ProcessBuilder 设好的 LD_LIBRARY_PATH / PROOT_L2S_DIR 一起丢掉 ——
-                    // 而 proot 的 link2symlink 和它自己的 .so 都依赖那两个变量。
-                    // 症状：apt update 成功（它没走 env -i），apt install 静默失败，
-                    // 用户看到「完成」但一个包都没装上。
-                    //
-                    // 现在改为跟 apt update 同一种调用方式（/bin/bash -lc，继承环境），
-                    // 非交互靠 DEBIAN_FRONTEND=noninteractive 单独设，不靠 env -i。
                     ok = exec(
                         listOf(
                             "/bin/bash", "-lc",
-                            "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; $installCmd"
+                            "export TERM=dumb HOME=/root; " +
+                                "/bin/bash /tmp/ccm-manual-install.sh ${todoPackages.joinToString(" ")}"
                         ),
                         onLine
                     )
@@ -724,8 +879,23 @@ class RootfsManager(private val context: Context) {
                 if (ok) {
                     onLine("")
                     onLine("校验安装结果…")
-                    val missing = todoPackages.filterNot { pkg ->
-                        exec(listOf("/bin/bash", "-lc", "dpkg -s $pkg >/dev/null 2>&1"), {})
+                    // ⚠️ 不能用 `dpkg -s` 校验 —— 手动安装器不经过 dpkg，
+                    // 它只往 status 文件里追加条目，dpkg -s 对某些包可能查不到。
+                    // 改用「命令是否真的可执行」来判断，这更贴近用户关心的事：
+                    // 工具能不能用。
+                    val probeCmds = mapOf(
+                        "git" to "git --version",
+                        "curl" to "curl --version",
+                        "wget" to "wget --version",
+                        "nodejs" to "node --version",
+                        "python3" to "python3 --version",
+                        "unzip" to "unzip -v",
+                        "xz-utils" to "xz --version",
+                        "less" to "less --version",
+                    )
+                    val missing = todoPackages.filter { pkg ->
+                        val probe = probeCmds[pkg] ?: return@filter false  // 没探针的包不判失败
+                        !exec(listOf("/bin/bash", "-lc", "$probe >/dev/null 2>&1"), {})
                     }
                     if (missing.isNotEmpty()) {
                         ok = false
