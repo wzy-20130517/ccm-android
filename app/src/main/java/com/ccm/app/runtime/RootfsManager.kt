@@ -400,9 +400,23 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export DEBIAN_FRONTEND=noninteractive
 export TERM=dumb
 export HOME=/root
+# ⚠️ 必须显式设 TMPDIR —— dpkg-deb 要建临时目录，默认位置在 proot 里不可用。
+# 症状：dpkg-deb: error: unable to create temporary directory: No such file or directory
+export TMPDIR=/tmp
+export TEMP=/tmp
+export TMP=/tmp
 
 WORK=/tmp/.ccm-pkg
 STATUS=/var/lib/dpkg/status
+
+# /tmp 必须存在且可写 —— 有些 rootfs 的 /tmp 权限不对
+mkdir -p /tmp 2>/dev/null
+chmod 1777 /tmp 2>/dev/null
+if [ ! -w /tmp ]; then
+  echo "❌ /tmp 不可写，无法继续"
+  exit 1
+fi
+
 mkdir -p "${'$'}WORK"
 cd "${'$'}WORK" || exit 1
 
