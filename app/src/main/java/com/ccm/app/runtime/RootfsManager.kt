@@ -1414,16 +1414,31 @@ class RootfsManager(private val context: Context) {
         // ⚠️ exec 返回 Boolean 表示退出码，**不是抛异常** ——
         //    最早写成 try { exec(...); hasDebconf = true } 是错的：
         //    那样只要不抛异常就认为「有 debconf」，检测恒真、修复永不执行。
-        val hasDebconf = try {
-            exec(listOf("/bin/bash", "-lc", "test -x /usr/share/debconf/frontend"), {})
+        // ⚠️ 判据必须是「debconf 能用」而不是「文件在」。
+        //
+        // 【踩过的坑】原来只测 `test -x /usr/share/debconf/frontend` —— 文件当然在
+        // （debconf 包装上了），但 **frontend 是 perl 脚本，perl 坏掉它就跑不起来**。
+        // 于是这里判定「已就绪」直接返回，修复被跳过，接着所有用 debconf 的包
+        // postinst 全部 exit 127（libpam0g 就是这么挂的）。
+        // 症状：错误换了个样子，但依然装不上，而且越查越像"别的问题"。
+        //
+        // 现在多跑一次 `perl -e 'exit 0'` —— 真能执行才算数。
+        val baseOk = try {
+            exec(
+                listOf(
+                    "/bin/bash", "-lc",
+                    "test -x /usr/share/debconf/frontend && perl -e 'exit 0' 2>/dev/null"
+                ),
+                {}
+            )
         } catch (_: Throwable) { false }
 
-        if (hasDebconf) {
+        if (baseOk) {
             try { stamp.writeText("ok") } catch (_: Throwable) {}
             return true
         }
 
-        onLine("检测到系统基础组件不全（缺 debconf），先修复…")
+        onLine("检测到系统基础组件不全（debconf/perl 不可用），先修复…")
 
         // ① 把已经解包但没配置完的包配置掉（--force-confold 避免交互卡住）
         //    ⚠️ 这一步会因为缺 debconf 而部分失败，但 dpkg 会把状态往前推，
@@ -1458,9 +1473,42 @@ class RootfsManager(private val context: Context) {
             { line -> if (line.isNotBlank()) onLine("  $line") }
         )
 
+        // ②.5) 强制重装 perl-base + debconf —— **这是 exit 127 的真正病根**。
+        //
+        // 【因果链】libpam0g 等大量包 postinst 的第一行是
+        //     . /usr/share/debconf/confmodule
+        // 而 confmodule 内部会
+        //     exec /usr/share/debconf/frontend "$0"
+        // frontend 是个 **perl 脚本**（`#!/usr/bin/perl`）。
+        //
+        // 早期 perl-base 解包失败（硬链接建不出来的那个 bug）→ perl 残缺 →
+        // frontend 跑不起来 → confmodule 加载失败 → postinst 直接 exit 127。
+        //
+        // 【为什么必须强制重装】修好 link2symlink 之后，**旧包不会自动重来** ——
+        // dpkg 记着 perl-base 是 "installed"，apt 不会重试解包。
+        // 所以坏掉的 perl 会一直坏下去，表现为「换了个错误但依然装不上」。
+        // --reinstall 强制重新解包，这一步做完 perl 才真正可用。
+        exec(
+            listOf(
+                "/bin/bash", "-lc",
+                "export DEBIAN_FRONTEND=noninteractive TERM=dumb; " +
+                    "apt-get install -y -q --reinstall --fix-broken " +
+                    "perl-base perl debconf 2>&1 | tail -20"
+            ),
+            { line -> if (line.isNotBlank()) onLine("  $line") }
+        )
+
         // 验证（同样看返回码，不靠异常）
+        // 验证要**真的跑一遍 perl** —— 只测文件存不存在会漏掉「perl 在但跑不起来」
+        // 这种情况（正是 exit 127 的来源：frontend 存在，但 shebang 解析失败）。
         val ok = try {
-            exec(listOf("/bin/bash", "-lc", "test -x /usr/share/debconf/frontend"), {})
+            exec(
+                listOf(
+                    "/bin/bash", "-lc",
+                    "test -x /usr/share/debconf/frontend && perl -e 'exit 0' 2>/dev/null"
+                ),
+                {}
+            )
         } catch (_: Throwable) { false }
         onLine(if (ok) "  ✓ 基础组件已修复" else "  ⚠️ 修复未完全成功，继续尝试安装")
         if (ok) {
