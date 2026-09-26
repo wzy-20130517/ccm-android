@@ -73,6 +73,29 @@ class PhoneUseService : IPhoneUseService.Stub {
     private val refTable = HashMap<String, RefEntry>()
     private val refLock = Any()
 
+    /**
+     * 节点名最长输出。
+     *
+     * 【为什么保头也保尾】URL 查询参数、订单号、取件码都长在尾巴上 ——
+     * agent-mobile-use 有实测事故：一条聊天消息的链接结尾是 ...?orderId=xyz，
+     * 按 140 从头部截断后 id 丢了，而 truncated 还报 0（它以为没截）。
+     * 所以截断必须在**中间**标注，两头都留。
+     *
+     * 4000 是灾难墙上限而非常规预算：实测 8 个富文本界面最长真实字段 311 字符，
+     * 正常内容碰不到，只有整章小说/日志页那种病态节点才会被截。
+     */
+    private val maxFieldChars = 4000
+    private val fieldTailChars = 160
+    private val fieldHeadChars = maxFieldChars - fieldTailChars - 22
+
+    /** 超长时保头 + 保尾，中间标注丢了多少字符。 */
+    private fun clip(s: String): String {
+        if (s.length <= maxFieldChars) return s
+        val dropped = s.length - fieldHeadChars - fieldTailChars
+        return s.substring(0, fieldHeadChars) + "...[cut:$dropped]..." +
+            s.substring(s.length - fieldTailChars)
+    }
+
     private class RefEntry(
         val cx: Int,
         val cy: Int,
@@ -595,13 +618,26 @@ class PhoneUseService : IPhoneUseService.Stub {
             for (r in capped) refTable[r.id] = RefEntry(r.cx, r.cy, r.raw, r.editable)
         }
 
+        // 无损记账：整棵树有多少可点击元素、实际发了多少。
+        // 只报「截断了」不够 —— 模型没法知道丢的是不是它能点的东西。
+        var actTotal = 0; var actSent = 0
+        for (r in rows) if (r.clickable || r.editable) actTotal++
+        for (r in capped) if (r.clickable || r.editable) actSent++
+
         val sb = StringBuilder()
         sb.append("# display=").append(id).append(" ").append(dispW).append('x').append(dispH)
         sb.append(" count=").append(capped.size)
-        if (total > capped.size) sb.append(" has_more=1 total=").append(total)
+        if (total > capped.size) {
+            sb.append(" truncated=1 total=").append(total)
+            sb.append(" omitted=").append(total - capped.size)
+            sb.append(" actionable_sent=").append(actSent).append('/').append(actTotal)
+            if (actSent < actTotal) sb.append(" (!)")
+        }
         sb.append('\n')
         sb.append("# 一行一元素：id type name x1,y1,x2,y2 flags")
-        sb.append(" | flags: c=可点 e=可输入 s=可滚 k+=选中 k-=未选 off=禁用 focus=聚焦")
+        sb.append(" | flags: c=可点 e=可输入 s=可滚 k+=选中 k-=未选 off=禁用 focus=聚焦 dN=深度")
+        sb.append('\n')
+        sb.append("# 元素已按有用程度排序（能点、有名字的在前），从上往下读就是推荐顺序")
         sb.append('\n')
         for (r in capped) {
             sb.append('#').append(r.id).append(' ')
@@ -652,7 +688,7 @@ class PhoneUseService : IPhoneUseService.Stub {
         val scrollable = try { node.isScrollable } catch (_: Throwable) { false }
         val text = try { node.text?.toString() ?: "" } catch (_: Throwable) { "" }
         val desc = try { node.contentDescription?.toString() ?: "" } catch (_: Throwable) { "" }
-        val name = (if (text.isNotEmpty()) text else desc).let { if (it.length > 160) it.take(160) + "…" else it }
+        val name = clip(if (text.isNotEmpty()) text else desc)
 
         val take = if (interactiveOnly) clickable || editable || scrollable
                    else clickable || editable || scrollable || name.isNotEmpty()
