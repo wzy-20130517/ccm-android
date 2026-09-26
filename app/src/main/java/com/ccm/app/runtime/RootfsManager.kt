@@ -454,57 +454,55 @@ log() { echo "${'$'}@"; }
 #
 # 现在用队列做广度优先展开，深度上限 6 层（防依赖环/爆炸；
 # 实测 Ubuntu 基础包的依赖深度很少超过 4）。
+# 【为什么用 apt-cache depends --recurse —— 2026-09-26 实测】
+#
+# 试过三个方案，前两个都不行：
+#
+#   ① 自己递归 apt-cache depends（只查直接依赖，逐层展开）
+#      · 只查一层 → 漏间接依赖：curl 缺 libnghttp2.so.14 跑不起来
+#        （依赖链 curl → libcurl4t64 → libnghttp2-14 是两层）
+#      · 改成递归 6 层 → 16 个包要跑几百次 apt-cache，
+#        **实测卡在「解析依赖」好几分钟没动静**，用户以为死机
+#
+#   ② apt-get install --print-uris
+#      · 已安装的包不输出 URI（apt 认为不需要下载）→ 漏包
+#      · 加 --reinstall 在 Termux 的 apt 上无效果
+#
+#   ③ **apt-cache depends --recurse** ← 采用这个
+#      一次调用拿到完整依赖闭包，输出形如：
+#        git
+#          Depends: libcurl
+#          Depends: libexpat
+#        libcurl
+#          Depends: libnghttp2      ← 间接依赖也在
+#      纯包名（顶格的行）就是全部依赖，含间接的。
+#
+# 实测对比：git 从「一层 8 个」变成「14 个」，多出来的正是
+# libnghttp2 / libnghttp3 / libngtcp2 / libssh2 这些漏掉的间接依赖。
+# 且只有**一次** apt-cache 调用，不再有性能问题。
 resolve_deps() {
-  local depth=0
-  local frontier="${'$'}*"
-  local seen="" all=""
-  while [ -n "${'$'}frontier" ] && [ "${'$'}depth" -lt 6 ]; do
-    local next=""
-    local pkg
-    for pkg in ${'$'}frontier; do
-      # 去重
-      case " ${'$'}seen " in *" ${'$'}pkg "*) continue;; esac
-      seen="${'$'}seen ${'$'}pkg"
-      all="${'$'}all ${'$'}pkg"
-      # 展开这一层的依赖
-      next="${'$'}next ${'$'}(apt-cache depends --no-recommends --no-suggests --no-conflicts \
-        --no-breaks --no-replaces --no-enhances "${'$'}pkg" 2>/dev/null \
-        | awk '/^  (Depends|PreDepends):/ {gsub(/[<>]/,"",${'$'}2); print ${'$'}2}' \
-        | grep -v '^libc6${'$'}' || true)"
-    done
-    frontier="${'$'}next"
-    depth=${'$'}((depth + 1))
-  done
-
-  # 过滤虚拟包 + 去重输出
-  for p in ${'$'}all; do
-    [ -z "${'$'}p" ] && continue
-    if apt-cache policy "${'$'}p" 2>/dev/null | grep -q 'Candidate:.*[0-9]'; then
-      echo "${'$'}p"
-    else
-      log "  （跳过虚拟包 ${'$'}p —— 没有候选版本，无需单独下载）" >&2
-    fi
-  done | sort -u
+  apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts \
+    --no-breaks --no-replaces --no-enhances "${'$'}@" 2>/dev/null \
+    | grep -E '^[a-z0-9]' \
+    | grep -v '^libc6${'$'}' \
+    | sort -u
 }
 
-# ── 2) 下载 ────────────────────────────────────────────────
-log "=== 解析依赖 ==="
-PKGS=${'$'}(resolve_deps "${'$'}@" | tr '\n' ' ')
-log "  需要: ${'$'}PKGS"
-
 log "=== 下载 ==="
-# apt-get download 不会调用 dpkg，安全。
+# 用 apt-get download 逐个下（不用 --print-uris 给的 URL 直接 curl，
+# 因为 apt-get download 会自动走配置好的镜像、处理重定向和校验，
+# 而且它同样不会调用 dpkg）。
 #
-# 【为什么逐个下载而不是一次传全部 —— 2026-09-26】
-# 原来写 `apt-get download ${'$'}PKGS`（一次给全）。实测发现：
-# **只要列表里有一个包下不了，apt 就中止整批**，已下载的一个都不留 ——
-# 于是「一个包失败」表现成「什么都没下到」，看起来像网络问题，
-# 排查方向完全跑偏（这次就是被 debconf-2.0 这个虚拟包坑的）。
+# 【为什么逐个下载 —— 2026-09-26】
+# 一次传全部时，**只要列表里有一个包下不了，apt 就中止整批**，
+# 已下载的一个都不留 —— 于是「一个包失败」表现成「什么都没下到」，
+# 看起来像网络问题，排查方向完全跑偏（曾被 debconf-2.0 这个虚拟包坑过）。
+# 逐个下之后单个失败只影响它自己，最后打印失败清单。
 #
-# 逐个下之后：
-#   · 单个包失败只影响它自己，其余照常下到
-#   · 最后统计「成功/失败」，失败清单明确打出来，一眼看出是哪个包的问题
-# 代价是 apt 要重复解析，几十个包多花几秒 —— 换可诊断性，值。
+# 【虚拟包问题】resolve_deps 走 apt-cache depends --recurse，
+# 它输出的是「依赖名」，虚拟包（如 debconf-2.0）仍可能出现 ——
+# 但 apt-get download 单个失败只跳过它自己，不再中止整批，
+# 所以不会像以前那样「一个虚拟包毁掉全部下载」。
 DEB_OK=0; DEB_FAIL=""
 for p in ${'$'}PKGS; do
   if apt-get download "${'$'}p" >/dev/null 2>&1; then
