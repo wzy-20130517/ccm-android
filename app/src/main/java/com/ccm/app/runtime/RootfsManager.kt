@@ -458,24 +458,47 @@ for d in *.deb; do
   fi
 done
 
-# ── 3.5) 补硬链接：把 tar 报错的项建成相对符号链接 ─────────
-# 保守做法：只处理那些「归档里是硬链接、但目标文件已存在」的情况。
-# 复杂情况留给以后 —— 实测这批基础包没有需要补的。
+# ── 3.5) 补硬链接：把 tar 建不出来的硬链接改成相对符号链接 ──
+#
+# tar 解包时硬链接会失败（Android 沙箱禁止 link()），报错形如：
+#   tar: ./usr/bin/zipinfo: Cannot hard link to './usr/bin/unzip': Permission denied
+# 但**主文件（unzip）照常解出** —— 少的只是同一个 inode 的别名。
+# 用相对符号链接补上别名即可，客户机里必定可达。
+#
+# tar -tvf 输出格式（硬链接行）：
+#   hrwxr-xr-x root/root 0 2024-10-02 13:29 ./usr/bin/zipinfo link to ./usr/bin/unzip
+#     $1        $2      $3    $4       $5      $6（链接名）    $7  $8  $9（目标）
+# ⚠️ 早期版本写的是 `print $NF, $(NF-2)` —— 取成了「目标」和单词 "link"，
+#    两个字段全错位，结果建出 /usr/bin/unzip -> /（目标解析成空串）这种废链接。
+#    字段位置是固定的，不要用 NF 相对索引（"link to" 可能缺失）。
 fix_hardlinks() {
-  local d link target
+  local d link target lp tp dir
   for d in *.deb; do
     dpkg-deb --fsys-tarfile "${'$'}d" 2>/dev/null | tar -tvf - 2>/dev/null \
-      | awk '${'$'}1 ~ /^hrw/ {print ${'$'}NF, ${'$'}(NF-2)}' | while read -r link _ target; do
-        [ -z "${'$'}link" ] && continue
-        # 目标在 rootfs 里的绝对路径
-        local lp="/${'$'}{link#./}" tp="/${'$'}{target#./}"
+      | awk '${'$'}1 ~ /^hrw/ && ${'$'}6 != "" {
+          # 标准格式 9 字段（… link to <目标>）；简化格式 7 字段（… <目标>）
+          tgt = (${'$'}9 != "") ? ${'$'}9 : ${'$'}7
+          if (tgt != "" && tgt != "link" && tgt != "to") print ${'$'}6, tgt
+        }' \
+      | while read -r link target; do
+        if [ -z "${'$'}link" ] || [ -z "${'$'}target" ]; then continue; fi
+        lp="/${'$'}{link#./}"
+        tp="/${'$'}{target#./}"
+        dir=$(dirname "${'$'}lp")
         if [ -e "${'$'}tp" ] && [ ! -e "${'$'}lp" ]; then
-          ln -sfn "${'$'}(basename "${'$'}tp")" "${'$'}lp" 2>/dev/null \
-            && log "  补链接: ${'$'}lp -> ${'$'}(basename "${'$'}tp")"
+          # 同目录用相对路径（可搬迁），跨目录用绝对路径
+          if [ "$(dirname "${'$'}tp")" = "${'$'}dir" ]; then
+            ln -sfn "$(basename "${'$'}tp")" "${'$'}lp" 2>/dev/null \
+              && log "  补链接: ${'$'}lp -> $(basename "${'$'}tp")"
+          else
+            ln -sfn "${'$'}tp" "${'$'}lp" 2>/dev/null \
+              && log "  补链接: ${'$'}lp -> ${'$'}tp"
+          fi
         fi
       done
   done
 }
+
 log "=== 补硬链接 ==="
 fix_hardlinks
 
