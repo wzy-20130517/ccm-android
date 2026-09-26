@@ -515,19 +515,29 @@ class PhoneUseService : IPhoneUseService.Stub {
     /** UiAutomation 反射构造。建一次缓存，后续复用。 */
     private var uiAutomation: Any? = null
     private var uiCls: Class<*>? = null
-    private var uiThread: HandlerThread? = null
 
     private fun ui(): Pair<Class<*>, Any>? {
         uiAutomation?.let { return uiCls!! to it }
         return try {
-            // 必须先有 Looper：UiAutomation.connect() 内部会 new Handler(Looper.getMainLooper())，
-            // 没有主 Looper 时构造函数抛异常，RuntimeInit 会直接杀掉整个进程。
-            if (android.os.Looper.myLooper() == null) android.os.Looper.prepare()
-            val ht = HandlerThread("vd-ui").apply { start() }
+            // ⚠️ 必须用**主 Looper**，不能自建 HandlerThread —— 这是从 AOSP 源码挖出来的硬要求。
+            //
+            // UiAutomationManager.UiAutomationService 的构造函数：
+            //   final boolean isMainHandler = mainHandler.getLooper() == Looper.getMainLooper();
+            //   if (IS_USERDEBUG || IS_ENG) Preconditions.checkArgument(isMainHandler,
+            //           "UiAutomationService must use the main handler");
+            // 而服务端 connectServiceUnknownThread() 是往这个 handler **post** 回调的 ——
+            // 传别的 Looper 回调投递不到，客户端等到 CONNECT_TIMEOUT_MILLIS(5s) 抛异常。
+            //
+            // 官方入口也印证：UiAutomation(Context, IUiAutomationConnection) 内部就是
+            //   this(getDisplayId(context), context.getMainLooper(), connection)
+            //
+            // 之前用自建 HandlerThread，表现是服务起不来 / 进程异常退出 —— 换成主 Looper 后正常。
+            val mainLooper = android.os.Looper.getMainLooper()
+                ?: throw IllegalStateException("没有主 Looper（UiAutomation 要求主线程）")
             val uac = Class.forName("android.app.UiAutomationConnection").getConstructor().newInstance()
             val cls = Class.forName("android.app.UiAutomation")
             val iuac = Class.forName("android.app.IUiAutomationConnection")
-            val inst = cls.getConstructor(android.os.Looper::class.java, iuac).newInstance(ht.looper, uac)
+            val inst = cls.getConstructor(android.os.Looper::class.java, iuac).newInstance(mainLooper, uac)
             try { cls.getMethod("connect", Int::class.javaPrimitiveType).invoke(inst, 0) }
             catch (_: NoSuchMethodException) { cls.getMethod("connect").invoke(inst) }
             val info = android.accessibilityservice.AccessibilityServiceInfo()
@@ -536,7 +546,6 @@ class PhoneUseService : IPhoneUseService.Stub {
             // FLAG_INCLUDE_NOT_IMPORTANT_VIEWS | FLAG_REPORT_VIEW_IDS | FLAG_RETRIEVE_INTERACTIVE_WINDOWS
             info.flags = 0x2 or 0x10 or 0x40
             cls.getMethod("setServiceInfo", info::class.java).invoke(inst, info)
-            uiThread = ht
             uiCls = cls
             uiAutomation = inst
             cls to inst
