@@ -208,10 +208,11 @@ fun CcmApp() {
                                 // 正确做法：**日志全留**，让显示区的滚动条负责历史。
                                 // 内存代价可控：几百行 × 每行 ~100 字符 ≈ 几十 KB。
                                 var toolLog = StringBuilder()
-                                // ⚠️ 在 lambda 里 `filesDir` 不可见（它不是 Context 成员）——
-                                // 直接写会编译报 "Unresolved reference 'filesDir'"（CI 实测）。
-                                // 提前取出成局部变量，让闭包捕获。
-                                val logFile = java.io.File(applicationContext.filesDir, "install.log")
+                                // ⚠️ 这里只能用 `ctx.filesDir`。
+                                // 直接写 `filesDir` 或 `applicationContext` 都会编译报
+                                // Unresolved reference（CI 实测两次）—— 这个 lambda 不在
+                                // Activity 的成员作用域里，能看到的 Context 只有外层局部变量 ctx。
+                                val logFile = java.io.File(ctx.filesDir, "install.log")
                                 runCatching { logFile.writeText("") }
                                 val appendLog: (String) -> Unit = { line ->
                                     scope.launch {
@@ -412,10 +413,8 @@ fun CcmApp() {
                                 // 现在两边统一：**日志全留**，不截断行数。
                                 // 显示区自动滚到底负责「看最新」，滚动条负责「翻历史」。
                                 var toolLog = StringBuilder()
-                                // ⚠️ 在 lambda 里 `filesDir` 是不可见的（不是 Context 成员）——
-                                // 直接写会编译报 "Unresolved reference 'filesDir'"（CI 实测）。
-                                // 提前在这里取出来，闭包捕获局部变量。
-                                val logFile = java.io.File(applicationContext.filesDir, "install.log")
+                                // 同上一处：只能用外层局部变量 ctx（见该处注释）。
+                                val logFile = java.io.File(ctx.filesDir, "install.log")
                                 runCatching { logFile.writeText("") }
                                 val appendLog: (String) -> Unit = { line ->
                                     scope.launch {
