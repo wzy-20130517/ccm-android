@@ -135,3 +135,54 @@ libc6:  Status: install ok installed     ← dpkg 数据库说装了
   2. 手工跑 postinst（大部分能跑；跑不了的记下来）
   3. 手工往 /var/lib/dpkg/status 追加条目
 这比继续跟 dpkg 的 paste 子进程较劲更实际。
+
+---
+
+# 最终结论（2026-09-26 收尾）
+
+## link2symlink 在 CCM 的 proot 构建里是个死结
+
+用 CCM 自带的 `libproot.so` 实测了 `PROOT_L2S_DIR` 的**全部四种取值**：
+
+| 取值 | proot 找得到工作目录？ | 产出的链接目标客户机可达？ | 结果 |
+|---|---|---|---|
+| 宿主机绝对路径 `/data/user/0/.../files/l2s` | ✅ | ❌ **断链** | 看着成功，实际坏 |
+| 客户机路径 `/.l2s` | ❌ | — | link2symlink 静默失效 |
+| 相对路径 `.l2s` | ✅ | ❌ 指向 `/usr/bin/.l2s/...`（错位置） | 坏 |
+| 客户机路径 `/.l2s` + `--bind` 映射 | ❌ | — | 失效 |
+
+**根本矛盾**：
+- proot **需要用宿主机路径找到工作目录**（否则整个扩展不工作）
+- 但它建符号链接时**直接把 `PROOT_L2S_DIR` 的值当链接目标**，
+  **不做宿主机→客户机的路径转换**
+- 于是：能找到工作目录的写法 → 产出断链；产出可达链接的写法 → 扩展失效
+
+## 一个反直觉的观察
+用**相对路径** `.l2s` 时，**硬链接真的建成了**（`stat` 显示 links=2，不是符号链接）。
+说明 link2symlink 判定「不需要转换」直接放行了 —— 但那个硬链接是**真硬链接**，
+后面某个操作又会失败。这条线索没深挖。
+
+## 全部尝试过的方向（供后人少走弯路）
+1. ❌ 改 `PROOT_L2S_DIR` 位置（四种取值都试过，见上表）
+2. ❌ 改用 `-0` / `--change-id`（两者行为一致）
+3. ❌ 预先删除冲突的旧符号链接
+4. ❌ 预先创建 `status-old` 绕开 dpkg 的 link()
+5. ❌ 用 `dpkg-deb -x` 替代 `dpkg -i`（解包成功，但产出的也是断链）
+6. ❌ `--bind` 把 L2S 目录映射进客户机
+7. ⏳ 未试：改 proot 源码，让 link2symlink 输出客户机相对路径
+8. ⏳ 未试：换一个 prebuilt 的、link2symlink 行为正确的 proot
+
+## 建议的出路
+**方案 A（推荐）**：换一个 rootfs —— 找一个**已经装好基础包**的 Ubuntu 镜像
+（如 ubuntu-base 的完整版、或第三方做的「开箱即用」包），
+直接跳过「从最小镜像装基础包」这一步。用户要的是能跑 Node，
+不是把 ubuntu-base 修好。
+
+**方案 B**：修 proot 源码里 link2symlink 的路径转换逻辑（在
+`src/extension/link2symlink/link2symlink.c`），重新编译。
+
+**方案 C**：不用 proot，改用 **chroot + 预编译的静态 busybox**
+（需要 root，用户没有）。
+
+**方案 D**：用 Termux 自己的环境跑 Node（不用 Linux 容器）——
+但这样就失去了 proot 隔离的意义。
