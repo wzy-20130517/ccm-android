@@ -442,23 +442,49 @@ log() { echo "${'$'}@"; }
 #
 # 判据用 `apt-cache policy`：真实包会显示候选版本号，虚拟包显示 (none)。
 # 比维护一张「已知虚拟包」黑名单可靠 —— 虚拟包会随发行版变化。
+# 【必须递归到底 —— 2026-09-26 实测】
+# 原来只解析**一层**（只取直接依赖），漏了间接依赖。实测后果：
+#   curl 装上了，但跑起来报
+#     curl: error while loading shared libraries: libnghttp2.so.14:
+#     cannot open shared object file
+#   因为依赖链是 curl → libcurl4t64 → libnghttp2-14，是**两层**。
+#
+# 一层解析的假设是「apt 会把间接依赖也当直接依赖列出来」——
+# 那是错的：apt-cache depends 只给该包自己的 Depends。
+#
+# 现在用队列做广度优先展开，深度上限 6 层（防依赖环/爆炸；
+# 实测 Ubuntu 基础包的依赖深度很少超过 4）。
 resolve_deps() {
-  local pkg
-  for pkg in "${'$'}@"; do
-    echo "${'$'}pkg"
-    apt-cache depends --no-recommends --no-suggests --no-conflicts \
-      --no-breaks --no-replaces --no-enhances "${'$'}pkg" 2>/dev/null \
-      | awk '/^  (Depends|PreDepends):/ {gsub(/[<>]/,"",${'$'}2); print ${'$'}2}' \
-      | grep -v '^libc6${'$'}' || true
-  done | sort -u | while read -r p; do
+  local depth=0
+  local frontier="${'$'}*"
+  local seen="" all=""
+  while [ -n "${'$'}frontier" ] && [ "${'$'}depth" -lt 6 ]; do
+    local next=""
+    local pkg
+    for pkg in ${'$'}frontier; do
+      # 去重
+      case " ${'$'}seen " in *" ${'$'}pkg "*) continue;; esac
+      seen="${'$'}seen ${'$'}pkg"
+      all="${'$'}all ${'$'}pkg"
+      # 展开这一层的依赖
+      next="${'$'}next ${'$'}(apt-cache depends --no-recommends --no-suggests --no-conflicts \
+        --no-breaks --no-replaces --no-enhances "${'$'}pkg" 2>/dev/null \
+        | awk '/^  (Depends|PreDepends):/ {gsub(/[<>]/,"",${'$'}2); print ${'$'}2}' \
+        | grep -v '^libc6${'$'}' || true)"
+    done
+    frontier="${'$'}next"
+    depth=${'$'}((depth + 1))
+  done
+
+  # 过滤虚拟包 + 去重输出
+  for p in ${'$'}all; do
     [ -z "${'$'}p" ] && continue
-    # 有候选版本才保留（虚拟包在这里被过滤掉）
     if apt-cache policy "${'$'}p" 2>/dev/null | grep -q 'Candidate:.*[0-9]'; then
       echo "${'$'}p"
     else
       log "  （跳过虚拟包 ${'$'}p —— 没有候选版本，无需单独下载）" >&2
     fi
-  done
+  done | sort -u
 }
 
 # ── 2) 下载 ────────────────────────────────────────────────
