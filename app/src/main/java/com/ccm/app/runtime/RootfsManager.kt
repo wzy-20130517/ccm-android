@@ -551,11 +551,14 @@ class RootfsManager(private val context: Context) {
                 val probe = exec(
                     listOf(
                         "/bin/bash", "-lc",
+                        // ⚠️ Kotlin 字符串里 `$` 是模板起始符，shell 变量要写 \$d
+                        // （直接写 $d 会被当成 Kotlin 变量，报 Unresolved reference 'd'
+                        //   —— CI 实测踩过。\$ 是 Kotlin 的合法转义，同文件 416 行也这么用。）
                         "cd /tmp 2>/dev/null || cd /; " +
-                            "d=$(ls /var/cache/apt/archives/perl-base_*.deb 2>/dev/null | head -1); " +
-                            "if [ -z \"$d\" ]; then echo NO_PKG; exit 0; fi; " +
+                            "d=\$(ls /var/cache/apt/archives/perl-base_*.deb 2>/dev/null | head -1); " +
+                            "if [ -z \"\$d\" ]; then echo NO_PKG; exit 0; fi; " +
                             "rm -rf .l2sprobe; " +
-                            "if dpkg-deb -x \"$d\" .l2sprobe >/dev/null 2>&1; then echo UNPACK_OK; " +
+                            "if dpkg-deb -x \"\$d\" .l2sprobe >/dev/null 2>&1; then echo UNPACK_OK; " +
                             "else echo UNPACK_FAIL; fi; rm -rf .l2sprobe"
                     ),
                     {}
