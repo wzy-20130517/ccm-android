@@ -403,44 +403,44 @@ export HOME=/root
 
 WORK=/tmp/.ccm-pkg
 STATUS=/var/lib/dpkg/status
-mkdir -p "$WORK"
-cd "$WORK" || exit 1
+mkdir -p "${'$'}WORK"
+cd "${'$'}WORK" || exit 1
 
-log() { echo "$@"; }
+log() { echo "${'$'}@"; }
 
 # ── 1) 解析依赖（递归，一层）──────────────────────────────
 # apt-cache depends 不需要 dpkg 工作，可以拿来算依赖树。
 resolve_deps() {
   local pkg
-  for pkg in "$@"; do
-    echo "$pkg"
+  for pkg in "${'$'}@"; do
+    echo "${'$'}pkg"
     apt-cache depends --no-recommends --no-suggests --no-conflicts \
-      --no-breaks --no-replaces --no-enhances "$pkg" 2>/dev/null \
-      | awk '/^  (Depends|PreDepends):/ {gsub(/[<>]/,"",$2); print $2}' \
-      | grep -v '^libc6$' || true
+      --no-breaks --no-replaces --no-enhances "${'$'}pkg" 2>/dev/null \
+      | awk '/^  (Depends|PreDepends):/ {gsub(/[<>]/,"",${'$'}2); print ${'$'}2}' \
+      | grep -v '^libc6${'$'}' || true
   done | sort -u
 }
 
 # ── 2) 下载 ────────────────────────────────────────────────
 log "=== 解析依赖 ==="
-PKGS=$(resolve_deps "$@" | tr '\n' ' ')
-log "  需要: $PKGS"
+PKGS=${'$'}(resolve_deps "${'$'}@" | tr '\n' ' ')
+log "  需要: ${'$'}PKGS"
 
 log "=== 下载 ==="
 # apt-get download 不会调用 dpkg，安全
 # shellcheck disable=SC2086
-apt-get download $PKGS 2>&1 | tail -5 || true
-DEBS=$(ls *.deb 2>/dev/null | wc -l)
-log "  已下载 $DEBS 个包"
-[ "$DEBS" -eq 0 ] && { log "❌ 什么都没下到"; exit 1; }
+apt-get download ${'$'}PKGS 2>&1 | tail -5 || true
+DEBS=${'$'}(ls *.deb 2>/dev/null | wc -l)
+log "  已下载 ${'$'}DEBS 个包"
+[ "${'$'}DEBS" -eq 0 ] && { log "❌ 什么都没下到"; exit 1; }
 
 # ── 3) 解包（不用 --link2symlink，硬链接失败不影响主文件）──
 log "=== 解包 ==="
 for d in *.deb; do
   # 记录硬链接失败项 —— 解包后要手动补相对符号链接
-  out=$(dpkg-deb -x "$d" / 2>&1)
-  if echo "$out" | grep -qi "hard link"; then
-    echo "$out" | grep -i "hard link" | sed "s/^/  [$d] /"
+  out=${'$'}(dpkg-deb -x "${'$'}d" / 2>&1)
+  if echo "${'$'}out" | grep -qi "hard link"; then
+    echo "${'$'}out" | grep -i "hard link" | sed "s/^/  [${'$'}d] /"
   fi
 done
 
@@ -450,14 +450,14 @@ done
 fix_hardlinks() {
   local d link target
   for d in *.deb; do
-    dpkg-deb --fsys-tarfile "$d" 2>/dev/null | tar -tvf - 2>/dev/null \
-      | awk '$1 ~ /^hrw/ {print $NF, $(NF-2)}' | while read -r link _ target; do
-        [ -z "$link" ] && continue
+    dpkg-deb --fsys-tarfile "${'$'}d" 2>/dev/null | tar -tvf - 2>/dev/null \
+      | awk '${'$'}1 ~ /^hrw/ {print ${'$'}NF, ${'$'}(NF-2)}' | while read -r link _ target; do
+        [ -z "${'$'}link" ] && continue
         # 目标在 rootfs 里的绝对路径
-        local lp="/${link#./}" tp="/${target#./}"
-        if [ -e "$tp" ] && [ ! -e "$lp" ]; then
-          ln -sfn "$(basename "$tp")" "$lp" 2>/dev/null \
-            && log "  补链接: $lp -> $(basename "$tp")"
+        local lp="/${'$'}{link#./}" tp="/${'$'}{target#./}"
+        if [ -e "${'$'}tp" ] && [ ! -e "${'$'}lp" ]; then
+          ln -sfn "${'$'}(basename "${'$'}tp")" "${'$'}lp" 2>/dev/null \
+            && log "  补链接: ${'$'}lp -> ${'$'}(basename "${'$'}tp")"
         fi
       done
   done
@@ -468,43 +468,43 @@ fix_hardlinks
 # ── 4) 跑 postinst（失败不中断）─────────────────────────────
 log "=== 配置（postinst）==="
 for d in *.deb; do
-  ctrl="$WORK/ctrl-$$"
-  rm -rf "$ctrl"; mkdir -p "$ctrl"
-  dpkg-deb -e "$d" "$ctrl" 2>/dev/null || continue
-  if [ -x "$ctrl/postinst" ]; then
-    if "$ctrl/postinst" configure 2>&1 | grep -viE '^$' | head -3; then
+  ctrl="${'$'}WORK/ctrl-${'$'}${'$'}"
+  rm -rf "${'$'}ctrl"; mkdir -p "${'$'}ctrl"
+  dpkg-deb -e "${'$'}d" "${'$'}ctrl" 2>/dev/null || continue
+  if [ -x "${'$'}ctrl/postinst" ]; then
+    if "${'$'}ctrl/postinst" configure 2>&1 | grep -viE '^${'$'}' | head -3; then
       :
     fi
   fi
-  rm -rf "$ctrl"
+  rm -rf "${'$'}ctrl"
 done
 
 # ── 5) 登记到 dpkg 数据库（让后续 apt 认为已装）─────────────
 log "=== 登记状态 ==="
 for d in *.deb; do
-  pkg=$(dpkg-deb -f "$d" Package)
-  ver=$(dpkg-deb -f "$d" Version)
-  arch=$(dpkg-deb -f "$d" Architecture)
-  [ -z "$pkg" ] && continue
+  pkg=${'$'}(dpkg-deb -f "${'$'}d" Package)
+  ver=${'$'}(dpkg-deb -f "${'$'}d" Version)
+  arch=${'$'}(dpkg-deb -f "${'$'}d" Architecture)
+  [ -z "${'$'}pkg" ] && continue
   # 已登记就跳过
-  if grep -q "^Package: $pkg$" "$STATUS" 2>/dev/null; then
-    log "  $pkg 已在状态库，跳过"
+  if grep -q "^Package: ${'$'}pkg${'$'}" "${'$'}STATUS" 2>/dev/null; then
+    log "  ${'$'}pkg 已在状态库，跳过"
     continue
   fi
   {
     echo ""
-    echo "Package: $pkg"
+    echo "Package: ${'$'}pkg"
     echo "Status: install ok installed"
     echo "Priority: optional"
     echo "Section: utils"
     echo "Installed-Size: 1"
     echo "Maintainer: ccm-manual-install"
-    echo "Architecture: $arch"
-    echo "Version: $ver"
+    echo "Architecture: ${'$'}arch"
+    echo "Version: ${'$'}ver"
     echo "Description: installed by ccm manual installer"
     echo "  (dpkg -i is unusable in this proot environment; see install.log)"
-  } >> "$STATUS"
-  log "  已登记 $pkg $ver"
+  } >> "${'$'}STATUS"
+  log "  已登记 ${'$'}pkg ${'$'}ver"
 done
 
 log "=== 完成 ==="
