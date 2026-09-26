@@ -1057,13 +1057,18 @@ log "=== 完成 ==="
             if (tmpDir.exists()) tmpDir.deleteRecursively()
             tmpDir.mkdirs()
 
-            val extracted = TarExtractor.extract(archive, tmpDir) { done, total ->
-                if (total > 0 && done % (5L * 1024 * 1024) < 256 * 1024) {
-                    onLine("  解压 ${done * 100 / total}%")
-                }
-            }
+            val extracted = TarExtractor.extract(
+                archive, tmpDir,
+                { done, total ->
+                    if (total > 0 && done % (5L * 1024 * 1024) < 256 * 1024) {
+                        onLine("  解压 ${done * 100 / total}%")
+                    }
+                },
+                // 把失败原因写进安装日志 —— 否则用户只看到「解压失败」，
+                // 而真正的原因（异常类型/消息/行号）被 Log.e 藏在 logcat 里。
+                { reason -> onLine("  ❌ 解压失败：$reason") }
+            )
             if (!extracted) {
-                onLine("  ❌ 解压失败")
                 tmpDir.deleteRecursively()
                 return false
             }
