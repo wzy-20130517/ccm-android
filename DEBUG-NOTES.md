@@ -244,3 +244,87 @@ dpkg **自己**需要建硬链接来做两件事：
 因为整个泥潭的根源是「从 20MB 的最小镜像开始装」，
 而用户要的只是能跑 Node。如果有一个 200MB 的、装好 git/perl/curl 的
 Ubuntu 镜像，上面所有问题都不存在。
+
+---
+
+# ✅ 可行方案已完整验证（2026-09-26 深夜）
+
+## 结论：完全绕开 dpkg/apt 的安装器，实测可用
+
+### 验证过程（真机，CCM 自带 proot）
+```
+1. apt-get download git git-man liberror-perl libc6 libcurl3t64-gnutls \
+     libexpat1 libpcre2-8-0 zlib1g
+   → ✅ 成功（apt 的下载功能不依赖 dpkg）
+
+2. 对每个 .deb 执行 dpkg-deb -x <deb> /
+   → ✅ 全部成功，**一个硬链接错误都没报**
+   → /usr/bin/git 4003072 字节，真文件
+
+3. 启动参数（关键）：
+   proot -0 -L \
+     --bind=/dev/urandom --bind=/dev/random --bind=/dev/zero --bind=/dev/pts \
+     --rootfs=<rootfs> -w /tmp
+   ⚠️ 不传 --link2symlink（它建的是断链，有害无益）
+   ⚠️ 必须显式 bind /dev/urandom 等（rootfs 的 /dev 里只有 null）
+
+4. 实测结果：
+   git --version      → git version 2.43.0 ✅
+   git init           → ✅
+   git add / commit   → ✅（缺 /dev/urandom 时会失败，补上就好）
+   git log            → ✅
+```
+
+### 为什么这条路能通
+- `apt` 的**下载**功能是纯 HTTP，不碰 dpkg
+- `dpkg-deb -x` 是**纯解包**，不做 dpkg 那两件需要硬链接的事
+  （备份旧文件、备份 status 数据库）
+- 这批包解包时**没有硬链接**（perl-base 那种才用硬链接造别名）
+- 万一遇到硬链接：tar 会报错但**主文件照常解出**，补个相对符号链接即可
+
+### 还需要补的（写代码时要处理）
+1. **postinst**：解包后要跑，大部分包有（git 有 git.postinst）
+   - 用 `dpkg-deb -e` 提取 control 脚本
+   - 在 rootfs 里执行 postinst configure
+   - 失败的记下来但不中断（很多 postinst 只做文档/alternatives 设置）
+2. **status 数据库**：手工往 /var/lib/dpkg/status 追加 Package 条目
+   （格式可从 `dpkg-deb -f <deb>` 直接生成）
+3. **依赖顺序**：被依赖的先装（libc6 → zlib1g → git 等）
+4. **/dev 挂载**：ProotRuntime 的 bind 列表要补 urandom/random/zero/pts
+
+---
+
+# ⚠️ 重要更正：run-as 的网络被 SELinux 限制，之前的"网络不通"结论无效
+
+## 发现（2026-09-26 深夜）
+```
+CCM 正常进程 (am start 启动):  u:r:untrusted_app:s0   ← 网络正常
+run-as 起的进程:              u:r:runas_app:s0       ← **网络被拒**
+```
+`run-as` 在 Android 上是调试用途，SELinux 策略把它的网络访问禁掉了：
+```
+DNS 查询 → [Errno 1] Operation not permitted
+TCP 连接 → timed out（连 223.5.5.5:443 都不通）
+```
+
+## 影响范围
+**我用 run-as 做的所有网络相关测试结论都要作废**，包括：
+- ❌「DNS 解析失败」—— 那是 runas_app 上下文的问题
+- ❌「TCP 80 连不上」—— 同上
+- ❌「需要用 /etc/hosts 绕过 DNS」—— 不需要
+
+**但不受影响的结论**（这些是文件系统层面的，与网络无关）：
+- ✅ dpkg -i 因硬链接失败（`error setting ownership` / `paste subprocess killed`）
+- ✅ PROOT_L2S_DIR 的四种取值行为
+- ✅ `dpkg-deb -x` 解包稳定成功
+- ✅ 手动补相对符号链接后 perl 能跑
+- ✅ git 解包后 `git --version` / `init` / `commit` 正常
+- ✅ /dev 设备节点需要显式 bind（git 缺 urandom 时 commit 失败）
+
+## 待确认
+在 **CCM 正常进程里**（untrusted_app 上下文）验证：
+1. DNS 能不能解析
+2. apt-get download 能不能下载
+3. dpkg -i 是不是依然因硬链接失败
+
+**方法**：给 CCM 加一个「诊断」入口，或直接跑一次安装看 install.log。
