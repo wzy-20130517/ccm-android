@@ -426,6 +426,22 @@ log() { echo "${'$'}@"; }
 
 # ── 1) 解析依赖（递归，一层）──────────────────────────────
 # apt-cache depends 不需要 dpkg 工作，可以拿来算依赖树。
+#
+# 【必须滤掉虚拟包 —— 2026-09-26 实测】
+# 报错现场：
+#   E: Can't select candidate version from package debconf-2.0 as it has no candidate
+#   已下载 0 个包
+#   ❌ 什么都没下到
+#
+# debconf-2.0 是**虚拟包**（virtual package），没有对应的 .deb 文件 ——
+# 真实提供者是 debconf / cdebconf / debconf-tiny 之类。
+# apt-cache depends 会把它当依赖列出来，但 apt-get download 拿不到它，
+# **并且一失败就中止整批下载** —— 所以症状是「一个包都没下到」，
+# 而不是「下了大部分、缺一个」。这个差别很关键：
+# 看起来像网络问题/源问题，实际是依赖列表里混了一个下不了的名字。
+#
+# 判据用 `apt-cache policy`：真实包会显示候选版本号，虚拟包显示 (none)。
+# 比维护一张「已知虚拟包」黑名单可靠 —— 虚拟包会随发行版变化。
 resolve_deps() {
   local pkg
   for pkg in "${'$'}@"; do
@@ -434,7 +450,15 @@ resolve_deps() {
       --no-breaks --no-replaces --no-enhances "${'$'}pkg" 2>/dev/null \
       | awk '/^  (Depends|PreDepends):/ {gsub(/[<>]/,"",${'$'}2); print ${'$'}2}' \
       | grep -v '^libc6${'$'}' || true
-  done | sort -u
+  done | sort -u | while read -r p; do
+    [ -z "${'$'}p" ] && continue
+    # 有候选版本才保留（虚拟包在这里被过滤掉）
+    if apt-cache policy "${'$'}p" 2>/dev/null | grep -q 'Candidate:.*[0-9]'; then
+      echo "${'$'}p"
+    else
+      log "  （跳过虚拟包 ${'$'}p —— 没有候选版本，无需单独下载）" >&2
+    fi
+  done
 }
 
 # ── 2) 下载 ────────────────────────────────────────────────
@@ -443,11 +467,29 @@ PKGS=${'$'}(resolve_deps "${'$'}@" | tr '\n' ' ')
 log "  需要: ${'$'}PKGS"
 
 log "=== 下载 ==="
-# apt-get download 不会调用 dpkg，安全
-# shellcheck disable=SC2086
-apt-get download ${'$'}PKGS 2>&1 | tail -5 || true
+# apt-get download 不会调用 dpkg，安全。
+#
+# 【为什么逐个下载而不是一次传全部 —— 2026-09-26】
+# 原来写 `apt-get download ${'$'}PKGS`（一次给全）。实测发现：
+# **只要列表里有一个包下不了，apt 就中止整批**，已下载的一个都不留 ——
+# 于是「一个包失败」表现成「什么都没下到」，看起来像网络问题，
+# 排查方向完全跑偏（这次就是被 debconf-2.0 这个虚拟包坑的）。
+#
+# 逐个下之后：
+#   · 单个包失败只影响它自己，其余照常下到
+#   · 最后统计「成功/失败」，失败清单明确打出来，一眼看出是哪个包的问题
+# 代价是 apt 要重复解析，几十个包多花几秒 —— 换可诊断性，值。
+DEB_OK=0; DEB_FAIL=""
+for p in ${'$'}PKGS; do
+  if apt-get download "${'$'}p" >/dev/null 2>&1; then
+    DEB_OK=${'$'}((DEB_OK + 1))
+  else
+    DEB_FAIL="${'$'}DEB_FAIL ${'$'}p"
+  fi
+done
 DEBS=${'$'}(ls *.deb 2>/dev/null | wc -l)
-log "  已下载 ${'$'}DEBS 个包"
+log "  已下载 ${'$'}DEBS 个包（成功 ${'$'}DEB_OK）"
+[ -n "${'$'}DEB_FAIL" ] && log "  ⚠️ 以下包下载失败（已跳过）：${'$'}DEB_FAIL"
 [ "${'$'}DEBS" -eq 0 ] && { log "❌ 什么都没下到"; exit 1; }
 
 # ── 3) 解包（不用 --link2symlink，硬链接失败不影响主文件）──
