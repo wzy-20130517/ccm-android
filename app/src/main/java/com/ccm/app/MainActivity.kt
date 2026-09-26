@@ -208,10 +208,11 @@ fun CcmApp() {
                                 // 正确做法：**日志全留**，让显示区的滚动条负责历史。
                                 // 内存代价可控：几百行 × 每行 ~100 字符 ≈ 几十 KB。
                                 var toolLog = StringBuilder()
-                                // 每次安装清空上次的日志，免得多次记录混在一起分不清
-                                runCatching {
-                                    java.io.File(filesDir, "install.log").writeText("")
-                                }
+                                // ⚠️ 在 lambda 里 `filesDir` 不可见（它不是 Context 成员）——
+                                // 直接写会编译报 "Unresolved reference 'filesDir'"（CI 实测）。
+                                // 提前取出成局部变量，让闭包捕获。
+                                val logFile = java.io.File(applicationContext.filesDir, "install.log")
+                                runCatching { logFile.writeText("") }
                                 val appendLog: (String) -> Unit = { line ->
                                     scope.launch {
                                         toolLog.append(line).append('\n')
@@ -220,10 +221,7 @@ fun CcmApp() {
                                         // 而出错时用户重启 App 是常态（要和副屏/终端来回切），
                                         // 结果就是"出错后再也看不到当时的日志"。
                                         // 写到私有目录，开发者可用 adb / 文件管理器取。
-                                        runCatching {
-                                            java.io.File(filesDir, "install.log")
-                                                .appendText(line + "\n")
-                                        }
+                                        runCatching { logFile.appendText(line + "\n") }
                                     }
                                 }
                                 progress = 0.88f
@@ -414,18 +412,16 @@ fun CcmApp() {
                                 // 现在两边统一：**日志全留**，不截断行数。
                                 // 显示区自动滚到底负责「看最新」，滚动条负责「翻历史」。
                                 var toolLog = StringBuilder()
-                                // 每次安装清空上次的日志，免得多次记录混在一起分不清
-                                runCatching {
-                                    java.io.File(filesDir, "install.log").writeText("")
-                                }
+                                // ⚠️ 在 lambda 里 `filesDir` 是不可见的（不是 Context 成员）——
+                                // 直接写会编译报 "Unresolved reference 'filesDir'"（CI 实测）。
+                                // 提前在这里取出来，闭包捕获局部变量。
+                                val logFile = java.io.File(applicationContext.filesDir, "install.log")
+                                runCatching { logFile.writeText("") }
                                 val appendLog: (String) -> Unit = { line ->
                                     scope.launch {
                                         toolLog.append(line).append('\n')
                                         log = toolLog.toString().trimEnd()
-                                        runCatching {
-                                            java.io.File(filesDir, "install.log")
-                                                .appendText(line + "\n")
-                                        }
+                                        runCatching { logFile.appendText(line + "\n") }
                                     }
                                 }
                                 try {

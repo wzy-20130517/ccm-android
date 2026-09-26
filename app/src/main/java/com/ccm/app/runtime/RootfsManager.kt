@@ -1427,7 +1427,7 @@ class RootfsManager(private val context: Context) {
             exec(
                 listOf(
                     "/bin/bash", "-lc",
-                    "test -x /usr/share/debconf/frontend && perl -e 'exit 0' 2>/dev/null"
+                    "test -x /usr/share/debconf/frontend && perl -v >/dev/null 2>&1"
                 ),
                 {}
             )
@@ -1505,7 +1505,7 @@ class RootfsManager(private val context: Context) {
             exec(
                 listOf(
                     "/bin/bash", "-lc",
-                    "test -x /usr/share/debconf/frontend && perl -e 'exit 0' 2>/dev/null"
+                    "test -x /usr/share/debconf/frontend && perl -v >/dev/null 2>&1"
                 ),
                 {}
             )
