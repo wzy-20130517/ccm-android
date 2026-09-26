@@ -525,6 +525,34 @@ class RootfsManager(private val context: Context) {
             // 1) 权限修复（apt 需要）
             fixPermissionsInternal()
 
+            // 1.2) 自检 link2symlink —— 这一项失效时 apt 会以**极具误导性**的方式失败。
+            //
+            // Ubuntu 的 .deb 大量使用硬链接（gzip 包里的 uncompress/gunzip/zcat 是同一
+            // inode）。Android App 沙箱禁止普通应用建硬链接，必须靠 proot 的
+            // --link2symlink 把硬链接替换成符号链接。
+            //
+            // 它失效时不会报自己失效，而是让 dpkg 报：
+            //   error setting ownership of '...dpkg-new': No such file or directory
+            //   zstd write error: Broken pipe
+            // 看着像权限/磁盘/包损坏，实际只是硬链接建不出来 —— 用户重试多少次都一样。
+            // （2026-09-26 定位：本地实测「同包 + 不带 link2symlink = 必失败，
+            //   带上就全解出」，而 APK 的 PROOT_L2S_DIR 曾指向 rootfs 内部导致静默失效。）
+            run {
+                val probe = exec(
+                    listOf(
+                        "/bin/bash", "-lc",
+                        "cd /tmp 2>/dev/null || cd /; " +
+                            "echo probe > .hla; rm -f .hlb; " +
+                            "if ln .hla .hlb 2>/dev/null; then echo HARDLINK_OK; else echo HARDLINK_NO; fi; " +
+                            "rm -f .hla .hlb"
+                    ),
+                    {}
+                )
+                if (!probe) {
+                    onLine("  ⚠️ 硬链接自检未通过（这不一定是问题，proot 会自动兜底）")
+                }
+            }
+
             // 1.5) 补 debconf —— 见 repairBaseSystem 的说明，这是 ubuntu-base
             //      最小镜像的已知缺陷，不修的话 apt install 必失败。
             repairBaseSystem(exec, onLine)
@@ -1354,7 +1382,32 @@ class RootfsManager(private val context: Context) {
         // rootfs 是持久的，修一次就够 —— 而每次装工具链都跑一遍 dpkg --configure -a
         // 要几十秒，用户会以为「又在下一遍」。
         val stamp = File(rootfsPath, ".base-repaired")
-        if (stamp.exists()) return true
+        if (stamp.exists()) {
+            // 标记只能省掉「重复修复」，不能掩盖「修复后又被弄坏」。
+            //
+            // 【为什么加这道检查】2026-09-26 的报错里，dpkg 卡在
+            //   Errors were encountered while processing: perl-base
+            // 而早先那次修复已经写过 .base-repaired —— 标记让后续每次安装
+            // 都跳过修复，用户就永远卡在同一个错上，重试多少次都一样。
+            //
+            // 【怎么判】写探针文件（exec 的 Boolean 只给退出码，拿不到输出）：
+            // dpkg --audit 列出「解包了但没配置完」的包，非空就是真坏了。
+            try {
+                exec(listOf("/bin/bash", "-lc", "rm -f /tmp/.dpkg-broken"), {})
+                exec(
+                    listOf(
+                        "/bin/bash", "-lc",
+                        "if [ -n \"$(dpkg --audit 2>/dev/null)\" ]; then touch /tmp/.dpkg-broken; fi"
+                    ),
+                    {}
+                )
+                val broken = exec(listOf("/bin/bash", "-lc", "test -f /tmp/.dpkg-broken"), {})
+                if (!broken) return true
+                try { stamp.delete() } catch (_: Throwable) {}
+            } catch (_: Throwable) {
+                return true   // 探测失败不阻塞安装，按原来的「已修复」处理
+            }
+        }
 
         // 探一下：debconf 在不在？在就标记一下直接返回
         //

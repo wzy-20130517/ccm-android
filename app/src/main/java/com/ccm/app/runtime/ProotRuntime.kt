@@ -112,7 +112,64 @@ class ProotRuntime(private val context: Context) {
     val prootTmpDir: File
         get() = File(context.cacheDir, "proot-tmp").apply { if (!exists()) mkdirs() }
 
+    /**
+     * link2symlink 的工作目录 —— **必须在 rootfs 之外**。
+     *
+     * proot 用 --rootfs=. + cwd=rootfs 启动，此时给一个「rootfs 内部」的绝对路径，
+     * 视角会对不上，link2symlink 静默失效 → 退回建硬链接 → App 沙箱不允许 → apt 全挂。
+     * 详细因果链见 buildProcess() 里那段注释。
+     *
+     * 放 filesDir 下（不是 cacheDir —— cache 会被系统清理，映射丢了符号链接就断了）。
+     */
+    val prootL2sDir: File
+        get() = File(context.filesDir, "l2s").apply { if (!exists()) mkdirs() }
+
     fun isReady(): Boolean = prootBin.exists() && rootfs.isDirectory
+
+    /**
+     * 自检 link2symlink 是否真的生效。
+     *
+     * 【为什么要单独探一次】它失效时的表现**极难定位**：不会报「link2symlink 没生效」，
+     * 而是让 dpkg 在解包时报一堆误导性错误 ——
+     *   error setting ownership of '...': No such file or directory
+     *   zstd write error: Broken pipe
+     * 看着像权限/路径/包损坏，实际只是硬链接建不出来，用户重试一百次都一样。
+     *
+     * 探法：在 rootfs 里造两个文件、请求建硬链接。
+     *   · 成功 → 宿主的文件系统居然支持（少见），无需 link2symlink 也能过
+     *   · 失败 → 正常情况（App 沙箱禁硬链接），此时**必须**靠 link2symlink，
+     *            所以紧接着验证 PROOT_L2S_DIR 是否可用
+     *
+     * @return 三元组 (硬链接可用, l2s目录可用, 说明文字)
+     */
+    fun probeLinkSupport(): Triple<Boolean, Boolean, String> {
+        val l2s = prootL2sDir
+        val l2sOk = l2s.isDirectory && l2s.canWrite()
+        val probeDir = File(rootfs, "tmp")
+        if (!probeDir.isDirectory) probeDir.mkdirs()
+        val a = File(probeDir, ".l2s-probe-a")
+        val b = File(probeDir, ".l2s-probe-b")
+        var hardlinkOk = false
+        try {
+            a.writeText("probe")
+            b.delete()
+            hardlinkOk = try {
+                java.nio.file.Files.createLink(b.toPath(), a.toPath())
+                true
+            } catch (_: Throwable) { false }
+        } catch (_: Throwable) {
+            // 探测本身失败不致命，当作「不支持硬链接」处理
+        } finally {
+            try { a.delete() } catch (_: Throwable) {}
+            try { b.delete() } catch (_: Throwable) {}
+        }
+        val note = when {
+            hardlinkOk -> "硬链接可用（无需 link2symlink 兜底）"
+            l2sOk -> "硬链接不可用（正常），link2symlink 工作目录就绪：${l2s.absolutePath}"
+            else -> "硬链接不可用，且 link2symlink 工作目录不可写：${l2s.absolutePath}"
+        }
+        return Triple(hardlinkOk, l2sOk, note)
+    }
 
     fun rootfsDir(): File = rootfs
 
@@ -150,8 +207,25 @@ class ProotRuntime(private val context: Context) {
         // 修复 lstat 语义（dpkg 需要）
         args += "-L"
 
-        // 伪装 root
-        args += "--change-id=0:0"
+        // ⚠️ 必须是 -0（--root-id），**不能**用 --change-id=0:0。
+        //
+        // 两者不等价，这是 apt 装不上大量包（git/curl/perl-base…）的真正根因：
+        //
+        //   -0 / --root-id     把调用者伪装成 uid 0，**并让 proot 拦截 chown 等
+        //                      特权系统调用、直接返回成功**（不落到真实内核）
+        //   --change-id=0:0    只是把「系统调用参数的 uid/gid」改写成 0:0，
+        //                      调用本身照旧落到真实内核 → 以 App 的 uid 执行 → 失败
+        //
+        // dpkg 解包时对每个文件做 chown("xxx.dpkg-new", 0, 0)。用 --change-id 时
+        // 这一步失败 → 文件没被创建 → dpkg-deb 的 zstd 管道当场断裂：
+        //
+        //   error setting ownership of '/usr/bin/uncompress.dpkg-new': No such file or directory
+        //   dpkg-deb (subprocess): decompressing archive ...: zstd write error: Broken pipe
+        //   Е: Sub-process /usr/bin/dpkg returned an error code (1)
+        //
+        // 而这个错误是**误导性**的 —— 它看着像「磁盘/权限/包损坏」，
+        // 实际只是 root 伪装方式不对。Operit 全程用 -0，proot-distro 也是。
+        args += "-0"
 
         // ⚠️ 相对路径！配合 ProcessBuilder.directory(rootfs)
         args += "--rootfs=."
@@ -246,8 +320,38 @@ class ProotRuntime(private val context: Context) {
         env["PROOT_TMP_DIR"] = tmp.absolutePath
         env["TMPDIR"] = tmp.absolutePath
 
-        // ⚠️ 必须：link2symlink 工作目录
-        val l2sDir = File(rootfs, ".l2s")
+        // ⚠️ 必须：link2symlink 工作目录 —— 且**必须放在 rootfs 之外**。
+        //
+        // ═══════════════════════════════════════════════════════════
+        // 【为什么不能放 rootfs 里】这是 apt 从来装不上任何包的真根因。
+        //
+        // 症状（报错.txt 实测）：
+        //   error setting ownership of '/usr/bin/uncompress.dpkg-new': No such file or directory
+        //   dpkg-deb (subprocess): ... member 'data.tar': zstd write error: Broken pipe
+        //   E: Sub-process /usr/bin/dpkg returned an error code (1)
+        //
+        // 因果链（本地实测复现）：
+        //   1. Ubuntu 的 .deb 用**硬链接**省空间 —— gzip 包里的 uncompress/gunzip/zcat
+        //      都是同一个 inode 的硬链接
+        //   2. Android 的 App 沙箱**禁止普通应用创建硬链接**
+        //      （实测：直接 dpkg-deb -x → "Cannot hard link to './usr/bin/gunzip': Permission denied"）
+        //   3. tar 子进程整包失败退出 → 父进程还在往管道写 → Broken pipe
+        //   4. 文件没解出来 → 下一步 chown 报 "No such file or directory"（**这是后果不是原因**，
+        //      报错信息在这里极具误导性，会让人以为是权限或路径问题）
+        //
+        // 正解就是 proot 的 --link2symlink：把硬链接替换成符号链接。
+        // 本地实测同样这个 gzip 包：不带它必失败，带上它全部解出。
+        //
+        // 但 --link2symlink 需要一个**工作目录**来存放「符号链接 ↔ 硬链接」的映射
+        // （即 PROOT_L2S_DIR）。原来设的是 <rootfs>/.l2s，而 proot 是以
+        // --rootfs=. + ProcessBuilder.directory(rootfs) 启动的 ——
+        // **绝对路径给了一个「客户机视角」之外的路径，proot 解析不到，
+        // 于是 link2symlink 静默失效**，退回直接建硬链接 → 又撞上沙箱限制。
+        //
+        // 放在 rootfs 外面（App filesDir 下）就没这个问题：proot 的宿主观
+        // 和客户机观在这里是一致的。
+        // ═══════════════════════════════════════════════════════════
+        val l2sDir = prootL2sDir
         if (!l2sDir.exists()) l2sDir.mkdirs()
         env["PROOT_L2S_DIR"] = l2sDir.absolutePath
 
