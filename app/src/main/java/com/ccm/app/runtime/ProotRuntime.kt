@@ -237,7 +237,20 @@ class ProotRuntime(private val context: Context) {
         args += "--bind=/dev"
         args += "--bind=/proc"
         args += "--bind=/sys"
-        args += "--bind=/dev/urandom:/dev/random"
+
+        // ⚠️ /dev 下的设备节点必须**逐个显式挂载** —— `--bind=/dev` 不够。
+        //
+        // 【实测】只挂 /dev 时，rootfs 的 /dev 里**只有 null 一个文件**
+        // （proot 对 /dev 有特殊处理，大部分节点被滤掉）。后果很隐蔽：
+        //   · git 报 "unable to get random bytes for temporary file"  → 缺 /dev/urandom
+        //   · apt 报 "Can not write log (Is /dev/pts mounted?)"        → 缺 /dev/pts
+        // 这两个报错都不提「挂载」二字，排查时很难往那个方向想。
+        //
+        // /dev/urandom 那条原来的写法（urandom:/dev/random）是想让两者同源，
+        // 但那样 /dev/urandom 自己反而**没被挂上** —— 改成各自显式挂载。
+        listOf("/dev/urandom", "/dev/random", "/dev/zero", "/dev/null", "/dev/pts", "/dev/tty").forEach { dev ->
+            if (File(dev).exists()) args += "--bind=$dev"
+        }
 
         // Android 运行时路径
         listOf(
