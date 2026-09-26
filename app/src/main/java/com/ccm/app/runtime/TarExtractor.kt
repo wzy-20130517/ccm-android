@@ -60,7 +60,11 @@ object TarExtractor {
     fun extract(
         archive: File,
         destDir: File,
-        onProgress: (Long, Long) -> Unit = { _, _ -> }
+        onProgress: (Long, Long) -> Unit = { _, _ -> },
+        // 失败原因要能被安装日志看到 —— 原来只写 Log.e（进 logcat），
+        // 而用户和我们看的是 install.log，那里只有一句「解压失败」，
+        // 等于把最有用的信息（异常类型和消息）藏起来了。
+        onError: (String) -> Unit = {}
     ): Boolean {
         val total = archive.length()
         var processed = 0L
@@ -241,6 +245,9 @@ object TarExtractor {
             return true
         } catch (t: Throwable) {
             Log.e(TAG, "解压失败", t)
+            // 把异常摘要交给调用方写进安装日志
+            val where = t.stackTrace.firstOrNull()?.let { " (${it.fileName}:${it.lineNumber})" } ?: ""
+            onError("${t.javaClass.simpleName}: ${t.message ?: "(无消息)"}$where")
             return false
         }
     }
