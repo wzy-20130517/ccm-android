@@ -210,15 +210,6 @@ class HashlineTools(
                 Triple(i, op, Triple(anchorStr, endAnchorStr, content))
             }
 
-            // 排序 key：write 排最前（它会整体替换，不需要锚点），其余按 anchor 行号降序
-            val sorted = parsed.sortedWith(
-                compareByDescending<Pair<Int, String>> { }
-                    .let { _ ->
-                        // 用 anchor 的行号排序（write 当作 -1，最先执行）
-                        Comparator<Pair<Int, String>> { a, b -> 0 }
-                    },
-            )
-
             // 简化：直接手动分组 —— write 先做，其余按行号降序
             val writeOps = parsed.filter { it.second == "write" }
             val anchoredOps = parsed.filter { it.second != "write" }
