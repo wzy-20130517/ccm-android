@@ -2,6 +2,8 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    // 【2026-09-27 新增 · 阶段2】序列化编译器插件，给 core/ 层的 @Serializable 用。
+    id("org.jetbrains.kotlin.plugin.serialization")
 }
 
 android {
@@ -97,4 +99,31 @@ dependencies {
     // API 负责授权和 binder，provider 提供 manifest 合并项（权限声明）。
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
+
+    // ─────────── 以下为 2026-09-27 阶段2（core 层）新增 ───────────
+    //
+    // 【OkHttp 4.12.0】core/api 的唯一出网点。
+    // 为什么不用 HttpURLConnection：
+    //   1. SSE 逐行读：okio 的 BufferedSource.readUtf8Line() 天然流式，不用手写缓冲区
+    //   2. 【最关键】CCM 踩过的血泪 bug「一次流超时后所有请求永久卡死」，
+    //      根因是 HttpURLConnection 的连接池无法隔离坏连接，只能靠加
+    //      `Connection: close` 头绕开。OkHttp 可以给流式请求单独一个 client
+    //      实例（独立连接池），从根上杜绝污染。
+    //   3. Call.cancel() 对应 AbortController，取消立即生效
+    //   4. connectTimeout / readTimeout 分离，对齐 CCM 的
+    //      STREAM_CONNECT_TIMEOUT(150s 实测阈值) 与 watchdog(300s) 双层设计
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // 【kotlinx.serialization 1.7.3】JSON 序列化。
+    // 为什么不用 Gson（虽然它已在缓存里，是 AGP 的传递依赖）：
+    //   Gson 用反射绕过 Kotlin 的构造器，data class 的非空字段能被塞进 null、
+    //   默认值会被忽略 —— 配置迁移（旧 config.json 缺字段）场景下必然踩坑。
+    //   kotlinx.serialization 编译期生成，配合 ignoreUnknownKeys + 默认值，
+    //   是「向后兼容旧配置文件」最稳的方案。
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+
+    // 【协程】Agent 循环 / 流式事件 / 取消，全项目异步基础。
+    // 原本是 lifecycle-runtime-ktx 的传递依赖，这里显式声明版本，
+    // 避免上游升级时被动漂移。
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }
