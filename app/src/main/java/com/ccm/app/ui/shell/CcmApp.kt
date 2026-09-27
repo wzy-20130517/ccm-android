@@ -5,18 +5,17 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.ccm.app.ui.common.SidebarDrawer
 import com.ccm.app.ui.common.TitleBar
+import com.ccm.app.ui.pages.LandingScreen
+import com.ccm.app.ui.pages.greetingFor
 import com.ccm.app.ui.theme.CCMTheme
-import com.ccm.app.ui.theme.CCMText
 
 /**
  * CCM 应用根 Composable —— **阶段 5 的 MainActivity 只调这一个**。
@@ -92,18 +91,13 @@ private fun AppScaffold() {
             )
 
             // ── 内容区 ────────────────────────────────────────────────
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) {
-                // B1 占位：验证主题、顶栏、抽屉渲染正确
-                // TODO(阶段4·B4): 替换为真实页面（首页 / 聊天 / 设置 …）
-                Text(
-                    text = "CCM",
-                    style = CCMText.titleSerif,
-                    color = colors.textSecondary,
-                )
-            }
+            // B1：首页 Landing（校准 diff 工具链用）
+            // TODO(阶段4·B4): 换成路由分发（首页 / 聊天 / 设置 …）
+            LandingScreen(
+                greeting = greetingFor("Jay"),
+                onSend = { },
+                onPickPrompt = { },
+            )
         }
 
         // ── 侧栏抽屉（浮层，含遮罩）───────────────────────────────────
