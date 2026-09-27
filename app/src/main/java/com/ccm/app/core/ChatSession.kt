@@ -66,6 +66,24 @@ class ChatSession(
     /** 是否正在跑。 */
     val isRunning: Boolean get() = runningJob?.isActive == true
 
+    /**
+     * 注入一条本地回复（不走 API、不进模型上下文）。
+     *
+     * slash 命令的输出用它（如 `/help` 的帮助文本）——
+     * 这类内容对模型没有价值，塞进历史只会白烧 token。
+     * 会 append 进 bubbles（UI 可见），下次 TurnEnd 时也会随
+     * AgentLoop 历史落盘的差异被忽略（它不在 getHistory 里）。
+     */
+    fun injectNotice(text: String) {
+        _state.value = _state.value.copy(
+            bubbles = _state.value.bubbles + Bubble(
+                role = Message.ROLE_ASSISTANT,
+                text = text,
+                messageId = "notice-${System.currentTimeMillis()}",
+            ),
+        )
+    }
+
     /** 更新输入框草稿（InputBar 的 onValueChange 直连这里）。 */
     fun setDraft(text: String) {
         _state.value = _state.value.copy(draft = text)

@@ -118,7 +118,33 @@ fun ChatScreenConnected(
         onInputChange = session::setDraft,
         onSend = {
             val text = coreState.draft.trim()
-            if (text.isNotEmpty()) session.send(text)   // send() 内部清 draft
+            if (text.isNotEmpty()) {
+                // ── slash 命令（2026-09-28 最小集）──────────────────
+                // 原来 ChatSession.send 对 "/xxx" 照样发给模型 ——
+                // 模型收到后只能回一句「我不是这样用的」。
+                // UI 类命令（/model /export）必须在这里拦：
+                // 它们要操作的是 Compose 状态，core 层够不着。
+                when {
+                    text == "/clear" -> {
+                        session.clear()          // 停任务 + 清历史 + 清气泡
+                    }
+                    text == "/help" -> {
+                        session.injectNotice(
+                            "**可用命令**\n\n" +
+                            "- `/clear` — 清空当前对话\n" +
+                            "- `/model` — 打开模型选择器\n" +
+                            "- `/export` — 导出对话（系统分享）\n" +
+                            "- `/help` — 显示本帮助\n\n" +
+                            "其余输入会直接发给模型。"
+                        )
+                    }
+                    text == "/model" -> onModelClick()
+                    text == "/export" -> onExport()
+                    else -> session.send(text)   // send() 内部清 draft
+                }
+                // slash 分支不走 send，draft 得自己清（send 的清空够不着）
+                if (text.startsWith("/")) session.setDraft("")
+            }
         },
         onStop = { session.stop() },
         onExport = onExport,
