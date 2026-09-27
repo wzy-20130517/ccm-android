@@ -252,7 +252,10 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                 .background(colors.bgMain),
         ) {
             TitleBar(
-                onToggleSidebar = { sidebarOpen = !sidebarOpen },
+                onToggleSidebar = {
+                    android.util.Log.i("CCMTap", "click menu, sidebarOpen: $sidebarOpen -> ${!sidebarOpen}")
+                    sidebarOpen = !sidebarOpen
+                },
                 // 非首页时启用「后退」（回首页）；首页时禁用（灰色 #B7B5B0）
                 onNavBack = if (route != CcmRoute.HOME) ({ navigate(CcmRoute.HOME) }) else null,
                 onNavForward = null,
@@ -346,6 +349,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         }
 
         // ── 侧栏抽屉（浮层，含遮罩）───────────────────────────────────
+        android.util.Log.i("CCMTap", "recompose SidebarDrawer open=$sidebarOpen route=$route showSettings=$showSettings")
         SidebarDrawer(
             open = sidebarOpen,
             onClose = { sidebarOpen = false },
