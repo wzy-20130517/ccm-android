@@ -11,7 +11,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.ccm.app.core.ChatSession
 import com.ccm.app.ui.chat.ChatScreen
+import com.ccm.app.ui.chat.ChatScreenConnected
 import com.ccm.app.ui.common.SidebarDrawer
 import com.ccm.app.ui.common.TitleBar
 import com.ccm.app.ui.pages.ArtifactsScreen
@@ -31,16 +33,31 @@ import com.ccm.app.ui.theme.CCMTheme
  * ## 冻结接口（CONTRACTS.md）
  * ```kotlin
  * // MainActivity.kt（阶段 5 owner）
- * setContent { CcmApp() }
+ * setContent { CcmApp(session = graph) }
  * ```
  * 这是 dev-ui（阶段 4）与阶段 5 之间**唯一**的接口。阶段 5 不需要知道
  * 内部有哪些页面、怎么导航 —— 全在 ui/ 包内封装。
  *
- * ## 当前状态：B4
+ * ## 状态
  * - ✅ 主题层（ui/theme/）
  * - ✅ 顶栏 + 侧栏抽屉（ui/common/）
  * - ✅ 首页 / 对话列表 / 项目页（ui/pages/）
- * - ⏳ 聊天主界面（B5，最难）
+ * - ✅ 聊天主界面（接 [ChatSession]）
+ *
+ * ## ★ 关于 [session] 参数（阶段 5 接线）
+ *
+ * 这是本次接线**唯一的改动点**：以前 `CcmApp()` 无参，所以聊天页只能
+ * 渲染 `bubbles = emptyList()` 的假空态 —— 用户看到的界面是死的。
+ *
+ * 现在由 `AppGraph` 装配好会话传进来：
+ * ```
+ * AppGraph.init() → ChatSession
+ *   └── CcmApp(session)
+ *         ├── 首页输入 → session.send() → 自动切到对话页
+ *         └── 对话页 → ChatScreenConnected(session)  ← 真数据
+ * ```
+ *
+ * 传 `null` 时（用户还没配 Provider）保持原来的空态渲染，不崩。
  *
  * ## 布局结构（对齐 Web 移动端）
  * ```
@@ -59,15 +76,17 @@ import com.ccm.app.ui.theme.CCMTheme
  * 2. 否则跟随系统 `prefers-color-scheme: dark`
  *
  * 实测确认 Web 的 localStorage 默认值是 `"system"`（跟随系统）。
+ *
+ * @param session 已装配的会话（`null` = 还没配 API，渲染空态）
  */
 @Composable
-fun CcmApp() {
+fun CcmApp(session: ChatSession? = null) {
     // 对齐 Web：未显式设置过主题时跟随系统（localStorage.theme === "system"）
     // TODO(阶段4·B5): 接 SettingsRepository —— 用户显式选择优先于系统
     val darkTheme = isSystemInDarkTheme()
 
     CCMTheme(darkTheme = darkTheme) {
-        AppScaffold()
+        AppScaffold(session = session)
     }
 }
 
@@ -128,9 +147,24 @@ enum class CcmRoute(val path: String) {
  * - 顶栏 44dp，**不乘 0.92**
  * - 侧栏是 276dp 的抽屉，默认收起
  * - Web 在每次路由变化时自动收起抽屉（`App.tsx:378`）—— 已保留该行为
+ *
+ * ## 接线说明（阶段 5）
+ *
+ * **首页输入 → 对话页** 的流转在这里：
+ * ```
+ * LandingScreen.onSend(text)
+ *   └── session.send(text)      ← 交给 core，Agent 开始跑
+ *         └── navigate(CHAT)    ← 立刻切页，让用户看到流式输出
+ * ```
+ * 切页必须在 `send` 之后立刻做（而不是等第一个事件）——
+ * 用户按了发送却还停在首页，会以为没反应。
+ *
+ * 从侧栏「新对话」进来时是 [CcmRoute.HOME]，再次发送会复用同一个 session
+ * （会话历史连续）。要开新会话得等 dev-core 提供 `session.clear()` 的
+ * 界面入口 —— 见 `ChatSession.clear()`，目前还没有 UI 接它。
  */
 @Composable
-private fun AppScaffold() {
+private fun AppScaffold(session: ChatSession?) {
     val colors = CCMTheme.colors
 
     var sidebarOpen by remember { mutableStateOf(false) }
@@ -142,6 +176,18 @@ private fun AppScaffold() {
     fun navigate(to: CcmRoute) {
         route = to
         sidebarOpen = false
+    }
+
+    /**
+     * 发消息并切到对话页。
+     *
+     * 抽出来是因为首页和对话页都可能触发发送（对话页的输入框走的是
+     * `ChatScreenConnected` 内部的 `session.send`，不经过这里）。
+     */
+    fun sendAndOpen(text: String) {
+        val s = session ?: return
+        s.send(text)
+        navigate(CcmRoute.CHAT)
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -162,18 +208,23 @@ private fun AppScaffold() {
                 when (route) {
                     CcmRoute.HOME -> LandingScreen(
                         greeting = greetingFor("Jay"),
-                        onSend = { },
-                        onPickPrompt = { },
+                        // ★ 接线：首页输入框真的能发消息了
+                        onSend = { sendAndOpen(it) },
+                        onPickPrompt = { sendAndOpen(it) },
                     )
 
-                    // 未接 session 时渲染空态。
-                    // 接了 session 请用 ChatScreenConnected(session) —— 见 ui/chat/ChatScreenConnected.kt
-                    // 阶段 5 装配 session 后，把这里换成：
-                    //   ChatScreenConnected(session = session)
-                    CcmRoute.CHAT -> ChatScreen(
-                        bubbles = emptyList(),
-                        onSend = { },
-                    )
+                    CcmRoute.CHAT -> if (session != null) {
+                        // ★ 接线：真数据。ChatScreenConnected 内部订阅
+                        //   session.state（StateFlow），把 core 类型适配成 UI 类型。
+                        ChatScreenConnected(session = session)
+                    } else {
+                        // 没配 Provider —— 渲染空态而不是崩。
+                        // 用户此时应该去设置页，这里给个能点的入口。
+                        ChatScreen(
+                            bubbles = emptyList(),
+                            onSend = { },
+                        )
+                    }
 
                     CcmRoute.CHATS -> ChatsScreen(
                         chats = emptyList(),
@@ -200,12 +251,10 @@ private fun AppScaffold() {
 
                     CcmRoute.SCHEDULED -> ScheduledScreen()
 
-                    // TODO(阶段4·B4-c): Cowork / Scheduled 的独立页面（已有 CoworkScreen，待接）
-                    // TODO(阶段4·B5-c): 聊天主界面剩余区块
                     else -> LandingScreen(
                         greeting = greetingFor("Jay"),
-                        onSend = { },
-                        onPickPrompt = { },
+                        onSend = { sendAndOpen(it) },
+                        onPickPrompt = { sendAndOpen(it) },
                     )
                 }
             }

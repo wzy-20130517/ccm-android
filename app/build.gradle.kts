@@ -70,6 +70,18 @@ android {
     // proot 二进制以 .so 形式打进 jniLibs —— 只有 nativeLibraryDir 才有 exec 权限
     sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
 
+    androidResources {
+        // 【2026-09-27 · 阶段5 P2】内置 rootfs 包**不能被 AAPT 再压一遍**。
+        //
+        // 原因：RootfsManager 用 `assets.openFd()` 读它的长度来显示复制进度，
+        // 而 openFd 对「已压缩的 asset」会抛 FileNotFoundException。
+        // 而且这个包本身就是 gzip（再压几乎无收益），AAPT 压缩纯属白费打包时间。
+        //
+        // 注意这里是 `tar.gz`（后缀匹配），不是文件名 —— 将来换 rootfs 版本
+        // 只要还是 .tar.gz 就自动生效，不用改这行。
+        noCompress += "tar.gz"
+    }
+
     packaging {
         // 不压缩 so，保证解压后可直接 exec
         jniLibs { useLegacyPackaging = true }

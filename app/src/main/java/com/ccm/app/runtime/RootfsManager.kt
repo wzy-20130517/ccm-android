@@ -36,6 +36,30 @@ class RootfsManager(private val context: Context) {
         private const val ARCHIVE_NAME = "rootfs.tar.gz"
 
         /**
+         * APK 内置的 rootfs 包名（`app/src/main/assets/` 下）。
+         *
+         * 【2026-09-27 新增：内置优先】
+         * 原来首次安装必须联网下载 28MB —— 移动网络下 1~3 分钟，
+         * 慢的时候（限速/信号差）能卡十几分钟甚至反复失败。
+         *
+         * 现在把这个包直接打进 APK，首次安装变成**本地复制**（2~5 秒）：
+         * ```
+         * 改前：首次安装 = 下载 28MB（网络，1~3 分钟）
+         * 改后：首次安装 = 复制 assets（本地，2~5 秒）
+         * ```
+         *
+         * 代价是 APK 从 17MB 涨到约 45MB。用户已确认接受。
+         *
+         * ⚠️ **必须有网络回退**（见 [download]）—— 万一某个构建变体没打进
+         * assets，或者 assets 里的包损坏了，不能让用户彻底装不上。
+         *
+         * ⚠️ 这个文件必须在 `build.gradle` 里配 `noCompress`（已配），
+         * 否则 AAPT 会把它再压一遍：既拖慢复制（要边解压边写），
+         * 又让 `AssetManager.openFd()` 失败（拿不到长度）。
+         */
+        private const val ASSET_ARCHIVE = "ubuntu-base.tar.gz"
+
+        /**
          * rootfs 版本。升级这个值会触发重新安装。
          *
          * 【2026-09-27 → 24.04-v2】换 rootfs 方案（自打包 GitHub Release
@@ -145,6 +169,93 @@ class RootfsManager(private val context: Context) {
     fun hasArchive(): Boolean = archiveFile.exists() && archiveFile.length() > 1_000_000
 
     /**
+     * APK 里是否带了 rootfs 包。
+     *
+     * 只查存在性 + 大小，**不校验内容**（校验要读完整 28MB，白费时间）。
+     * 内容正确性由解压阶段的 [TarExtractor] 兜底 —— 损坏的包会在那里失败，
+     * 而失败后 `hasArchive()` 为 false，下次安装会重新复制/下载。
+     */
+    fun hasAssetArchive(): Boolean = try {
+        val fd = context.assets.openFd(ASSET_ARCHIVE)
+        val ok = fd.length > 10_000_000
+        fd.close()
+        ok
+    } catch (t: Throwable) {
+        // openFd 失败有两种常见原因，都属正常：
+        //   1. 这个构建变体没打进 assets（本地调试）
+        //   2. assets 被压缩了（忘了配 noCompress）→ 退回 open() 也能读，只是慢
+        // 用 open() 再确认一次，避免第 2 种情况被误判成「没有内置包」。
+        try {
+            context.assets.open(ASSET_ARCHIVE).use { it.read() }  // 只读 1 字节探存在性
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * 从 APK assets 复制 rootfs 包到 [archiveFile]。
+     *
+     * 【为什么先写 .part 再改名】
+     * 复制中途进程被杀（用户划掉 App、系统回收）会留下半个文件。
+     * 若直接写 [archiveFile]，`hasArchive()` 会认为「已有包」而跳过下载，
+     * 然后解压一个残缺包 → 报「解压失败」，用户完全想不到是复制没做完。
+     * 用 .part 则半个文件不算数，下次重新复制。
+     *
+     * 【进度回调】
+     * 28MB 复制在手机上约 2~5 秒。不算快，所以要报进度，
+     * 否则用户看到进度条不动会以为卡死。
+     *
+     * @return 成功返回 true；失败返回 false（调用方应退回网络下载）
+     */
+    private fun copyFromAssets(onProgress: (String, Long, Long) -> Unit): Boolean {
+        val tmp = File(context.filesDir, "$ARCHIVE_NAME.part")
+        return try {
+            // 拿总大小：openFd 能拿到（需 noCompress），拿不到就用已知值兜底
+            val total = try {
+                context.assets.openFd(ASSET_ARCHIVE).use { it.length }
+            } catch (_: Throwable) {
+                29_865_086L   // ubuntu-base-24.04.3-base-arm64.tar.gz 实测大小
+            }
+
+            context.assets.open(ASSET_ARCHIVE).use { input ->
+                FileOutputStream(tmp, false).use { out ->
+                    val buf = ByteArray(256 * 1024)
+                    var done = 0L
+                    var lastReport = 0L
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n <= 0) break
+                        out.write(buf, 0, n)
+                        done += n
+                        // 每 2MB 报一次，避免回调过于频繁拖慢复制
+                        if (done - lastReport > 2 * 1024 * 1024) {
+                            onProgress("copy", done, total)
+                            lastReport = done
+                        }
+                    }
+                    onProgress("copy", done, total)
+                    if (done < 10_000_000) {
+                        Log.w(TAG, "内置包过小（$done 字节），判定为无效")
+                        return false
+                    }
+                }
+            }
+
+            if (archiveFile.exists()) archiveFile.delete()
+            if (!tmp.renameTo(archiveFile)) {
+                tmp.copyTo(archiveFile, overwrite = true)
+                tmp.delete()
+            }
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "从 assets 复制失败：${t.message}")
+            try { tmp.delete() } catch (_: Throwable) {}
+            false
+        }
+    }
+
+    /**
      * 完整安装流程：下载 → 解压 → 配置。
      *
      * @param onProgress (阶段, 已完成, 总量)  阶段: "download" / "extract" / "config"
@@ -187,11 +298,29 @@ class RootfsManager(private val context: Context) {
         }
         val tmpPath = File(context.filesDir, "rootfs.install.tmp")
         return try {
-            // 1) 下载（已有就跳过）
+            // 1) 准备压缩包：**优先用 APK 内置的**，没有再走网络。
+            //
+            // 【2026-09-27 改】原来只有下载一条路。现在内置包在 APK 里，
+            // 本地复制 2~5 秒 vs 网络下载 1~3 分钟 —— 首次安装体验差一个量级。
+            //
+            // 复制失败（assets 缺失/损坏）**不报错**，静默退回下载：
+            // 用户看到的是「在装」而不是「装不了」。
             if (!hasArchive()) {
-                if (!download(onProgress)) {
-                    Log.e(TAG, "下载失败")
-                    return false
+                onProgress("copy", 0, 0)
+                val fromAsset = try {
+                    if (hasAssetArchive()) copyFromAssets(onProgress) else false
+                } catch (t: Throwable) {
+                    Log.w(TAG, "内置包复制失败，改走网络：${t.message}")
+                    false
+                }
+                if (!fromAsset) {
+                    Log.i(TAG, "走网络下载 rootfs")
+                    if (!download(onProgress)) {
+                        Log.e(TAG, "下载失败")
+                        return false
+                    }
+                } else {
+                    Log.i(TAG, "已用 APK 内置 rootfs（本地复制）")
                 }
             }
 
