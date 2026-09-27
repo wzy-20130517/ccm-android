@@ -2,6 +2,7 @@ package com.ccm.app.core
 
 import com.ccm.app.core.agent.AgentLoop
 import com.ccm.app.core.api.ApiClient
+import com.ccm.app.core.compact.AutoCompact
 import com.ccm.app.core.compact.Compactor
 import com.ccm.app.core.image.ImageScaler
 import com.ccm.app.core.provider.AppConfig
@@ -68,6 +69,12 @@ class AppContainer private constructor(
     val sessionStore: SessionStore,
     /** 上下文压缩。 */
     val compactor: Compactor,
+    /**
+     * 自动压缩决策（**默认关闭**，见 [AutoCompact] 类注释）。
+     *
+     * 用户被自动压缩搞丢过记忆，明确反感 —— 只有他显式设阈值才会启用。
+     */
+    val autoCompact: AutoCompact,
 ) {
 
     /**
@@ -211,6 +218,8 @@ class AppContainer private constructor(
                 spawnSubAgent = null,   // 由上层在装配后注入（需要 Agent 工具支持）
                 toolRunner = toolRunner,
                 imageScaler = imageScaler,
+                // trace 目录 —— 排查问题的关键设施（Node 版最难查的 bug 全靠它）
+                traceDir = storage.tracesDir,
             )
             agentLoop.setHistory(initialHistory)
 
@@ -221,6 +230,8 @@ class AppContainer private constructor(
                 toolRegistry = registry,
                 sessionStore = sessionStore,
                 compactor = compactor,
+                // 阈值从配置读（AppConfig 目前没有这两个字段 → 用默认 0 = 关闭）
+                autoCompact = AutoCompact(maxContext = config.maxContextTokens),
             )
         }
 

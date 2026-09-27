@@ -5,6 +5,8 @@ import com.ccm.app.core.api.ApiTypes
 import com.ccm.app.core.image.ImageProcessor
 import com.ccm.app.core.image.ImageScaler
 import com.ccm.app.core.session.ContentBlock
+import com.ccm.app.core.trace.TraceEvents
+import com.ccm.app.core.trace.TraceStore
 import com.ccm.app.core.session.Message
 import com.ccm.app.core.tool.Attachment
 import com.ccm.app.core.tool.SubAgentSpec
@@ -88,6 +90,14 @@ class AgentLoop(
     /** 派生子 Agent 的能力（由上层注入）。 */
     private val spawnSubAgent: (suspend (SubAgentSpec) -> SubAgentResult)? = null,
     /**
+     * trace 目录（`null` = 不记录）。
+     *
+     * **强烈建议传** —— Node 版那些最难查的 bug（「只有 WebSearch 被掐死」
+     * 「一次超时后全卡」「十几分钟一声不响」）全靠 trace 定位，
+     * 光看现象根本猜不到。见 [TraceStore] 类注释。
+     */
+    private val traceDir: java.io.File? = null,
+    /**
      * 图片缩放器（生产用 Android 的，单测用 JVM 的）。
      *
      * `null` = 不缩放，图片原样注入。**生产环境应该传** ——
@@ -120,6 +130,9 @@ class AgentLoop(
     /** 中断标志。 */
     @Volatile
     private var aborted = false
+
+    /** 当前 trace（每轮 run 建一个）。 */
+    private var trace: TraceStore? = null
 
     /** 主动中断当前 run。 */
     fun abort() {
@@ -169,6 +182,20 @@ class AgentLoop(
         turnCount = 0
         aborted = false
 
+        // 每轮 run 一个 trace 文件（jsonl），结束后 end()
+        val tr = traceDir?.let { TraceStore(dir = it) }
+        trace = tr
+        tr?.emit(
+            TraceEvents.RUN_START,
+            mapOf(
+                "kind" to "agent",
+                "input" to com.ccm.app.core.trace.Redactor.preview(userMessage, 800),
+                "max_turns" to maxTurns,
+                "message_count_before" to (messages.size - 1),
+                "tool_count" to toolsProvider().size,
+            ),
+        )
+
         try {
             while (turnCount < maxTurns) {
                 if (aborted) throw CancellationException("用户中断")
@@ -193,6 +220,12 @@ class AgentLoop(
         } catch (e: Throwable) {
             emit(AgentEvent.Error(e.message ?: "未知错误", ToolResult.UNKNOWN))
         } finally {
+            // trace 收尾（记录轮数与状态）
+            try {
+                tr?.end(mapOf("status" to "completed", "turns" to turnCount, "message_count" to messages.size))
+                trace = null
+            } catch (_: Throwable) {
+            }
             // 保证恰好发一次 Done —— UI 靠它收尾（关 spinner、恢复输入框）
             emit(AgentEvent.Done)
         }
@@ -221,9 +254,30 @@ class AgentLoop(
             )
         }
 
+        val apiStartedAt = System.currentTimeMillis()
+        trace?.emit(
+            TraceEvents.API_REQUEST,
+            mapOf(
+                "turn" to turnCount,
+                "stream" to useStream,
+                "message_count" to apiMessages.size,
+                "tool_count" to toolDefs.size,
+            ),
+        )
+
         if (!useStream) {
             // 非流式（compact 摘要等短请求）
             val resp = api.chat(systemPrompt, apiMessages, toolDefs)
+            trace?.emit(
+                TraceEvents.API_RESPONSE,
+                mapOf(
+                    "turn" to turnCount,
+                    "duration_ms" to (System.currentTimeMillis() - apiStartedAt),
+                    "prompt_tokens" to resp.usage.promptTokens,
+                    "completion_tokens" to resp.usage.completionTokens,
+                    "tool_calls" to resp.toolCalls.size,
+                ),
+            )
             if (resp.text.isNotEmpty()) {
                 textSb.append(resp.text)
                 emit(AgentEvent.TextDelta(resp.text, messageId))
@@ -273,6 +327,16 @@ class AgentLoop(
 
         // 流结束 —— 此时工具参数才拼装完整
         val toolCalls = api.lastToolCalls()
+        trace?.emit(
+            TraceEvents.API_RESPONSE,
+            mapOf(
+                "turn" to turnCount,
+                "duration_ms" to (System.currentTimeMillis() - apiStartedAt),
+                "text_len" to textSb.length,
+                "reasoning_len" to reasoningSb.length,
+                "tool_calls" to toolCalls.size,
+            ),
+        )
         toolCalls.forEach { tc ->
             val parsed = parseArgs(tc.arguments)
             emit(AgentEvent.ToolStart(tc.id, tc.name, parsed, formatInputPreview(tc.name, parsed)))
@@ -400,6 +464,18 @@ class AgentLoop(
             )
 
         val input = parseArgs(tc.arguments)
+        val toolStartedAt = System.currentTimeMillis()
+
+        trace?.emit(
+            TraceEvents.TOOL_START,
+            mapOf(
+                "turn" to turnCount,
+                "tool" to tc.name,
+                "id" to tc.id,
+                // 参数预览（Redactor 会截断 + 脱敏）
+                "input" to com.ccm.app.core.trace.Redactor.preview(input.toString(), 400),
+            ),
+        )
 
         // 参数校验（返回字符串 = 错误信息）
         tool.validateInput(input)?.let { err ->
@@ -437,6 +513,22 @@ class AgentLoop(
         } catch (e: Throwable) {
             ToolResult.Error(e.message ?: "工具执行异常", ToolResult.INTERNAL)
         }
+
+        val elapsed = System.currentTimeMillis() - toolStartedAt
+        // ⚠️ 记 tool_end 而不是 tool_error 是有意的：
+        // 排查「工具被谁掐死」时，关键是**时序**（start/end 的时间差），
+        // 光看结果文本判断不出「是自己失败还是被外部 abort」。
+        trace?.emit(
+            if (result.failed) TraceEvents.TOOL_ERROR else TraceEvents.TOOL_END,
+            mapOf(
+                "turn" to turnCount,
+                "tool" to tc.name,
+                "duration_ms" to elapsed,
+                "is_error" to result.failed,
+                "result_len" to result.textOrMessage.length,
+                "category" to (result as? ToolResult.Error)?.category,
+            ),
+        )
 
         emit(AgentEvent.ToolResult(tc.id, tc.name, result.textOrMessage, result.failed))
         return ToolExecResult(tc.id, tc.name, result)
