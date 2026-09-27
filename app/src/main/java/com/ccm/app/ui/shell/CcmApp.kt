@@ -623,11 +623,13 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     "chats" -> CcmRoute.CHATS
                     "projects" -> CcmRoute.PROJECTS
                     "artifacts" -> CcmRoute.ARTIFACTS
+                    "scheduled" -> CcmRoute.SCHEDULED
                     else -> CcmRoute.HOME
                 }
                 navigate(target)
             },
-            onNewChat = { navigate(CcmRoute.HOME) },
+            // 「新对话」= 真新建会话（原来只回首页 —— 旧会话还挂着）
+            onNewChat = newChat,
             onCustomize = { navigate(CcmRoute.CUSTOMIZE) },
             onOpenProfile = { navigate(CcmRoute.SETTINGS) },
             // ★ 2026-09-27 修「侧边栏点不动」：
@@ -638,7 +640,20 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                 sidebarOpen = false
                 navigate(CcmRoute.CHATS)
             },
-            onPillChange = { /* TODO: 协作/代码模式路由（Web 是 /cowork 切换） */ },
+            // 胶囊路由 —— 对齐 Web（Sidebar.tsx:209-240 实测）：
+            //   聊天 → / ；协作 → /cowork ；**代码在 Web 是 disabled: true**（点了没反应是预期）。
+            //   Scheduled（计划任务）在 Web 走侧栏菜单项，不走胶囊。
+            onPillChange = { key ->
+                when (key) {
+                    "协作" -> navigate(CcmRoute.COWORK)
+                    else -> navigate(CcmRoute.HOME)   // "聊天" 及未知值回首页
+                }
+            },
+            // 当前激活胶囊跟路由走（原来写死默认"聊天"，进协作页还高亮聊天）
+            activePill = when (route) {
+                CcmRoute.COWORK, CcmRoute.SCHEDULED -> "协作"
+                else -> "聊天"
+            },
             userName = profileName ?: "",
             // ★ 最近对话真数据（原来没传 → 永远空列表）
             recentChats = sessions.take(8).map {

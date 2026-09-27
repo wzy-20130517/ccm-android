@@ -132,6 +132,9 @@ fun SidebarContent(
             SidebarNavRow(R.drawable.ic_chats, "对话", onClick = { onNavigate("chats") })
             SidebarNavRow(R.drawable.ic_projects, "项目", onClick = { onNavigate("projects") })
             SidebarNavRow(R.drawable.ic_artifacts, "产物", onClick = { onNavigate("artifacts") })
+            // 计划任务 —— Web Sidebar.tsx:755 有这个入口，CCM 之前漏了，
+            // CcmRoute.SCHEDULED 页面存在却没有任何入口能到。
+            SidebarNavRow(R.drawable.ic_list_checks, "计划任务", onClick = { onNavigate("scheduled") })
         }
 
         Spacer(Modifier.height(11.04.dp))
