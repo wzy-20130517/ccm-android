@@ -127,6 +127,101 @@ def check_file(path):
     return errors, len(lines)
 
 
+def collect_definitions(files):
+    """收集所有顶层函数的参数名，用于跨文件调用检查。"""
+    defs = {}
+    for f in files:
+        src = open(f, encoding='utf-8').read()
+        # 匹配 fun Name( ... ) 的完整参数列表（含换行）
+        for m in re.finditer(r'^fun\s+(\w+)\s*\(', src, re.M):
+            name = m.group(1)
+            start = m.end() - 1
+            depth = 0
+            i = start
+            while i < len(src):
+                if src[i] == '(':
+                    depth += 1
+                elif src[i] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            params_src = src[start + 1:i]
+            # 提取参数名（形如 `name: Type`，跳过注解与默认值里的冒号）
+            params = set()
+            for pm in re.finditer(r'(?:^|,)\s*(?:@\w+\s+)*(\w+)\s*:', params_src):
+                params.add(pm.group(1))
+            # 是否是 @Composable
+            preceding = src[max(0, m.start() - 200):m.start()]
+            defs[name] = {
+                'params': params,
+                'file': f,
+                'composable': '@Composable' in preceding.split('fun ')[-1] if 'fun ' in preceding else False,
+                'trailing_lambda': params_src.rstrip().endswith('-> Unit') or 'content:' in params_src,
+            }
+    return defs
+
+
+def check_cross_file(files, defs):
+    """检查跨文件调用：参数名是否存在、必填参数是否缺失。
+
+    这是本轮 CI 报错暴露的盲区 —— 单文件检查查不出「调用了不存在的参数名」。
+    """
+    errors = []
+    for f in files:
+        src = open(f, encoding='utf-8').read()
+        # 找形如 `FuncName(` 且后面跟 `key = value` 的调用
+        for m in re.finditer(r'\b([A-Z]\w+)\s*\(', src):
+            fname = m.group(1)
+            if fname not in defs:
+                continue
+            d = defs[fname]
+            if d['file'] == f:
+                continue        # 同文件调用不查（可能有重载）
+            # 提取本次调用的实参（到匹配的右括号）
+            start = m.end() - 1
+            depth = 0
+            i = start
+            while i < len(src):
+                if src[i] == '(':
+                    depth += 1
+                elif src[i] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            call_src = src[start + 1:i]
+            # ★ 只取顶层具名实参 —— 嵌套括号里的内容必须剔除。
+            # 否则 `Modifier.padding(top = 8.dp, end = 6.44.dp)` 里的 top/end
+            # 会被误当成外层函数的实参（本轮踩过这个误报）。
+            named = set()
+            depth2 = 0
+            token = ''
+            for ch in call_src + ',':
+                if ch in '([{':
+                    depth2 += 1
+                    if depth2 == 1:
+                        token = ''
+                    continue
+                if ch in ')]}':
+                    depth2 -= 1
+                    continue
+                if ch == ',' and depth2 == 0:
+                    m = re.match(r'\s*(\w+)\s*=(?!=)', token)
+                    if m:
+                        named.add(m.group(1))
+                    token = ''
+                    continue
+                if depth2 == 0:
+                    token += ch
+            unknown = named - d['params']
+            if unknown:
+                errors.append(f'{f}: 调用 {fname}() 传了不存在的参数 {sorted(unknown)}'
+                              f'（{fname} 定义在 {os.path.basename(d["file"])}，'
+                              f'可用: {sorted(d["params"])}）')
+    return errors
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -144,10 +239,21 @@ def main():
         print('未找到 .kt 文件')
         sys.exit(2)
 
+    # 先收集所有定义（跨文件检查用）
+    all_defs = collect_definitions(files)
+    cross_errors = check_cross_file(files, all_defs)
+    cross_by_file = {}
+    for e in cross_errors:
+        fp = e.split(':')[0]
+        cross_by_file.setdefault(fp, []).append(e.split(': ', 1)[1] if ': ' in e else e)
+
     total_lines = 0
     bad = 0
     for f in files:
         errs, n = check_file(f)
+        # 合并跨文件错误
+        if f in cross_by_file:
+            errs = errs + [f'跨文件调用: {x}' for x in cross_by_file[f]]
         total_lines += n
         rel = f.replace(os.getcwd() + '/', '')
         if errs:

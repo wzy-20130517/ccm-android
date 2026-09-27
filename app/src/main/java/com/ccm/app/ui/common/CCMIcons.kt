@@ -212,22 +212,28 @@ object SvgIcons {
  *
  * ```kotlin
  * PainterIcon(CCMIcons.Search, size = 20.dp, tint = CCMTheme.colors.textSecondary)
+ * // 需要旋转/内边距时：
+ * PainterIcon(CCMIcons.ChevronDown, size = 12.88.dp, modifier = Modifier.rotate(180f))
  * ```
  *
- * @param resId  drawable 资源
- * @param size   显示尺寸。Web 默认 20，侧栏切换 24
- * @param tint   着色。传 [Color.Unspecified] 保留原图颜色（彩色插图用）
+ * @param resId    drawable 资源
+ * @param size     显示尺寸。Web 默认 20，侧栏切换 24
+ * @param tint     着色。传 [Color.Unspecified] 保留原图颜色（彩色插图用）
+ * @param modifier 额外修饰符（旋转、内边距、对齐等）。
+ *                 ⚠️ 内部用 `Modifier.size(size)`，若传入的 modifier 也含 size
+ *                 会以后者为准（Compose 的 size 后者覆盖前者）
  */
 @Composable
 fun PainterIcon(
     resId: Int,
     size: Dp = 20.dp,
     tint: Color = Color.Unspecified,
+    modifier: Modifier = Modifier,
 ) {
     Image(
         painter = painterResource(resId),
         contentDescription = null,
-        modifier = Modifier.size(size),
+        modifier = modifier.size(size),
         colorFilter = if (tint == Color.Unspecified) null else ColorFilter.tint(tint),
     )
 }

@@ -140,7 +140,7 @@ fun ArtifactsPanel(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 18.4.dp, vertical = 14.72.dp),   // px-5 py-4
+                .padding(horizontal = 18.4.dp, vertical = 14.72.dp)   // px-5 py-4
                 .height(24.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
