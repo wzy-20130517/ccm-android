@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自动生成，请勿手改 —— 由 tools/svg/svg2vd.py 从
+  web/src/assets/sidebar-exact/projects.svg 转换而来。
+
+  viewBox: 20.0 x 20.0（保留原始浮点，不做取整以免坐标偏移）
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="20dp"
+    android:height="20dp"
+    android:viewportWidth="20.0"
+    android:viewportHeight="20.0">
+    <path
+        android:pathData="M16.5 3C17.3284 3 18 3.67157 18 4.5V15.5C18 16.3284 17.3284 17 16.5 17H3.5C2.67157 17 2 16.3284 2 15.5V6.5C2 5.67157 2.67157 5 3.5 5H10.793L12.3535 3.43945L12.4639 3.33984C12.7307 3.12123 13.0661 3.00003 13.4141 3H16.5ZM13.4141 4C13.3146 4.00003 13.2182 4.02961 13.1367 4.08398L13.0605 4.14648L11.3535 5.85352C11.2597 5.94728 11.1326 6 11 6H3.5C3.22386 6 3 6.22386 3 6.5V15.5C3 15.7761 3.22386 16 3.5 16H16.5C16.7761 16 17 15.7761 17 15.5V4.5C17 4.22386 16.7761 4 16.5 4H13.4141Z"
+        android:fillColor="#141413" />
+</vector>

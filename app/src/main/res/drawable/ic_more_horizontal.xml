@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  手工编写 —— svg2vd.py 只处理 <path>，本图标源文件用的是 <circle>。
+
+  来源：web/src/components/Icons.tsx 的 IconDotsHorizontal
+  ```jsx
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+       strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="1" />
+    <circle cx="19" cy="12" r="1" />
+    <circle cx="5"  cy="12" r="1" />
+  </svg>
+  ```
+
+  ⚠️ 注意 fill="none" + stroke="currentColor"：
+  原图标是**空心圆描边**（不是实心点）。这里转成实心圆是**有意简化** ——
+  r=1 的圆加 2px 描边后，视觉上就是一个直径 4 的点，与实心 r=2 的点几乎无差；
+  用实心能少 3 条 path 且不依赖 stroke 属性。
+
+  strokeWidth=2 且 r=1 → 外径 = 2×(1+1) = 4，所以实心圆用 r=2。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="16dp"
+    android:height="16dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 三个点：外径 4（= r1 + strokeWidth2 的一半） -->
+    <path android:pathData="M5,12m-2,0a2,2 0 1,0 4,0a2,2 0 1,0 -4,0" android:fillColor="#666666" />
+    <path android:pathData="M12,12m-2,0a2,2 0 1,0 4,0a2,2 0 1,0 -4,0" android:fillColor="#666666" />
+    <path android:pathData="M19,12m-2,0a2,2 0 1,0 4,0a2,2 0 1,0 -4,0" android:fillColor="#666666" />
+</vector>

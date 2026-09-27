@@ -6,15 +6,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -23,7 +18,6 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import com.ccm.app.ui.theme.CCMText
 import com.ccm.app.ui.theme.CCMTheme
 
 /**
@@ -68,7 +62,7 @@ fun SidebarDrawer(
     open: Boolean,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
-    content: @Composable () -> Unit = { SidebarPlaceholderContent() },
+    content: @Composable () -> Unit = { SidebarContent() },
 ) {
     val colors = CCMTheme.colors
 
@@ -133,54 +127,9 @@ fun SidebarDrawer(
     }
 }
 
-/**
- * 侧栏占位内容 —— B2 会替换为真实内容。
- *
- * Web 侧栏结构（自上而下）：
- * 1. 顶部按钮组：新建对话 / 搜索 / Customize
- * 2. 导航：Chats / Projects / Artifacts
- * 3. 用户区（底部）：头像 + 昵称 + 菜单
- */
-@Composable
-private fun SidebarPlaceholderContent() {
-    val colors = CCMTheme.colors
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 12.dp),
-    ) {
-        Spacer(Modifier.height(12.dp))
-        Text(
-            text = "侧栏（B2 填充）",
-            style = CCMText.body13,
-            color = colors.sidebarText,
-        )
-        Spacer(Modifier.height(8.dp))
-        // 占位项，用来验证文字色在明暗两套下都正确
-        SidebarItem(label = "新建对话", onClick = {})
-        SidebarItem(label = "搜索", onClick = {})
-        SidebarItem(label = "Chats", onClick = {})
-        SidebarItem(label = "Projects", onClick = {})
-        SidebarItem(label = "Artifacts", onClick = {})
-    }
-}
 
 /**
  * 侧栏列表项占位 —— B2 会按 Web 的真实样式重写。
  *
  * 这里先用最小实现验证 [com.ccm.app.ui.theme.CCMColors.sidebarText] 在明暗两套下都正确。
  */
-@Composable
-private fun SidebarItem(label: String, onClick: () -> Unit) {
-    val colors = CCMTheme.colors
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(36.dp)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.CenterStart,
-    ) {
-        Text(text = label, style = CCMText.body13, color = colors.sidebarText)
-    }
-}
