@@ -94,6 +94,19 @@ def check_file(path):
     imports = [(i + 1, l) for i, l in enumerate(lines) if l.startswith('import ')]
     body = '\n'.join(l for l in lines if not l.startswith('import '))
     uses_delegate = re.search(r'\bby\s+(remember|mutableStateOf|animateFloatAsState|\w+\.current)', body) is not None
+
+    # ★ 反向检查：用了 `by remember` 委托就**必须**有 getValue/setValue import。
+    # 本轮 CI 报过 `Property delegate must have a 'getValue(...)' method` ——
+    # SettingsScreen.kt 缺了这两个 import，但我的脚本因为「无条件跳过」
+    # 而没报出来。这里补上反向检查。
+    if uses_delegate:
+        if 'import androidx.compose.runtime.getValue' not in src:
+            errors.append('用了 `by remember` 委托但缺 import androidx.compose.runtime.getValue')
+        # 只有 `var ... by` 才需要 setValue（`val ... by` 不需要）
+        if re.search(r'\bvar\s+\w+\s+by\s+', body) and \
+           'import androidx.compose.runtime.setValue' not in src:
+            errors.append('用了 `var ... by` 委托但缺 import androidx.compose.runtime.setValue')
+
     unused = []
     for ln, imp in imports:
         m = re.match(r'import\s+([\w.]+)(?:\s+as\s+(\w+))?', imp)
