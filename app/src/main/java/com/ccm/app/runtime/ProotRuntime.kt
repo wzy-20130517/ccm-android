@@ -115,16 +115,36 @@ class ProotRuntime(private val context: Context) {
         get() = File(context.cacheDir, "proot-tmp").apply { if (!exists()) mkdirs() }
 
     /**
-     * link2symlink 的工作目录 —— **必须在 rootfs 之外**。
+     * link2symlink 的工作目录 —— **必须在 rootfs 之内**。
      *
-     * proot 用 --rootfs=. + cwd=rootfs 启动，此时给一个「rootfs 内部」的绝对路径，
-     * 视角会对不上，link2symlink 静默失效 → 退回建硬链接 → App 沙箱不允许 → apt 全挂。
-     * 详细因果链见 buildProcess() 里那段注释。
+     * ══════════════════════════════════════════════════════════════
+     *  ⚠️ 这个属性的注释 2026-09-27 被纠正过一次，方向完全反了
+     * ══════════════════════════════════════════════════════════════
      *
-     * 放 filesDir 下（不是 cacheDir —— cache 会被系统清理，映射丢了符号链接就断了）。
+     * 【曾经的错误说法】「必须在 rootfs 之外，否则视角对不上」
+     *   —— 这个结论来自一次不完整的实测：只验证了「链接能建出来」，
+     *      没验证「链接能不能被访问」。于是把工作目录挪到了 filesDir/l2s，
+     *      结果真机上含硬链接的包（gzip/perl-base）解包全挂。
+     *
+     * 【真机复现 + 手工验证 · 2026-09-27】
+     *   filesDir/l2s 时：rootfs/usr/bin/gzip -> <files>/l2s/.l2s.gzip0001
+     *                     在 proot 里 [ -e /usr/bin/gzip ] → **MISSING**
+     *   手工把链接改成 <files>/rootfs/.l2s/.l2s.gzip0001 后
+     *                     在 proot 里 [ -e /usr/bin/gzip ] → **EXISTS** ✅
+     *
+     * 【原因】proot 源码 src/extension/link2symlink/link2symlink.c:103-106：
+     *   "The paths recorded inside the symbolic links are deliberately left
+     *    as they were, that is, absolute host paths into this directory:
+     *    that is what the canonicalization dereferences them through,
+     *    c.f. detranslate_path()."
+     *   → 链接内容**故意**写宿主机绝对路径，靠 detranslate_path() 反向翻译。
+     *     该路径必须在 rootfs 的挂载映射内，否则翻译失败 → 断链。
+     *     filesDir/l2s 不在映射里；rootfs/.l2s 对应客户机 /.l2s，能翻译。
+     *
+     * 所以：放 rootfs 内（[rootfs]/.l2s），传它的宿主机绝对路径。
      */
     val prootL2sDir: File
-        get() = File(context.filesDir, "l2s").apply { if (!exists()) mkdirs() }
+        get() = File(rootfs, ".l2s").apply { if (!exists()) mkdirs() }
 
     fun isReady(): Boolean = prootBin.exists() && rootfs.isDirectory
 
@@ -366,31 +386,46 @@ class ProotRuntime(private val context: Context) {
         // 放在 rootfs 外面（App filesDir 下）就没这个问题：proot 的宿主观
         // 和客户机观在这里是一致的。
         // ═══════════════════════════════════════════════════════════
-        // ⚠️ PROOT_L2S_DIR 必须给**宿主机路径**（proot 靠它找自己的工作目录），
-        //    且**必须在 rootfs 之外**（rootfs 内的绝对路径是「客户机视角」，
-        //    proot 解析不到，link2symlink 会静默失效）。
+        // ⚠️ PROOT_L2S_DIR 必须给**宿主机绝对路径**，且该路径**必须在 rootfs 内**。
         //
-        // 【实测对照 · 2026-09-26，用 CCM 自带的 proot 二进制，同一个 rootfs】
-        //   PROOT_L2S_DIR=<宿主机绝对路径>  → link2symlink 生效
-        //       /usr/bin 下 ln h1 h2 → EXIT=0，链接正常建立
-        //   PROOT_L2S_DIR=/.l2s（客户机路径）→ link2symlink **失效**
-        //       /usr/bin 下 ln h1 h2 → "Operation not permitted"
-        //   两者都不带该变量时 → 也是 Operation not permitted
+        // ══════════════════════════════════════════════════════════════
+        //  【2026-09-27 两次踩坑记录 —— 别再改错方向】
+        // ══════════════════════════════════════════════════════════════
         //
-        // 结论：这个变量是**给 proot 进程本身**看的（宿主机视角），
-        // 不是给客户机里的程序看的。写成客户机路径，proot 找不到工作目录，
-        // 整个 link2symlink 扩展静默失效 —— 然后硬链接创建落到内核，
-        // 撞上 Android 沙箱「禁止普通应用建硬链接」的限制。
-        //
-        // 曾担心「链接目标会不会是宿主机路径、在客户机里变成断链」——
-        // 实测不会：proot 自己会做路径转换（/usr/bin 下的测试链接可正常访问）。
-        //
-        // 【2026-09-27 修真机 bug】上一版这里写的是 `File(rootfs, ".l2s")` ——
-        // 正是上面注释里说的「rootfs 内部路径」，导致真机上 apt 装 perl-base 必挂：
+        // 真机症状（两个位置都试过，都失败）：
         //   error setting ownership of '/usr/bin/perl5.38.2.dpkg-new': No such file or directory
         //   dpkg-deb: zstd write error: Broken pipe
-        // 类里早已有正确的 [prootL2sDir]（filesDir/l2s），这里却自己造了一个本地变量，
-        // 两套实现不一致 → 用错了那套。现在统一走 [prootL2sDir]。
+        //   → 含硬链接的包（gzip/perl-base）解包必挂，其余正常
+        //
+        // 【坑 1】PROOT_L2S_DIR 放 rootfs 外面（filesDir/l2s）
+        //   症状：链接建出来了，但内容是宿主机绝对路径，在客户机里访问不到：
+        //     rootfs/usr/bin/gzip -> /data/user/0/com.ccm.app/files/l2s/.l2s.gzip0001
+        //   原因：proot 的 detranslate_path() 要把宿主机路径反向翻译成客户机路径，
+        //         但 filesDir/l2s **不在 rootfs 的挂载映射里** → 翻译失败 → 断链。
+        //
+        // 【坑 2】PROOT_L2S_DIR 传「客户机视角的路径字符串」（如 /.l2s）
+        //   症状：proot 找不到该目录，link2symlink 静默失效，
+        //         退回建真硬链接 → "Operation not permitted"（Android 沙箱禁止）
+        //   原因：这个变量是**给 proot 进程本身**看的（宿主机视角），
+        //         必须传宿主机绝对路径，不能传客户机路径。
+        //
+        // 【正解】宿主机绝对路径 + 位置在 rootfs 内
+        //   PROOT_L2S_DIR=<files>/rootfs/.l2s
+        //   → proot 视角：能找到（宿主机路径 ✅）
+        //   → 客户机视角：对应 /.l2s，在挂载映射里 ✅
+        //   → detranslate_path() 能正常反向翻译 → 链接可访问
+        //
+        // 【源码依据】proot 的 src/extension/link2symlink/link2symlink.c:103-106
+        //   "The paths recorded inside the symbolic links are deliberately left
+        //    as they were, that is, absolute host paths into this directory:
+        //    that is what the canonicalization dereferences them through,
+        //    c.f. detranslate_path()."
+        //   → 链接内容就是宿主机绝对路径（设计如此），靠 detranslate_path 转换。
+        //     所以该路径必须在 rootfs 映射内，否则翻译不出来。
+        //
+        // 【用 [prootL2sDir] 而不是本地 new 一个】
+        // 上一轮就是因为这里自己造了个本地变量、和类里的属性各写各的，
+        // 两套实现漂移后用了错的那个。统一走属性，只有一处定义。
         val l2sHostDir = prootL2sDir
         if (l2sHostDir.isDirectory && l2sHostDir.canWrite()) {
             env["PROOT_L2S_DIR"] = l2sHostDir.absolutePath

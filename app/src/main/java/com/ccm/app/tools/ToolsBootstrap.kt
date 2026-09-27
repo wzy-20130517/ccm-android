@@ -11,6 +11,7 @@ import com.ccm.app.core.tool.ToolStorage
 import com.ccm.app.runtime.ProotRuntime
 import com.ccm.app.tools.bash.BashOutputTool
 import com.ccm.app.tools.bash.BashTool
+import com.ccm.app.tools.bash.GitTools
 import com.ccm.app.tools.bash.KillShellTool
 import com.ccm.app.tools.bash.ProotChannel
 import com.ccm.app.tools.bash.TermuxChannel
@@ -201,6 +202,14 @@ class ToolsBootstrap(
             add(BashTool(primary, fallback))
             add(BashOutputTool())
             add(KillShellTool())
+
+            // Git（复用 Bash 通道 —— git 只装在 rootfs/Termux 里，Android 本体没有）
+            val gitTools = GitTools(primary, fallback)
+            add(gitTools.GitStatusTool())
+            add(gitTools.GitDiffTool())
+            add(gitTools.GitLogTool())
+            add(gitTools.GitAddTool())
+            add(gitTools.GitCommitTool())
 
             // 批 3：网络（需要 settings，没配就不注册 —— 免得模型调了才发现没 key）
             webTools?.let {
