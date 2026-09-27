@@ -75,7 +75,7 @@ fun SidebarDrawer(
     onOpenProfile: () -> Unit = {},
     activePill: String = "聊天",
     recentChats: List<ChatSummary> = emptyList(),
-    userName: String = "Jay",
+    userName: String = "",   // 空 = 未配置，调用方从 UserProfileStore 读
     userSubtitle: String = "自部署",
 ) {
     val colors = CCMTheme.colors

@@ -133,6 +133,24 @@ object AppGraph {
         private set
 
     /**
+     * 用户资料存储（称呼 / 职业 / 回复偏好）。
+     *
+     * ## 为什么放这里
+     * - 对齐 Web 的 `user_profile`（localStorage）+ CCM 的 `cli-profile.json`
+     * - 不属于 Provider 配置（config.json），独立文件 `user-profile.json`
+     * - UI 多处要用（首页问候、侧栏、设置页），从 AppGraph 单例取最方便
+     *
+     * ## 用法
+     * ```kotlin
+     * val profile = AppGraph.userProfileStore?.load()
+     * greetingFor(profile?.callName)   // 空 → 自动降级为通用问候
+     * ```
+     */
+    @Volatile
+    var userProfileStore: com.ccm.app.core.user.UserProfileStore? = null
+        private set
+
+    /**
      * 本次启动是否从老架构（proot 内 HOME）迁移了配置。
      *
      * UI 可以据此提示用户「已从旧版本导入配置」。目前只在日志里体现，
@@ -197,6 +215,13 @@ object AppGraph {
             // ── 1. 存储根 ────────────────────────────────────────────
             val st = FileAppStorage(app.filesDir).also { it.ensureDirs() }
             storage = st
+
+            // ── 1.2 用户资料（称呼 / 职业 / 回复偏好）────────────────
+            //
+            // 对齐 Web 的 user_profile + CCM 的 cli-profile.json。
+            // 必须在这里初始化：UI（首页问候、侧栏）启动时就要读，
+            // 不能等「用户第一次进设置页」才建。
+            userProfileStore = com.ccm.app.core.user.UserProfileStore(st)
 
             // ── 1.5 迁移老架构配置（★ 不做的话用户已配的 Provider 全丢）──
             //

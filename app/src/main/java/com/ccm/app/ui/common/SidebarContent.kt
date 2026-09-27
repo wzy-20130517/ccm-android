@@ -78,7 +78,7 @@ fun SidebarContent(
     modifier: Modifier = Modifier,
     activePill: String = "聊天",
     recentChats: List<ChatSummary> = emptyList(),
-    userName: String = "Jay",
+    userName: String = "",   // 空 = 未配置，调用方从 UserProfileStore 读
     userSubtitle: String = "自部署",
     onNewChat: () -> Unit = {},
     onSearch: () -> Unit = {},
@@ -366,11 +366,15 @@ private fun UserRow(userName: String, subtitle: String, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(9.2.dp),
     ) {
-        CcmAvatar(initial = userName.take(1), size = 33.11.dp)
+        // 对齐 Web Sidebar.tsx:1002 —— display_name → full_name → nickname → 'User'
+        // userName 为空时取 'U' 做头像字母，显示文本用「未设置」
+        val displayName = userName.ifBlank { "未设置" }
+        val initial = userName.ifBlank { "U" }.take(1).uppercase()
+        CcmAvatar(initial = initial, size = 33.11.dp)
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = userName,
+                text = displayName,
                 style = CCMText.body13,
                 color = colors.textMain,
                 maxLines = 1,

@@ -253,7 +253,11 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
 
                 when (route) {
                     CcmRoute.HOME -> LandingScreen(
-                        greeting = greetingFor("Jay"),
+                        greeting = greetingFor(
+                            // 从用户资料读称呼，没配时传 null → 自动降级为通用问候
+                            // 对齐 Web MainContent.tsx:1586 的降级链
+                            com.ccm.app.AppGraph.userProfileStore?.load()?.callName?.ifBlank { null }
+                        ),
                         // ★ 接线：首页输入框真的能发消息了
                         onSend = { sendAndOpen(it) },
                         onPickPrompt = { sendAndOpen(it) },
@@ -298,7 +302,9 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     CcmRoute.SCHEDULED -> ScheduledScreen()
 
                     else -> LandingScreen(
-                        greeting = greetingFor("Jay"),
+                        greeting = greetingFor(
+                            com.ccm.app.AppGraph.userProfileStore?.load()?.callName?.ifBlank { null }
+                        ),
                         onSend = { sendAndOpen(it) },
                         onPickPrompt = { sendAndOpen(it) },
                     )
@@ -333,6 +339,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
             onNewChat = { navigate(CcmRoute.HOME) },
             onCustomize = { navigate(CcmRoute.CUSTOMIZE) },
             onOpenProfile = { navigate(CcmRoute.SETTINGS) },
+            userName = com.ccm.app.AppGraph.userProfileStore?.load()?.callName ?: "",
         )
     }
 }

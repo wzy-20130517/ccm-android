@@ -58,10 +58,13 @@ import com.ccm.app.ui.theme.CCMTheme
  */
 @Composable
 fun SettingsGeneralTab(modifier: Modifier = Modifier) {
-    var fullName by remember { mutableStateOf("JayChou") }
-    var callName by remember { mutableStateOf("Jay") }
-    var workFunction by remember { mutableStateOf("其他") }
-    var preferences by remember { mutableStateOf("") }
+    // 从用户资料读初始值（没配过就是空，让用户自己填）
+    val profileStore = com.ccm.app.AppGraph.userProfileStore
+    val initialProfile = remember { profileStore?.load() ?: com.ccm.app.core.user.UserProfile.EMPTY }
+    var fullName by remember { mutableStateOf(initialProfile.fullName) }
+    var callName by remember { mutableStateOf(initialProfile.displayName) }
+    var workFunction by remember { mutableStateOf(initialProfile.workFunction) }
+    var preferences by remember { mutableStateOf(initialProfile.personalPreferences) }
     var sendKey by remember { mutableStateOf("仅按钮（回车只换行）") }
     var newlineKey by remember { mutableStateOf("Enter") }
     var theme by remember { mutableStateOf(ThemeMode.AUTO) }
@@ -85,7 +88,10 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                             CcmAvatarSmall(fullName.take(1).uppercase())
                             SettingsTextField(
                                 value = fullName,
-                                onValueChange = { fullName = it },
+                                onValueChange = {
+                                fullName = it
+                                profileStore?.setField("full_name", it)
+                            },
                                 modifier = Modifier.weight(1f),
                             )
                         }
@@ -95,7 +101,10 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                         Spacer(Modifier.height(SettingsLabelGap))
                         SettingsTextField(
                             value = callName,
-                            onValueChange = { callName = it },
+                            onValueChange = {
+                            callName = it
+                            profileStore?.setField("display_name", it)
+                        },
                         )
                     }
                 }
@@ -128,7 +137,10 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                     Spacer(Modifier.height(7.36.dp))
                     SettingsTextField(
                         value = preferences,
-                        onValueChange = { preferences = it },
+                        onValueChange = {
+                            preferences = it
+                            profileStore?.setField("personal_preferences", it)
+                        },
                         singleLine = false,
                         minHeight = 86.6.dp,
                         placeholder = "例如：回答尽量简洁，使用中文，代码注释用英文",
