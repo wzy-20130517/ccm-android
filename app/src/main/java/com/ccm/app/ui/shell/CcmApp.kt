@@ -545,6 +545,31 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                             onSearchChange = { chatSearch = it },
                             onOpenChat = { ui -> openChat(ui.id) },
                             onNewChat = newChat,
+                            // 行菜单：重命名 / 删除（2026-09-28）
+                            onRenameChat = { id, title ->
+                                AppGraph.storage?.let { st ->
+                                    val ss = SessionStore(st)
+                                    val cur = ss.load(id)
+                                    if (cur != null) {
+                                        ss.save(cur.copy(
+                                            title = title,
+                                            updatedAt = System.currentTimeMillis(),
+                                        ))
+                                    }
+                                }
+                                refreshSessions()
+                            },
+                            onDeleteChat = { id ->
+                                AppGraph.storage?.let { SessionStore(it).delete(id) }
+                                // 删的正是当前会话 → 切回新会话，别让 activeSession 悬空
+                                if (id == AppGraph.sessionId) {
+                                    AppGraph.storage?.let { st ->
+                                        AppGraph.openSession(SessionStore(st).newSessionId())
+                                            ?.let { activeSession = it }
+                                    }
+                                }
+                                refreshSessions()
+                            },
                         )
                     }
 

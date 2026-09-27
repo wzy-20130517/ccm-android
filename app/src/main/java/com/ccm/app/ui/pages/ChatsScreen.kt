@@ -19,6 +19,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -74,8 +82,18 @@ fun ChatsScreen(
     onOpenChat: (ChatSummaryUi) -> Unit = {},
     onNewChat: () -> Unit = {},
     onToggleSelect: () -> Unit = {},
+    /** 重命名会话（CcmApp 负责 SessionStore 写入 + 刷新列表）。 */
+    onRenameChat: (id: String, newTitle: String) -> Unit = { _, _ -> },
+    /** 删除会话（SessionStore.delete 先备份到回收站）。 */
+    onDeleteChat: (id: String) -> Unit = {},
 ) {
     val colors = CCMTheme.colors
+
+    // ── 行菜单状态（2026-09-28：重命名/删除原来全缺）──────────────
+    var menuFor by remember { mutableStateOf<ChatSummaryUi?>(null) }
+    var renaming by remember { mutableStateOf<ChatSummaryUi?>(null) }
+    var deleting by remember { mutableStateOf<ChatSummaryUi?>(null) }
+    var renameInput by remember { mutableStateOf("") }
 
     Column(
         modifier = modifier
@@ -165,7 +183,11 @@ fun ChatsScreen(
         val shown = if (searchQuery.isBlank()) chats
         else chats.filter { it.title.contains(searchQuery, ignoreCase = true) }
         shown.forEach { chat ->
-            ChatRow(chat = chat, onClick = { onOpenChat(chat) })
+            ChatRow(
+                chat = chat,
+                onClick = { onOpenChat(chat) },
+                onMore = { menuFor = chat },
+            )
         }
         if (shown.isEmpty() && chats.isNotEmpty()) {
             Spacer(Modifier.height(32.dp))
@@ -179,6 +201,102 @@ fun ChatsScreen(
         }
 
         Spacer(Modifier.height(24.dp))
+    }
+
+    // ── 行菜单：重命名 / 删除（2026-09-28）──────────────────────────
+    menuFor?.let { target ->
+        AlertDialog(
+            onDismissRequest = { menuFor = null },
+            title = { Text(target.title.ifBlank { "未命名" }, style = CCMText.body14) },
+            text = {
+                Column {
+                    Text(
+                        text = "重命名",
+                        style = CCMText.body13,
+                        color = colors.textMain,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                renameInput = target.title
+                                renaming = target
+                                menuFor = null
+                            }
+                            .padding(vertical = 10.dp, horizontal = 4.dp),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "删除（进回收站）",
+                        style = CCMText.body13,
+                        color = Color(0xFFDC2626),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                deleting = target
+                                menuFor = null
+                            }
+                            .padding(vertical = 10.dp, horizontal = 4.dp),
+                    )
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { menuFor = null }) { Text("取消", style = CCMText.body13) }
+            },
+        )
+    }
+
+    // 重命名输入
+    renaming?.let { target ->
+        AlertDialog(
+            onDismissRequest = { renaming = null },
+            title = { Text("重命名对话", style = CCMText.body14) },
+            text = {
+                BasicTextField(
+                    value = renameInput,
+                    onValueChange = { renameInput = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = CCMText.body13.copy(color = colors.textMain),
+                    cursorBrush = SolidColor(colors.claudeOrange),
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val nt = renameInput.trim()
+                    if (nt.isNotEmpty()) onRenameChat(target.id, nt)
+                    renaming = null
+                }) { Text("确定", style = CCMText.body13) }
+            },
+            dismissButton = {
+                TextButton(onClick = { renaming = null }) { Text("取消", style = CCMText.body13) }
+            },
+        )
+    }
+
+    // 删除确认
+    deleting?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("删除对话", style = CCMText.body14) },
+            text = {
+                Text(
+                    text = "「${target.title.ifBlank { "未命名" }}」将被删除（先备份到回收站，可恢复）。",
+                    style = CCMText.body13,
+                    color = colors.textSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteChat(target.id)
+                    deleting = null
+                }) { Text("删除", style = CCMText.body13, color = Color(0xFFDC2626)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleting = null }) { Text("取消", style = CCMText.body13) }
+            },
+        )
     }
 }
 
@@ -227,7 +345,7 @@ private fun SearchField(query: String, onQueryChange: (String) -> Unit) {
  * 右侧「…」菜单在 Web 里是 `opacity-0 group-hover:opacity-100`，手机侧常显。
  */
 @Composable
-private fun ChatRow(chat: ChatSummaryUi, onClick: () -> Unit) {
+private fun ChatRow(chat: ChatSummaryUi, onClick: () -> Unit, onMore: () -> Unit = {}) {
     val colors = CCMTheme.colors
 
     Column(
@@ -251,11 +369,19 @@ private fun ChatRow(chat: ChatSummaryUi, onClick: () -> Unit) {
             )
 
             // 「…」更多（Web 是 hover 显示，手机常显）
-            PainterIcon(
-                R.drawable.ic_more_horizontal,
-                size = 18.4.dp,                        // size={20} × 0.92
-                tint = colors.textSecondary,
-            )
+            // ★ 2026-09-28：原来没接点击 —— 图标是个死装饰。
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(onClick = onMore)
+                    .padding(4.dp),
+            ) {
+                PainterIcon(
+                    R.drawable.ic_more_horizontal,
+                    size = 18.4.dp,                    // size={20} × 0.92
+                    tint = colors.textSecondary,
+                )
+            }
         }
 
         Spacer(Modifier.height(3.68.dp))
