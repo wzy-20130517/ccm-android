@@ -49,7 +49,13 @@ class ToolExecutor(
     private val hooks: ToolHooks,
     private val outputStore: ToolOutputStore,
     private val defaultTimeoutMs: Long = 600_000L,
-) {
+) : com.ccm.app.core.tool.ToolRunner {
+
+    // ⚠️ 实现 core 的 [com.ccm.app.core.tool.ToolRunner] 接口是**必须的**，不是可选装饰：
+    // 依赖方向是 core ← tools（不能倒挂）。AgentLoop 依赖接口、装配时注入本类实例，
+    // 这样 core 层能跑 JVM 单测，也不会被绑死在 Android 工具实现上。
+    // 漏掉 implements 的后果：AgentLoop 退回 ToolRunner.Passthrough ——
+    // 权限/hook/截断六环全绕过（plan 模式下能直接改代码、大输出撑爆上下文）。
 
     /** 执行统计（供 /stats 与诊断用） */
     @Volatile var totalCalls: Long = 0; private set
@@ -68,11 +74,11 @@ class ToolExecutor(
      * @param sessionId 会话 id（写进 hook 环境变量）
      * @return 工具结果。**永不抛异常** —— 一切失败都转成 [ToolResult.Error]
      */
-    suspend fun run(
+    override suspend fun run(
         tool: Tool,
         input: JsonObject,
         ctx: ToolContext,
-        sessionId: String = "",
+        sessionId: String,
     ): ToolResult {
         totalCalls++
 

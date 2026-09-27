@@ -23,7 +23,16 @@ import com.ccm.app.tools.net.ImageTools
 import com.ccm.app.tools.net.LookupTools
 import com.ccm.app.tools.net.WebTools
 import com.ccm.app.tools.phone.PhoneTools
+import com.ccm.app.tools.phone.SayTool
 import com.ccm.app.tools.system.SystemTools
+import com.ccm.app.tools.task.AgentTools
+import com.ccm.app.tools.task.GoalStore
+import com.ccm.app.tools.task.GoalTools
+import com.ccm.app.tools.task.MiscTools
+import com.ccm.app.tools.task.TaskStore
+import com.ccm.app.tools.task.TaskTools
+import com.ccm.app.tools.task.TeamStore
+import com.ccm.app.tools.task.TeamTools
 import java.io.File
 
 /**
@@ -62,13 +71,17 @@ import java.io.File
  * | 批 3 | 网络工具（WebSearch/WebFetch/FindImage/ImageGen） | 部分 |
  * | 批 4 | 手机工具（13 个 phone_*） | ✅ |
  * | 系统 | 剪贴板/Toast/通知/震动/电量/定位/打开链接/分享/TTS | ✅ |
- * | 批 5 | Task/Team/Goal/Agent/Memory/Skill/Cron | ⏳ 待存储层裁决 |
+ * | 批 5 | Task/Team/Goal/Agent/Memory/TodoWrite/Sleep/say | ✅ |
  */
 class ToolsBootstrap(
     private val context: Context,
     private val storage: ToolStorage,
     private val settings: ToolSettings?,
     private val bridge: NativeBridge,
+    /** 当前会话 id 的取值函数（Goal 工具用）—— **必须是 getter**，见 GoalTools 注释 */
+    private val getSessionId: () -> String = { "default" },
+    /** 子 Agent 观察器（AgentStatus/Stop/Output 用）—— 未注入时那些工具会提示未接入 */
+    private val subAgentObserver: AgentTools.SubAgentObserver? = null,
 ) {
 
     /** 装配结果（供诊断与 UI 展示） */
@@ -121,6 +134,21 @@ class ToolsBootstrap(
         val lookupTools = LookupTools(storage.rootDir)
         val phoneTools = PhoneTools(context, storage.rootDir)
         val systemTools = SystemTools(bridge)
+
+        // 批 5：任务/团队/目标/Agent
+        val taskStore = TaskStore(File(storage.rootDir, "tasks"))
+        val teamStore = TeamStore(File(storage.rootDir, "teams"), taskStore)
+        val goalStore = GoalStore(File(storage.rootDir, "goals"))
+        val taskTools = TaskTools(taskStore)
+        val teamTools = TeamTools(teamStore, taskStore)
+        val goalTools = GoalTools(goalStore, getSessionId)
+        val agentTools = AgentTools(getRegistry = { registry })
+        subAgentObserver?.let { agentTools.observer = it }
+        val miscTools = MiscTools(
+            storageRoot = storage.rootDir,
+            memoryFile = File(storage.rootDir, "CLAUDE.md"),
+            todoFile = File(storage.rootDir, "todos.json"),
+        )
 
         val all: List<Tool> = buildList {
             // 批 1：文件
@@ -177,6 +205,46 @@ class ToolsBootstrap(
             add(systemTools.OpenUrlTool(systemTools))
             add(systemTools.ShareTool(systemTools))
             add(systemTools.TtsTool(systemTools))
+
+            // 语音播报（与 TTS 的区别：多一个 secret 模式）
+            add(SayTool(context))
+
+            // 批 5：任务
+            add(taskTools.TaskCreateTool())
+            add(taskTools.TaskListTool())
+            add(taskTools.TaskGetTool())
+            add(taskTools.TaskClaimTool())
+            add(taskTools.TaskUpdateTool())
+            add(taskTools.TaskDeleteTool())
+
+            // 批 5：团队
+            add(teamTools.TeamCreateTool())
+            add(teamTools.TeamJoinTool())
+            add(teamTools.TeamLeaveTool())
+            add(teamTools.TeamDisbandTool())
+            add(teamTools.TeamStatusTool())
+            add(teamTools.SendMessageTool())
+            add(teamTools.CheckMessagesTool())
+
+            // 批 5：目标（刻意没有 CreateGoal —— 目标只能用户用 /goal 设）
+            add(goalTools.GetGoalTool())
+            add(goalTools.GoalStatusTool())
+            add(goalTools.SetGoalBudgetTool())
+
+            // 批 5：Agent
+            add(agentTools.AgentTool())
+            add(agentTools.AgentStatusTool())
+            add(agentTools.AgentOutputTool())
+            add(agentTools.AgentStopTool())
+            add(agentTools.AgentMemoryTool(File(storage.rootDir, "agent-memory")))
+            add(agentTools.ExtendTurnsTool())
+
+            // 批 5：杂项
+            add(miscTools.TodoWriteTool())
+            add(miscTools.SleepTool())
+            add(miscTools.MemoryTool())
+            add(miscTools.UserInputHistoryTool(File(storage.rootDir, "input-history.jsonl")))
+            add(miscTools.AskUserQuestionTool())
         }
 
         val rejected = registry.registerAll(*all.toTypedArray())
@@ -231,7 +299,18 @@ class ToolsBootstrap(
             "phone_shell", "phone_vd", "phone_device",
             // 系统
             "ClipboardGet", "ClipboardSet", "Toast", "Notify", "Vibrate", "Battery",
-            "Location", "OpenUrl", "Share", "TTS",
+            "Location", "OpenUrl", "Share", "TTS", "say",
+            // 任务
+            "TaskCreate", "TaskList", "TaskGet", "TaskClaim", "TaskUpdate", "TaskDelete",
+            // 团队
+            "TeamCreate", "TeamJoin", "TeamLeave", "TeamDisband", "TeamStatus",
+            "SendMessage", "CheckMessages",
+            // 目标
+            "GetGoal", "GoalStatus", "SetGoalBudget",
+            // Agent
+            "Agent", "AgentStatus", "AgentOutput", "AgentStop", "AgentMemory", "ExtendTurns",
+            // 杂项
+            "TodoWrite", "Sleep", "Memory", "UserInputHistory", "AskUserQuestion",
         )
     }
 }
