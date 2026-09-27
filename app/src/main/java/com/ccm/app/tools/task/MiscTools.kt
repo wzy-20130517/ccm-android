@@ -88,7 +88,9 @@ class MiscTools(
                 "只有真正做完才标 completed（测试还红着、只做一半、有未解决错误 → 都不算）。\n" +
                 "全部完成后传空数组清空清单，不要留一堆 completed 占着屏幕。\n" +
                 "**不要用的场景**：单个简单任务、三步内能做完、纯对话/纯信息查询。"
-        override val isReadOnly = true
+        // 它会把清单写进 todos.json（跨轮保持），所以**不是**只读工具 ——
+        // 标成 true 会让 plan 模式漏拦一次真实写盘。对齐 Node 版 extra-tools.mjs:80。
+        override val isReadOnly = false
         override val maxResultSizeChars = 2_000
 
         override val inputSchema: JsonObject = ToolSchema.objectSchema(
@@ -199,6 +201,8 @@ class MiscTools(
                 "【别用它做轮询】要等子 Agent 用 AgentOutput({block:true})，要等界面用 phone_wait，" +
                 "要等后台命令用 BashOutput —— 那些会在条件满足时立刻返回，比盲等固定秒数快得多。\n" +
                 "【上限 300 秒】需要更久说明该换成后台任务 + 事件回调。"
+        // 纯等待，不碰文件系统也不改状态（对齐 Node 版 tools-smart.mjs:555）
+        override val isReadOnly = true
         override val isConcurrencySafe = true
         override val maxResultSizeChars = 300
 
