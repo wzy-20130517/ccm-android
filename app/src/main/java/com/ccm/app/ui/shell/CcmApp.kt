@@ -103,9 +103,6 @@ enum class CcmRoute(val path: String) {
     ARTIFACTS("/artifacts"),
     COWORK("/cowork"),
     SCHEDULED("/scheduled"),
-    SETTINGS("/settings"),
-    SETTINGS("/settings"),
-    SETTINGS("/settings"),
     LOGIN("/login"),
     ADMIN("/admin");
 
@@ -244,7 +241,7 @@ private fun AppScaffold() {
             },
             onNewChat = { navigate(CcmRoute.HOME) },
             onCustomize = { navigate(CcmRoute.CUSTOMIZE) },
-            onOpenProfile = { showSettings = true },
+            onOpenProfile = { navigate(CcmRoute.SETTINGS) },
         )
     }
 }

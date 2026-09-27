@@ -71,6 +71,8 @@ fun SidebarDrawer(
     onSearch: () -> Unit = {},
     onCustomize: () -> Unit = {},
     onOpenChat: (ChatSummary) -> Unit = {},
+    /** 点底部用户区（Web: 打开用户菜单 → 可进设置） */
+    onOpenProfile: () -> Unit = {},
     activePill: String = "聊天",
     recentChats: List<ChatSummary> = emptyList(),
     userName: String = "Jay",
@@ -135,7 +137,7 @@ fun SidebarDrawer(
                     onPillChange = {},
                     onNavigate = onNavigate,
                     onOpenChat = onOpenChat,
-                    onOpenProfile = {},
+                    onOpenProfile = onOpenProfile,
                 )
             }
 
