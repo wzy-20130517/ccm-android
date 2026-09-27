@@ -3,6 +3,16 @@ package com.ccm.app.ui.pages
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -194,6 +204,10 @@ private fun InputCard(
     modifier: Modifier = Modifier,
 ) {
     val colors = CCMTheme.colors
+    // ★ 真输入框（2026-09-27 修）：原来这里是 `Text("今天需要什么帮助？")`
+    //   —— 一个静态的 Text，打不了字、按不了发送。
+    //   用户报「所有按钮点不动」就包括它：看着像输入框，实际是块死文字。
+    var input by remember { mutableStateOf("") }
     // ★ 亮色下 Web 的卡片边框是**透明**的（computed: 1.08696px solid rgba(0,0,0,0)）。
     //   类名里的 `border` 只是占位，hover/focus 时才显色。画成 colors.border 会多出
     //   一圈肉眼可见的灰边 —— 这是「卡片比 Web 脏」的第一来源。
@@ -233,12 +247,35 @@ private fun InputCard(
                     // textarea 自身 padding-left 6px × 0.92
                     .padding(start = 5.52.dp),
             ) {
-                Text(
-                    text = "今天需要什么帮助？",
-                    style = CCMText.body16.copy(fontSize = CCMText.body16.fontSize),
-                    color = colors.textSecondary,
-                )
-                // TODO(阶段4·B5): 换成真实 TextField（需处理 slash 命令、多行自适应高度）
+                // ★ 真输入框（2026-09-27）：能打字、回车发送
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    if (input.isEmpty()) {
+                        Text(
+                            text = "今天需要什么帮助？",
+                            style = CCMText.body16.copy(fontSize = CCMText.body16.fontSize),
+                            color = colors.textSecondary,
+                        )
+                    }
+                    BasicTextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = CCMText.body16.copy(
+                            fontSize = CCMText.body16.fontSize,
+                            color = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
+                        ),
+                        cursorBrush = SolidColor(colors.claudeOrange),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(
+                            onSend = {
+                                if (input.isNotBlank()) {
+                                    onSend(input)
+                                    input = ""
+                                }
+                            },
+                        ),
+                    )
+                }
             }
 
             // ── 底部行（h=29.44，与输入区间距 5.82）────────────────
@@ -253,23 +290,55 @@ private fun InputCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 // 左：+ 按钮（上传文件）
+                // ★ 2026-09-27：原来只有图标没有 clickable —— 点了什么都不发生。
                 PainterIcon(
                     R.drawable.ic_input_plus,
                     size = 20.dp,
                     tint = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
+                    modifier = Modifier.clickable { /* TODO: 附件选择器（需 SAF 权限） */ },
                 )
 
-                // 右：模型选择器 + 麦克风
+                // 右：模型选择器 + 麦克风 + 发送（★ 2026-09-27 加发送按钮）
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(Gap2),
                 ) {
-                    ModelChip()
+                    // ★ 2026-09-27：ModelChip 原来写死 "Sonnet 4.6" 且 onClick 是空的
+                    ModelChip(
+                        modelName = com.ccm.app.AppGraph.storage
+                            ?.let { com.ccm.app.core.provider.AppConfig.load(it.configFile).config.currentProvider?.model }
+                            ?.takeIf { it.isNotBlank() }
+                            ?: "未配置模型",
+                        onClick = { /* TODO: 模型选择器弹窗（需要 /v1/models 列表） */ },
+                    )
+                    // ★ 2026-09-27：麦克风原来也没有 clickable
                     PainterIcon(
                         R.drawable.ic_voice_mode,
                         size = 20.dp,
                         tint = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
+                        modifier = Modifier.clickable { /* TODO: 语音输入 */ },
                     )
+                    // 发送按钮：有内容才亮，点了发消息（对齐 Web 的 ↑ 按钮）
+                    Box(
+                        modifier = Modifier
+                            .size(29.44.dp)
+                            .clip(RoundedCornerShape(CCMRadius.md))
+                            .background(
+                                if (input.isNotBlank()) colors.claudeOrange
+                                else Color.Transparent
+                            )
+                            .clickable(enabled = input.isNotBlank()) {
+                                onSend(input)
+                                input = ""
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "↑",
+                            style = CCMText.body14.copy(fontSize = 15.sp),
+                            color = if (input.isNotBlank()) Color.White else colors.textSecondary,
+                        )
+                    }
                 }
             }
         }
@@ -283,19 +352,22 @@ private fun InputCard(
  * 实测：w=195.11 / h=29.44 / 圆角 6px（无移动端覆盖 → 5.52dp）
  */
 @Composable
-private fun ModelChip() {
+private fun ModelChip(
+    modelName: String = "Sonnet 4.6",
+    onClick: () -> Unit = {},
+) {
     val colors = CCMTheme.colors
     Row(
         modifier = Modifier
             .height(29.44.dp)
             .clip(RoundedCornerShape(CCMRadius.md))
-            .clickable { /* TODO(B4): 打开模型选择器 */ }
+            .clickable(onClick = onClick)
             .padding(horizontal = 9.2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.52.dp),
     ) {
         Text(
-            text = "Sonnet 4.6",
+            text = modelName,
             style = CCMText.body14,
             color = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
             maxLines = 1,
