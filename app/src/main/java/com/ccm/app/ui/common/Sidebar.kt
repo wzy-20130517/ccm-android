@@ -8,7 +8,10 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -122,6 +125,11 @@ fun SidebarDrawer(
             modifier = Modifier
                 .width(SidebarWidth)
                 .fillMaxHeight()
+                // 抽屉顶部让开状态栏：侧栏打开后顶部的
+                // 「聊天/协作/代码」胶囊也在 y=0 起画，同样会被
+                // StatusBar 窗口 (0,0,1280,152) 的触摸区吃掉（2026-09-27）。
+                // 只给抽屉加，遮罩保持全屏 —— 点状态栏区域外要能关闭。
+                .windowInsetsPadding(WindowInsets.statusBars)
                 .graphicsLayer {
                     // Web: translateX(-100%) 收起；宽度保留（为动画平滑）
                     translationX = -widthPx * (1f - progress)

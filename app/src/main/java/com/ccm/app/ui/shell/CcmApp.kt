@@ -4,7 +4,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -249,7 +252,20 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(colors.bgMain),
+                .background(colors.bgMain)
+                // ══════════════════════════════════════════════════════
+                //  【2026-09-27 修「侧栏/按钮点不动」的真因】
+                // ══════════════════════════════════════════════════════
+                // 系统强制 edge-to-edge（dumpsys: EDGE_TO_EDGE_ENFORCED），
+                // 而全项目 0 处 insets 处理 → 内容从 y=0 裸奔。
+                // 实测（dumpsys window）：
+                //   StatusBar 窗口 frame=[0,0][1280,152]
+                //   touchableRegion=(0,0,1280,152)   ← 触摸也归它！
+                //   TitleBar 高 44dp=143px，☰ 居中在 y≈19~123
+                // → ☰ 及整个标题栏都落在状态栏触摸区内，
+                //   用户点 ☰ 触摸被 StatusBar 窗口吃掉，CCM 收不到 ——
+                //   表现为「任何地方都点不开侧栏」（副屏没状态栏，所以能开）。
+                .windowInsetsPadding(WindowInsets.statusBars),
         ) {
             TitleBar(
                 onToggleSidebar = {
@@ -342,7 +358,8 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(colors.bgMain),
+                    .background(colors.bgMain)
+                    .windowInsetsPadding(WindowInsets.statusBars),   // 顶部返回按钮同理
             ) {
                 SettingsScreen(onClose = { showSettings = false })
             }
