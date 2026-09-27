@@ -22,9 +22,11 @@ import com.ccm.app.tools.file.SearchTools
 import com.ccm.app.tools.file.TrashStore
 import com.ccm.app.tools.file.UndoStore
 import com.ccm.app.tools.dev.DevTools
+import com.ccm.app.tools.dev.LspTools
 import com.ccm.app.tools.net.GitHubTools
 import com.ccm.app.tools.net.ImageTools
 import com.ccm.app.tools.net.LookupTools
+import com.ccm.app.tools.net.PresentTools
 import com.ccm.app.tools.net.VisionTools
 import com.ccm.app.tools.net.WebTools
 import com.ccm.app.tools.phone.PhoneTools
@@ -34,9 +36,11 @@ import com.ccm.app.tools.system.CronTools
 import com.ccm.app.tools.system.QqTools
 import com.ccm.app.tools.system.SystemTools
 import com.ccm.app.tools.task.AgentTools
+import com.ccm.app.tools.task.AgentWorkflowTools
 import com.ccm.app.tools.task.GoalStore
 import com.ccm.app.tools.task.GoalTools
 import com.ccm.app.tools.task.MiscTools
+import com.ccm.app.tools.task.SkillTools
 import com.ccm.app.tools.task.TaskStore
 import com.ccm.app.tools.task.TaskTools
 import com.ccm.app.tools.task.TeamStore
@@ -161,6 +165,8 @@ class ToolsBootstrap(
         // 若跟 FindImage/ImageGen 一起挂在 settings 下面会被误伤（没配 key 就整个消失）
         val imageTools = ImageTools(settings, defaultCwd)
         val lookupTools = LookupTools(storage.rootDir)
+        // Present：把可视内容落盘 + 返回路径（APK 端无内联渲染通道，见类注释）
+        val presentTools = PresentTools(storage.rootDir)
         val visionTools = VisionTools(context, storage.rootDir)
         val phoneTools = PhoneTools(context, storage.rootDir)
         val systemTools = SystemTools(bridge)
@@ -173,6 +179,12 @@ class ToolsBootstrap(
         val teamTools = TeamTools(teamStore, taskStore)
         val goalTools = GoalTools(goalStore, getSessionId)
         val agentTools = AgentTools(getRegistry = { registry })
+        // AgentWorkflow：Explore → Plan → Implement → Review 四阶段串行
+        val workflowTools = AgentWorkflowTools()
+        // Skill：项目 skills/（按运行时 cwd）优先，用户级兜底
+        val skillTools = SkillTools(
+            globalDir = File(context.filesDir, "skills"),
+        )
         subAgentManager?.let { agentTools.observer = it.asToolObserver() }
         val miscTools = MiscTools(
             storageRoot = storage.rootDir,
@@ -182,6 +194,8 @@ class ToolsBootstrap(
 
         // 批 3 补全 + P1
         val devTools = DevTools(primary, trashStore, commandExec)
+        // LSP：diagnostic 走 Bash 通道真实执行；hover/definition/completion 降级
+        val lspTools = LspTools(primary)
         val hashlineTools = HashlineTools(trashStore, undoStore)
         val cronTools = CronTools(CronStore(File(storage.rootDir, "cron")))
         val qqTools = QqTools(qqPusher, qqRecaller)
@@ -320,6 +334,12 @@ class ToolsBootstrap(
             add(hashlineTools.HashlineReadTool())
             add(hashlineTools.HashlineEditTool())
             add(hashlineTools.HashlineGrepTool())
+
+            // P2：Skill / AgentWorkflow / Present / LSP
+            add(skillTools.SkillTool())
+            add(workflowTools.AgentWorkflowTool())
+            add(presentTools.PresentTool())
+            add(lspTools.LspTool())
 
             // P2：GitHub（未配 token 时工具会提示怎么配）
             add(ghTools.GitHubRepoTool())
