@@ -82,7 +82,7 @@ class AppContainer private constructor(
      * `null` = 未启用子 Agent（需要协程作用域，见 [attachSubAgents]）。
      */
     var subAgents: SubAgentManager? = null
-        private set,
+        private set
 ) {
 
     /**

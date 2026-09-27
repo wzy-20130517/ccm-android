@@ -2,6 +2,7 @@ package com.ccm.app.core
 
 import com.ccm.app.core.agent.AgentEvent
 import com.ccm.app.core.agent.AgentLoop
+import com.ccm.app.core.provider.AppConfig
 import com.ccm.app.core.session.Message
 import com.ccm.app.core.tool.ToolRegistry
 import com.ccm.app.core.tool.ToolRunner

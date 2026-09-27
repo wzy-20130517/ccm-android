@@ -29,8 +29,8 @@ import java.util.Base64
  *
  * 本类**不引用 `android.graphics.Bitmap`** —— `core/` 层要能在 JVM 单测里跑。
  * 缩放能力由 [ImageScaler] 接口注入：
- * - 生产：`tools/AndroidImageScaler`（用 BitmapFactory）
- * - 测试：`JvmImageScaler`（用 `javax.imageio`，纯 JVM）
+ * - 生产：`tools/AndroidImageScaler`（用 `BitmapFactory`）
+ * - 单测：不注入即可（`imageScaler = null` → 图片原样注入，不影响断言）
  */
 object ImageProcessor {
 
@@ -190,7 +190,11 @@ class ImageException(message: String) : Exception(message)
  * ## 为什么是接口
  * 缩放要用平台 API：
  * - **Android**：`BitmapFactory` + `Bitmap.createScaledBitmap`（在 `tools/` 侧实现）
- * - **纯 JVM**（单测）：`javax.imageio.ImageIO` + `Graphics2D`
+ * - **Android**：`BitmapFactory` + `Bitmap.createScaledBitmap`（在 `tools/` 侧实现）
+ *
+ * ⚠️ **不要用 `javax.imageio` / `java.awt`** —— Android SDK 不含 `java.desktop` 模块，
+ * 这两个包在设备上根本不存在（编译期可能过，运行时抛 `NoClassDefFoundError`）。
+ * 我一开始写了个 `JvmImageScaler` 想「单测用」，CI 直接编译失败才发现这点。
  *
  * `core/` 层零 Android 依赖是硬约束，所以定义接口、实现注入。
  */
@@ -209,45 +213,4 @@ interface ImageScaler {
      * @return 缩放后的文件；失败返回 null（调用方会退回用原图）
      */
     fun scale(file: File, maxLongEdge: Int): File?
-}
-
-/**
- * 纯 JVM 缩放器 —— **单测 / 桌面端用**，不依赖 Android。
- *
- * ⚠️ **不要在 Android 生产环境用它**：`java.awt` 在 Android 上不可用
- * （编译能过是因为 API 26+ 带了一部分，但运行时会抛 `NoClassDefFoundError`）。
- * 生产环境用 `tools/AndroidImageScaler`。
- */
-class JvmImageScaler(private val tempDir: File) : ImageScaler {
-
-    override fun size(file: File): Pair<Int, Int>? = try {
-        javax.imageio.ImageIO.read(file)?.let { it.width to it.height }
-    } catch (_: Throwable) {
-        null
-    }
-
-    override fun scale(file: File, maxLongEdge: Int): File? = try {
-        val src = javax.imageio.ImageIO.read(file) ?: return null
-        val longEdge = maxOf(src.width, src.height)
-        if (longEdge <= maxLongEdge) return file
-
-        val ratio = maxLongEdge.toDouble() / longEdge
-        val w = (src.width * ratio).toInt().coerceAtLeast(1)
-        val h = (src.height * ratio).toInt().coerceAtLeast(1)
-
-        val dst = java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB)
-        val g = dst.createGraphics()
-        g.setRenderingHint(
-            java.awt.RenderingHints.KEY_INTERPOLATION,
-            java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR,
-        )
-        g.drawImage(src, 0, 0, w, h, null)
-        g.dispose()
-
-        tempDir.mkdirs()
-        val out = File(tempDir, "scaled_${System.currentTimeMillis()}_${file.name}")
-        if (javax.imageio.ImageIO.write(dst, "jpg", out)) out else null
-    } catch (_: Throwable) {
-        null
-    }
 }
