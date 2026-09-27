@@ -107,6 +107,16 @@ object AppGraph {
     var registry: ToolRegistry? = null
         private set
 
+    /**
+     * init 时的协程作用域 —— [openSession] 重建会话时要复用它。
+     * 不存的话换会话时拿不到 scope，ChatSession.create 就没法调。
+     */
+    var appScope: kotlinx.coroutines.CoroutineScope? = null
+        private set
+
+    /** init 时的图片缩放器 —— 同上，openSession 复用。 */
+    private var imageScaler: AndroidImageScaler? = null
+
     /** 工具装配结果（含 executor / permissions / hooks，供诊断展示）。 */
     @Volatile
     var toolsResult: ToolsBootstrap.Result? = null
@@ -241,6 +251,8 @@ object AppGraph {
             // → 同一场对话两个 id，表现为「工具里拿不到会话 id」。
             val sid = SessionStore(st).newSessionId()
             sessionId = sid
+            appScope = scope
+            imageScaler = AndroidImageScaler(app.cacheDir)
 
             // ── 3. 配置 ──────────────────────────────────────────────
             val cfg = AppConfig.load(st.configFile).config
@@ -276,7 +288,7 @@ object AppGraph {
                 registry = reg,
                 toolRunner = tools.executor,
                 scope = scope,
-                imageScaler = AndroidImageScaler(app.cacheDir),
+                imageScaler = imageScaler,
                 cwd = cwd,
                 sessionId = sid,
             )
@@ -288,6 +300,70 @@ object AppGraph {
                 return null
             }
 
+            session = sess
+            initError = null
+            sess
+        } catch (t: Throwable) {
+            initError = "${t::class.java.simpleName}: ${t.message}"
+            null
+        }
+    }
+
+    /**
+     * 打开一个历史会话 —— 侧栏 / 对话列表点进来时调。
+     *
+     * ## 为什么不复用旧 session 实例
+     * ChatSession 内部的 AgentLoop / SessionAuto 都绑定创建时的 sessionId
+     * （getSessionId 是闭包）。给它们「换 id」会牵扯定时保存、Goal 工具、
+     * hooks 三处的 id 一致性 —— 历史上就踩过「两个 id 对不上」的坑
+     * （见 init 里「会话 id 必须先定下来」的注释）。所以**换会话 = 整个重建**，
+     * 用 [ChatSession.create] 传目标 id，让所有组件从同一个 id 起步。
+     *
+     * ## 三步
+     * 1. 旧会话 [ChatSession.dispose]：先 flush 自动保存（最后 30s 不丢），
+     *    再停掉它的 SessionAuto —— 不停的话两个 auto 会抢写同一个文件。
+     * 2. 重建 + [ChatSession.loadHistory]：AgentLoop 和 UI 气泡同时灌。
+     * 3. 切 [sessionId]：ToolsBootstrap 的 getSessionId getter 是
+     *    `{ sessionId }` 闭包，跟着这里走，工具侧自动对齐。
+     *
+     * @return 新会话；id 不存在或配置无效返回 null（调用方留在原页）
+     */
+    @Synchronized
+    fun openSession(id: String): ChatSession? {
+        val st = storage ?: return null
+        val scope = appScope ?: return null
+        val reg = registry ?: return null
+        val tools = toolsResult ?: return null
+        if (id.isBlank()) return null
+        if (id == sessionId && session != null) return session   // 已经在这场对话里
+
+        return try {
+            // ① 释放旧会话（flush + 停自动保存 + 断连接）
+            session?.dispose()
+
+            // ② 重建
+            val cwd = File(st.root, WORKSPACE_DIR).apply { mkdirs() }.absolutePath
+            val sess = ChatSession.create(
+                storage = st,
+                registry = reg,
+                toolRunner = tools.executor,
+                scope = scope,
+                imageScaler = imageScaler,
+                cwd = cwd,
+                sessionId = id,
+            ) ?: run {
+                // 没配 Provider —— 与 init 同样的降级
+                initError = "尚未配置 API —— 请到「设置 → 模型」里添加一个 Provider"
+                return null
+            }
+
+            // ③ 灌历史（AgentLoop 上下文 + UI 气泡）
+            val saved = SessionStore(st).load(id)
+            if (saved != null && saved.messages.isNotEmpty()) {
+                sess.loadHistory(saved.messages)
+            }
+
+            sessionId = id
             session = sess
             initError = null
             sess

@@ -28,6 +28,9 @@ import androidx.compose.ui.unit.dp
 import com.ccm.app.AppGraph
 import com.ccm.app.core.ChatSession
 import com.ccm.app.core.session.SessionStore
+import com.ccm.app.core.session.SessionSummary
+import com.ccm.app.ui.common.ChatSummary
+import com.ccm.app.ui.pages.ChatSummaryUi
 import com.ccm.app.ui.chat.ChatScreen
 import com.ccm.app.ui.chat.ChatScreenConnected
 import com.ccm.app.ui.common.CcmNoticeBar
@@ -195,6 +198,7 @@ enum class CcmRoute(val path: String) {
  */
 @Composable
 private fun AppScaffold(session: ChatSession?, initError: String?) {
+
     val colors = CCMTheme.colors
 
     var sidebarOpen by remember { mutableStateOf(false) }
@@ -236,6 +240,39 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         sidebarOpen = false
     }
 
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-09-27 第2批】会话切换 + 历史列表真数据
+    // ══════════════════════════════════════════════════════════════
+    // activeSession：当前打开的会话。init 结果是它，侧栏/列表点进来后
+    // 被 AppGraph.openSession(id) 换掉。原参数 session 只当初始值。
+    var activeSession by remember { mutableStateOf(session) }
+    // 会话列表（侧栏最近 + 列表页共用一个数据源）
+    var sessions by remember { mutableStateOf<List<SessionSummary>>(emptyList()) }
+
+    fun refreshSessions() {
+        sessions = AppGraph.storage
+            ?.let { SessionStore(it).listSummaries() }
+            ?.sortedByDescending { it.updatedAt }
+            ?: emptyList()
+    }
+    LaunchedEffect(Unit) { refreshSessions() }   // 启动先灌一次
+
+    // 打开指定会话并进对话页；id 空/失败则留在原地
+    val openChat: (String) -> Unit = { id ->
+        AppGraph.openSession(id)?.let { activeSession = it }
+        refreshSessions()
+        navigate(CcmRoute.CHAT)
+    }
+    // 新建会话：openSession 对「不存在的 id」= 建空会话，天然复用
+    val newChat: () -> Unit = {
+        val st = AppGraph.storage
+        if (st != null) {
+            AppGraph.openSession(SessionStore(st).newSessionId())?.let { activeSession = it }
+        }
+        refreshSessions()
+        navigate(CcmRoute.CHAT)
+    }
+
     /**
      * 发消息并切到对话页。
      *
@@ -249,7 +286,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
      * 首页顶部同时会显示 [initError] 提示条（见下方 notice）。
      */
     fun sendAndOpen(text: String) {
-        session?.send(text)
+        activeSession?.send(text)
         // ★ 不管有没有 session 都切到对话页 —— 用户按了发送/点了胶囊，
         //   就该看到「消息已发出」的界面。没配 Provider 时对话页会显示
         //   提示条（由 initError 驱动），而不是把人踢去设置页。
@@ -316,7 +353,9 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         onPickPrompt = { sendAndOpen(it) },
                     )
 
-                    CcmRoute.CHAT -> if (session != null) {
+                    CcmRoute.CHAT -> if (activeSession != null) {
+                        // delegated var（by remember）不能隐式 smart cast，显式断言
+                        val session = activeSession as ChatSession
                         // ★ 接线：真数据。ChatScreenConnected 内部订阅
                         //   session.state（StateFlow），把 core 类型适配成 UI 类型。
                         //
@@ -395,10 +434,22 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         )
                     }
 
-                    CcmRoute.CHATS -> ChatsScreen(
-                        chats = emptyList(),
-                        onNewChat = { navigate(CcmRoute.HOME) },
-                    )
+                    CcmRoute.CHATS -> {
+                        // 进列表页时刷新（新建/改名/删除后回来也是新的）
+                        LaunchedEffect(route) { refreshSessions() }
+                        ChatsScreen(
+                            chats = sessions.map {
+                                ChatSummaryUi(
+                                    id = it.sessionId,
+                                    title = it.displayName,
+                                    updatedAt = it.updatedAt,
+                                )
+                            },
+                            onSearchChange = { /* TODO 第3批: 内存过滤 */ },
+                            onOpenChat = { ui -> openChat(ui.id) },
+                            onNewChat = newChat,
+                        )
+                    }
 
                     CcmRoute.SETTINGS -> SettingsScreen(
                         onClose = { navigate(CcmRoute.HOME) },
@@ -461,9 +512,24 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
             // ★ 2026-09-27 修「侧边栏点不动」：
             //   下面两个回调原来**根本没传**，UI 侧拿到的是默认空实现
             //   → 点「搜索」「聊天/协作/代码」胶囊完全没反应。
-            onSearch = { showSettings = true },   // TODO: 真正的会话搜索页
+            // 搜索 → 会话列表页（真搜索在那里；原来错跳设置页）
+            onSearch = {
+                sidebarOpen = false
+                navigate(CcmRoute.CHATS)
+            },
             onPillChange = { /* TODO: 协作/代码模式路由（Web 是 /cowork 切换） */ },
             userName = profileName ?: "",
+            // ★ 最近对话真数据（原来没传 → 永远空列表）
+            recentChats = sessions.take(8).map {
+                ChatSummary(id = it.sessionId, title = it.displayName, updatedAt = it.updatedAt)
+            },
+            onOpenChat = { c ->
+                sidebarOpen = false
+                openChat(c.id)
+            },
         )
+
+        // 侧栏打开时刷新一次（刚在别处新建的会话要出现）
+        LaunchedEffect(sidebarOpen) { if (sidebarOpen) refreshSessions() }
     }
 }
