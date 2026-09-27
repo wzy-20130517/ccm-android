@@ -9,6 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -26,9 +27,13 @@ import com.ccm.app.R
  *
  * | 来源 | 数量 | 实现方式 |
  * |---|---|---|
- * | PNG 位图（`src/assets/icons/*.png`） | 17 | 已复制到 `res/drawable/ic_*.png`，用 [PainterIcon] |
+ * | PNG 位图（`src/assets/icons/` 目录下的 `.png`） | 17 | 已复制到 `res/drawable/ic_*.png`，用 [PainterIcon] |
  * | SVG 描边（Icons.tsx 内联） | 7 | [CCMIcons] 的 ImageVector |
- * | lucide-react 图标 | 按需 | 手工重建（见 [LucideIcons]） |
+ * | lucide-react 图标 | 按需 | 手工重建（见 [SvgIcons]） |
+ *
+ * > ⚠️ 写 KDoc 时别在注释里出现「斜杠 + 星号」的连续两字符（如 glob 通配路径），
+ * > Kotlin 的块注释**可嵌套**，那会开启一个新的注释层级导致文件后半段全部失效。
+ * > 需要表达时写成「斜杠 + 空格 + 星号」或改用文字描述。
  *
  * ## 为什么 PNG 直接搬而不是转成 Vector
  * Web 用的就是这些 PNG（110×110 等，显示时缩放到 20~24dp）。
@@ -113,7 +118,7 @@ object SvgIcons {
             viewportHeight = 24f,
         ).apply {
             path(
-                stroke = androidx.compose.ui.graphics.SolidColor(Color.Black),
+                stroke = SolidColor(Color.Black),
                 strokeLineWidth = 2f,
                 strokeLineCap = StrokeCap.Round,
             ) {
@@ -139,7 +144,7 @@ object SvgIcons {
             viewportHeight = 24f,
         ).apply {
             path(
-                stroke = androidx.compose.ui.graphics.SolidColor(Color.Black),
+                stroke = SolidColor(Color.Black),
                 strokeLineWidth = 2f,
                 strokeLineCap = StrokeCap.Round,
             ) {
@@ -165,7 +170,7 @@ object SvgIcons {
             viewportHeight = 24f,
         ).apply {
             path(
-                stroke = androidx.compose.ui.graphics.SolidColor(Color.Black),
+                stroke = SolidColor(Color.Black),
                 strokeLineWidth = 1.5f,      // ← Web 显式指定
                 strokeLineCap = StrokeCap.Round,
                 strokeLineJoin = StrokeJoin.Round,
@@ -188,7 +193,7 @@ object SvgIcons {
             viewportHeight = 24f,
         ).apply {
             path(
-                stroke = androidx.compose.ui.graphics.SolidColor(Color.Black),
+                stroke = SolidColor(Color.Black),
                 strokeLineWidth = 1.5f,
                 strokeLineCap = StrokeCap.Round,
                 strokeLineJoin = StrokeJoin.Round,
