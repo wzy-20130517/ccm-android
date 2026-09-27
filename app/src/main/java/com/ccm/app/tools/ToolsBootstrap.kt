@@ -1,0 +1,232 @@
+package com.ccm.app.tools
+
+import android.content.Context
+import com.ccm.app.bridge.NativeBridge
+import com.ccm.app.core.AppStorage
+import com.ccm.app.core.tool.AppBackedToolStorage
+import com.ccm.app.core.tool.Tool
+import com.ccm.app.core.tool.ToolRegistry
+import com.ccm.app.core.tool.ToolSettings
+import com.ccm.app.core.tool.ToolStorage
+import com.ccm.app.runtime.ProotRuntime
+import com.ccm.app.tools.bash.BashOutputTool
+import com.ccm.app.tools.bash.BashTool
+import com.ccm.app.tools.bash.KillShellTool
+import com.ccm.app.tools.bash.ProotChannel
+import com.ccm.app.tools.bash.TermuxChannel
+import com.ccm.app.tools.file.ApplyPatchTool
+import com.ccm.app.tools.file.FileTools
+import com.ccm.app.tools.file.SearchTools
+import com.ccm.app.tools.file.TrashStore
+import com.ccm.app.tools.file.UndoStore
+import com.ccm.app.tools.net.ImageTools
+import com.ccm.app.tools.net.WebTools
+import com.ccm.app.tools.phone.PhoneTools
+import com.ccm.app.tools.system.SystemTools
+import java.io.File
+
+/**
+ * 工具装配 —— **把所有工具注册进 registry 的唯一入口**。
+ *
+ * ══════════════════════════════════════════════════════════════
+ *  为什么需要这个类（它是「接线」而不是「实现」）
+ * ══════════════════════════════════════════════════════════════
+ *
+ * 各个工具类写好了不等于能用 —— 它们需要：
+ *   1. 被 `new` 出来（很多要注入依赖：TrashStore / UndoStore / NativeBridge / Context）
+ *   2. 注册进 [ToolRegistry]（否则 Agent 循环的 `registry.list` 里没有它们）
+ *   3. 拿到正确的工作目录与存储路径
+ *
+ * 这一步漏掉的话，**所有工具都是死的** —— 编译通过、单元测试通过、
+ * 但 Agent 一个工具都调不到（表现为「模型说它要读文件，但没有 Read 工具」）。
+ *
+ * ══════════════════════════════════════════════════════════════
+ *  ⚠️ 注册顺序的坑（CCM 踩过，这里已避开）
+ * ══════════════════════════════════════════════════════════════
+ *
+ * CCM 上「子 Agent 拿不到 Agent 工具」的根因是：注册表传了**数组快照**，
+ * 而 Agent 工具在那之后才注册。Kotlin 侧由 [ToolRegistry.toolProvider]
+ * （闭包，每次现取）从设计上堵死了，但**本类仍要注意**：
+ * 若将来加 Agent 工具，它需要的是 `toolProvider` 而不是 `registry.list`。
+ *
+ * ══════════════════════════════════════════════════════════════
+ *  分层：哪些工具在哪个批次
+ * ══════════════════════════════════════════════════════════════
+ *
+ * | 批次 | 内容 | 状态 |
+ * |---|---|---|
+ * | 批 0 | ToolExecutor / ToolPermissions / ToolHooks / ToolOutputStore | ✅ |
+ * | 批 1 | 文件工具（Read/Write/Edit/MultiEdit/ApplyPatch/Glob/Grep/CodeSearch） | ✅ |
+ * | 批 2 | Bash 双通道 + BashOutput + KillShell | ✅ |
+ * | 批 3 | 网络工具（WebSearch/WebFetch/FindImage/ImageGen） | 部分 |
+ * | 批 4 | 手机工具（13 个 phone_*） | ✅ |
+ * | 系统 | 剪贴板/Toast/通知/震动/电量/定位/打开链接/分享/TTS | ✅ |
+ * | 批 5 | Task/Team/Goal/Agent/Memory/Skill/Cron | ⏳ 待存储层裁决 |
+ */
+class ToolsBootstrap(
+    private val context: Context,
+    private val storage: ToolStorage,
+    private val settings: ToolSettings?,
+    private val bridge: NativeBridge,
+) {
+
+    /** 装配结果（供诊断与 UI 展示） */
+    data class Result(
+        val registered: List<String>,
+        val rejected: List<String>,
+        val executor: ToolExecutor,
+        val permissions: ToolPermissions,
+        val hooks: ToolHooks,
+        val outputStore: ToolOutputStore,
+        val trashStore: TrashStore,
+        val undoStore: UndoStore,
+        val bashChannel: com.ccm.app.tools.bash.BashChannel,
+    )
+
+    /** 默认工作目录（App 私有，无需运行时权限） */
+    private val defaultCwd: File
+        get() = File(storage.rootDir, "workspace").apply { if (!exists()) mkdirs() }
+
+    /**
+     * 装配全部工具。
+     *
+     * @param registry 工具注册表（由 Agent 层提供，注册完它就能用了）
+     * @param bashChannel 用户选择的 Bash 通道（null = 用内置 proot）
+     */
+    fun install(registry: ToolRegistry, bashChannel: com.ccm.app.tools.bash.BashChannel? = null): Result {
+        storage.ensureDirs()
+
+        // ── 基础设施 ──────────────────────────────────────────────
+        val trashStore = TrashStore(storage.rootDir)
+        val undoStore = UndoStore(storage.undoDir)
+        val outputStore = ToolOutputStore(storage.rootDir)
+        val permissions = ToolPermissions(storage.rootDir)
+        val hooks = ToolHooks(storage.rootDir)
+        hooks.loadFromConfig()
+
+        // ── Bash 通道 ─────────────────────────────────────────────
+        val prootChannel = ProotChannel(context, ProotRuntime(context))
+        val termuxChannel = TermuxChannel(context)
+        // 默认用 proot；若用户选了 Termux，主通道换过来、proot 作兜底
+        val primary: com.ccm.app.tools.bash.BashChannel = bashChannel ?: prootChannel
+        val fallback: com.ccm.app.tools.bash.BashChannel? =
+            if (primary === prootChannel) termuxChannel else prootChannel
+
+        // ── 工具实例 ──────────────────────────────────────────────
+        val fileTools = FileTools(trashStore, undoStore)
+        val searchTools = SearchTools()
+        val webTools = settings?.let { WebTools(it) }
+        val imageTools = settings?.let { ImageTools(it, defaultCwd) }
+        val phoneTools = PhoneTools(context, storage.rootDir)
+        val systemTools = SystemTools(bridge)
+
+        val all: List<Tool> = buildList {
+            // 批 1：文件
+            add(fileTools.ReadTool())
+            add(fileTools.WriteTool())
+            add(fileTools.EditTool())
+            add(fileTools.MultiEditTool())
+            add(ApplyPatchTool(trashStore, undoStore))
+            add(searchTools.GlobTool())
+            add(searchTools.GrepTool())
+            add(searchTools.CodeSearchTool())
+
+            // 批 2：Bash
+            add(BashTool(primary, fallback))
+            add(BashOutputTool())
+            add(KillShellTool())
+
+            // 批 3：网络（需要 settings，没配就不注册 —— 免得模型调了才发现没 key）
+            webTools?.let {
+                add(it.WebSearchTool())
+                add(it.WebFetchTool())
+            }
+            imageTools?.let {
+                add(it.FindImageTool())
+                add(it.ImageGenTool())
+            }
+
+            // 批 4：手机
+            add(phoneTools.PhoneSnapshotTool())
+            add(phoneTools.PhoneClickTool())
+            add(phoneTools.PhoneTapXYTool())
+            add(phoneTools.PhoneTypeTool())
+            add(phoneTools.PhoneSwipeTool())
+            add(phoneTools.PhoneKeyTool())
+            add(phoneTools.PhoneScrollTool())
+            add(phoneTools.PhoneScreenshotTool())
+            add(phoneTools.PhoneWaitTool())
+            add(phoneTools.PhoneAppTool())
+            add(phoneTools.PhoneShellTool())
+            add(phoneTools.PhoneVdTool())
+            add(phoneTools.PhoneDeviceTool())
+
+            // 系统能力
+            add(systemTools.ClipboardGetTool(systemTools))
+            add(systemTools.ClipboardSetTool(systemTools))
+            add(systemTools.ToastTool(systemTools))
+            add(systemTools.NotifyTool(systemTools))
+            add(systemTools.VibrateTool(systemTools))
+            add(systemTools.BatteryTool(systemTools))
+            add(systemTools.LocationTool(systemTools))
+            add(systemTools.OpenUrlTool(systemTools))
+            add(systemTools.ShareTool(systemTools))
+            add(systemTools.TtsTool(systemTools))
+        }
+
+        val rejected = registry.registerAll(*all.toTypedArray())
+
+        val executor = ToolExecutor(permissions, hooks, outputStore)
+
+        return Result(
+            registered = all.map { it.name }.filter { it !in rejected },
+            rejected = rejected,
+            executor = executor,
+            permissions = permissions,
+            hooks = hooks,
+            outputStore = outputStore,
+            trashStore = trashStore,
+            undoStore = undoStore,
+            bashChannel = primary,
+        )
+    }
+
+    /** 便捷：从 App 层直接装配（自动桥接 AppStorage） */
+    companion object {
+        fun installDefault(
+            context: Context,
+            registry: ToolRegistry,
+            appStorage: AppStorage,
+            settings: ToolSettings?,
+            bridge: NativeBridge,
+            bashChannel: com.ccm.app.tools.bash.BashChannel? = null,
+        ): Result = ToolsBootstrap(
+            context = context,
+            storage = AppBackedToolStorage(appStorage),
+            settings = settings,
+            bridge = bridge,
+        ).install(registry, bashChannel)
+
+        /**
+         * 工具清单（供提示词列举与 UI 展示，不实例化）。
+         *
+         * ⚠️ 与 [install] 必须同步 —— 这里漏了某个工具，提示词里就不会告诉模型，
+         * 模型永远想不起来用它。两处都改。
+         */
+        val TOOL_NAMES: List<String> = listOf(
+            // 文件
+            "Read", "Write", "Edit", "MultiEdit", "ApplyPatch", "Glob", "Grep", "CodeSearch",
+            // Bash
+            "Bash", "BashOutput", "KillShell",
+            // 网络
+            "WebSearch", "WebFetch", "FindImage", "ImageGen",
+            // 手机
+            "phone_snapshot", "phone_click", "phone_tap_xy", "phone_type", "phone_swipe",
+            "phone_key", "phone_scroll", "phone_screenshot", "phone_wait", "phone_app",
+            "phone_shell", "phone_vd", "phone_device",
+            // 系统
+            "ClipboardGet", "ClipboardSet", "Toast", "Notify", "Vibrate", "Battery",
+            "Location", "OpenUrl", "Share", "TTS",
+        )
+    }
+}
