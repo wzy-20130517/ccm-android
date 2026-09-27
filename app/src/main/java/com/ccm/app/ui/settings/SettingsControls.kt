@@ -18,6 +18,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -210,6 +218,79 @@ fun SettingsSelect(
         ChevronDown(
             color = colors.textSecondary,
             rotated = chevronRotated,
+        )
+    }
+}
+
+/**
+ * 可弹出的下拉选择 —— [SettingsSelect] + 选项弹窗。
+ *
+ * ## 为什么要有这个
+ * 设置页有 4 个下拉（工作职能 / 发送键 / 换行键 / 思考强度），
+ * **全部是 `onClick = {}` 空转** —— 点了毫无反应（2026-09-27 审计）。
+ * SettingsSelect 本身只有展示，菜单得使用方自己弹；之前没人写。
+ *
+ * 选项用 AlertDialog 全屏列表（不是锚定 Popup）：设置页是全屏层，
+ * 锚定菜单在小屏上容易被截断，全屏列表最稳。
+ */
+@Composable
+fun SettingsSelectMenu(
+    value: String,
+    options: List<String>,
+    onPick: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    title: String = "",
+    chevronRotated: Boolean = false,
+) {
+    var open by remember { mutableStateOf(false) }
+
+    SettingsSelect(
+        value = value,
+        onClick = { open = true },
+        modifier = modifier,
+        chevronRotated = chevronRotated,
+    )
+
+    if (open) {
+        AlertDialog(
+            onDismissRequest = { open = false },
+            title = title.takeIf { it.isNotBlank() }?.let { { Text(it, style = CCMText.body14) } },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    options.forEach { opt ->
+                        val selected = opt == value
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    onPick(opt)
+                                    open = false
+                                }
+                                .padding(horizontal = 8.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                text = opt,
+                                style = CCMText.body13,
+                                color = if (selected) CCMTheme.colors.accent
+                                else CCMTheme.colors.textMain,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (selected) Text("✓", style = CCMText.body13, color = CCMTheme.colors.accent)
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { open = false }) { Text("取消", style = CCMText.body13) }
+            },
         )
     }
 }

@@ -329,7 +329,6 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         ) {
             TitleBar(
                 onToggleSidebar = {
-                    android.util.Log.i("CCMTap", "click menu, sidebarOpen: $sidebarOpen -> ${!sidebarOpen}")
                     sidebarOpen = !sidebarOpen
                 },
                 // 非首页时启用「后退」（回首页）；首页时禁用（灰色 #B7B5B0）
@@ -553,16 +552,16 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         onCreate = { },
                     )
 
-                    CcmRoute.CUSTOMIZE -> CustomizeScreen()
+                    CcmRoute.CUSTOMIZE -> CustomizeScreen(onBack = { navigate(CcmRoute.HOME) })
 
                     CcmRoute.ARTIFACTS -> ArtifactsScreen(
                         items = emptyList(),
                         onNewArtifact = { },
                     )
 
-                    CcmRoute.COWORK -> CoworkScreen()
+                    CcmRoute.COWORK -> CoworkScreen(onBack = { navigate(CcmRoute.HOME) })
 
-                    CcmRoute.SCHEDULED -> ScheduledScreen()
+                    CcmRoute.SCHEDULED -> ScheduledScreen(onBack = { navigate(CcmRoute.HOME) })
 
                     else -> LandingScreen(
                         greeting = greetingFor(profileName),
@@ -586,7 +585,6 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         }
 
         // ── 侧栏抽屉（浮层，含遮罩）───────────────────────────────────
-        android.util.Log.i("CCMTap", "recompose SidebarDrawer open=$sidebarOpen route=$route showSettings=$showSettings")
         SidebarDrawer(
             open = sidebarOpen,
             onClose = { sidebarOpen = false },

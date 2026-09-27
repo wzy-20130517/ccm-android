@@ -99,6 +99,14 @@ class ProviderStore(private val storage: AppStorage) {
         return AppConfig.save(cfg.copy(current = id), file)
     }
 
+    /** 改全局思考强度（对应 `/effort <级别>`，存 AppConfig.effort）。 */
+    fun setGlobalEffort(level: String): Boolean {
+        val cfg = load()
+        // "继承全局" = 清掉字段（回落到默认）
+        val v = if (level.startsWith("继承")) null else level
+        return AppConfig.save(cfg.copy(effort = v), file)
+    }
+
     /** 改模型（对应 `/model <id> <名称>`） */
     fun setModel(id: String, model: String): Boolean =
         update(id) { it.copy(model = model.trim()) }

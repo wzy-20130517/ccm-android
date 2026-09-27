@@ -33,6 +33,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ccm.app.ui.theme.CCMText
+
+/** 下拉选项集合（2026-09-27 加 —— 这些下拉之前全是 onClick 空转）。 */
+private val WORK_FUNCTION_OPTIONS = listOf(
+    "工程师", "设计师", "产品经理", "学生", "教师",
+    "写作 / 内容", "运营 / 市场", "科研 / 数据", "其他",
+)
+private val SEND_KEY_OPTIONS = listOf(
+    "仅按钮（回车只换行）",
+    "回车发送（Shift+Enter 换行）",
+    "Ctrl+Enter 发送",
+)
+private val NEWLINE_KEY_OPTIONS = listOf("Enter", "Shift+Enter", "Alt+Enter")
 import com.ccm.app.ui.theme.CCMTheme
 
 /**
@@ -111,9 +123,16 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
 
                 // 职业
                 SettingsField(label = "你的职业是什么？") {
-                    SettingsSelect(
+                    // ★ 2026-09-27：原注释说「由系统 Dialog 承担」—— 实际没有
+                    //   Dialog，onClick 空转点不开。接 SettingsSelectMenu + 落盘。
+                    SettingsSelectMenu(
                         value = workFunction,
-                        onClick = { /* 原生下拉由系统 Dialog 承担，见 SettingsSelectField */ },
+                        options = WORK_FUNCTION_OPTIONS,
+                        onPick = {
+                            workFunction = it
+                            profileStore?.setField("work_function", it)
+                        },
+                        title = "你的职业",
                         chevronRotated = true,
                     )
                 }
@@ -154,12 +173,22 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
             Row(horizontalArrangement = Arrangement.spacedBy(22.08.dp)) {
                 Column(modifier = Modifier.weight(1f)) {
                     SettingsField(label = "发送消息") {
-                        SettingsSelect(value = sendKey, onClick = {})
+                        SettingsSelectMenu(
+                            value = sendKey,
+                            options = SEND_KEY_OPTIONS,
+                            onPick = { sendKey = it },
+                            title = "发送消息",
+                        )
                     }
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     SettingsField(label = "换行") {
-                        SettingsSelect(value = newlineKey, onClick = {})
+                        SettingsSelectMenu(
+                            value = newlineKey,
+                            options = NEWLINE_KEY_OPTIONS,
+                            onPick = { newlineKey = it },
+                            title = "换行",
+                        )
                     }
                 }
             }

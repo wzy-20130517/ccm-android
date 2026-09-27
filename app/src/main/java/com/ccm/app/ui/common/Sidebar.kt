@@ -99,7 +99,6 @@ fun SidebarDrawer(
     // 收起动画结束后会收敛到精确的 0f，触发重组进入本分支。
     // 曾误判为「遮罩残留吞掉点击」，实测不成立（遮罩挂在最后的子元素位置，
     // 但 progress=0 时整个抽屉根本不挂载）。
-    android.util.Log.i("CCMTap", "Sidebar open=$open progress=$progress")
     if (progress <= 0f) return
 
     // dp → px（graphicsLayer 用像素）

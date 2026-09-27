@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ccm.app.core.provider.AppConfig
 import com.ccm.app.core.provider.ProviderStore
 import com.ccm.app.ui.theme.CCMText
 import com.ccm.app.ui.theme.CCMTheme
@@ -259,7 +260,15 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                 title = "模型行为",
                 hint = "这个供应商的默认模型怎么工作",
             ) {
-                var effort by remember { mutableStateOf("继承全局") }
+                // ★ 2026-09-27：原来是写死的 "继承全局" + onClick 空转 ——
+                //   点不开、选了也不存。改成读真实值 + 落盘。
+                var effort by remember(selectedId, refreshTick) {
+                    val st = com.ccm.app.AppGraph.storage
+                    mutableStateOf(
+                        st?.let { AppConfig.load(it.configFile).config.effort }
+                            ?.takeIf { it.isNotBlank() } ?: "继承全局"
+                    )
+                }
                 var format by remember(selectedId, refreshTick) {
                     mutableStateOf(selected?.protocol ?: "openai")
                 }
@@ -269,9 +278,19 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(7.36.dp),
                     ) {
-                        SettingsSelect(
+                        SettingsSelectMenu(
                             value = effort,
-                            onClick = { },
+                            options = listOf(
+                                "继承全局", "none", "minimal", "low",
+                                "medium", "high", "xhigh", "max",
+                            ),
+                            onPick = {
+                                effort = it
+                                com.ccm.app.AppGraph.storage?.let { st ->
+                                    com.ccm.app.core.provider.ProviderStore(st).setGlobalEffort(it)
+                                }
+                            },
+                            title = "思考强度",
                             modifier = Modifier.weight(1f),
                         )
                         // 状态徽章：已开启 / 已关闭
