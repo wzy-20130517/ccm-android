@@ -261,6 +261,7 @@ class ToolsBootstrap(
             add(phoneTools.PhoneShellTool())
             add(phoneTools.PhoneVdTool())
             add(phoneTools.PhoneDeviceTool())
+            add(phoneTools.PhoneHandoffTool())
 
             // 系统能力
             add(systemTools.ClipboardGetTool())

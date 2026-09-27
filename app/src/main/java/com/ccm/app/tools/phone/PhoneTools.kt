@@ -606,10 +606,7 @@ class PhoneTools(
 
             return try {
                 val out = svc.runShell(cmd, timeout)
-                // 返回格式 "exitCode\n---\nstdout"
-                val parts = out.split("\n---\n", limit = 2)
-                val code = parts.getOrNull(0)?.trim()?.toIntOrNull()
-                val stdout = parts.getOrNull(1) ?: ""
+                val (code, stdout) = parseShellResult(out)
                 if (code == 0) {
                     ToolResult.ok(stdout.ifEmpty { "(无输出)" })
                 } else {
@@ -727,6 +724,237 @@ class PhoneTools(
 
             return ToolResult.ok(sb.toString())
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  14. phone_handoff（跨屏接力）
+    // ══════════════════════════════════════════════════════════════
+
+    /**
+     * 跨屏接力：把某个屏上**正在跑的 App** 整体搬到另一个屏。
+     *
+     * 参照 Node 版 `core/tools-phone.mjs` 的 PhoneHandoffTool（已实测通过）。
+     *
+     * ══════════════════════════════════════════════════════════════
+     *  与 phone_app 的区别（这是本工具存在的理由）
+     * ══════════════════════════════════════════════════════════════
+     *
+     * | | phone_app | phone_handoff |
+     * |---|---|---|
+     * | 行为 | 在新屏**重新启动** | 把正在跑的 **task 整体搬过去** |
+     * | 状态 | 重走启动流程，可能丢（登录态/草稿/播放进度） | **完整保留** |
+     * | 适用 | 还没开、或开了也无所谓 | 已经开着、状态不能丢 |
+     *
+     * 典型场景：用户在主屏开着某 App，你要操作但不想占他屏幕 ——
+     * 先 handoff 迁到副屏，再在副屏操作。
+     *
+     * ══════════════════════════════════════════════════════════════
+     *  实现：两条 Android 原生命令（照抄 agent-mobile-use 的做法）
+     * ══════════════════════════════════════════════════════════════
+     *
+     * ```
+     * 1. dumpsys activity activities | grep -A 12 "Display #<from>"
+     *    → 从 topResumedActivity / Task{} 行解析出 taskId
+     * 2. cmd activity display move-stack <taskId> <to>
+     * ```
+     *
+     * ⚠️ **move-stack 成功时无输出**，退出码也可能是 0 ——
+     * 所以判据是「输出里有没有 error/denied 字样」，**不能把空输出当失败**。
+     *
+     * ══════════════════════════════════════════════════════════════
+     *  通道选择：走 runShell 而不是新增 AIDL 方法
+     * ══════════════════════════════════════════════════════════════
+     *
+     * 有两条路可走：
+     * · ① 给 IPhoneUseService 加一个 `handoff()` AIDL 方法（改 aidl + PhoneUseService）
+     * · ② 复用现有的 `runShell(cmd, timeout)`（[phone_shell][PhoneShellTool] 用的同一个）
+     *
+     * **选 ②**：move-stack 本来就是 shell 命令，加 AIDL 方法只是把它包一层，
+     * 收益是「少拼一次字符串」，代价是要动 AIDL 契约（跨模块，需协调）+
+     * 服务端要重新实现解析逻辑。而 ① 的解析逻辑跟 CLI 端完全一致，
+     * 复用 runShell 能让两端**共用同一套正则和排错经验**（CLI 端已实测过）。
+     *
+     * 副作用：需要 Shizuku 服务在线（与 phone_shell 同样的前提）。
+     */
+    inner class PhoneHandoffTool : Tool() {
+        override val name = "phone_handoff"
+        override val description =
+            "跨屏接力：把某个屏上正在运行的 App **整体搬到**另一个屏（状态完整保留）。\n" +
+                "【典型场景】用户在主屏开着某个 App，你要操作它但不想占他屏幕 —— " +
+                "先 phone_handoff 把它迁到副屏，再在副屏操作。\n" +
+                "【与 phone_app 的区别】phone_app 是「在新屏重新启动」（会重走启动流程、可能丢状态）；" +
+                "phone_handoff 是「把正在跑的 task 整体搬过去」（状态完整保留）。\n" +
+                "【参数】省略 from/to 时：from 默认主屏(0)，to 默认副屏。"
+        override val isReadOnly = false
+        override val isDestructive = false
+        override val isConcurrencySafe = false
+        override val maxResultSizeChars = 2_000
+
+        override val inputSchema: JsonObject = ToolSchema.objectSchema(
+            "from" to ToolSchema.integer("源屏 display id（默认 0 = 主屏）", minimum = 0),
+            "to" to ToolSchema.integer("目标屏 display id（默认 = 副屏）", minimum = 0),
+            "package" to ToolSchema.string("可选：指定搬哪个包（该屏有多个 task 时用）"),
+        )
+
+        override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val svc = service().getOrElse {
+                return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
+            }
+
+            val from = input.int("from") ?: 0
+            val wantPkg = input.str("package")?.trim()?.takeIf { it.isNotEmpty() } ?: ""
+
+            // 包名安全校验（拼进 shell 命令前必须挡注入 —— 对齐 PhoneAppTool 的做法）
+            if (wantPkg.isNotEmpty() && !Regex("^[\\w.]+$").matches(wantPkg)) {
+                return ToolResult.invalidInput("包名格式非法：$wantPkg")
+            }
+
+            // ── 目标屏：默认副屏（从服务拿 displayId）────────────────
+            var to = input.int("to")
+            if (to == null) {
+                val displayId = try {
+                    // status() 返回 JSON：{running, display_id, ...}
+                    val raw = svc.status()
+                    JSONObject(raw).optInt("display_id", -1)
+                } catch (_: Throwable) {
+                    -1
+                }
+                if (displayId < 0) {
+                    return ToolResult.failed(
+                        "副屏未运行，无法接力。先用 phone_vd start 启动副屏，或显式传 to 参数。",
+                    )
+                }
+                to = displayId
+            }
+
+            if (from == to) {
+                return ToolResult.ok("源屏和目标屏相同（$from），无需接力。")
+            }
+
+            return try {
+                // ── ① 找源屏最顶层的 task ─────────────────────────
+                val dump = svc.runShell(
+                    "dumpsys activity activities 2>/dev/null | grep -A 12 \"Display #$from \"",
+                    20_000,
+                )
+                val text = parseShellResult(dump).second
+
+                var taskId = 0
+                var component = ""
+
+                // 主匹配：topResumedActivity=ActivityRecord{hash u0 pkg/Act t<taskId>}
+                //
+                // ⚠️ 正则的两个容错点（都用真机 dumpsys 输出核对过，2026-09-27）：
+                // · `(?:c\d+\s+)?` —— 部分 Android 版本/机型在 userId 前多一个 clientId
+                //   （形如 `{hash c0 u0 pkg/Act}`），真机 REDMI Note 15 Pro 上没有，
+                //   但加可选段能兼容，且不影响现有格式的匹配
+                // · `t(?:askId=)?` —— 老版本写 `t15118`，新版本有的写 `taskId=15118`
+                for (line in text.lines()) {
+                    val m = Regex(
+                        """topResumedActivity=ActivityRecord\{[0-9a-fA-F]+\s+(?:c\d+\s+)?u\d+\s+([\w.]+)/([\w.$]+)\s+t(?:askId=)?(\d+)""",
+                    ).find(line)
+                    if (m != null) {
+                        component = "${m.groupValues[1]}/${m.groupValues[2]}"
+                        taskId = m.groupValues[3].toIntOrNull() ?: 0
+                        break
+                    }
+                }
+
+                // 兜底：从 * Task{hash #12345 type=standard A=10349:pkg ...} 行找
+                if (taskId == 0) {
+                    for (line in text.lines()) {
+                        val m = Regex("""\* Task\{[0-9a-fA-F]+\s+#(\d+)\s+[^}]*A=\d+:([\w.]+)""").find(line)
+                            ?: continue
+                        val pkg = m.groupValues[2]
+                        if (pkg.contains("launcher") || pkg.contains("systemui")) continue
+                        if (wantPkg.isNotEmpty() && !pkg.contains(wantPkg)) continue
+                        taskId = m.groupValues[1].toIntOrNull() ?: 0
+                        component = pkg
+                        break
+                    }
+                }
+
+                // 指定了包名时，再按包名过滤一遍（主匹配可能拿到的是别的 App）
+                if (taskId != 0 && wantPkg.isNotEmpty() && !component.contains(wantPkg)) {
+                    for (line in text.lines()) {
+                        val m = Regex("""\* Task\{[0-9a-fA-F]+\s+#(\d+)\s+[^}]*A=\d+:([\w.]+)""").find(line)
+                            ?: continue
+                        if (m.groupValues[2].contains(wantPkg)) {
+                            taskId = m.groupValues[1].toIntOrNull() ?: 0
+                            component = m.groupValues[2]
+                            break
+                        }
+                    }
+                }
+
+                if (taskId == 0) {
+                    return ToolResult.failed(
+                        "display $from 上没找到可搬的 App（可能只有桌面/系统界面）。" +
+                            (if (wantPkg.isNotEmpty()) "\n指定了包名 $wantPkg，但该屏顶层没有它。" else "") +
+                            "\n提示：先确认那屏上确实开着目标 App（phone_snapshot 看一眼）。",
+                    )
+                }
+
+                // ── ② 移动整个 task ──────────────────────────────
+                val moveOut = svc.runShell("cmd activity display move-stack $taskId $to 2>&1", 20_000)
+                val out = parseShellResult(moveOut).second.trim()
+
+                // ⚠️ 成功时通常无输出 —— 判据是「有没有错误字样」，不是「输出是否为空」
+                val failed = Regex("error|exception|not found|denied", RegexOption.IGNORE_CASE).containsMatchIn(out)
+                if (failed) {
+                    return ToolResult.failed(
+                        "接力失败（task $taskId → display $to）：\n${out.take(400)}\n\n" +
+                            "【常见原因】\n" +
+                            "· Android 版本不支持 move-stack（13+ 部分机型改了权限）\n" +
+                            "· 跨屏移动需要系统权限（shell 通道可能不够）\n" +
+                            "· 备选：phone_app 在新屏重新启动（会丢状态）",
+                    )
+                }
+
+                ToolResult.ok(
+                    "✅ 已接力：${component.ifEmpty { "顶层 App" }}（task $taskId）从 display $from → $to" +
+                        (if (out.isNotEmpty()) "\n输出：${out.take(200)}" else "") +
+                        "\n\n接下来可以在目标屏上操作它了（phone_snapshot / phone_click）。",
+                )
+            } catch (e: Throwable) {
+                ToolResult.Error("接力执行失败：${e.message}", ToolResult.INTERNAL)
+            }
+        }
+    }
+
+    /**
+     * 解析 [IPhoneUseService.runShell] 的返回值。
+     *
+     * ══════════════════════════════════════════════════════════════
+     *  ⚠️ 契约与实际不一致（2026-09-27 实测发现）
+     * ══════════════════════════════════════════════════════════════
+     *
+     * - **AIDL 注释**（`IPhoneUseService.aidl:69`）承诺：`"exitCode\n---\nstdout"`
+     * - **服务实现**（`PhoneUseService.kt:387`）实际返回：`"${proc.exitValue()}\n$out"`
+     *
+     * 少了 `---` 分隔符。原 `phone_shell` 按注释格式 split，于是**永远切不开**：
+     * `parts[0]` 变成 `"0\n<输出内容>"`，`toIntOrNull()` 得 null，
+     * `code == 0` 不成立 → **每次调用都走 failed 分支**。
+     *
+     * 本函数同时兼容两种格式：
+     * · 有 `\n---\n` → 按它切（若将来服务端补上分隔符，无需改这里）
+     * · 没有 → 只切第一行当 exitCode，其余全部是 stdout
+     *
+     * **为什么不直接改服务端**：`bridge/` 不在本层权限内（且 AIDL 是跨模块契约，
+     * 改动要协调）。工具侧兼容是安全的做法 —— 两种格式都能吃。
+     *
+     * @return (exitCode, stdout)；exitCode 为 null 表示连首行都不是数字（异常返回）
+     */
+    private fun parseShellResult(raw: String): Pair<Int?, String> {
+        // ① 优先按 AIDL 承诺的格式切
+        if (raw.contains("\n---\n")) {
+            val parts = raw.split("\n---\n", limit = 2)
+            return parts[0].trim().toIntOrNull() to (parts.getOrNull(1) ?: "")
+        }
+        // ② 实际格式：首行 exitCode，其余全是 stdout（**stdout 本身可能含换行，不能多切**）
+        val idx = raw.indexOf('\n')
+        if (idx < 0) return raw.trim().toIntOrNull() to ""
+        return raw.substring(0, idx).trim().toIntOrNull() to raw.substring(idx + 1)
     }
 
     // ══════════════════════════════════════════════════════════════

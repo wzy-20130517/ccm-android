@@ -273,22 +273,25 @@ object AppGraph {
     }
 
     /**
-     * 把老架构（proot 内 HOME）的配置迁移到 App 私有目录。
+     * 把老架构（proot 内 Node 内核）的配置迁移到 App 私有目录。
      *
      * ══════════════════════════════════════════════════════════════
      *  为什么需要（这是升级用户最可能踩的坑）
      * ══════════════════════════════════════════════════════════════
      *
-     * 老架构的 Node 内核跑在 proot 里，`HOME=/root`，配置在：
+     * 老架构的 Node 内核跑在 proot 里、工作目录是 `/root/ccm`，
+     * 配置在 **内核自己的工作目录**：
      * ```
-     * filesDir/rootfs/root/.claude-code-mobile/config.json
+     * filesDir/rootfs/root/ccm/config.json
      * ```
+     * （Node 版的 `PROJECT_CONFIG_PATH` 锚定 index.mjs 所在目录，不是 homedir）
+     *
      * 新架构（Kotlin core）读 App 私有目录：
      * ```
      * filesDir/config.json
      * ```
      *
-     * 不迁移的话，**所有升级用户的 Provider 配置、会话历史全部消失** ——
+     * 不迁移的话，**所有升级用户的 Provider 配置全部消失** ——
      * 打开 App 看到「尚未配置 API」，得重新填 key。用户很可能已经忘了。
      *
      * ══════════════════════════════════════════════════════════════
@@ -300,42 +303,65 @@ object AppGraph {
      *   （APK 覆盖安装不删 filesDir）。占几 KB，不值得冒险删。
      * - **失败静默** —— 迁移是尽力而为的优化，失败不该让 App 起不来。
      *
-     * 会迁移的东西：
-     * | 文件 | 说明 |
-     * |---|---|
-     * | `config.json` | Provider 配置（最关键） |
-     * | `sessions/` 下的 json | 对话历史 |
-     * | `CLAUDE.md` | 项目记忆 |
+     * ⚠️ **路径按实测确定**（2026-09-27 用 `run-as` 查过真机）：
+     * ```
+     * files/config.json                        ← 目标（新架构读这里）
+     * files/rootfs/root/ccm/config.json        ← 源（老架构 Node 内核，实测存在）
+     * files/rootfs/root/.claude-code-mobile/   ← 备选（Node 版 homedir 约定，实测不存在）
+     * ```
      */
     private fun migrateLegacyConfig(app: android.content.Context, st: AppStorage) {
         try {
-            val legacyRoot = File(app.filesDir, "rootfs/root/.claude-code-mobile")
-            if (!legacyRoot.isDirectory) return
+            // 源按可能性排序。实测老架构在 `rootfs/root/ccm/`（内核工作目录），
+            // 但 Node 版的 `~/.claude-code-mobile/` 约定也列上 —— 两者都试成本极低，
+            // 而漏掉一个就会让一部分用户的配置读不到。
+            val candidates = listOf(
+                File(app.filesDir, "rootfs/root/ccm/config.json"),
+                File(app.filesDir, "rootfs/root/.claude-code-mobile/config.json"),
+            )
+            val legacyRoots = listOf(
+                File(app.filesDir, "rootfs/root/ccm"),
+                File(app.filesDir, "rootfs/root/.claude-code-mobile"),
+            )
 
             // ① 配置（最关键）
-            val legacyConfig = File(legacyRoot, "config.json")
-            if (legacyConfig.isFile && !st.configFile.exists()) {
-                legacyConfig.copyTo(st.configFile, overwrite = false)
-                migrated = true
+            if (!st.configFile.exists()) {
+                for (src in candidates) {
+                    if (src.isFile && src.length() > 2) {
+                        src.copyTo(st.configFile, overwrite = false)
+                        migrated = true
+                        android.util.Log.i("AppGraph", "已迁移老配置：${src.absolutePath}")
+                        break
+                    }
+                }
             }
 
             // ② 会话历史
-            val legacySessions = File(legacyRoot, "sessions")
-            if (legacySessions.isDirectory && st.sessionsDir.list()?.isEmpty() != false) {
-                legacySessions.listFiles()?.forEach { f ->
-                    if (f.isFile && f.name.endsWith(".json")) {
-                        try {
-                            f.copyTo(File(st.sessionsDir, f.name), overwrite = false)
-                        } catch (_: Throwable) {}
+            val sessionsEmpty = st.sessionsDir.list()?.isEmpty() != false
+            if (sessionsEmpty) {
+                for (root in legacyRoots) {
+                    val legacySessions = File(root, "sessions")
+                    if (!legacySessions.isDirectory) continue
+                    legacySessions.listFiles()?.forEach { f ->
+                        if (f.isFile && f.name.endsWith(".json")) {
+                            try {
+                                f.copyTo(File(st.sessionsDir, f.name), overwrite = false)
+                            } catch (_: Throwable) {}
+                        }
                     }
                 }
             }
 
             // ③ 项目记忆
-            val legacyMemory = File(legacyRoot, "CLAUDE.md")
             val newMemory = File(st.root, "CLAUDE.md")
-            if (legacyMemory.isFile && !newMemory.exists()) {
-                legacyMemory.copyTo(newMemory, overwrite = false)
+            if (!newMemory.exists()) {
+                for (root in legacyRoots) {
+                    val legacyMemory = File(root, "CLAUDE.md")
+                    if (legacyMemory.isFile && legacyMemory.length() > 0) {
+                        legacyMemory.copyTo(newMemory, overwrite = false)
+                        break
+                    }
+                }
             }
         } catch (t: Throwable) {
             // 静默 —— 迁移失败只是「用户要重配一次」，不该让 App 起不来
