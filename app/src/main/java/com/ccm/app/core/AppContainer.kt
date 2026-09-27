@@ -1,6 +1,7 @@
 package com.ccm.app.core
 
 import com.ccm.app.core.agent.AgentLoop
+import com.ccm.app.core.agent.SubAgentManager
 import com.ccm.app.core.api.ApiClient
 import com.ccm.app.core.compact.AutoCompact
 import com.ccm.app.core.compact.Compactor
@@ -75,7 +76,30 @@ class AppContainer private constructor(
      * 用户被自动压缩搞丢过记忆，明确反感 —— 只有他显式设阈值才会启用。
      */
     val autoCompact: AutoCompact,
+    /**
+     * 子 Agent 管理器（并发上限 + 观察窗）。
+     *
+     * `null` = 未启用子 Agent（需要协程作用域，见 [attachSubAgents]）。
+     */
+    var subAgents: SubAgentManager? = null
+        private set,
 ) {
+
+    /**
+     * 接上子 Agent 能力。
+     *
+     * @param scope App 级协程作用域
+     * @param spawn 实际派生函数（由上层注入，避免 core 依赖具体实现）
+     */
+    fun attachSubAgents(
+        scope: kotlinx.coroutines.CoroutineScope,
+        spawn: suspend (com.ccm.app.core.tool.SubAgentSpec, com.ccm.app.core.agent.SubAgentHandle) ->
+            com.ccm.app.core.tool.SubAgentResult,
+    ): SubAgentManager {
+        val mgr = SubAgentManager(scope = scope, spawn = spawn)
+        subAgents = mgr
+        return mgr
+    }
 
     /**
      * 会话自动保存（`null` = 未启用）。
