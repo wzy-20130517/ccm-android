@@ -1,0 +1,125 @@
+package com.ccm.app.ui.chat
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import com.ccm.app.core.ChatSession
+
+/**
+ * 已接上 [ChatSession] 的聊天界面 —— **阶段 5 只需传一个 session**。
+ *
+ * ## 用法（阶段 5 / MainActivity）
+ * ```kotlin
+ * val session = ChatSession.create(
+ *     storage = FileAppStorage(context.filesDir),
+ *     registry = registry,
+ *     toolRunner = executor,
+ *     scope = lifecycleScope,
+ *     imageScaler = AndroidImageScaler(cacheDir),
+ * ) ?: run {
+ *     // 配置无效（没 Provider / 没 key）→ 引导去设置页
+ *     SettingsScreen(); return@setContent
+ * }
+ *
+ * ChatScreenConnected(session = session)
+ * ```
+ *
+ * ## 这一层做什么
+ * 1. **订阅** `session.state`（`StateFlow<ChatSession.State>`）
+ * 2. **适配** core 类型 → UI 类型（[ChatAdapter]）
+ * 3. **驱动流式记账**（[StreamingMarkdown]）—— core 给的是累积全文，
+ *    这里按「换行边界」切出可安全渲染的部分
+ * 4. **转发交互**（send / stop）到 session
+ *
+ * ## 流式记账的时机（关键）
+ * ```
+ * state.streaming 变化 → md.feed(全文) → 拿 stable 渲染
+ * state.running 从 true 变 false → md.flush()  ← ★ 必须，否则末尾内容被吞
+ * ```
+ * 注意判据是 **running 变 false**（而不是 `streaming` 变空）——
+ * 因为气泡定型后 `streaming` 会被清空，但那时内容已经进了 `bubbles`。
+ *
+ * @param session 已装配的会话（由阶段 5 创建）
+ */
+@Composable
+fun ChatScreenConnected(
+    session: ChatSession,
+    modifier: Modifier = Modifier,
+    title: String = "新对话",
+    modelName: String = "Sonnet 4.6",
+    onExport: () -> Unit = {},
+    onRename: () -> Unit = {},
+) {
+    val coreState by session.state.collectAsState()
+    val uiState = remember(coreState) { ChatAdapter.toUi(coreState) }
+
+    // 输入框文本（UI 本地状态，不进 core）
+    var input by remember { mutableStateOf("") }
+
+    // 流式记账器（跨重组保持）
+    val md = remember { StreamingMarkdown() }
+    var stableStreaming by remember { mutableStateOf("") }
+    var wasRunning by remember { mutableStateOf(false) }
+
+    // ── 流式内容变化 → 记账 ──────────────────────────────────────────
+    LaunchedEffect(uiState.streaming) {
+        if (uiState.streaming.isNotBlank()) {
+            val r = md.feed(uiState.streaming)
+            stableStreaming = r.stable
+        }
+    }
+
+    // ── running 状态跃迁 → 记账器生命周期管理 ──────────────────────
+    //
+    // ⚠️ 必须放在**一个** LaunchedEffect 里处理两个方向：
+    // 拆成两个的话，两者都会读改写 `wasRunning`，执行顺序不确定 →
+    // 要么漏 flush（丢末尾内容），要么漏 reset（下一轮带上轮残留）。
+    LaunchedEffect(uiState.running) {
+        val nowRunning = uiState.running
+        if (!wasRunning && nowRunning) {
+            // 新一轮开始 → 清空上一轮残留
+            md.reset()
+            stableStreaming = ""
+        } else if (wasRunning && !nowRunning) {
+            // 收尾 → 必须 flush（不变量 3：不能吞内容）
+            //
+            // 注意：气泡定型发生在 core 层的 `TurnEnd`，此后 `streaming` 被清空、
+            // 内容进了 `bubbles`。所以 flush 的结果通常「已没必要渲染」，
+            // 但**仍然必须调用** —— 它同时负责重置内部状态供下一轮使用。
+            // 这里不把结果写回 stableStreaming，否则会与 bubbles 重复显示。
+            md.flush()
+            md.reset()
+            stableStreaming = ""
+        }
+        wasRunning = nowRunning
+    }
+
+    ChatScreen(
+        bubbles = uiState.bubbles,
+        modifier = modifier,
+        streaming = stableStreaming.ifBlank { uiState.streaming },
+        toolCards = uiState.toolCards,
+        input = input,
+        running = uiState.running,
+        title = title,
+        modelName = modelName,
+        tokenCount = uiState.displayTokens,
+        errorMessage = uiState.error,
+        onInputChange = { input = it },
+        onSend = {
+            val text = input.trim()
+            if (text.isNotEmpty()) {
+                session.send(text)
+                input = ""
+            }
+        },
+        onStop = { session.stop() },
+        onExport = onExport,
+        onRename = onRename,
+    )
+}

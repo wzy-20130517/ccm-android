@@ -159,10 +159,10 @@ private fun AppScaffold() {
                         onPickPrompt = { },
                     )
 
-                    // TODO(阶段4·B5-d): 接 ChatSession（dev-core 的门面）
-                    //   val session = ChatSession.create(...)
-                    //   val state by session.state.collectAsState()
-                    //   然后把 state 传给 ChatScreen
+                    // 未接 session 时渲染空态。
+                    // 接了 session 请用 ChatScreenConnected(session) —— 见 ui/chat/ChatScreenConnected.kt
+                    // 阶段 5 装配 session 后，把这里换成：
+                    //   ChatScreenConnected(session = session)
                     CcmRoute.CHAT -> ChatScreen(
                         bubbles = emptyList(),
                         onSend = { },

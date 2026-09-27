@@ -16,10 +16,12 @@ import com.ccm.app.tools.bash.ProotChannel
 import com.ccm.app.tools.bash.TermuxChannel
 import com.ccm.app.tools.file.ApplyPatchTool
 import com.ccm.app.tools.file.FileTools
+import com.ccm.app.tools.file.HashlineTools
 import com.ccm.app.tools.file.SearchTools
 import com.ccm.app.tools.file.TrashStore
 import com.ccm.app.tools.file.UndoStore
 import com.ccm.app.tools.dev.DevTools
+import com.ccm.app.tools.net.GitHubTools
 import com.ccm.app.tools.net.ImageTools
 import com.ccm.app.tools.net.LookupTools
 import com.ccm.app.tools.net.VisionTools
@@ -102,6 +104,10 @@ class ToolsBootstrap(
     private val qqPusher: QqTools.Pusher? = null,
     /** QQ 群消息回溯器（QQRecall 用）—— App 层注入 */
     private val qqRecaller: QqTools.Recaller? = null,
+    /** GitHub PAT（GitHub* 工具用）—— /github login 设置 */
+    private val githubToken: String? = null,
+    /** 默认 GitHub 仓库（owner/name）—— /github repo 设置 */
+    private val githubRepo: String? = null,
 ) {
 
     /** 装配结果（供诊断与 UI 展示） */
@@ -173,8 +179,10 @@ class ToolsBootstrap(
 
         // 批 3 补全 + P1
         val devTools = DevTools(primary, trashStore, commandExec)
+        val hashlineTools = HashlineTools(trashStore, undoStore)
         val cronTools = CronTools(CronStore(File(storage.rootDir, "cron")))
         val qqTools = QqTools(qqPusher, qqRecaller)
+        val ghTools = GitHubTools(githubToken, githubRepo)
 
         val all: List<Tool> = buildList {
             // 批 1：文件
@@ -293,6 +301,21 @@ class ToolsBootstrap(
             // P1：QQ
             add(qqTools.QQPushTool())
             add(qqTools.QQRecallTool())
+
+            // P2：Hashline（行锚点验证编辑）
+            add(hashlineTools.HashlineReadTool())
+            add(hashlineTools.HashlineEditTool())
+            add(hashlineTools.HashlineGrepTool())
+
+            // P2：GitHub（未配 token 时工具会提示怎么配）
+            add(ghTools.GitHubRepoTool())
+            add(ghTools.GitHubIssuesTool())
+            add(ghTools.GitHubIssueViewTool())
+            add(ghTools.GitHubPRsTool())
+            add(ghTools.GitHubPRCommentsTool())
+            add(ghTools.GitHubFileTool())
+            add(ghTools.GitHubCommentTool())
+            add(ghTools.GitHubCreateIssueTool())
         }
 
         val rejected = registry.registerAll(*all.toTypedArray())
@@ -367,6 +390,11 @@ class ToolsBootstrap(
             "CronCreate", "CronList", "CronDelete",
             // QQ
             "QQPush", "QQRecall",
+            // Hashline
+            "HashlineRead", "HashlineEdit", "HashlineGrep",
+            // GitHub
+            "GitHubRepo", "GitHubIssues", "GitHubIssueView", "GitHubPRs",
+            "GitHubPRComments", "GitHubFile", "GitHubComment", "GitHubCreateIssue",
         )
     }
 }
