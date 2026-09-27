@@ -32,6 +32,7 @@ object ChatAdapter {
         role = bubble.role,
         text = bubble.text,
         messageId = bubble.messageId,
+        thinking = bubble.thinking,
     )
 
     /** core 工具卡片 → UI 工具卡片 */
@@ -52,6 +53,7 @@ object ChatAdapter {
     fun toUi(state: ChatSession.State): UiChatState = UiChatState(
         bubbles = state.bubbles.map(::toUi),
         streaming = state.streaming,
+        streamingThinking = state.thinking,
         running = state.running,
         toolCards = state.toolCards.map(::toUi),
         error = state.error,
@@ -69,6 +71,8 @@ object ChatAdapter {
 data class UiChatState(
     val bubbles: List<ChatBubble> = emptyList(),
     val streaming: String = "",
+    /** 正在流式生成的思考（AssistantThinkingChain 用，isThinking = running）。 */
+    val streamingThinking: String = "",
     val running: Boolean = false,
     val toolCards: List<ChatToolCard> = emptyList(),
     val error: String? = null,

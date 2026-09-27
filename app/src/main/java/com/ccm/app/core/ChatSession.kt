@@ -160,6 +160,9 @@ class ChatSession(
         val toolCards = mutableListOf<ToolCard>()
         var streaming = ""
         var currentMessageId = ""
+        // 思考流（与上面的正文流独立：先想后说，两个流交错）
+        var thinkingBuf = ""
+        var currentThinkingId = ""
 
         try {
             events.collect { ev ->
@@ -175,7 +178,15 @@ class ChatSession(
                     }
 
                     is AgentEvent.ReasoningDelta -> {
-                        // 思考内容暂不进状态（UI 需要时用事件流自己接）
+                        // ★ 2026-09-27：原来是 `暂不进状态` 直接丢弃 ——
+                        //   AssistantThinkingChain 739 行组件因此永远空转。
+                        //   现在与 TextDelta 同模式：messageId 变了重开一轮。
+                        if (ev.messageId != currentThinkingId) {
+                            currentThinkingId = ev.messageId
+                            thinkingBuf = ""
+                        }
+                        thinkingBuf += ev.text
+                        _state.value = _state.value.copy(thinking = thinkingBuf)
                     }
 
                     is AgentEvent.ToolStart -> {
@@ -211,8 +222,10 @@ class ChatSession(
                                     role = Message.ROLE_ASSISTANT,
                                     text = streaming,
                                     messageId = currentMessageId,
+                                    thinking = thinkingBuf,
                                 ),
                                 streaming = "",
+                                thinking = "",   // 已定型进气泡，清流式字段
                                 toolCards = toolCards.toList(),
                             )
                             streaming = ""
@@ -275,6 +288,14 @@ class ChatSession(
         val outputTokens: Int = 0,
         /** 输入框草稿（打字内容）。放 State 里 = 配置变化/屏幕旋转不丢。 */
         val draft: String = "",
+        /**
+         * 正在进行的思考内容（ReasoningDelta 累积）。
+         *
+         * 2026-09-27 之前这里是被丢弃的（`暂不进状态`注释）——
+         * UI 的 AssistantThinkingChain（739 行）因此永远无数据可渲染。
+         * TurnEnd 时定型进 [Bubble.thinking] 并清空本字段。
+         */
+        val thinking: String = "",
     ) {
         /** 是否为空对话（UI 据此显示欢迎页）。 */
         val isEmpty: Boolean get() = bubbles.isEmpty() && streaming.isBlank()
@@ -286,6 +307,8 @@ class ChatSession(
         val role: String,
         val text: String,
         val messageId: String,
+        /** 该消息的思考过程（TurnEnd 时从 State.thinking 定型过来；历史恢复无此项）。 */
+        val thinking: String = "",
     ) {
         val isUser: Boolean get() = role == Message.ROLE_USER
     }

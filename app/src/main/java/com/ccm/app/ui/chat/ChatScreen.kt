@@ -79,6 +79,7 @@ fun ChatScreen(
     modifier: Modifier = Modifier,
     streaming: String = "",
     toolCards: List<ChatToolCard> = emptyList(),
+    streamingThinking: String = "",
     input: String = "",
     running: Boolean = false,
     title: String = "新对话",
@@ -143,6 +144,8 @@ fun ChatScreen(
                         bubbles = bubbles,
                         streaming = streaming,
                         toolCards = toolCards,
+                        streamingThinking = streamingThinking,
+                        streamingRunning = running,
                     )
                     // 底部留白 —— 实测滚动容器 pad: `0px 0px 154px`（pb-154）
                     // 给浮动输入栏 + 底部状态行让位

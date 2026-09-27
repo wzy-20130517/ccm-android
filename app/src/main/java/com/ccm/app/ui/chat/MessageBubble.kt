@@ -121,19 +121,43 @@ fun MessageList(
     modifier: Modifier = Modifier,
     streaming: String = "",
     toolCards: List<ChatToolCard> = emptyList(),
+    /** 正在流式生成的思考（State.thinking）。 */
+    streamingThinking: String = "",
+    /** 是否还在跑（决定思考链的 isThinking 动效）。 */
+    streamingRunning: Boolean = false,
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
         bubbles.forEach { bubble ->
             if (bubble.isUser) {
                 UserBubble(text = bubble.text)
             } else {
+                // 定型消息：思考已结束（isThinking=false，组件自己合成 done 事件）
+                if (bubble.thinking.isNotBlank()) {
+                    AssistantThinkingChain(
+                        thinking = bubble.thinking,
+                        isThinking = false,
+                        modifier = Modifier.fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
                 AssistantBubble(text = bubble.text)
             }
         }
 
         // 流式内容（未定型）
-        if (streaming.isNotBlank()) {
-            AssistantBubble(text = streaming)
+        if (streaming.isNotBlank() || streamingThinking.isNotBlank()) {
+            // 流式中：思考在前（先想后说），running 驱动 isThinking 动效
+            if (streamingThinking.isNotBlank()) {
+                AssistantThinkingChain(
+                    thinking = streamingThinking,
+                    isThinking = streamingRunning,
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
+            if (streaming.isNotBlank()) {
+                AssistantBubble(text = streaming)
+            }
         }
 
         // 本轮工具卡片
@@ -154,6 +178,8 @@ data class ChatBubble(
     val role: String,
     val text: String,
     val messageId: String,
+    /** 该消息的思考过程（空 = 没有/历史消息）。AssistantThinkingChain 渲染。 */
+    val thinking: String = "",
 ) {
     val isUser: Boolean get() = role == "user"
 
