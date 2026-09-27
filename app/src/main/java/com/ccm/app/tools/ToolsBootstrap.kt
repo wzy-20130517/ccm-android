@@ -20,6 +20,7 @@ import com.ccm.app.tools.file.SearchTools
 import com.ccm.app.tools.file.TrashStore
 import com.ccm.app.tools.file.UndoStore
 import com.ccm.app.tools.net.ImageTools
+import com.ccm.app.tools.net.LookupTools
 import com.ccm.app.tools.net.WebTools
 import com.ccm.app.tools.phone.PhoneTools
 import com.ccm.app.tools.system.SystemTools
@@ -117,6 +118,7 @@ class ToolsBootstrap(
         val searchTools = SearchTools()
         val webTools = settings?.let { WebTools(it) }
         val imageTools = settings?.let { ImageTools(it, defaultCwd) }
+        val lookupTools = LookupTools(storage.rootDir)
         val phoneTools = PhoneTools(context, storage.rootDir)
         val systemTools = SystemTools(bridge)
 
@@ -145,6 +147,9 @@ class ToolsBootstrap(
                 add(it.FindImageTool())
                 add(it.ImageGenTool())
             }
+            // SearchInfo/Lookup 不依赖任何 key（直连公开搜索源）
+            add(lookupTools.SearchInfoTool())
+            add(lookupTools.LookupTool())
 
             // 批 4：手机
             add(phoneTools.PhoneSnapshotTool())
@@ -219,7 +224,7 @@ class ToolsBootstrap(
             // Bash
             "Bash", "BashOutput", "KillShell",
             // 网络
-            "WebSearch", "WebFetch", "FindImage", "ImageGen",
+            "WebSearch", "WebFetch", "FindImage", "ImageGen", "SearchInfo", "Lookup",
             // 手机
             "phone_snapshot", "phone_click", "phone_tap_xy", "phone_type", "phone_swipe",
             "phone_key", "phone_scroll", "phone_screenshot", "phone_wait", "phone_app",
