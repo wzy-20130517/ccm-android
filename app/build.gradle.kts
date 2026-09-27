@@ -135,4 +135,16 @@ dependencies {
     // 这类 bug 只能靠单测防住，代码审查和手工测试都发现不了。
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
+
+    // 【MockWebServer】端到端链路测试的假网关。
+    //
+    // 【为什么不用 JDK 自带的 com.sun.net.httpserver】Android 单元测试的
+    // classpath 是 android.jar（只有 API 存根，**不含 com.sun.* 实现**），
+    // 所以 `HttpServer.create()` 编译期就报 Unresolved reference。
+    // 实测踩过（CI #148 共 31 处错误）。
+    //
+    // MockWebServer 与生产用的 okhttp 同版本线，能精确控制 SSE 分片、
+    // 响应码和「挂着不发」的悬挂场景 —— 正好覆盖 watchdog / 重试 /
+    // 中断这几条最难手工构造的路径。
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }
