@@ -1,5 +1,6 @@
 package com.ccm.app.tools.task
 
+import com.ccm.app.core.tool.SubAgentSpec
 import com.ccm.app.core.tool.Tool
 import com.ccm.app.core.tool.ToolContext
 import com.ccm.app.core.tool.ToolResult
