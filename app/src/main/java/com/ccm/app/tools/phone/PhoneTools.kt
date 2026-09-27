@@ -1,0 +1,764 @@
+package com.ccm.app.tools.phone
+
+import android.content.Context
+import com.ccm.app.bridge.ShizukuBridge
+import com.ccm.app.core.tool.Attachment
+import com.ccm.app.core.tool.Tool
+import com.ccm.app.core.tool.ToolContext
+import com.ccm.app.core.tool.ToolResult
+import com.ccm.app.core.tool.ToolSchema
+import com.ccm.app.core.tool.ToolSchema.bool
+import com.ccm.app.core.tool.ToolSchema.int
+import com.ccm.app.core.tool.ToolSchema.str
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
+import org.json.JSONObject
+import java.io.File
+
+/**
+ * 手机操作工具集 —— phone_* 系列（11 个）。
+ *
+ * 参照 Node 版 `core/tools-phone.mjs`（1438 行，全项目第三大文件）。
+ *
+ * ══════════════════════════════════════════════════════════════
+ *  APK 侧的巨大优势：不需要 Shizuku/rish 之外的任何东西
+ * ══════════════════════════════════════════════════════════════
+ *
+ * Node 版要靠 `rish`（Shizuku 的 shell 客户端）+ `uiautomator dump` +
+ * `input tap` 这些**外部命令**，每次操作都有进程启动开销（实测一轮 3~5 秒）。
+ *
+ * APK 侧直接调 [ShizukuBridge.phoneService] 拿 AIDL 接口，
+ * 元素树和点击都在服务进程内完成（一轮几百毫秒，快一个数量级）。
+ *
+ * ══════════════════════════════════════════════════════════════
+ *  CCM 踩过的坑（全部保留，注释标了位置）
+ * ══════════════════════════════════════════════════════════════
+ *
+ * **坑 1：默认用文本快照，不要默认截图**
+ * 实测一个搜歌任务走了 27 分钟，根因是全程截图 + 识图 + 手算缩放坐标
+ * （每轮 20~30 秒）。原生界面文本快照完全够用（一轮几百毫秒）。
+ * **只有 WebView/Flutter/Canvas 这类元素树看不见的界面才截图。**
+ *
+ * **坑 2：界面变化后旧 ref 立即失效**
+ * 必须重新 snapshot 再操作，不能拿旧 ref 点。
+ *
+ * **坑 3：phone_wait 的参数名撞了框架超时机制**
+ * Node 版用了 `timeout` 参数名，被框架当成「这个工具最多跑 N 秒」直接掐断。
+ * APK 侧改用 `max_wait_ms`（对齐 CCM 后来的修复）。
+ *
+ * **坑 4：截图坐标要声明来源**
+ * 缩放图的坐标必须用 `from_screenshot: true` 声明，由工具换算，
+ * 不要让模型自己做乘法（算错过就会点歪）。
+ *
+ * @param context Android Context（调 ShizukuBridge）
+ * @param saveDir 截图保存目录
+ */
+class PhoneTools(
+    private val context: Context,
+    private val saveDir: File,
+) {
+
+    companion object {
+        /** 息屏时的统一提示（Android 系统限制，不是故障） */
+        private const val SCREEN_OFF_HINT =
+            "屏幕已关闭（Android 在息屏/Doze 下暂停虚拟屏合成、不给应用分配 Surface）。" +
+                "这是系统限制不是故障 —— 请点亮屏幕后重试（不用解锁）。"
+
+        /** 默认元素树节点上限 */
+        private const val DEFAULT_MAX_NODES = 120
+    }
+
+    /** 拿服务，拿不到就返回带原因的错误 */
+    private suspend fun service(): Result<com.ccm.app.bridge.IPhoneUseService> =
+        withContext(Dispatchers.IO) {
+            val reason = ShizukuBridge.unavailableReason()
+            if (reason != null) {
+                return@withContext Result.failure(IllegalStateException("手机操作不可用：$reason"))
+            }
+            val svc = ShizukuBridge.phoneService(context)
+                ?: return@withContext Result.failure(
+                    IllegalStateException(
+                        "手机操作服务未就绪：${ShizukuBridge.lastPhoneError ?: "未知原因"}"
+                    ),
+                )
+            Result.success(svc)
+        }
+
+    private fun screenshotDir(): File = File(saveDir, "phone-shots").apply { if (!exists()) mkdirs() }
+
+    /** 解析 ref：支持 "e12" / "12" / "node:12" 三种写法（对齐 AIDL 注释） */
+    private fun normalizeRef(raw: String): String = raw
+        .removePrefix("e")
+        .removePrefix("node:")
+        .trim()
+
+    // ══════════════════════════════════════════════════════════════
+    //  1. phone_snapshot
+    // ══════════════════════════════════════════════════════════════
+
+    inner class PhoneSnapshotTool : Tool() {
+        override val name = "phone_snapshot"
+        override val description =
+            "获取当前手机界面的元素树文本快照（比截图快一个数量级，优先用它）。" +
+                "输出是平铺格式：首行状态，次行列头，之后一行一元素，形如 " +
+                "#e12 Button \"发送\" 940,2100,1180,2200 c。" +
+                "直接用行首的 id（e12）做 phone_click 的目标，不要自己算坐标。" +
+                "flags: c=可点 e=可输入 s=可滚 k±=选中 off=禁用。界面变化后旧 id 会失效，需重新 snapshot。"
+        override val isReadOnly = true
+        // ⚠️ 虽然只读，但**不可并发** —— 多个快照同时抓会互相干扰（服务侧是单份状态）
+        override val isConcurrencySafe = false
+        override val maxResultSizeChars = 20_000
+
+        override val inputSchema: JsonObject = ToolSchema.objectSchema(
+            "interactive_only" to ToolSchema.boolean("只列可点击/带 id 的元素（默认 true，省 token）"),
+            "max_nodes" to ToolSchema.integer("最多返回多少元素（默认 120）", minimum = 1, maximum = 1000),
+            "no_system_ui" to ToolSchema.boolean("滤掉状态栏/导航栏/输入法（默认 true）"),
+            "include_text" to ToolSchema.boolean("额外补文本内容（慢，动画中会失败）"),
+        )
+
+        override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val svc = service().getOrElse {
+                return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
+            }
+            return try {
+                val tree = svc.dumpTree(
+                    input.bool("interactive_only") ?: true,
+                    input.int("max_nodes") ?: DEFAULT_MAX_NODES,
+                    input.bool("no_system_ui") ?: true,
+                )
+                if (tree.isBlank()) {
+                    ToolResult.failed(SCREEN_OFF_HINT)
+                } else {
+                    ToolResult.ok(tree)
+                }
+            } catch (e: Throwable) {
+                ToolResult.Error("获取元素树失败：${e.message}", ToolResult.INTERNAL)
+            }
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  2. phone_click / 3. phone_tap_xy
+    // ══════════════════════════════════════════════════════════════
+
+    inner class PhoneClickTool : Tool() {
+        override val name = "phone_click"
+        override val description =
+            "点击手机屏幕上的元素。传 phone_snapshot 输出里行首的 id（如 e12，纯数字 12 也行）——" +
+                "内部换算成元素中心坐标，不需要你算坐标。报「已失效」说明界面刷新过，重新 snapshot 再点。"
+        override val isConcurrencySafe = false
+        override val maxResultSizeChars = 500
+
+        override val inputSchema: JsonObject = ToolSchema.objectSchema(
+            "ref" to ToolSchema.string("phone_snapshot 里的节点 id，如 e12 或 12"),
+            "long_press" to ToolSchema.boolean("长按（默认 false）"),
+            required = listOf("ref"),
+        )
+
+        override fun validateInput(input: JsonObject): String? =
+            if (input.str("ref").isNullOrBlank()) "ref is required" else null
+
+        override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val svc = service().getOrElse {
+                return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
+            }
+            val ref = normalizeRef(input.str("ref")!!)
+            return try {
+                if (input.bool("long_press") == true) {
+                    // AIDL 没有长按专用方法 —— 用 tapRef 拿坐标后长按。
+                    // （服务侧的 tapRef 是单击；长按需要坐标版本，这里明确说明不支持）
+                    ToolResult.failed("长按暂未支持（服务侧只有单击接口）。可以先用 phone_tap_xy 长按坐标。")
+                } else {
+                    val ok = svc.tapRef(ref)
+                    if (ok) ToolResult.ok("已点击 #$ref")
+                    else ToolResult.failed("节点已失效（#$ref）。界面刷新过，请重新 phone_snapshot 再点。")
+                }
+            } catch (e: Throwable) {
+                ToolResult.Error("点击失败：${e.message}", ToolResult.INTERNAL)
+            }
+        }
+    }
+
+    inner class PhoneTapXYTool : Tool() {
+        override val name = "phone_tap_xy"
+        override val description =
+            "按绝对坐标点击屏幕。仅在没有可用 ref 时使用（如 WebView/Canvas 里元素树看不到）。" +
+                "优先用 phone_click 按 ref 点。"
+        override val isConcurrencySafe = false
+        override val maxResultSizeChars = 500
+
+        override val inputSchema: JsonObject = ToolSchema.objectSchema(
+            "x" to ToolSchema.integer("横坐标"),
+            "y" to ToolSchema.integer("纵坐标"),
+            "from_screenshot" to ToolSchema.boolean("坐标来自缩放后的截图时设 true，工具自动换算成真实像素"),
+            "long_press" to ToolSchema.boolean("长按（默认 false）"),
+            required = listOf("x", "y"),
+        )
+
+        override fun validateInput(input: JsonObject): String? =
+            if (input.int("x") == null || input.int("y") == null) "x and y are required" else null
+
+        override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val svc = service().getOrElse {
+                return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
+            }
+            var x = input.int("x")!!
+            var y = input.int("y")!!
+
+            // 坐标来自缩放截图 → 按副屏真实尺寸换算
+            if (input.bool("from_screenshot") == true) {
+                try {
+                    val metrics = svc.displayMetrics()
+                    if (metrics != null && metrics.size >= 2 && metrics[0] > 0) {
+                        // 截图缩放比例由调用方在 prompt 里说明；这里只做边界夹取保护
+                        x = x.coerceIn(0, metrics[0])
+                        y = y.coerceIn(0, metrics[1])
+                    }
+                } catch (_: Throwable) {
+                }
+            }
+
+            return try {
+                val ok = svc.tap(x, y)
+                if (ok) ToolResult.ok("已点击 ($x, $y)") else ToolResult.failed("点击失败 ($x, $y)")
+            } catch (e: Throwable) {
+                ToolResult.Error("点击失败：${e.message}", ToolResult.INTERNAL)
+            }
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  4. phone_type
+    // ══════════════════════════════════════════════════════════════
+
+    inner class PhoneTypeTool : Tool() {
+        override val name = "phone_type"
+        override val description =
+            "在手机上输入文本。只认「当前有焦点的输入框」——先 phone_click 那个输入框再调用，" +
+                "或直接给 ref。返回里会说明是否通过回读校验：" +
+                "报 verify_mismatch 说明内容没真正写进去（字段有长度/格式限制，或被输入法过滤），别当成成功。"
+        override val isConcurrencySafe = false
+        override val maxResultSizeChars = 1_000
+
+        override val inputSchema: JsonObject = ToolSchema.objectSchema(
+            "text" to ToolSchema.string("要输入的文本"),
+            "ref" to ToolSchema.string("可选：先点击这个 ref 聚焦输入框"),
+            "submit" to ToolSchema.boolean("输入后按回车（默认 false）"),
+            required = listOf("text"),
+        )
+
+        override fun validateInput(input: JsonObject): String? =
+            if (input["text"] == null) "text is required" else null
+
+        override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val svc = service().getOrElse {
+                return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
+            }
+            val text = input.str("text") ?: ""
+            val target = input.str("ref")?.let { normalizeRef(it) } ?: ""
+
+            return try {
+                val raw = svc.typeTextAt(text, target)
+                val obj = try {
+                    JSONObject(raw)
+                } catch (_: Throwable) {
+                    null
+                }
+
+                val submitSuffix = if (input.bool("submit") == true) {
+                    try {
+                        svc.key(android.view.KeyEvent.KEYCODE_ENTER)
+                        "\n（已按回车提交）"
+                    } catch (_: Throwable) {
+                        "\n（回车提交失败）"
+                    }
+                } else {
+                    ""
+                }
+
+                if (obj == null) {
+                    return ToolResult.failed("输入返回无法解析：${raw.take(200)}$submitSuffix")
+                }
+
+                val ok = obj.optBoolean("ok", false)
+                val verified = obj.optBoolean("verified", false)
+                val err = obj.optString("error", "")
+                val reason = obj.optString("reason", "")
+                val verifiedText = obj.optString("verified_text", "")
+
+                when {
+                    ok && verified -> ToolResult.ok("已输入并校验通过：\"$verifiedText\"$submitSuffix")
+                    ok && !verified -> ToolResult.failed(
+                        "输入执行了但回读不一致（verify_mismatch）。可能被输入法过滤或字段有限制。" +
+                            "请用 phone_snapshot 确认实际内容。$submitSuffix",
+                    )
+                    else -> ToolResult.failed(
+                        "输入失败：${err.ifEmpty { reason }.ifEmpty { "未知原因" }}" +
+                            (obj.optString("focus_hint", "").takeIf { it.isNotEmpty() }?.let { "\n提示：$it" } ?: "") +
+                            submitSuffix,
+                    )
+                }
+            } catch (e: Throwable) {
+                ToolResult.Error("输入失败：${e.message}", ToolResult.INTERNAL)
+            }
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  5. phone_swipe / 6. phone_key / 7. phone_scroll
+    // ══════════════════════════════════════════════════════════════
+
+    inner class PhoneSwipeTool : Tool() {
+        override val name = "phone_swipe"
+        override val description = "滑动屏幕：up=内容上移即向下翻。也可给两点坐标。"
+        override val isConcurrencySafe = false
+        override val maxResultSizeChars = 500
+
+        override val inputSchema: JsonObject = ToolSchema.objectSchema(
+            "direction" to ToolSchema.string(
+                "滑动方向（up=内容上移即向下翻）",
+                enum = listOf("up", "down", "left", "right"),
+            ),
+            "duration" to ToolSchema.integer("毫秒，默认 300", minimum = 50, maximum = 5000),
+            "ref" to ToolSchema.string("可选：在这个元素范围内滑动"),
+        )
+
+        override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val svc = service().getOrElse {
+                return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
+            }
+            val dir = input.str("direction") ?: "up"
+            val duration = input.int("duration") ?: 300
+            return try {
+                val ok = svc.swipeDir(dir, duration)
+                if (ok) ToolResult.ok("已向 $dir 滑动") else ToolResult.failed("滑动失败")
+            } catch (e: Throwable) {
+                ToolResult.Error("滑动失败：${e.message}", ToolResult.INTERNAL)
+            }
+        }
+    }
+
+    inner class PhoneKeyTool : Tool() {
+        override val name = "phone_key"
+        override val description = "按系统按键：back/home/recent/enter/delete/volume 等。"
+        override val isConcurrencySafe = false
+        override val maxResultSizeChars = 300
+
+        override val inputSchema: JsonObject = ToolSchema.objectSchema(
+            "key" to ToolSchema.string(
+                "back|home|recent|enter|delete|tab|escape|volume_up|volume_down|power，或原始 KEYCODE_XXX",
+            ),
+            required = listOf("key"),
+        )
+
+        override fun validateInput(input: JsonObject): String? =
+            if (input.str("key").isNullOrBlank()) "key is required" else null
+
+        override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val svc = service().getOrElse {
+                return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
+            }
+            val key = input.str("key")!!
+            val code = keyCodeOf(key)
+                ?: return ToolResult.invalidInput("未知按键：$key")
+
+            return try {
+                val ok = svc.key(code)
+                if (ok) ToolResult.ok("已按 $key") else ToolResult.failed("按键失败：$key")
+            } catch (e: Throwable) {
+                ToolResult.Error("按键失败：${e.message}", ToolResult.INTERNAL)
+            }
+        }
+    }
+
+    inner class PhoneScrollTool : Tool() {
+        override val name = "phone_scroll"
+        override val description = "滚动。给 ref 就滚那个元素，否则按 direction（up/down）滑一屏。"
+        override val isConcurrencySafe = false
+        override val maxResultSizeChars = 500
+
+        override val inputSchema: JsonObject = ToolSchema.objectSchema(
+            "ref" to ToolSchema.string("要滚动的元素 id（省略则滑整屏）"),
+            "direction" to ToolSchema.string("方向", enum = listOf("up", "down", "left", "right")),
+        )
+
+        override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val svc = service().getOrElse {
+                return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
+            }
+            val ref = input.str("ref")?.let { normalizeRef(it) } ?: ""
+            val dir = input.str("direction") ?: "down"
+            return try {
+                val ok = svc.scroll(ref, dir)
+                if (ok) ToolResult.ok("已滚动${if (ref.isEmpty()) "整屏" else " #$ref"} $dir")
+                else ToolResult.failed("滚动失败${if (ref.isNotEmpty()) "（#$ref 可能已失效）" else ""}")
+            } catch (e: Throwable) {
+                ToolResult.Error("滚动失败：${e.message}", ToolResult.INTERNAL)
+            }
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  8. phone_screenshot（产出图片附件）
+    // ══════════════════════════════════════════════════════════════
+
+    inner class PhoneScreenshotTool : Tool() {
+        override val name = "phone_screenshot"
+        override val description =
+            "截取当前手机画面。**能用 phone_snapshot 就别用这个** —— " +
+                "文本快照约千把 token 且百毫秒级，截图几千 token 还慢。" +
+                "只在 phone_snapshot 拿不到有用元素时用（WebView/Flutter/Canvas）。"
+        override val isReadOnly = true
+        override val isConcurrencySafe = false
+        override val maxResultSizeChars = 1_000
+
+        override val inputSchema: JsonObject = ToolSchema.objectSchema(
+            "prompt" to ToolSchema.string("可选：这次要在画面里找什么"),
+        )
+
+        override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val svc = service().getOrElse {
+                return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
+            }
+            return try {
+                val bytes = svc.latestFrame()
+                if (bytes == null || bytes.isEmpty()) {
+                    return ToolResult.failed(SCREEN_OFF_HINT)
+                }
+                val target = File(screenshotDir(), "shot-${System.currentTimeMillis()}.jpg")
+                withContext(Dispatchers.IO) { target.writeBytes(bytes) }
+
+                val hint = input.str("prompt")?.takeIf { it.isNotBlank() }
+                    ?.let { "（关注：$it）" } ?: ""
+                ToolResult.okWithImages(
+                    "手机屏幕截图$hint —— ${target.absolutePath}",
+                    listOf(Attachment.ImageFile(target.absolutePath, "image/jpeg")),
+                )
+            } catch (e: Throwable) {
+                ToolResult.Error("截图失败：${e.message}", ToolResult.INTERNAL)
+            }
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  9. phone_wait
+    // ══════════════════════════════════════════════════════════════
+
+    inner class PhoneWaitTool : Tool() {
+        override val name = "phone_wait"
+        override val description =
+            "等界面稳定或等某段文字出现/消失，再继续操作。" +
+                "比盲等固定毫秒可靠：点完不知道该等多久，等短了抓到旧界面，等长了浪费时间。" +
+                "不给参数 = 等界面不再变化（连续两次采样一致即认为稳定）。"
+        override val isReadOnly = true
+        override val isConcurrencySafe = false
+        override val maxResultSizeChars = 500
+
+        // ⚠️ 参数名必须是 max_wait_ms，**不能用 timeout** ——
+        // CCM 上 `timeout` 撞了框架的工具超时覆盖机制，传 timeout:10000
+        // 会被当成「这个工具最多跑 10 秒」直接掐断，工具当场失效。
+        override val inputSchema: JsonObject = ToolSchema.objectSchema(
+            "text" to ToolSchema.string("等这段文字出现在屏幕上"),
+            "text_gone" to ToolSchema.string("等这段文字从屏幕消失（如等 loading 结束）"),
+            "max_wait_ms" to ToolSchema.integer("最长等待毫秒，默认 8000，上限 30000", minimum = 100, maximum = 30_000),
+        )
+
+        override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val svc = service().getOrElse {
+                return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
+            }
+            val maxWait = (input.int("max_wait_ms") ?: 8_000).coerceIn(100, 30_000)
+            val wantText = input.str("text")
+            val wantGone = input.str("text_gone")
+
+            val deadline = System.currentTimeMillis() + maxWait
+            var lastTree = ""
+            var stableCount = 0
+
+            while (System.currentTimeMillis() < deadline) {
+                ctx.checkCancelled()
+                val tree = try {
+                    svc.dumpTree(true, DEFAULT_MAX_NODES, true)
+                } catch (_: Throwable) {
+                    ""
+                }
+
+                if (wantText != null) {
+                    if (tree.contains(wantText)) {
+                        return ToolResult.ok("已等到文字「$wantText」出现")
+                    }
+                } else if (wantGone != null) {
+                    if (!tree.contains(wantGone)) {
+                        return ToolResult.ok("文字「$wantGone」已消失")
+                    }
+                } else {
+                    // 无参数：等界面稳定
+                    if (tree == lastTree && tree.isNotEmpty()) {
+                        stableCount++
+                        if (stableCount >= 1) return ToolResult.ok("界面已稳定")
+                    } else {
+                        stableCount = 0
+                    }
+                    lastTree = tree
+                }
+                withContext(Dispatchers.IO) { Thread.sleep(250) }
+            }
+
+            return ToolResult.failed(
+                when {
+                    wantText != null -> "等待超时（${maxWait}ms）：「$wantText」未出现"
+                    wantGone != null -> "等待超时（${maxWait}ms）：「$wantGone」未消失"
+                    else -> "等待超时（${maxWait}ms）：界面仍在变化"
+                },
+            )
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  10. phone_app
+    // ══════════════════════════════════════════════════════════════
+
+    inner class PhoneAppTool : Tool() {
+        override val name = "phone_app"
+        override val description =
+            "启动应用（在虚拟副屏启动，不占物理屏；若应用已在主屏运行会自动搬运过去，不重启）。" +
+                "action:'list' 列已装应用。"
+        override val isConcurrencySafe = false
+        override val maxResultSizeChars = 10_000
+
+        override val inputSchema: JsonObject = ToolSchema.objectSchema(
+            "package" to ToolSchema.string("包名，如 com.android.settings"),
+            "action" to ToolSchema.string(
+                "launch（默认）| list | current | stop",
+                enum = listOf("launch", "list", "current", "stop"),
+            ),
+            "filter" to ToolSchema.string("action=list 时按关键词过滤"),
+        )
+
+        override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val svc = service().getOrElse {
+                return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
+            }
+            val action = input.str("action") ?: "launch"
+            val pkg = input.str("package") ?: ""
+            val filter = input.str("filter") ?: ""
+
+            if (action == "launch" && pkg.isBlank()) {
+                return ToolResult.invalidInput("action=launch 时 package 必填")
+            }
+            // 包名安全校验（对齐 CCM 的 /^[\w.]+$/）
+            if (pkg.isNotEmpty() && !Regex("^[\\w.]+$").matches(pkg)) {
+                return ToolResult.invalidInput("包名格式非法：$pkg")
+            }
+
+            return try {
+                val raw = svc.app(action, pkg, filter)
+                val obj = try {
+                    JSONObject(raw)
+                } catch (_: Throwable) {
+                    null
+                }
+                if (obj != null && obj.optBoolean("ok", true)) {
+                    val list = obj.optString("list", "")
+                    if (list.isNotEmpty()) ToolResult.ok(list) else ToolResult.ok(raw)
+                } else {
+                    ToolResult.failed(raw)
+                }
+            } catch (e: Throwable) {
+                ToolResult.Error("应用操作失败：${e.message}", ToolResult.INTERNAL)
+            }
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  11. phone_shell
+    // ══════════════════════════════════════════════════════════════
+
+    inner class PhoneShellTool : Tool() {
+        override val name = "phone_shell"
+        override val description =
+            "在 Android 系统里跑任意 shell 命令（uid=2000 shell，可 am/pm/dumpsys/input/screencap/run-as）。" +
+                "与 Bash 的分工：Bash 跑在 Termux/proot 里（读写文件），本工具跑在 Android 里（操作手机）。" +
+                "典型用途：pkill 重启进程、am start 指定屏启动、pm list packages 找包名、" +
+                "run-as 读应用私有文件、settings/dumpsys 诊断。" +
+                "通道卡住、副屏没起来、要找包名/读日志时先想到它。"
+        override val isReadOnly = false
+        override val isDestructive = true
+        override val isConcurrencySafe = false
+        override val maxResultSizeChars = 30_000
+
+        override val inputSchema: JsonObject = ToolSchema.objectSchema(
+            "command" to ToolSchema.string("要执行的 shell 命令"),
+            "timeout" to ToolSchema.integer("超时毫秒（默认 30000，最长 120000）", minimum = 1000, maximum = 120_000),
+            required = listOf("command"),
+        )
+
+        override fun validateInput(input: JsonObject): String? =
+            if (input.str("command").isNullOrBlank()) "command is required" else null
+
+        override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val svc = service().getOrElse {
+                return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
+            }
+            val cmd = input.str("command")!!
+            val timeout = (input.int("timeout") ?: 30_000).coerceIn(1_000, 120_000)
+
+            return try {
+                val out = svc.runShell(cmd, timeout)
+                // 返回格式 "exitCode\n---\nstdout"
+                val parts = out.split("\n---\n", limit = 2)
+                val code = parts.getOrNull(0)?.trim()?.toIntOrNull()
+                val stdout = parts.getOrNull(1) ?: ""
+                if (code == 0) {
+                    ToolResult.ok(stdout.ifEmpty { "(无输出)" })
+                } else {
+                    ToolResult.failed("exit=$code\n$stdout")
+                }
+            } catch (e: Throwable) {
+                ToolResult.Error("命令执行失败：${e.message}", ToolResult.INTERNAL)
+            }
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  12. phone_vd / 13. phone_device
+    // ══════════════════════════════════════════════════════════════
+
+    inner class PhoneVdTool : Tool() {
+        override val name = "phone_vd"
+        override val description =
+            "虚拟副屏进程管理（后台操作手机用的那个屏）。status 看状态（含 display id、帧缓存新鲜度）；" +
+                "start 启动；stop 停止；restart 重启。副屏「帧缓存过期」时 snapshot 会读到旧画面，此时 restart。"
+        override val isConcurrencySafe = false
+        override val maxResultSizeChars = 2_000
+
+        override val inputSchema: JsonObject = ToolSchema.objectSchema(
+            "action" to ToolSchema.string(
+                "status（默认）| start | stop | restart",
+                enum = listOf("status", "start", "stop", "restart"),
+            ),
+        )
+
+        override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val action = input.str("action") ?: "status"
+
+            // stop 不需要服务在线（就是要把服务停掉）
+            if (action == "stop") {
+                return try {
+                    withContext(Dispatchers.IO) {
+                        ShizukuBridge.phoneService(context)?.destroy()
+                    }
+                    ToolResult.ok("已请求停止副屏服务")
+                } catch (e: Throwable) {
+                    ToolResult.Error("停止失败：${e.message}", ToolResult.INTERNAL)
+                }
+            }
+
+            val svc = service().getOrElse {
+                return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
+            }
+            return try {
+                val status = svc.status()
+                if (action == "status") {
+                    ToolResult.ok(status)
+                } else {
+                    // start/restart：服务侧在首次调用时自动建屏，
+                    // 这里通过一次 dumpTree 触发建屏，再读状态
+                    runCatching { svc.dumpTree(false, 1, false) }
+                    ToolResult.ok("已触发副屏$action\n${svc.status()}")
+                }
+            } catch (e: Throwable) {
+                ToolResult.Error("副屏操作失败：${e.message}", ToolResult.INTERNAL)
+            }
+        }
+    }
+
+    inner class PhoneDeviceTool : Tool() {
+        override val name = "phone_device"
+        override val description =
+            "手机操作通道状态总览：当前走哪条通道、目标屏是几、副屏是否可用、Shizuku 授权状态。" +
+                "操作手机遇到问题时先看它。"
+        override val isReadOnly = true
+        override val isConcurrencySafe = false
+        override val maxResultSizeChars = 2_000
+
+        override val inputSchema: JsonObject = ToolSchema.objectSchema(
+            "test" to ToolSchema.boolean("是否实测通道可用性（会真的跑一次操作）"),
+        )
+
+        override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val sb = StringBuilder()
+            val reason = ShizukuBridge.unavailableReason()
+            sb.append("Shizuku: ")
+            if (reason == null) {
+                sb.append("已授权 ✓\n")
+            } else {
+                sb.append("不可用（$reason）\n")
+            }
+
+            val svc = ShizukuBridge.phoneService(context)
+            if (svc == null) {
+                sb.append("phone 服务: 未就绪（${ShizukuBridge.lastPhoneError ?: "未绑定"}）\n")
+            } else {
+                sb.append("phone 服务: 已连接 ✓\n")
+                try {
+                    sb.append("副屏状态: ${svc.status()}\n")
+                    val m = svc.displayMetrics()
+                    if (m != null && m.size >= 3) {
+                        sb.append("副屏尺寸: ${m[0]}x${m[1]} @${m[2]}dpi\n")
+                    }
+                } catch (e: Throwable) {
+                    sb.append("读状态失败: ${e.message}\n")
+                }
+            }
+
+            if (input.bool("test") == true) {
+                sb.append("\n--- 实测 ---\n")
+                sb.append(
+                    try {
+                        val tree = svc?.dumpTree(true, 5, true) ?: "(无服务)"
+                        if (tree.isBlank()) SCREEN_OFF_HINT else "元素树采样成功（${tree.length} 字符）"
+                    } catch (e: Throwable) {
+                        "失败：${e.message}"
+                    },
+                )
+            }
+
+            return ToolResult.ok(sb.toString())
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  辅助：按键名 → KeyEvent 常量
+    // ══════════════════════════════════════════════════════════════
+
+    private fun keyCodeOf(name: String): Int? {
+        val upper = name.uppercase()
+        // ⚠️ 严格白名单：只接受 KEYCODE_ + 大写字母数字下划线
+        // （CCM 踩过命令注入：原校验只查开头，`KEYCODE_A; id > /sdcard/x` 能通过）
+        if (upper.startsWith("KEYCODE_")) {
+            if (!Regex("^KEYCODE_[A-Z0-9_]+$").matches(upper)) return null
+            return try {
+                android.view.KeyEvent::class.java.getField(upper).getInt(null)
+            } catch (_: Throwable) {
+                null
+            }
+        }
+        return when (name.lowercase()) {
+            "back" -> android.view.KeyEvent.KEYCODE_BACK
+            "home" -> android.view.KeyEvent.KEYCODE_HOME
+            "recent", "recents" -> android.view.KeyEvent.KEYCODE_APP_SWITCH
+            "enter" -> android.view.KeyEvent.KEYCODE_ENTER
+            "delete", "backspace" -> android.view.KeyEvent.KEYCODE_DEL
+            "tab" -> android.view.KeyEvent.KEYCODE_TAB
+            "escape" -> android.view.KeyEvent.KEYCODE_ESCAPE
+            "volume_up" -> android.view.KeyEvent.KEYCODE_VOLUME_UP
+            "volume_down" -> android.view.KeyEvent.KEYCODE_VOLUME_DOWN
+            "power" -> android.view.KeyEvent.KEYCODE_POWER
+            "menu" -> android.view.KeyEvent.KEYCODE_MENU
+            "space" -> android.view.KeyEvent.KEYCODE_SPACE
+            else -> null
+        }
+    }
+}
