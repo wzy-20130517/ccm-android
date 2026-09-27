@@ -508,16 +508,48 @@ log "=== 下载 ==="
 # 它输出的是「依赖名」，虚拟包（如 debconf-2.0）仍可能出现 ——
 # 但 apt-get download 单个失败只跳过它自己，不再中止整批，
 # 所以不会像以前那样「一个虚拟包毁掉全部下载」。
-DEB_OK=0; DEB_FAIL=""
-for p in ${'$'}PKGS; do
-  if apt-get download "${'$'}p" >/dev/null 2>&1; then
-    DEB_OK=${'$'}((DEB_OK + 1))
-  else
-    DEB_FAIL="${'$'}DEB_FAIL ${'$'}p"
+# 【批量下载，失败才降级逐个 —— 2026-09-26 实测】
+#
+# 原来是无脑逐个下载（为了「单个失败不影响整批」）。338 个包实测报错：
+#   执行失败: read interrupted by close() on another thread
+#   安装失败，重试…
+#
+# 这个错误**不是网络问题**，是 proot 的已知缺陷：多线程下
+# read() 被另一线程的 close() 打断。**频繁创建子进程会触发它** ——
+# 338 次 apt-get 就是 338 次进程创建，撞上的概率极高。
+#
+# 所以改成两段式：
+#   ① 先一次传 50 个包（减少进程创建次数）
+#   ② 只有①失败的批次才拆开逐个重试（此时数量少，触发概率低）
+# 既保留「单个失败不毁整批」的可诊断性，又避免高频进程创建。
+download_batch() {
+  # ${'$'}@ = 包名列表。返回 0 表示全部成功。
+  apt-get download "${'$'}@" >/dev/null 2>&1
+}
+
+DEB_FAIL=""
+BATCH=50
+set -- ${'$'}PKGS
+while [ ${'$'}# -gt 0 ]; do
+  chunk=""
+  n=0
+  while [ ${'$'}# -gt 0 ] && [ "${'$'}n" -lt "${'$'}BATCH" ]; do
+    chunk="${'$'}chunk ${'$'}1"
+    shift
+    n=${'$'}((n + 1))
+  done
+  # ① 整批下
+  # shellcheck disable=SC2086
+  if ! download_batch ${'$'}chunk; then
+    # ② 整批失败 → 拆开逐个，找出到底哪个不行
+    for p in ${'$'}chunk; do
+      download_batch "${'$'}p" || DEB_FAIL="${'$'}DEB_FAIL ${'$'}p"
+    done
   fi
 done
+
 DEBS=${'$'}(ls *.deb 2>/dev/null | wc -l)
-log "  已下载 ${'$'}DEBS 个包（成功 ${'$'}DEB_OK）"
+log "  已下载 ${'$'}DEBS 个包"
 [ -n "${'$'}DEB_FAIL" ] && log "  ⚠️ 以下包下载失败（已跳过）：${'$'}DEB_FAIL"
 [ "${'$'}DEBS" -eq 0 ] && { log "❌ 什么都没下到"; exit 1; }
 
