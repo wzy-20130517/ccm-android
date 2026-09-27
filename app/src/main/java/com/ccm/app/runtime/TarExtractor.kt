@@ -255,14 +255,35 @@ object TarExtractor {
     /**
      * 按魔数打开合适的解压流。
      *
-     * gzip 和 xz 都支持 —— see extract() 里的说明。
-     * zstd 不在 Android 的常见发行物里，暂不支持（用不到）。
+     * 支持：gzip / xz / **未压缩的裸 tar**。
+     *
+     * ═══════════════════════════════════════════════════════════════
+     * 【2026-09-27 新增裸 tar 分支 —— 不是可选优化，是必需品】
+     *
+     * AAPT 对 `.gz` 结尾的 asset 会**自动 gunzip 并去掉后缀**（实测 build-158：
+     * 源码 29MB 的 `ubuntu-base.tar.gz` → APK 内 106MB 的 `ubuntu-base.tar`）。
+     * 于是「从 APK 内置包解压」这条路拿到的**永远是一份裸 tar**。
+     *
+     * 原来没有裸 tar 分支，会掉进最后的 `else` 被当成 gzip 打开 →
+     * `GZIPInputStream` 构造时读 magic 就抛
+     * 「Not in GZIP format」→ 整个安装失败。
+     *
+     * 识别方式：tar 的 ustar magic 在 offset 257（`ustar\0` 或 `ustar  `）。
+     * 我们只需要区分「裸 tar」和「压缩流」，读 512 字节头就够 ——
+     * 而且读满 512 也顺便确认了这不是个空文件。
+     * ═══════════════════════════════════════════════════════════════
      */
     private fun openDecompressed(archive: File): java.io.InputStream {
-        val head = ByteArray(6)
-        FileInputStream(archive).use { it.read(head) }
+        val head = ByteArray(512)
+        // 用 readFully 而不是 read() —— 后者不保证读满，
+        // 而我们要读 offset 257 的 ustar magic，读不满就会误判成「不是裸 tar」
+        // 然后掉进 gzip 分支报 "Not in GZIP format"。
+        FileInputStream(archive).use { readFully(it, head) }
+
+        fun at(i: Int): Int = if (i < head.size) head[i].toInt() and 0xFF else -1
+
         return when {
-            head[0] == 0x1F.toByte() && head[1] == 0x8B.toByte() ->
+            at(0) == 0x1F && at(1) == 0x8B ->
                 GZIPInputStream(FileInputStream(archive), 64 * 1024)
             // ⚠️ XZInputStream 的第二个参数是**内存限制（单位 KiB）**，不是缓冲区大小！
             //
@@ -275,10 +296,14 @@ object TarExtractor {
             //
             // 改传 -1 = 不限制。我们的场景是解压自己下载的官方 tarball，
             // 不存在恶意构造的 xz bomb 风险（真要防也该在下载校验那层做）。
-            head[0] == 0xFD.toByte() && head[1] == 0x37.toByte() &&
-            head[2] == 0x7A.toByte() && head[3] == 0x58.toByte() &&
-            head[4] == 0x5A.toByte() && head[5] == 0x00.toByte() ->
+            at(0) == 0xFD && at(1) == 0x37 && at(2) == 0x7A &&
+            at(3) == 0x58 && at(4) == 0x5A && at(5) == 0x00 ->
                 XZInputStream(FileInputStream(archive), -1)
+            // 裸 tar：ustar magic（offset 257）。老 GNU tar 写 "ustar  \0"，
+            // POSIX 写 "ustar\0" —— 两种都以前 5 字节 "ustar" 开头。
+            at(257) == 'u'.code && at(258) == 's'.code && at(259) == 't'.code &&
+            at(260) == 'a'.code && at(261) == 'r'.code ->
+                FileInputStream(archive).buffered(64 * 1024)
             else -> GZIPInputStream(FileInputStream(archive), 64 * 1024)
         }
     }

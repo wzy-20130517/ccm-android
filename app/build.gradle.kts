@@ -71,15 +71,31 @@ android {
     sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
 
     androidResources {
-        // 【2026-09-27 · 阶段5 P2】内置 rootfs 包**不能被 AAPT 再压一遍**。
+        // 【2026-09-27 · 阶段5 P2 修正】后缀从 `tar.gz` 改成 `bin`。
         //
-        // 原因：RootfsManager 用 `assets.openFd()` 读它的长度来显示复制进度，
-        // 而 openFd 对「已压缩的 asset」会抛 FileNotFoundException。
-        // 而且这个包本身就是 gzip（再压几乎无收益），AAPT 压缩纯属白费打包时间。
+        // ═══════════════════════════════════════════════════════════════
+        // ⚠️ 起因：AAPT 对 **`.gz` 结尾的 asset 会自动 gunzip 并去掉后缀**，
+        //    这个行为**不受 noCompress 影响**（它压根不是「压缩」那一步做的）。
         //
-        // 注意这里是 `tar.gz`（后缀匹配），不是文件名 —— 将来换 rootfs 版本
-        // 只要还是 .tar.gz 就自动生效，不用改这行。
-        noCompress += "tar.gz"
+        //    实测 build-158：
+        //      源码 `app/src/main/assets/ubuntu-base.tar.gz`  29,865,086 字节（gzip）
+        //      APK 内 `assets/ubuntu-base.tar`               106,649,600 字节（裸 tar）
+        //      —— 106,649,600 正是 gzip 头里记录的原始大小，铁证。
+        //
+        //    后果：RootfsManager 找 `ubuntu-base.tar.gz` 必然
+        //    FileNotFoundException → hasAssetArchive() 恒为 false →
+        //    **静默退回网络下载**。内置包完全没生效，APK 白涨 30MB，
+        //    而且失败是静默的（用户只看到「在下载」），极难发现。
+        //
+        //    用 `.bin` 后缀 AAPT 就原样打包，不会碰它。
+        // ═══════════════════════════════════════════════════════════════
+        //
+        // 这里配 `bin` 让它 **STORED** 存储，两个好处：
+        //   · 复制时不用边解压边写 —— 29MB 直接拷，2~5 秒
+        //   · `AssetManager.openFd()` 能拿到长度（进度条要用）
+        //
+        // ⚠️ 改这里必须同步 RootfsManager.ASSET_ARCHIVE 的文件名，两处是一体的。
+        noCompress += "bin"
     }
 
     packaging {

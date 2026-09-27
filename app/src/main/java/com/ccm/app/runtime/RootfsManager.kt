@@ -36,7 +36,7 @@ class RootfsManager(private val context: Context) {
         private const val ARCHIVE_NAME = "rootfs.tar.gz"
 
         /**
-         * APK 内置的 rootfs 包名（`app/src/main/assets/` 下）。
+         * APK 内置的 rootfs 包名**候选**（按优先级）。
          *
          * 【2026-09-27 新增：内置优先】
          * 原来首次安装必须联网下载 28MB —— 移动网络下 1~3 分钟，
@@ -50,14 +50,39 @@ class RootfsManager(private val context: Context) {
          *
          * 代价是 APK 从 17MB 涨到约 45MB。用户已确认接受。
          *
+         * ═══════════════════════════════════════════════════════════════
+         * ⚠️【2026-09-27 二次修正：`.gz` 后缀是个陷阱】
+         *
+         * 第一版把文件命名成 `ubuntu-base.tar.gz` 并配了 `noCompress += "tar.gz"`，
+         * 以为就没事了。**实测 build-158 证明完全没生效**：
+         *
+         *   · 源码  `assets/ubuntu-base.tar.gz`   29,865,086 字节（gzip）
+         *   · APK 内 `assets/ubuntu-base.tar`    106,649,600 字节（**裸 tar**）
+         *
+         * 106,649,600 正是 gzip 头里记录的原始大小 —— **AAPT 自动 gunzip 了它
+         * 并去掉了 `.gz` 后缀**。这个行为发生在「压缩」之外，所以 noCompress
+         * 拦不住（noCompress 只管「压不压」，管不了「解不解」）。
+         *
+         * 后果：代码找 `ubuntu-base.tar.gz` 必然 FileNotFoundException →
+         * [hasAssetArchive] 恒为 false → **静默退回网络下载**。
+         * 内置包从未生效过，APK 白涨 30MB，而且失败是静默的。
+         *
+         * 现在改用 `.bin` 后缀（AAPT 不认，原样打包），并在 build.gradle.kts
+         * 里配 `noCompress += "bin"` 让它 STORED 存储（复制更快 + openFd 能拿长度）。
+         *
+         * 候选列表的第二项是**兼容项**：已经构建出去的 build-158 类 APK 里
+         * 就是 `ubuntu-base.tar`（AAPT 解压后的产物，本身是合法裸 tar，
+         * [TarExtractor] 按 magic bytes 识别，照样能解）。
+         * 留着它能让老包也走本地复制，不用重新下载。
+         * ═══════════════════════════════════════════════════════════════
+         *
          * ⚠️ **必须有网络回退**（见 [download]）—— 万一某个构建变体没打进
          * assets，或者 assets 里的包损坏了，不能让用户彻底装不上。
-         *
-         * ⚠️ 这个文件必须在 `build.gradle` 里配 `noCompress`（已配），
-         * 否则 AAPT 会把它再压一遍：既拖慢复制（要边解压边写），
-         * 又让 `AssetManager.openFd()` 失败（拿不到长度）。
          */
-        private const val ASSET_ARCHIVE = "ubuntu-base.tar.gz"
+        private val ASSET_ARCHIVES = listOf(
+            "ubuntu-base.tar.gz.bin",
+            "ubuntu-base.tar",
+        )
 
         /**
          * rootfs 版本。升级这个值会触发重新安装。
@@ -176,21 +201,50 @@ class RootfsManager(private val context: Context) {
      * 而失败后 `hasArchive()` 为 false，下次安装会重新复制/下载。
      */
     fun hasAssetArchive(): Boolean = try {
-        val fd = context.assets.openFd(ASSET_ARCHIVE)
-        val ok = fd.length > 10_000_000
-        fd.close()
-        ok
+        val name = resolveAssetName()
+        name != null && assetSize(name) > 10_000_000
     } catch (t: Throwable) {
-        // openFd 失败有两种常见原因，都属正常：
-        //   1. 这个构建变体没打进 assets（本地调试）
-        //   2. assets 被压缩了（忘了配 noCompress）→ 退回 open() 也能读，只是慢
-        // 用 open() 再确认一次，避免第 2 种情况被误判成「没有内置包」。
-        try {
-            context.assets.open(ASSET_ARCHIVE).use { it.read() }  // 只读 1 字节探存在性
-            true
-        } catch (_: Throwable) {
-            false
+        false
+    }
+
+    /**
+     * 找出 APK 里**实际存在**的内置包名（按 [ASSET_ARCHIVES] 顺序探测）。
+     *
+     * 【为什么要「探测」而不是直接用常量】
+     * AAPT 对 `.gz` 结尾的 asset 会自动解压并改名（见 [ASSET_ARCHIVES] 的说明），
+     * 也就是说**源码里的文件名和 APK 里的文件名可以不一样**。
+     * 硬编码一个名字就是在赌 AAPT 不改它 —— build-158 赌输了，
+     * 而且输得很安静（静默退回网络下载，没有任何报错）。
+     *
+     * 探测成本：每个候选读 1 字节，2 个候选可以忽略不计，
+     * 且只在「准备安装」时调几次，不在热路径上。
+     *
+     * @return 可用的 asset 名；一个都没有时返回 null
+     */
+    private fun resolveAssetName(): String? {
+        for (name in ASSET_ARCHIVES) {
+            try {
+                context.assets.open(name).use { it.read() }
+                return name
+            } catch (_: Throwable) {
+                // 这个候选不在这个构建里 —— 试下一个
+            }
         }
+        return null
+    }
+
+    /**
+     * 拿内置包的大小（字节）。
+     *
+     * `openFd()` 要求 asset 是 STORED（未压缩）—— 由 build.gradle.kts 的
+     * `noCompress += "bin"` 保证。拿不到时返回兜底值：
+     * 该值只用于**进度显示**和「是不是空壳」判断，不影响正确性
+     * （复制阶段的字节数校验 + 解压阶段的 TarExtractor 才是正确性保障）。
+     */
+    private fun assetSize(name: String): Long = try {
+        context.assets.openFd(name).use { it.length }
+    } catch (_: Throwable) {
+        29_865_086L   // ubuntu-base-24.04.3-base-arm64.tar.gz 实测大小
     }
 
     /**
@@ -209,16 +263,16 @@ class RootfsManager(private val context: Context) {
      * @return 成功返回 true；失败返回 false（调用方应退回网络下载）
      */
     private fun copyFromAssets(onProgress: (String, Long, Long) -> Unit): Boolean {
+        val assetName = resolveAssetName()
+        if (assetName == null) {
+            Log.w(TAG, "没有可用的内置包（候选：$ASSET_ARCHIVES）")
+            return false
+        }
         val tmp = File(context.filesDir, "$ARCHIVE_NAME.part")
         return try {
-            // 拿总大小：openFd 能拿到（需 noCompress），拿不到就用已知值兜底
-            val total = try {
-                context.assets.openFd(ASSET_ARCHIVE).use { it.length }
-            } catch (_: Throwable) {
-                29_865_086L   // ubuntu-base-24.04.3-base-arm64.tar.gz 实测大小
-            }
+            val total = assetSize(assetName)
 
-            context.assets.open(ASSET_ARCHIVE).use { input ->
+            context.assets.open(assetName).use { input ->
                 FileOutputStream(tmp, false).use { out ->
                     val buf = ByteArray(256 * 1024)
                     var done = 0L
