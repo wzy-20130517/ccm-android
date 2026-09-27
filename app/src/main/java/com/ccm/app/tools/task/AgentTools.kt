@@ -51,6 +51,16 @@ import kotlinx.serialization.json.JsonObject
  */
 class AgentTools(
     private val getRegistry: () -> com.ccm.app.core.tool.ToolRegistry?,
+    /**
+     * 子 Agent 登记表 —— 支撑 `SendMessage(wake:true)` 的唤醒续跑。
+     *
+     * spawn 成功后把「名字 + 原始 prompt + 类型」记进去，之后就能按名唤醒。
+     * `null` = 未接入（wake 会明确报「未接入」，而不是假装成功）。
+     *
+     * ⚠️ **只在给了 agent_name 时登记** —— 没名字的没法被唤醒
+     * （对齐 Node 版：`keptAgents.set(name, ...)` 里的 name 就是 agent_name）。
+     */
+    private val subAgentRegistry: SubAgentRegistry? = null,
 ) {
 
     /**
@@ -145,6 +155,19 @@ class AgentTools(
 
             return try {
                 val r = spawn(spec)
+
+                // 登记到可唤醒名单（仅当给了 agent_name —— 没名字的唤不了）
+                // 放在 rejected 检查**之前**：并发超限时也登记，
+                // 这样等名额释放后可以直接 wake 它，不用重新构造 spec
+                spec.agentName?.takeIf { it.isNotBlank() }?.let { nm ->
+                    subAgentRegistry?.register(
+                        name = nm,
+                        originalPrompt = spec.prompt,
+                        agentType = spec.subagentType,
+                        description = spec.description,
+                        taskId = r.taskId,
+                    )
+                }
 
                 // ⚠️ 并发上限拒绝：**不是失败**，要给「重试」的指引
                 if (r.rejected != null) {

@@ -176,9 +176,14 @@ class ToolsBootstrap(
         val teamStore = TeamStore(File(storage.rootDir, "teams"))
         val goalStore = GoalStore(File(storage.rootDir, "goals"))
         val taskTools = TaskTools(taskStore)
-        val teamTools = TeamTools(teamStore, taskStore)
+        // 子 Agent 登记表 —— AgentTools 登记、TeamTools 的 wake 唤醒，**两者必须共享同一个实例**
+        val subAgentRegistry = SubAgentRegistry()
+        val teamTools = TeamTools(teamStore, taskStore, registry = subAgentRegistry)
         val goalTools = GoalTools(goalStore, getSessionId)
-        val agentTools = AgentTools(getRegistry = { registry })
+        val agentTools = AgentTools(
+            getRegistry = { registry },
+            subAgentRegistry = subAgentRegistry,
+        )
         // AgentWorkflow：Explore → Plan → Implement → Review 四阶段串行
         val workflowTools = AgentWorkflowTools()
         // Skill：项目 skills/（按运行时 cwd）优先，用户级兜底
