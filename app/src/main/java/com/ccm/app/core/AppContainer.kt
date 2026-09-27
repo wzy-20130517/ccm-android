@@ -130,7 +130,7 @@ class AppContainer private constructor(
         registry: ToolRegistry,
         toolRunner: ToolRunner,
         imageScaler: ImageScaler? = null,
-    ): AppContainer {
+    ): AppContainer? {
         shutdown()
         return build(
             storage = storage,
@@ -184,7 +184,7 @@ class AppContainer private constructor(
                 maxOutputTokens = provider.maxOutputTokens,
                 temperature = provider.temperature ?: config.temperature,
                 // key 池冷却状态落盘（重启后不从头撞已耗尽的 key）
-                keyPoolStateFile = java.io.File(storage.rootDir, "key-pool-state.json"),
+                keyPoolStateFile = java.io.File(storage.root, "key-pool-state.json"),
             )
 
             // ── 会话与压缩 ──
