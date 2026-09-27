@@ -208,13 +208,12 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
      * 首页顶部同时会显示 [initError] 提示条（见下方 notice）。
      */
     fun sendAndOpen(text: String) {
-        val s = session
-        if (s == null) {
-            // 不是「没反应」，而是「你得先配 API」—— 直接送用户去设置
-            showSettings = true
-            return
-        }
-        s.send(text)
+        session?.send(text)
+        // ★ 不管有没有 session 都切到对话页 —— 用户按了发送/点了胶囊，
+        //   就该看到「消息已发出」的界面。没配 Provider 时对话页会显示
+        //   提示条（由 initError 驱动），而不是把人踢去设置页。
+        //   踩过的坑：曾经 session==null 就 showSettings=true，
+        //   用户点胶囊期待发消息，结果跳设置页 —— 像是「点了乱跳」。
         navigate(CcmRoute.CHAT)
     }
 
@@ -244,6 +243,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                 if (initError != null) {
                     CcmNoticeBar(
                         message = initError,
+                        // 点提示条才进设置；不点就不打扰（不再强制跳转）
                         onClick = { showSettings = true },
                         modifier = Modifier
                             .align(Alignment.TopCenter)

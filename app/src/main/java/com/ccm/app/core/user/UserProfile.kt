@@ -78,21 +78,41 @@ data class UserProfile(
 class UserProfileStore(private val storage: AppStorage) {
     private val file: File get() = storage.resolve("user-profile.json")
 
-    /** 读取资料；文件不存在或损坏时返回 EMPTY（绝不抛） */
+    /**
+     * 内存缓存。
+     *
+     * ## 为什么必须有（2026-09-27 踩坑）
+     * UI 里是这样调的：
+     * ```kotlin
+     * greeting = greetingFor(AppGraph.userProfileStore?.load()?.callName)
+     * ```
+     * 而 Compose 的重组频率极高（每帧、每次状态变化）。如果 [load] 每次都
+     * `exists()` + `readText()` + `JSONObject` 解析，主线程会被磁盘 IO 塞满
+     * → **整个界面失去响应（所有按钮点不动）**。
+     *
+     * 缓存后 `load()` 是纯内存读，重组开销可忽略。
+     * [save] / [setField] / [clear] 会同步更新缓存，所以改名能立即生效。
+     */
+    @Volatile
+    private var cached: UserProfile? = null
+
+    /** 读取资料（走缓存）；文件不存在或损坏时返回 EMPTY（绝不抛） */
     fun load(): UserProfile {
-        return try {
-            if (!file.exists()) return UserProfile.EMPTY
-            val text = file.readText()
-            val json = JSONObject(text)
-            UserProfile.fromJson(json)
+        cached?.let { return it }
+        val loaded = try {
+            if (!file.exists()) UserProfile.EMPTY
+            else UserProfile.fromJson(JSONObject(file.readText()))
         } catch (e: Exception) {
             UserProfile.EMPTY
         }
+        cached = loaded
+        return loaded
     }
 
-    /** 整体覆盖保存 */
+    /** 整体覆盖保存（同时刷新缓存） */
     fun save(profile: UserProfile) {
-        file.writeText(profile.toJson().toString(2))
+        cached = profile
+        try { file.writeText(profile.toJson().toString(2)) } catch (e: Exception) { /* 忽略写失败 */ }
     }
 
     /** 更新单个字段；value 为空字符串表示清除该字段 */

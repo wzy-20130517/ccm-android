@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ccm.app.core.provider.ProviderStore
 import com.ccm.app.ui.theme.CCMText
 import com.ccm.app.ui.theme.CCMTheme
 import com.ccm.app.ui.theme.CcmMono
@@ -86,7 +87,25 @@ import com.ccm.app.ui.theme.CcmMono
 @Composable
 fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
     val colors = CCMTheme.colors
-    var selected by remember { mutableStateOf(0) }
+
+    // ★ 接真实数据（2026-09-27）：原来这里是 selectd=0 + 硬编码三个假 Provider，
+    //   所有按钮 onClick 都是空的 —— 用户点了「什么都不发生」，看起来像界面坏了。
+    val store = remember { com.ccm.app.AppGraph.storage?.let { ProviderStore(it) } }
+    var items by remember { mutableStateOf(store?.list() ?: emptyList()) }
+    var selectedId by remember { mutableStateOf(items.firstOrNull()?.id ?: "") }
+    var showAddDialog by remember { mutableStateOf(false) }
+    var refreshTick by remember { mutableStateOf(0) }
+
+    // 重新从磁盘读（写操作后调）
+    fun refresh() {
+        items = store?.list() ?: emptyList()
+        if (items.isNotEmpty() && items.none { it.id == selectedId }) {
+            selectedId = items.first().id
+        }
+        refreshTick++
+    }
+
+    val selected = items.firstOrNull { it.id == selectedId }
 
     Column(modifier = modifier) {
         Text(
@@ -120,7 +139,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(5.52.dp))
-                        .clickable { }
+                        .clickable { showAddDialog = true }   // ★ 原来空的
                         .padding(horizontal = 7.36.dp, vertical = 3.68.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(3.68.dp),
@@ -141,30 +160,27 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                     .horizontalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(1.84.dp),   // space-y-0.5
             ) {
-                ProviderListItem(
-                    name = "WorkBuddy",
-                    modelCount = 3,
-                    webSearchOk = false,
-                    enabled = true,
-                    selected = selected == 0,
-                    onClick = { selected = 0 },
-                )
-                ProviderListItem(
-                    name = "sharellm",
-                    modelCount = 12,
-                    webSearchOk = true,
-                    enabled = true,
-                    selected = selected == 1,
-                    onClick = { selected = 1 },
-                )
-                ProviderListItem(
-                    name = "英伟达",
-                    modelCount = 47,
-                    webSearchOk = false,
-                    enabled = false,
-                    selected = selected == 2,
-                    onClick = { selected = 2 },
-                )
+                // ★ 真实数据（2026-09-27）：原来这里是硬编码的
+                //   WorkBuddy / sharellm / 英伟达 三个假项，点了只改 selected。
+                if (items.isEmpty()) {
+                    Text(
+                        text = "还没有配置供应商。点上方「添加」建一个。",
+                        style = CCMText.body12,
+                        color = colors.textSecondary,
+                        modifier = Modifier.padding(vertical = 8.dp),
+                    )
+                } else {
+                    items.forEach { item ->
+                        ProviderListItem(
+                            name = item.name,
+                            modelCount = if (item.keyCount > 1) item.keyCount else 1,
+                            webSearchOk = false,
+                            enabled = item.enabled,
+                            selected = item.id == selectedId,
+                            onClick = { selectedId = item.id },
+                        )
+                    }
+                }
             }
         }
 
@@ -180,8 +196,16 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                 title = "连接信息",
                 hint = "这个供应商怎么连、用什么身份",
             ) {
-                var apiKey by remember { mutableStateOf("sk-xxxxxxxxxxxxxxxx") }
-                var baseUrl by remember { mutableStateOf("http://127.0.0.1:3011/v1") }
+                // ★ 接真实数据：key/url 从选中的 Provider 读，
+                //   remember(selectedId) 保证切换 Provider 时重新初始化
+                var apiKey by remember(selectedId, refreshTick) {
+                    mutableStateOf(
+                        selected?.let { store?.get(it.id)?.let { p -> p.apiKey ?: p.apiKeys?.firstOrNull() ?: "" } } ?: ""
+                    )
+                }
+                var baseUrl by remember(selectedId, refreshTick) {
+                    mutableStateOf(selected?.let { store?.get(it.id)?.url } ?: "")
+                }
                 var showKey by remember { mutableStateOf(false) }
 
                 ProviderField(label = "API 密钥") {
@@ -191,12 +215,16 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                     ) {
                         SettingsTextField(
                             value = apiKey,
-                            onValueChange = { apiKey = it },
+                            onValueChange = {
+                                apiKey = it
+                                // 立刻落盘（对齐 CLI 的 /key 命令「立即生效」）
+                                selected?.let { sel -> store?.setKey(sel.id, it) }
+                            },
                             placeholder = "sk-...",
                             modifier = Modifier.weight(1f),
                         )
                         Text(
-                            text = "池 · 4 个",
+                            text = if ((selected?.keyCount ?: 0) > 1) "池 · ${selected?.keyCount} 个" else "",
                             style = CCMText.body11.copy(fontSize = 10.12.sp),
                             color = colors.textSecondary,
                         )
@@ -218,7 +246,10 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                 ProviderField(label = "API 地址") {
                     SettingsTextField(
                         value = baseUrl,
-                        onValueChange = { baseUrl = it },
+                        onValueChange = {
+                            baseUrl = it
+                            selected?.let { sel -> store?.setUrl(sel.id, it) }
+                        },
                     )
                 }
             }
@@ -229,7 +260,9 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                 hint = "这个供应商的默认模型怎么工作",
             ) {
                 var effort by remember { mutableStateOf("继承全局") }
-                var format by remember { mutableStateOf("openai") }
+                var format by remember(selectedId, refreshTick) {
+                    mutableStateOf(selected?.protocol ?: "openai")
+                }
 
                 ProviderField(label = "思考强度") {
                     Row(
@@ -269,12 +302,18 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         FormatChip(
                             label = "OpenAI 兼容",
                             selected = format == "openai",
-                            onClick = { format = "openai" },
+                            onClick = {
+                                format = "openai"
+                                selected?.let { sel -> store?.setProtocol(sel.id, "openai") }
+                            },
                         )
                         FormatChip(
                             label = "Anthropic",
                             selected = format == "anthropic",
-                            onClick = { format = "anthropic" },
+                            onClick = {
+                                format = "anthropic"
+                                selected?.let { sel -> store?.setProtocol(sel.id, "anthropic") }
+                            },
                         )
                     }
                 }
@@ -374,6 +413,136 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         checked = false,
                     )
                 }
+            }
+        }
+    }
+
+    // ══ 添加 Provider 对话框（2026-09-27 加）══════════════════════════
+    //
+    // 原来「添加」按钮 onClick 是空的 —— 用户配不了 Provider，
+    // 也就没法开始对话。这个对话框补上「入口」这一环。
+    if (showAddDialog) {
+        AddProviderDialog(
+            onDismiss = { showAddDialog = false },
+            onConfirm = { id, name, url, model, key, protocol ->
+                val created = store?.addProvider(
+                    id = id, name = name, url = url,
+                    model = model, key = key, protocol = protocol,
+                )
+                if (created != null) {
+                    selectedId = created
+                    refresh()
+                }
+                showAddDialog = false
+            },
+        )
+    }
+}
+
+/**
+ * 「添加供应商」对话框（2026-09-27 加）。
+ *
+ * ## 为什么需要
+ * `ProviderSettingsScreen` 的「添加」按钮原来 onClick 是空的 ——
+ * 用户没有任何途径配置 Provider，于是 `AppGraph.session` 永远是 null，
+ * 表现就是「所有按钮都点不动」（点胶囊、点发送都没反应）。
+ *
+ * ## 字段（对齐 CLI 的 `/config provider add` 一行式）
+ * ```
+ * /config provider add [ID] name=<显示名> url=<地址> model=<模型> key=<sk-...>
+ * ```
+ *
+ * @param onConfirm 确认回调：(id, name, url, model, key, protocol)
+ */
+@Composable
+private fun AddProviderDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (String, String, String, String, String, String) -> Unit,
+) {
+    val colors = CCMTheme.colors
+    var id by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+    var url by remember { mutableStateOf("") }
+    var model by remember { mutableStateOf("") }
+    var key by remember { mutableStateOf("") }
+    var protocol by remember { mutableStateOf("openai") }
+
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(colors.bgMain)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(9.2.dp),
+        ) {
+            Text(
+                text = "添加供应商",
+                style = CCMText.body16.copy(fontWeight = FontWeight.SemiBold),
+                color = colors.textMain,
+            )
+
+            ProviderField(label = "编号（可留空，自动分配）") {
+                SettingsTextField(value = id, onValueChange = { id = it }, placeholder = "1")
+            }
+            ProviderField(label = "显示名") {
+                SettingsTextField(value = name, onValueChange = { name = it }, placeholder = "WorkBuddy")
+            }
+            ProviderField(label = "API 地址") {
+                SettingsTextField(
+                    value = url, onValueChange = { url = it },
+                    placeholder = "https://api.example.com/v1",
+                )
+            }
+            ProviderField(label = "模型") {
+                SettingsTextField(
+                    value = model, onValueChange = { model = it },
+                    placeholder = "deepseek-v4.1-flash",
+                )
+            }
+            ProviderField(label = "API 密钥") {
+                SettingsTextField(value = key, onValueChange = { key = it }, placeholder = "sk-...")
+            }
+            ProviderField(label = "协议") {
+                Row(horizontalArrangement = Arrangement.spacedBy(7.36.dp)) {
+                    FormatChip(
+                        label = "OpenAI 兼容",
+                        selected = protocol == "openai",
+                        onClick = { protocol = "openai" },
+                    )
+                    FormatChip(
+                        label = "Anthropic",
+                        selected = protocol == "anthropic",
+                        onClick = { protocol = "anthropic" },
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(9.2.dp, Alignment.End),
+            ) {
+                Text(
+                    text = "取消",
+                    style = CCMText.body13,
+                    color = colors.textSecondary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable(onClick = onDismiss)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+                Text(
+                    text = "添加",
+                    style = CCMText.body13.copy(fontWeight = FontWeight.Medium),
+                    color = if (url.isNotBlank() && key.isNotBlank()) Color(0xFFD97757)
+                            else colors.textSecondary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable(enabled = url.isNotBlank() && key.isNotBlank()) {
+                            onConfirm(id, name, url, model, key, protocol)
+                        }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                )
             }
         }
     }
