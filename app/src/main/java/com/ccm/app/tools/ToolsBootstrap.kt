@@ -352,6 +352,14 @@ class ToolsBootstrap(
             "Agent", "AgentStatus", "AgentOutput", "AgentStop", "AgentMemory", "ExtendTurns",
             // 杂项
             "TodoWrite", "Sleep", "Memory", "UserInputHistory", "AskUserQuestion",
+            // 视觉
+            "ViewImage", "ViewVideo", "Screencap",
+            // 开发辅助
+            "Test", "Diagnostics", "RepoMap", "Symbols", "SafeRename", "CommandExec",
+            // 定时任务
+            "CronCreate", "CronList", "CronDelete",
+            // QQ
+            "QQPush", "QQRecall",
         )
     }
 }
