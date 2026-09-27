@@ -488,6 +488,11 @@ resolve_deps() {
     | sort -u
 }
 
+log "=== 解析依赖 ==="
+PKGS=${'$'}(resolve_deps "${'$'}@" | tr '\n' ' ')
+PKG_N=${'$'}(echo ${'$'}PKGS | wc -w)
+log "  需要 ${'$'}PKG_N 个包"
+
 log "=== 下载 ==="
 # 用 apt-get download 逐个下（不用 --print-uris 给的 URL 直接 curl，
 # 因为 apt-get download 会自动走配置好的镜像、处理重定向和校验，
