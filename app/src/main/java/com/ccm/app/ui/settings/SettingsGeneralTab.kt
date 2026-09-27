@@ -79,8 +79,23 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
     var preferences by remember { mutableStateOf(initialProfile.personalPreferences) }
     var sendKey by remember { mutableStateOf("仅按钮（回车只换行）") }
     var newlineKey by remember { mutableStateOf("Enter") }
-    var theme by remember { mutableStateOf(ThemeMode.AUTO) }
-    var chatFont by remember { mutableStateOf(ChatFont.DEFAULT) }
+    // ★ 2026-09-27：原来是本地 remember —— 选完重启就丢，且主题没有
+    //   消费端。现在读写 UiPrefs（SharedPreferences + MutableState）：
+    //   这里改 → CcmApp 的 darkTheme 自动重组；重启后从磁盘恢复。
+    var theme by remember {
+        mutableStateOf(
+            ThemeMode.entries.firstOrNull {
+                it.key == com.ccm.app.ui.theme.UiPrefs.themeMode.value
+            } ?: ThemeMode.AUTO
+        )
+    }
+    var chatFont by remember {
+        mutableStateOf(
+            ChatFont.entries.firstOrNull {
+                it.key == com.ccm.app.ui.theme.UiPrefs.chatFont.value
+            } ?: ChatFont.DEFAULT
+        )
+    }
     var thinking by remember { mutableStateOf(false) }
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(SettingsSectionGap)) {
@@ -210,7 +225,10 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                             ThemePreviewCard(
                                 mode = m,
                                 selected = theme == m,
-                                onClick = { theme = m },
+                                onClick = {
+                                    theme = m
+                                    com.ccm.app.ui.theme.UiPrefs.setThemeMode(m.key)
+                                },
                             )
                         }
                     }
@@ -225,10 +243,22 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                             ChatFontCard(
                                 font = f,
                                 selected = chatFont == f,
-                                onClick = { chatFont = f },
+                                onClick = {
+                                    chatFont = f
+                                    com.ccm.app.ui.theme.UiPrefs.setChatFont(f.key)
+                                },
                             )
                         }
                     }
+                    // 诚实标注：选择已落盘，但正文消费端还没接
+                    // （需要先对照 Web 实测 4 个选项的真实字体映射，
+                    //   瞎猜会做出「和 Web 不一样」的字体）。
+                    Spacer(Modifier.height(5.52.dp))
+                    Text(
+                        text = "选择会保存；应用到聊天正文的字体映射待对齐 Web 后接入。",
+                        style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                        color = CCMTheme.colors.textSecondary,
+                    )
                 }
             }
         }

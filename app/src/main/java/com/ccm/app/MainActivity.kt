@@ -111,6 +111,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // UI 偏好（主题/字体）—— 必须在 setContent 之前：
+        // 晚了首帧会先闪系统主题再跳用户主题
+        com.ccm.app.ui.theme.UiPrefs.init(this)
+
         // 装配新架构（幂等 —— Activity 重建时复用同一个会话）
         val graph = AppGraph.init(applicationContext, appScope)
         Log.i(TAG, "AppGraph 装配：${if (graph != null) "成功" else "失败/无配置"}；" +

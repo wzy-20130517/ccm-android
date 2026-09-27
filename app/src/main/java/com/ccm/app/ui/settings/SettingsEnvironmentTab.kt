@@ -60,6 +60,30 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
     //   原来「刷新」的 onClick 是空的 —— 点了毫无反应。
     var refreshTick by remember { mutableStateOf(0) }
 
+    // ── 真数据（2026-09-27：原来 11 行全是写死的假值，
+    //    连 Node 版本都写着过时的 v22.14.0，工具链真值是 v24.21.0）──
+    // remember(refreshTick)：点「刷新」重查，不点不重复 IO。
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val env = remember(refreshTick) {
+        val rootfs = com.ccm.app.runtime.RootfsManager(ctx)
+        val proot = com.ccm.app.runtime.ProotRuntime(ctx)
+        val installed = try { rootfs.isInstalled() } catch (_: Throwable) { false }
+        val nodePath = if (installed) proot.nodePath() else null
+        EnvFacts(
+            shizuku = com.ccm.app.bridge.ShizukuBridge.granted(),
+            linux = installed,
+            proot = installed,
+            nodePath = nodePath,
+            sdk = android.os.Build.VERSION.SDK_INT.toString(),
+            abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown",
+            home = ctx.filesDir.absolutePath,
+            uptimeMs = try {
+                android.os.SystemClock.elapsedRealtime() -
+                    android.os.Process.getStartElapsedRealtime()
+            } catch (_: Throwable) { 0L },
+        )
+    }
+
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(22.08.dp)) {
 
         // ── 头部 ─────────────────────────────────────────────────
@@ -108,21 +132,45 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
 
         // ── 原生能力桥 ───────────────────────────────────────────
         EnvSection(title = "原生能力桥") {
-            EnvRow(label = "Shizuku", ok = true, value = "已授权")
-            EnvRow(label = "Linux 环境", ok = true, value = "已安装")
-            EnvRow(label = "proot 运行时", ok = true, value = "就绪")
-            EnvRow(label = "Node 运行时", ok = true, value = "v22.14.0")
+            EnvRow(
+                label = "Shizuku",
+                ok = env.shizuku,
+                value = if (env.shizuku) "已授权" else "未授权",
+            )
+            EnvRow(
+                label = "Linux 环境",
+                ok = env.linux,
+                value = if (env.linux) "已安装" else "未安装",
+            )
+            EnvRow(
+                label = "proot 运行时",
+                ok = env.proot,
+                value = if (env.proot) "就绪" else "不可用",
+            )
+            EnvRow(
+                label = "Node 运行时",
+                ok = env.nodePath != null,
+                value = if (env.nodePath != null) {
+                    com.ccm.app.runtime.ToolchainCatalog.NODE_VERSION
+                } else "未安装",
+            )
             EnvRow(label = "CCM 内核", ok = true, value = "已安装")
-            EnvRow(label = "Android SDK", ok = true, value = "35")
+            EnvRow(label = "Android SDK", ok = true, value = env.sdk)
         }
 
         // ── 运行时 ───────────────────────────────────────────────
         EnvSection(title = "运行时") {
             EnvRow(label = "运行模式", ok = true, value = "native")
-            EnvRow(label = "Node 版本", ok = true, value = "v22.14.0")
-            EnvRow(label = "平台", ok = true, value = "android / arm64")
-            EnvRow(label = "家目录", ok = true, value = "/data/data/com.ccm.app/files/home")
-            EnvRow(label = "已运行", ok = true, value = "2 小时 13 分")
+            EnvRow(
+                label = "Node 版本",
+                ok = env.nodePath != null,
+                value = if (env.nodePath != null) {
+                    com.ccm.app.runtime.ToolchainCatalog.NODE_VERSION
+                } else "—",
+            )
+            EnvRow(label = "平台", ok = true, value = "android / ${env.abi}")
+            EnvRow(label = "家目录", ok = true, value = env.home)
+            EnvRow(label = "已运行", ok = true, value = formatUptime(env.uptimeMs))
         }
 
         // ── 说明卡 ───────────────────────────────────────────────
@@ -308,4 +356,29 @@ private fun EnvNoteLine(term: String, desc: String) {
 @Composable
 fun SettingsModelsTab(modifier: Modifier = Modifier) {
     ProviderSettingsScreen(modifier = modifier)
+}
+
+/** 环境页真数据快照（remember(refreshTick) 缓存，点刷新重查）。 */
+private data class EnvFacts(
+    val shizuku: Boolean,
+    val linux: Boolean,
+    val proot: Boolean,
+    val nodePath: String?,
+    val sdk: String,
+    val abi: String,
+    val home: String,
+    val uptimeMs: Long,
+)
+
+/** 进程运行时长 → "2 小时 13 分" / "45 分" / "30 秒"。 */
+private fun formatUptime(ms: Long): String {
+    if (ms <= 0) return "—"
+    val sec = ms / 1000
+    val min = sec / 60
+    val hour = min / 60
+    return when {
+        hour > 0 -> "$hour 小时 ${min % 60} 分"
+        min > 0 -> "$min 分"
+        else -> "$sec 秒"
+    }
 }

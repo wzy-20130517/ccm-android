@@ -118,9 +118,14 @@ fun CcmApp(
     session: ChatSession? = null,
     initError: String? = null,
 ) {
-    // 对齐 Web：未显式设置过主题时跟随系统（localStorage.theme === "system"）
-    // TODO(阶段4·B5): 接 SettingsRepository —— 用户显式选择优先于系统
-    val darkTheme = isSystemInDarkTheme()
+    // 主题：用户选择优先，auto 才跟随系统（2026-09-27 接 UiPrefs ——
+    // 原来是 TODO 永远 isSystemInDarkTheme()，设置页选了白选）。
+    // UiPrefs.themeMode 是 MutableState → 设置页改值这里自动重组。
+    val darkTheme = when (com.ccm.app.ui.theme.UiPrefs.themeMode.value) {
+        "light" -> false
+        "dark" -> true
+        else -> isSystemInDarkTheme()
+    }
 
     // 兜底：调用方没传 initError 时从全局装配结果读。
     // 之所以要兜底：AppGraph.initError 早就存好了，但 UI 一直没显示它，
