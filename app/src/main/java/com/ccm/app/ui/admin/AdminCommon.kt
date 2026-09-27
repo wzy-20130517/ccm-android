@@ -132,9 +132,13 @@ object AdminSpacing {
     val p5 = 18.40.dp
     val p6 = 22.08.dp
     val p8 = 29.44.dp
+    val gap1 = 3.68.dp
+    val gap2 = 7.36.dp
     val gap3 = 11.04.dp
     val gap4 = 14.72.dp
     val gap6 = 22.08.dp
+    /** `px-4` 水平内距（表格单元格外侧用，避免与垂直 p3 混写） */
+    val px4 = 14.72.dp
 }
 
 /**

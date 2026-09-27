@@ -2,9 +2,11 @@ package com.ccm.app.core.api
 
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -40,6 +42,18 @@ import kotlin.coroutines.resumeWithException
  * 连接立即断开。这对应 Node 版 `streamController.abort()`。
  */
 object SseReader {
+
+    /**
+     * 流式静默超时（ms）—— 距上一个事件超过这个时间就判定「卡死」。
+     *
+     * 300s 对齐 Node 版 watchdog。**不能设更小**：实测首 token 最大 196.7s
+     * （8 次超 60s），设 60s 会把「慢但能成功」的请求全误杀 ——
+     * 这正是 Node 版 2026-09-01 那次「改坏体验」的根因。
+     */
+    const val STREAM_SILENCE_TIMEOUT_MS = 300_000L
+
+    /** 看门狗轮询间隔（ms）。比超时小两个数量级，保证判定及时且不空转。 */
+    private const val WATCHDOG_POLL_MS = 5_000L
 
     /** 共享的 JSON 解析器（宽松模式：忽略未知字段，容忍网关加料）。 */
     private val json = Json {
@@ -105,13 +119,52 @@ object SseReader {
      * @param request 已构造好的请求（含 header、body）
      * @param client 流式专用 client（见 [createStreamClient]）
      */
-    fun streamSse(request: Request, client: OkHttpClient): Flow<String> = callbackFlow {
+    fun streamSse(
+        request: Request,
+        client: OkHttpClient,
+        onCall: (Call) -> Unit = {},
+        onHttpError: ((Int, String) -> Unit)? = null,
+    ): Flow<String> = callbackFlow {
         val call = client.newCall(request)
+        onCall(call)
+
+        // ═════════════════ 流式看门狗（**必须有**） ═════════════════
+        //
+        // 【为什么不能省】`createStreamClient` 把 readTimeout 设成 0（不限制），
+        // 因为实测「首 token 中位 13.6s / p90 30.9s / 最大 196.7s」，
+        // 固定超时会把「慢但能成功」的请求误杀。**但代价是：如果网关真的挂了
+        // （TCP 连上了却永不发数据），socket 读会永久阻塞 → 用户看到「一直转圈，
+        // 连超时都不报」，只能杀进程。**
+        //
+        // Node 版用 300s 静默看门狗兜底（CLAUDE.md 记的「watchdog(300s)」）。
+        // 这里补上同等能力：**距上一个事件超过 300s → 主动 cancel 连接**。
+        //
+        // phase 用来区分「请求没发出去」「响应头没回来」「body 卡住」——
+        // Node 版排查时因为只有 `event_count: 0` 而无法定位，只能靠猜。
+        val lastEventAt = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
+        val phase = java.util.concurrent.atomic.AtomicReference("request_start")
+        val watchdogFired = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        val watchdog = launch {
+            while (isActive) {
+                delay(WATCHDOG_POLL_MS)
+                val silent = System.currentTimeMillis() - lastEventAt.get()
+                if (silent >= STREAM_SILENCE_TIMEOUT_MS) {
+                    watchdogFired.set(true)
+                    call.cancel()   // 解除 socket 阻塞读，走下面的 IOException 分支
+                    break
+                }
+            }
+        }
 
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 // 协程已取消导致的失败是正常路径，不要报错
                 if (!isActive) return
+                if (watchdogFired.get()) {
+                    close(streamTimeoutError(phase.get(), call))
+                    return
+                }
                 close(ApiTypes.ApiException(
                     message = "网络错误: ${e.message ?: e.javaClass.simpleName}",
                     statusCode = 0,
@@ -128,10 +181,14 @@ object SseReader {
                         } catch (_: Throwable) {
                             ""
                         }
+                        onHttpError?.invoke(resp.code, body)
                         close(ApiTypes.ApiException(
                             message = "HTTP ${resp.code}: ${body.take(2000)}",
                             statusCode = resp.code,
-                            retryable = resp.code == 429 || resp.code >= 500,
+                            // 401/403 也标可重试 —— 语义是「这个 key 不行」，
+                            // 上层换一个 key 可能就成功（与 ApiClient.isRetryableStatus 一致）
+                            retryable = resp.code == 429 || resp.code >= 500 ||
+                                resp.code == 401 || resp.code == 403,
                         ))
                         return
                     }
@@ -142,17 +199,27 @@ object SseReader {
                         return
                     }
 
+                    phase.set("streaming")
+                    lastEventAt.set(System.currentTimeMillis())
+
                     try {
-                        readLoop(source) { line -> trySend(line) }
+                        readLoop(source) { line ->
+                            lastEventAt.set(System.currentTimeMillis())
+                            trySend(line)
+                        }
                         close()
                     } catch (e: IOException) {
-                        // 网络中断：把已收到的数据留下，报错结束
-                        close(ApiTypes.ApiException(
-                            message = "流中断: ${e.message ?: e.javaClass.simpleName}",
-                            statusCode = 0,
-                            retryable = true,
-                            cause = e,
-                        ))
+                        if (watchdogFired.get()) {
+                            close(streamTimeoutError(phase.get(), call))
+                        } else {
+                            // 网络中断：把已收到的数据留下，报错结束
+                            close(ApiTypes.ApiException(
+                                message = "流中断: ${e.message ?: e.javaClass.simpleName}",
+                                statusCode = 0,
+                                retryable = true,
+                                cause = e,
+                            ))
+                        }
                     } catch (e: Throwable) {
                         close(e)
                     }
@@ -161,8 +228,27 @@ object SseReader {
         })
 
         // Flow 取消 → 断开连接（对应 Node 版 streamController.abort()）
-        awaitClose { call.cancel() }
+        awaitClose {
+            watchdog.cancel()
+            call.cancel()
+        }
     }
+
+    /**
+     * 构造流式超时异常。
+     *
+     * 消息里带 **"Stream timeout"** 是刻意的 —— `ErrorClassifier` 靠这个字符串
+     * 把它归到 `stream_timeout`（不可重试：同一 stream 重发没意义）。
+     * 带 phase 是为了排查时能区分「请求没发出去」和「响应头没回来」。
+     */
+    private fun streamTimeoutError(phase: String, call: Call): ApiTypes.ApiException =
+        ApiTypes.ApiException(
+            message = "Stream timeout: 静默 ${STREAM_SILENCE_TIMEOUT_MS / 1000}s 无任何事件" +
+                " (phase=$phase, sent=${runCatching { call.request().url.encodedPath }.getOrDefault("?")})",
+            statusCode = 0,
+            retryable = false,
+            cause = java.io.InterruptedIOException("stream watchdog"),
+        )
 
     /**
      * 逐行读取并提取 `data:` 负载。

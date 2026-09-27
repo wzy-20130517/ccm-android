@@ -28,7 +28,9 @@ import java.io.File
  *    所以 ProcessBuilder.directory() 必须设成 rootfs。
  *
  * 3. **必须设 PROOT_L2S_DIR 且目录预先创建**
- *    link2symlink 扩展的工作目录，位置在 rootfs 内部（<rootfs>/.l2s）。
+ *    link2symlink 扩展的工作目录，**位置必须在 rootfs 之外**（用 [prootL2sDir]，
+ *    即 filesDir/l2s）。写成 rootfs 内部路径会导致 link2symlink 静默失效 ——
+ *    详见 buildProcess() 里那段注释（2026-09-27 真机踩过）。
  *
  * 4. **必须传 --link2symlink**
  *    Android 文件系统不支持硬链接，rootfs 里有大量硬链接（perl、gzip 等）。
@@ -364,7 +366,9 @@ class ProotRuntime(private val context: Context) {
         // 放在 rootfs 外面（App filesDir 下）就没这个问题：proot 的宿主观
         // 和客户机观在这里是一致的。
         // ═══════════════════════════════════════════════════════════
-        // ⚠️ PROOT_L2S_DIR 必须给**宿主机路径**（proot 靠它找自己的工作目录）。
+        // ⚠️ PROOT_L2S_DIR 必须给**宿主机路径**（proot 靠它找自己的工作目录），
+        //    且**必须在 rootfs 之外**（rootfs 内的绝对路径是「客户机视角」，
+        //    proot 解析不到，link2symlink 会静默失效）。
         //
         // 【实测对照 · 2026-09-26，用 CCM 自带的 proot 二进制，同一个 rootfs】
         //   PROOT_L2S_DIR=<宿主机绝对路径>  → link2symlink 生效
@@ -380,8 +384,14 @@ class ProotRuntime(private val context: Context) {
         //
         // 曾担心「链接目标会不会是宿主机路径、在客户机里变成断链」——
         // 实测不会：proot 自己会做路径转换（/usr/bin 下的测试链接可正常访问）。
-        val l2sHostDir = File(rootfs, ".l2s")
-        if (!l2sHostDir.isDirectory) l2sHostDir.mkdirs()
+        //
+        // 【2026-09-27 修真机 bug】上一版这里写的是 `File(rootfs, ".l2s")` ——
+        // 正是上面注释里说的「rootfs 内部路径」，导致真机上 apt 装 perl-base 必挂：
+        //   error setting ownership of '/usr/bin/perl5.38.2.dpkg-new': No such file or directory
+        //   dpkg-deb: zstd write error: Broken pipe
+        // 类里早已有正确的 [prootL2sDir]（filesDir/l2s），这里却自己造了一个本地变量，
+        // 两套实现不一致 → 用错了那套。现在统一走 [prootL2sDir]。
+        val l2sHostDir = prootL2sDir
         if (l2sHostDir.isDirectory && l2sHostDir.canWrite()) {
             env["PROOT_L2S_DIR"] = l2sHostDir.absolutePath
         } else {

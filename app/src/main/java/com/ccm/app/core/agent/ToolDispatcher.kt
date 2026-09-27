@@ -124,8 +124,15 @@ object ToolDispatcher {
                 }
             } else {
                 // ── 串行批：一个一个来（有顺序依赖） ──
+                //
+                // ⚠️ 必须传**当前协程的 Job**，不能传 null。
+                // 早期实现传 null，而 AgentLoop 里 `cancelSignal = parentJob ?: Job()`
+                // 会新建一个**永远 active 的 Job** —— 于是串行工具完全无法取消：
+                // 用户按了中断，工具照样跑到自己结束（长命令 = 卡住不动）。
+                // 传当前 Job 后，用户中断 → 协程取消 → Job 失效 → ctx.isCancelled 为真。
+                val selfJob = coroutineContext[Job]
                 for (call in batch.calls) {
-                    slots[call.index] = execute(call, null)
+                    slots[call.index] = execute(call, selfJob)
                 }
             }
         }

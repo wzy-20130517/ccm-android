@@ -169,88 +169,108 @@ class ApiClient(
         system: String,
         messages: List<JsonObject>,
         tools: List<ApiTypes.ToolDefinition> = emptyList(),
-    ): Flow<ApiTypes.StreamEvent> = callbackFlow {
-        val parser = StreamParser(protocol)
-        lastParser = parser
-
+    ): Flow<ApiTypes.StreamEvent> = flow {
         val body = buildRequestBody(system, messages, tools, stream = true)
+
+        // ── 重试循环（**重试只在这一层**，见类注释规则 1） ──
+        //
+        // 【为什么流式也必须重试】早期实现只发一次、失败就往上抛一个
+        // `retriesExhausted = true` 的异常，但**它一次都没重试过** —— 于是：
+        //   ① 池里另外几个 key 永远轮不到（Node 版踩过的「池形同虚设」原样复现）
+        //   ② 谎报「下层已重试穷尽」，Agent 层据此不再重试 → 一次 429/503 直接失败
+        // 现在流式与非流式走同一套语义：可重试错误 → 换 key + 退避 → 再发；
+        // 只有**真正重试耗尽**（或错误不可重试）才打 `retriesExhausted = true`。
+        var lastError: ApiTypes.ApiException? = null
+        var emittedAny = false
+
+        for (attempt in 0 until maxRetries) {
+            val parser = StreamParser(protocol)
+            lastParser = parser
+
+            var failure: ApiTypes.ApiException? = null
+            try {
+                // 每次重试都重新构造请求 —— key 可能在上一轮被 rotate 换掉
+                streamOnce(body, parser).collect { ev ->
+                    // 只有「已经吐给用户看过」的内容才阻止重试。
+                    // Usage / Done / ParseError 不算 —— 它们不产生可见输出，
+                    // 重发不会让用户看到内容闪回。
+                    if (ev is ApiTypes.StreamEvent.Text ||
+                        ev is ApiTypes.StreamEvent.Reasoning ||
+                        ev is ApiTypes.StreamEvent.ToolCallDelta
+                    ) {
+                        emittedAny = true
+                    }
+                    emit(ev)
+                }
+            } catch (e: ApiTypes.ApiException) {
+                failure = e
+            }
+
+            if (failure == null) return@flow   // 这一轮正常跑完了
+
+            lastError = failure
+
+            // 换 key：401/403/429 是「这个 key 不行」，换一个可能就成功。
+            // 这是 key 池存在的意义 —— 不能像早期实现那样整条绕过。
+            if (shouldRotateKey(failure.statusCode)) {
+                val next = keyPool.rotate("HTTP ${failure.statusCode}")
+                if (next != null) onKeySwitch?.invoke(next)
+            }
+
+            val canRetry = failure.retryable &&
+                attempt < maxRetries - 1 &&
+                // 已经吐过正文就**不能**重试：重发会让 UI 看到内容从头再来一遍
+                !emittedAny
+            if (!canRetry) break
+
+            val backoff = backoffMs(attempt)
+            onRetry?.invoke(AttemptInfo(attempt + 1, maxRetries, failure.message, backoff))
+            kotlinx.coroutines.delay(backoff)
+        }
+
+        val err = lastError ?: ApiTypes.ApiException("未知错误")
+        // 重试耗尽（或不可重试）—— 打标记，上层绝不能再重试
+        throw ApiTypes.ApiException(
+            message = err.message,
+            statusCode = err.statusCode,
+            retryable = err.retryable,
+            retriesExhausted = true,
+            cause = err,
+        )
+    }
+
+    /**
+     * 单次流式尝试 —— 发一次请求，把 SSE 事件原样吐出来。
+     *
+     * 失败时以 [ApiTypes.ApiException] 结束这个 Flow（**不在这里重试**，
+     * 重试由 [stream] 统一管，保证「重试只在一层」）。
+     *
+     * ⚠️ **读循环委托给 [SseReader.streamSse]，不要在这里再手写一份**。
+     * 早期实现自己抄了一遍 readUtf8Line 循环，代价是 SseReader 那份带
+     * 看门狗的实现成了死代码、**这条真正在跑的路径反而没有超时保护** ——
+     * 网关挂起（TCP 连上却永不发数据）时 socket 永久阻塞，用户看到「一直转圈，
+     * 连超时都不报」。重复实现必然漂移，统一到一处。
+     */
+    private fun streamOnce(
+        body: JsonObject,
+        parser: StreamParser,
+    ): Flow<ApiTypes.StreamEvent> = flow {
         val request = buildRequest(body, stream = true)
-
-        val call = streamClient.newCall(request)
-        activeCall = call
-
-        call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                if (call.isCanceled()) {
-                    close()   // 正常取消，不是错误
-                } else {
-                    close(
-                        ApiTypes.ApiException(
-                            "网络错误: ${e.message ?: e.javaClass.simpleName}",
-                            retryable = true, cause = e,
-                        )
-                    )
-                }
+        try {
+            SseReader.streamSse(
+                request = request,
+                client = streamClient,
+                onCall = { activeCall = it },
+                onHttpError = { code, errBody ->
+                    // 能力探测：400 里提到 image/vision → 记下该端点不支持图片
+                    if (code == 400 && looksLikeVisionError(errBody)) markVisionUnsupported()
+                },
+            ).collect { payload ->
+                for (ev in parser.parse(payload)) emit(ev)
             }
-
-            override fun onResponse(call: Call, response: Response) {
-                response.use { resp ->
-                    if (!resp.isSuccessful) {
-                        val errBody = try {
-                            resp.body?.string().orEmpty()
-                        } catch (_: Throwable) {
-                            ""
-                        }
-                        // 能力探测：400 里提到 image/vision → 记下该端点不支持图片
-                        if (resp.code == 400 && looksLikeVisionError(errBody)) {
-                            markVisionUnsupported()
-                        }
-                        close(
-                            ApiTypes.ApiException(
-                                message = "HTTP ${resp.code}: ${errBody.take(2000)}",
-                                statusCode = resp.code,
-                                retryable = isRetryableStatus(resp.code),
-                                retriesExhausted = true,   // 已在本层重试过
-                            )
-                        )
-                        return
-                    }
-
-                    val source = resp.body?.source()
-                    if (source == null) {
-                        close(ApiTypes.ApiException("响应体为空", statusCode = resp.code))
-                        return
-                    }
-
-                    try {
-                        while (true) {
-                            val line = source.readUtf8Line() ?: break
-                            if (line.isEmpty() || line[0] == ':') continue
-                            if (!line.startsWith("data:")) continue
-                            val payload = line.removePrefix("data:").trim()
-                            if (payload.isEmpty()) continue
-
-                            for (ev in parser.parse(payload)) {
-                                trySend(ev)
-                                if (ev is ApiTypes.StreamEvent.Done) break
-                            }
-                        }
-                        close()
-                    } catch (e: IOException) {
-                        close(
-                            ApiTypes.ApiException(
-                                "流中断: ${e.message ?: e.javaClass.simpleName}",
-                                retryable = true, cause = e,
-                            )
-                        )
-                    }
-                }
-            }
-        })
-
-        awaitClose {
-            // Flow 取消 → 断开连接（对应 Node 版 streamController.abort()）
-            call.cancel()
+        } finally {
+            // 成功、失败、取消三条路径都要清 —— 否则 cancelActiveStream()
+            // 会去 cancel 一个早就结束的 call，真正在跑的那条取消不掉
             activeCall = null
         }
     }
@@ -413,12 +433,300 @@ class ApiClient(
         val effectiveTools = if (noTools) emptyList() else tools
         val maxTok = maxOutputTokens
 
+        // ⚠️ 会话历史是**协议无关的中间表示**，形态取自 Anthropic
+        // （assistant 里放 `tool_use` 块、结果放 user 里的 `tool_result` 块）。
+        // 每种协议在**这里**转成自己的线格式 —— 这是全项目唯一的转换点。
+        //
+        // 【为什么必须有这一步】早期实现直接把中间表示塞进三种协议，后果是
+        // **OpenAI 协议（绝大多数中转站、也是默认值）下工具调用完全失效**：
+        // OpenAI 要求 assistant 用 `tool_calls` 字段、结果用独立的
+        // `{"role":"tool","tool_call_id":...}` 消息，收到 `tool_use` 块时
+        // 要么报 400，要么静默忽略 —— 表现为「模型永远不调用工具，只会说话」。
         return when (protocol) {
-            Protocol.ANTHROPIC -> buildAnthropicBody(system, messages, effectiveTools, stream, maxTok)
-            Protocol.RESPONSES -> buildResponsesBody(system, messages, effectiveTools, stream, maxTok)
-            Protocol.OPENAI -> buildOpenAiBody(system, messages, effectiveTools, stream, maxTok)
+            Protocol.ANTHROPIC -> buildAnthropicBody(system, toAnthropicMessages(messages), effectiveTools, stream, maxTok)
+            Protocol.RESPONSES -> buildResponsesBody(system, toResponsesInput(messages), effectiveTools, stream, maxTok)
+            Protocol.OPENAI -> buildOpenAiBody(system, toOpenAiMessages(messages), effectiveTools, stream, maxTok)
         }
     }
+
+    // ───────────── 中间表示 → Anthropic 线格式 ─────────────
+
+    /**
+     * 把中间表示转成 Anthropic 的 `messages` 数组。
+     *
+     * 中间表示的**骨架本来就取自 Anthropic**（assistant 放 `tool_use` 块、
+     * 结果放 user 的 `tool_result` 块），所以这里只需修一处真实差异：
+     *
+     * **图片**：中间表示是 OpenAI 形态 `{type:"image_url", image_url:{url:"data:..."}}`，
+     * 而 Anthropic 要 `{type:"image", source:{type:"base64", media_type, data}}`。
+     * 直接透传会 400（`image_url: Extra inputs are not permitted`），
+     * 且因为只有带图的消息才触发，属于「平时好好的，一发图就挂」的隐蔽故障。
+     *
+     * 其余块（text / tool_use / tool_result）结构一致，原样透传。
+     */
+    private fun toAnthropicMessages(messages: List<JsonObject>): List<JsonObject> =
+        messages.map { m ->
+            val contentEl = m["content"]
+            // 纯文本简写形态：Anthropic 也接受 `content: "..."`，原样透传
+            if (contentEl is JsonPrimitive) return@map m
+
+            val blocks = contentEl as? kotlinx.serialization.json.JsonArray ?: return@map m
+
+            buildJsonObject {
+                m["role"]?.let { put("role", it) }
+                put("content", buildJsonArray {
+                    blocks.forEach { b ->
+                        val o = b as? JsonObject ?: return@forEach
+                        val url = if (prim(o["type"]) in setOf("image_url", "image")) imageUrlOf(o) else null
+                        if (url != null) {
+                            val (mediaType, data) = splitDataUrl(url)
+                            add(buildJsonObject {
+                                put("type", "image")
+                                put("source", buildJsonObject {
+                                    put("type", "base64")
+                                    put("media_type", mediaType)
+                                    put("data", data)
+                                })
+                            })
+                        } else {
+                            add(o)
+                        }
+                    }
+                })
+            }
+        }
+
+    /**
+     * 拆 data URL 成 `(mediaType, base64数据)`。
+     *
+     * `data:image/png;base64,AAAA` → `("image/png", "AAAA")`。
+     * 不是 data URL 时按「无媒体类型」处理（Anthropic 只接受 base64，给个兜底类型）。
+     */
+    private fun splitDataUrl(url: String): Pair<String, String> {
+        if (!url.startsWith("data:")) return "image/png" to url
+        val comma = url.indexOf(',')
+        if (comma < 0) return "image/png" to url
+        val header = url.substring(5, comma)          // "image/png;base64"
+        val data = url.substring(comma + 1)
+        val mediaType = header.substringBefore(';').ifEmpty { "image/png" }
+        return mediaType to data
+    }
+
+    // ───────────── 中间表示 → OpenAI 线格式 ─────────────
+
+    /**
+     * 把中间表示转成 OpenAI 的 `messages` 数组。
+     *
+     * 三处关键差异（漏一处工具就用不了）：
+     * 1. assistant 的工具调用 → **`tool_calls` 字段**（不是 content 里的块），
+     *    且 `arguments` 必须是**JSON 字符串**（不是对象）
+     * 2. 工具结果 → **独立的 `{"role":"tool","tool_call_id":...}` 消息**，
+     *    一条结果一条消息（不能塞进 user 的 content 数组）
+     * 3. 图片格式恰好一致（`image_url.url`），可直接透传
+     */
+    private fun toOpenAiMessages(messages: List<JsonObject>): List<JsonObject> {
+        val out = mutableListOf<JsonObject>()
+
+        for (m in messages) {
+            val role = (m["role"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: continue
+            val contentEl = m["content"]
+
+            // 纯文本简写形态：原样透传（最省 token，也是常规形态）
+            if (contentEl is JsonPrimitive) {
+                out += buildJsonObject {
+                    put("role", role)
+                    put("content", contentEl)
+                }
+                continue
+            }
+
+            val blocks = contentEl as? kotlinx.serialization.json.JsonArray ?: continue
+
+            // ── 工具结果 → 拆成独立的 role:"tool" 消息 ──
+            val toolResults = blocks.filter { b ->
+                (b as? JsonObject)?.get("type")?.let { prim(it) } == "tool_result"
+            }
+            if (toolResults.isNotEmpty()) {
+                for (tr in toolResults) {
+                    val o = tr as? JsonObject ?: continue
+                    out += buildJsonObject {
+                        put("role", "tool")
+                        put("tool_call_id", prim(o["tool_use_id"]))
+                        // 失败的也要有内容 —— OpenAI 不接受空 content
+                        val body = prim(o["content"])
+                        put("content", body.ifEmpty { "(空结果)" })
+                    }
+                }
+                continue
+            }
+
+            // ── assistant 的工具调用 → tool_calls 字段 ──
+            val toolUses = blocks.filter { b ->
+                (b as? JsonObject)?.get("type")?.let { prim(it) } == "tool_use"
+            }
+            if (toolUses.isNotEmpty()) {
+                val text = blocks.joinToString("") { b ->
+                    val o = b as? JsonObject ?: return@joinToString ""
+                    if (prim(o["type"]) == "text") prim(o["text"]) else ""
+                }
+                out += buildJsonObject {
+                    put("role", role)
+                    // 有 tool_calls 时 content 可以为空串，但不能缺字段
+                    put("content", text)
+                    put("tool_calls", buildJsonArray {
+                        toolUses.forEach { tu ->
+                            val o = tu as? JsonObject ?: return@forEach
+                            add(buildJsonObject {
+                                put("id", prim(o["id"]))
+                                put("type", "function")
+                                put("function", buildJsonObject {
+                                    put("name", prim(o["name"]))
+                                    // ⚠️ 必须是**字符串**，传对象会被拒
+                                    put("arguments", o["input"]?.toString() ?: "{}")
+                                })
+                            })
+                        }
+                    })
+                }
+                continue
+            }
+
+            // ── 其余（文本 + 图片）→ 数组形态 ──
+            out += buildJsonObject {
+                put("role", role)
+                put("content", buildJsonArray {
+                    blocks.forEach { b ->
+                        val o = b as? JsonObject ?: return@forEach
+                        when (prim(o["type"])) {
+                            "text" -> add(buildJsonObject {
+                                put("type", "text")
+                                put("text", prim(o["text"]))
+                            })
+                            // ⚠️ 中间表示里图片块的 type 就是 `image_url`，
+                            // 且 image_url 是 {url:...} 对象（对齐 OpenAI 线格式）。
+                            // 两种形态都认，避免以后中间表示改成 `image` 时静默丢图。
+                            "image_url", "image" -> {
+                                val url = imageUrlOf(o) ?: return@forEach
+                                add(buildJsonObject {
+                                    put("type", "image_url")
+                                    put("image_url", buildJsonObject {
+                                        put("url", url)
+                                    })
+                                })
+                            }
+                            else -> Unit   // 未知块丢弃，不要原样透传（会 400）
+                        }
+                    }
+                })
+            }
+        }
+
+        return out
+    }
+
+    /**
+     * 从内容块里取图片 URL。
+     *
+     * 兼容两种形态：`image_url: {url: "..."}`（OpenAI 风格，当前中间表示用的）
+     * 和 `image_url: "..."` / `url: "..."`（扁平写法）。
+     */
+    private fun imageUrlOf(block: JsonObject): String? {
+        val raw = block["image_url"] ?: block["url"] ?: return null
+        return when (raw) {
+            is JsonPrimitive -> raw.content
+            is JsonObject -> (raw["url"] as? JsonPrimitive)?.content
+            else -> null
+        }?.takeIf { it.isNotEmpty() }
+    }
+
+    // ───────────── 中间表示 → Responses 线格式 ─────────────
+
+    /**
+     * 把中间表示转成 Responses 的 `input` 数组。
+     *
+     * Responses 的 input 是**扁平事件流**，与 chat 的 messages 结构不同：
+     * - 文本消息 → `{type:"message", role, content:[{type:"input_text"|"output_text", text}]}`
+     * - 工具调用 → `{type:"function_call", call_id, name, arguments}`
+     * - 工具结果 → `{type:"function_call_output", call_id, output}`
+     * - 图片 → `{type:"input_image", image_url}`
+     */
+    private fun toResponsesInput(messages: List<JsonObject>): List<JsonObject> {
+        val out = mutableListOf<JsonObject>()
+
+        for (m in messages) {
+            val role = (m["role"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: continue
+            val contentEl = m["content"]
+
+            if (contentEl is JsonPrimitive) {
+                val text = contentEl.takeIf { it.isString }?.content.orEmpty()
+                if (text.isNotEmpty()) out += responsesTextMessage(role, text)
+                continue
+            }
+
+            val blocks = contentEl as? kotlinx.serialization.json.JsonArray ?: continue
+
+            // 工具调用 / 结果先展开成扁平事件，文本与图片合成 message
+            val textSb = StringBuilder()
+            val parts = mutableListOf<JsonObject>()
+
+            blocks.forEach { b ->
+                val o = b as? JsonObject ?: return@forEach
+                when (prim(o["type"])) {
+                    "text" -> textSb.append(prim(o["text"]))
+                    "image_url", "image" -> imageUrlOf(o)?.let { url ->
+                        parts += buildJsonObject {
+                            put("type", "input_image")
+                            put("image_url", url)
+                        }
+                    }
+                    "tool_use" -> out += buildJsonObject {
+                        put("type", "function_call")
+                        put("call_id", prim(o["id"]))
+                        put("name", prim(o["name"]))
+                        put("arguments", o["input"]?.toString() ?: "{}")
+                    }
+                    "tool_result" -> out += buildJsonObject {
+                        put("type", "function_call_output")
+                        put("call_id", prim(o["tool_use_id"]))
+                        put("output", prim(o["content"]).ifEmpty { "(空结果)" })
+                    }
+                }
+            }
+
+            if (textSb.isNotEmpty() || parts.isNotEmpty()) {
+                out += buildJsonObject {
+                    put("type", "message")
+                    put("role", role)
+                    put("content", buildJsonArray {
+                        if (textSb.isNotEmpty()) {
+                            add(buildJsonObject {
+                                put("type", if (role == "assistant") "output_text" else "input_text")
+                                put("text", textSb.toString())
+                            })
+                        }
+                        parts.forEach { add(it) }
+                    })
+                }
+            }
+        }
+
+        return out
+    }
+
+    private fun responsesTextMessage(role: String, text: String): JsonObject = buildJsonObject {
+        put("type", "message")
+        put("role", role)
+        put("content", buildJsonArray {
+            add(buildJsonObject {
+                put("type", if (role == "assistant") "output_text" else "input_text")
+                put("text", text)
+            })
+        })
+    }
+
+    /** 安全取字符串（非字符串/缺失 → 空串）。 */
+    private fun prim(el: kotlinx.serialization.json.JsonElement?): String =
+        (el as? JsonPrimitive)?.takeIf { it.isString }?.content.orEmpty()
 
     private fun buildOpenAiBody(
         system: String,

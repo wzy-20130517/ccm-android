@@ -126,4 +126,13 @@ dependencies {
     // 原本是 lifecycle-runtime-ktx 的传递依赖，这里显式声明版本，
     // 避免上游升级时被动漂移。
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // 【单元测试】core 层是纯 JVM 代码（零 Android 依赖），可以直接跑 JUnit。
+    //
+    // 【为什么要建测试基建】CCM 踩过的坑几乎全是「静默降级」类型 ——
+    // 不报错、不崩溃，但功能悄悄失效（如 ToolSchema.int() 判反了 isString，
+    // 导致所有工具的数值参数被丢弃，模型看到的永远是默认值）。
+    // 这类 bug 只能靠单测防住，代码审查和手工测试都发现不了。
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
 }
