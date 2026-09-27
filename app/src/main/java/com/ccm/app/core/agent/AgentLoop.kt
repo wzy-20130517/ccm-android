@@ -10,14 +10,12 @@ import com.ccm.app.core.tool.SubAgentResult
 import com.ccm.app.core.tool.Tool
 import com.ccm.app.core.tool.ToolContext
 import com.ccm.app.core.tool.ToolResult
+import com.ccm.app.core.tool.ToolRunner
 import com.ccm.app.core.tool.ToolStorage
 import com.ccm.app.core.tool.ToolUiCallback
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
@@ -87,6 +85,13 @@ class AgentLoop(
     private val sessionId: String = "",
     /** 派生子 Agent 的能力（由上层注入）。 */
     private val spawnSubAgent: (suspend (SubAgentSpec) -> SubAgentResult)? = null,
+    /**
+     * 工具执行器（**唯一入口**，见 [ToolRunner] 类注释）。
+     *
+     * 默认 [ToolRunner.Unset] 只保证不 NPE；**生产环境必须注入真正的实现**
+     * （`tools/ToolExecutor`），否则校验/权限/hook/截断全部失效。
+     */
+    private val toolRunner: ToolRunner = ToolRunner.Unset,
     /** 是否开启流式。 */
     private val useStream: Boolean = true,
 ) {
@@ -347,38 +352,18 @@ class AgentLoop(
         messageId: String,
     ): List<ToolExecResult> {
         val tools = toolsProvider()
-        val results = mutableListOf<ToolExecResult>()
 
-        // 分区：连续的安全工具合成一批
-        val batches = mutableListOf<Pair<Boolean, MutableList<ApiTypes.ToolCall>>>()
-        for (tc in toolCalls) {
-            val tool = tools.find { it.name == tc.name }
-            val safe = tool?.isConcurrencySafe == true
-            val last = batches.lastOrNull()
-            if (safe && last?.first == true) {
-                last.second.add(tc)
-            } else {
-                batches += safe to mutableListOf(tc)
-            }
+        // 分区与调度交给 ToolDispatcher（那块逻辑独立可测，见其类注释）
+        val indexed = toolCalls.mapIndexed { i, tc ->
+            ToolDispatcher.IndexedCall(i, tc.id, tc.name, tc.arguments)
         }
 
-        for ((safe, batch) in batches) {
-            if (safe) {
-                // 并发批：每个工具一个子协程，全部完成才继续
-                coroutineScope {
-                    val jobs = batch.map { tc ->
-                        async { runOneTool(tc, tools, emit, coroutineContext[Job], messageId) }
-                    }
-                    results += jobs.awaitAll()
-                }
-            } else {
-                // 串行批：一个一个来（有顺序依赖）
-                for (tc in batch) {
-                    results += runOneTool(tc, tools, emit, null, messageId)
-                }
-            }
+        return ToolDispatcher.dispatch(indexed, tools) { call, job ->
+            runOneTool(
+                ApiTypes.ToolCall(call.id, call.name, call.arguments),
+                tools, emit, job, messageId,
+            )
         }
-        return results
     }
 
     /**
@@ -432,12 +417,13 @@ class AgentLoop(
             sessionId = sessionId,
         )
 
+        // 走统一执行入口（校验 → 权限 → hook → 执行 → 截断 → hook）。
+        // ToolRunner 约定「永不抛异常」，但这里仍兜一层 —— 万一实现违约，
+        // 不能让它把整个 Agent 循环带崩。
         val result = try {
-            tool.execute(input, ctx)
+            toolRunner.run(tool, input, ctx, sessionId)
         } catch (e: CancellationException) {
-            ToolResult.cancelled()
-        } catch (e: com.ccm.app.core.tool.ToolCancelledException) {
-            ToolResult.cancelled()
+            throw e
         } catch (e: Throwable) {
             ToolResult.Error(e.message ?: "工具执行异常", ToolResult.INTERNAL)
         }
@@ -643,18 +629,23 @@ class AgentLoop(
      * ⚠️ **`retriesExhausted` 必须优先判断** —— 它是「下层已重试穷尽」的标记，
      * 上层再重试就是跨层叠加（Node 版 687 秒静默卡死的根因）。
      */
+    /**
+     * API 错误分类（委托 [ErrorClassifier]，分类表见其类注释）。
+     *
+     * 保留这个方法是为了让事件里的 category 字符串与 `AgentEvent.ERR_*` 常量对齐
+     * —— 后者是给 UI 用的稳定契约，前者是内部实现。
+     */
     private fun classifyApiError(e: ApiTypes.ApiException): String {
-        if (e.retriesExhausted) return "retries_exhausted"
-        val msg = e.message
-        return when {
-            e.statusCode == 429 -> AgentEvent.ERR_RATE_LIMIT
-            e.statusCode in 500..599 -> AgentEvent.ERR_SERVER
-            e.statusCode == 401 || e.statusCode == 403 -> AgentEvent.ERR_AUTH
-            e.statusCode in 400..499 -> AgentEvent.ERR_CLIENT_4XX
-            msg.contains("context", true) && msg.contains("length", true) -> AgentEvent.ERR_CONTEXT_OVERFLOW
-            msg.contains("Stream timeout", true) -> AgentEvent.ERR_STREAM_TIMEOUT
-            msg.contains("timeout", true) -> AgentEvent.ERR_CONNECT_TIMEOUT
-            msg.contains("network", true) || msg.contains("fetch failed", true) -> AgentEvent.ERR_NETWORK
+        val c = ErrorClassifier.classify(e)
+        return when (c.name) {
+            "context_overflow" -> AgentEvent.ERR_CONTEXT_OVERFLOW
+            "stream_timeout" -> AgentEvent.ERR_STREAM_TIMEOUT
+            "connect_timeout" -> AgentEvent.ERR_CONNECT_TIMEOUT
+            "auth" -> AgentEvent.ERR_AUTH
+            "rate_limit" -> AgentEvent.ERR_RATE_LIMIT
+            "server" -> AgentEvent.ERR_SERVER
+            "client_4xx" -> AgentEvent.ERR_CLIENT_4XX
+            "network" -> AgentEvent.ERR_NETWORK
             else -> AgentEvent.ERR_UNKNOWN
         }
     }
