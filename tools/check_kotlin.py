@@ -114,7 +114,26 @@ def check_file(path):
         if d != 0:
             errors.append(f'{name}不平衡: {d:+d}')
 
-    # ── 3. KDoc 块注释嵌套 ────────────────────────────────────────
+    # ── 3. 常用扩展属性的 import 检查 ─────────────────────────────
+    #
+    # 本轮 CI 报 `Unresolved reference 'sp'` —— 用了 `11.5.sp` 但没 import。
+    # 这类错误单靠肉眼很容易漏（.sp/.dp 看起来像语言内置的），
+    # 但它们在 Kotlin 里都是**扩展属性**，必须 import。
+    EXT_PROPS = {
+        'sp': 'androidx.compose.ui.unit.sp',
+        'dp': 'androidx.compose.ui.unit.dp',
+        'em': 'androidx.compose.ui.unit.em',
+    }
+    code_only = strip_comments_and_strings(src)
+    for prop, imp_path in EXT_PROPS.items():
+        # 形如 `123.sp` / `1.5f.dp` / `value.sp`
+        if re.search(r'[\d\w)]\.' + prop + r'\b', code_only):
+            if f'import {imp_path}' not in src:
+                errors.append(
+                    f'用了 `.{prop}` 但缺 import：加 `import {imp_path}`'
+                )
+
+    # ── 4. KDoc 块注释嵌套 ────────────────────────────────────────
     nested = []
     for i, l in enumerate(lines, 1):
         m = re.match(r'^\s*\*(.*)$', l)
