@@ -164,10 +164,19 @@ sealed class Attachment {
      *
      * @property path 绝对路径
      * @property mimeType 图片格式，默认 png
+     * @property resizedFrom 若这张图已被缩放过，记录**原尺寸** `"WxH"`；null = 未缩放。
+     *
+     *   Agent 注入时会据此追加 `<image_resize_notice>` 告诉模型「原图 WxH → 现 WxH」。
+     *   **为什么必须透明**：不告知的话，模型会把「细节看不清」误判成「图里本来就没有」，
+     *   进而对画面内容做出错误结论（Node 版实测）。
+     *
+     *   图片工具**不需要**主动填 —— 它们是原图直出，填 null 即可；
+     *   只有工具自己做了缩放（如提前压到 1024px 省 token）才填。
      */
     data class ImageFile(
         val path: String,
         val mimeType: String = "image/png",
+        val resizedFrom: String? = null,
     ) : Attachment()
 
     /**
@@ -175,10 +184,13 @@ sealed class Attachment {
      *
      * ⚠️ `ByteArray` 的 `equals` 是引用比较，data class 的自动相等性对它无效 ——
      * 不要拿 [ImageBytes] 做去重或集合成员判断。
+     *
+     * @property resizedFrom 同 [ImageFile.resizedFrom]。
      */
     class ImageBytes(
         val bytes: ByteArray,
         val mimeType: String = "image/png",
+        val resizedFrom: String? = null,
     ) : Attachment() {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
