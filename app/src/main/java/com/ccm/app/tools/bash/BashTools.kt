@@ -398,7 +398,9 @@ class BashTool(
         val lines = mutableListOf<String>()
         var lastProgressAt = 0L
         val result = try {
-            ch.execute(command, ctx.cwd, timeout) { line ->
+            // ⚠️ timeout 是 Int（来自 input.int），execute 要 Long —— 必须显式转换。
+            // Kotlin 不做隐式数值拓宽（与 Java 不同），漏转会编译失败。
+            ch.execute(command, ctx.cwd, timeout.toLong()) { line ->
                 lines += line
                 // 进度节流：每 2 秒报一次，避免高频刷 UI
                 val now = System.currentTimeMillis()
