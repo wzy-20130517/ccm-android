@@ -375,3 +375,60 @@ val Gap4: Dp = 14.72.dp
 /** 竖直占位（常用间距） */
 @Composable
 fun VSpace(height: Dp) = Spacer(Modifier.height(height))
+
+// ══ 提示条 ══════════════════════════════════════════════════════════
+
+/**
+ * 提示条 —— 用于「操作被拦下、需要用户先做点别的」的场景。
+ *
+ * ## 为什么需要它
+ * 修 2026-09-27 的「任何东西都点不动」时发现的：用户没配 Provider 时
+ * `sendAndOpen` 直接 `?: return`，点了没反应、也没有任何提示 ——
+ * 用户看到的是「界面坏了」，而不是「你需要先配 API」。
+ *
+ * **原则：用户的操作要么生效，要么有明确反馈，不能静默吞掉。**
+ *
+ * ## 样式
+ * 对齐 Web 的 `ErrorBanner`（`ChatScreen.kt`）：
+ * 红色系 `bg-red-50` + `border-red-200`，圆角 7.36dp。
+ * 传 [onClick] 时整条可点（右边会显示一个「›」箭头）。
+ *
+ * @param message 提示文案
+ * @param onClick 点整条的响应（如跳设置页）；null = 纯展示
+ */
+@Composable
+fun CcmNoticeBar(
+    message: String,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+) {
+    val shape = RoundedCornerShape(7.36.dp)
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(Color(0x14DC2626))                 // bg-red-500/8
+            .border(1.dp, Color(0x33DC2626), shape)        // border-red-500/20
+            .then(
+                if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
+            )
+            .padding(horizontal = 12.88.dp, vertical = 8.28.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Gap2),
+    ) {
+        Text(
+            text = message,
+            style = CCMText.body12,
+            color = Color(0xFFB91C1C),
+            modifier = Modifier.weight(1f),
+        )
+        if (onClick != null) {
+            // 可点提示的指示箭头
+            Text(
+                text = "›",
+                style = CCMText.body14,
+                color = Color(0xFFB91C1C),
+            )
+        }
+    }
+}

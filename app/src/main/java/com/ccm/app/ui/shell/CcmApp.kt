@@ -5,15 +5,19 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.ccm.app.core.ChatSession
 import com.ccm.app.ui.chat.ChatScreen
 import com.ccm.app.ui.chat.ChatScreenConnected
+import com.ccm.app.ui.common.CcmNoticeBar
 import com.ccm.app.ui.common.SidebarDrawer
 import com.ccm.app.ui.common.TitleBar
 import com.ccm.app.ui.pages.ArtifactsScreen
@@ -78,15 +82,28 @@ import com.ccm.app.ui.theme.CCMTheme
  * 实测确认 Web 的 localStorage 默认值是 `"system"`（跟随系统）。
  *
  * @param session 已装配的会话（`null` = 还没配 API，渲染空态）
+ * @param initError 装配失败的原因（`null` = 一切正常）。非空时会在页面顶部
+ *   显示一条可点的提示条 —— **不能只存不显**：用户没配 API 时点哪都没反应，
+ *   会以为界面坏了。见 [AppScaffold] 里的 notice。
+ *   **默认从 [com.ccm.app.AppGraph.initError] 读** —— 调用方（MainActivity）
+ *   漏传时也能拿到，不会退化成「静默失败」。显式传参优先。
  */
 @Composable
-fun CcmApp(session: ChatSession? = null) {
+fun CcmApp(
+    session: ChatSession? = null,
+    initError: String? = null,
+) {
     // 对齐 Web：未显式设置过主题时跟随系统（localStorage.theme === "system"）
     // TODO(阶段4·B5): 接 SettingsRepository —— 用户显式选择优先于系统
     val darkTheme = isSystemInDarkTheme()
 
+    // 兜底：调用方没传 initError 时从全局装配结果读。
+    // 之所以要兜底：AppGraph.initError 早就存好了，但 UI 一直没显示它，
+    // 于是「没配 API」表现为「点什么都没反应」—— 用户以为界面坏了。
+    val effectiveError = initError ?: com.ccm.app.AppGraph.initError
+
     CCMTheme(darkTheme = darkTheme) {
-        AppScaffold(session = session)
+        AppScaffold(session = session, initError = effectiveError)
     }
 }
 
@@ -164,7 +181,7 @@ enum class CcmRoute(val path: String) {
  * 界面入口 —— 见 `ChatSession.clear()`，目前还没有 UI 接它。
  */
 @Composable
-private fun AppScaffold(session: ChatSession?) {
+private fun AppScaffold(session: ChatSession?, initError: String?) {
     val colors = CCMTheme.colors
 
     var sidebarOpen by remember { mutableStateOf(false) }
@@ -183,9 +200,20 @@ private fun AppScaffold(session: ChatSession?) {
      *
      * 抽出来是因为首页和对话页都可能触发发送（对话页的输入框走的是
      * `ChatScreenConnected` 内部的 `session.send`，不经过这里）。
+     *
+     * ## ★ 不静默失败（2026-09-27 修）
+     * 原来写的是 `val s = session ?: return` —— 没配 Provider 时点胶囊、
+     * 按发送**全都没反应**，用户看到的是「界面坏了」而不是「你需要先配 API」。
+     * 现在改成：session 为空 → 直接跳设置页（配 API 的唯一入口）。
+     * 首页顶部同时会显示 [initError] 提示条（见下方 notice）。
      */
     fun sendAndOpen(text: String) {
-        val s = session ?: return
+        val s = session
+        if (s == null) {
+            // 不是「没反应」，而是「你得先配 API」—— 直接送用户去设置
+            showSettings = true
+            return
+        }
         s.send(text)
         navigate(CcmRoute.CHAT)
     }
@@ -205,6 +233,24 @@ private fun AppScaffold(session: ChatSession?) {
 
             // ── 页面内容 ──────────────────────────────────────────────
             Box(modifier = Modifier.fillMaxSize()) {
+                // ★ 未配置 API 的提示条（2026-09-27 加）
+                //
+                // 之前 initError 只存不显，用户看到的是「点哪都没反应」，
+                // 而不是「你需要先配 API」。现在把它顶到所有页面之上显示，
+                // 且整条可点 → 直接进设置页。
+                //
+                // 为什么放在 when **之外**：所有页面都该看得到它，
+                // 且它只由 AppGraph 的初始化结果决定，与路由无关。
+                if (initError != null) {
+                    CcmNoticeBar(
+                        message = initError,
+                        onClick = { showSettings = true },
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(horizontal = 14.72.dp, vertical = 7.36.dp),
+                    )
+                }
+
                 when (route) {
                     CcmRoute.HOME -> LandingScreen(
                         greeting = greetingFor("Jay"),
