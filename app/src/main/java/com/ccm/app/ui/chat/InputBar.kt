@@ -84,6 +84,8 @@ fun InputBar(
     running: Boolean = false,
     modelName: String = "Sonnet 4.6",
     tokenCount: Int = 0,
+    /** 点模型选择器（2026-09-27 接通 —— 原来是写死的 TODO 空转） */
+    onModelClick: () -> Unit = {},
 ) {
     val colors = CCMTheme.colors
 
@@ -180,7 +182,7 @@ fun InputBar(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(7.36.dp),
                     ) {
-                        ModelChipInline(modelName = modelName)
+                        ModelChipInline(modelName = modelName, onClick = onModelClick)
                         PainterIcon(
                             R.drawable.ic_voice_mode,
                             size = 20.dp,
@@ -200,13 +202,13 @@ fun InputBar(
 
 /** 模型选择器（对话页版）—— 比首页版窄，显示名会被截断 */
 @Composable
-private fun ModelChipInline(modelName: String) {
+private fun ModelChipInline(modelName: String, onClick: () -> Unit = {}) {
     val colors = CCMTheme.colors
     Row(
         modifier = Modifier
             .height(29.44.dp)
             .clip(RoundedCornerShape(5.52.dp))       // rounded-[6px]
-            .clickable { /* TODO(B5-c): 打开模型选择器 */ }
+            .clickable(onClick = onClick)
             .padding(horizontal = 9.2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.52.dp),

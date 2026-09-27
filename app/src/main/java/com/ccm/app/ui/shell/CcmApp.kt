@@ -20,6 +20,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
@@ -248,6 +255,10 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
     var activeSession by remember { mutableStateOf(session) }
     // 会话列表（侧栏最近 + 列表页共用一个数据源）
     var sessions by remember { mutableStateOf<List<SessionSummary>>(emptyList()) }
+    // 列表页搜索词（受控，路由切走再回来保留）
+    var chatSearch by remember { mutableStateOf("") }
+    // 模型选择器弹窗
+    var showModelPicker by remember { mutableStateOf(false) }
 
     fun refreshSessions() {
         sessions = AppGraph.storage
@@ -324,27 +335,28 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                 onNavForward = null,
             )
 
+            // ★ 未配置 API 的提示条（2026-09-27 加，同日修 z-order）
+            //
+            // 之前 initError 只存不显，用户看到的是「点哪都没反应」，
+            // 而不是「你需要先配 API」。
+            //
+            // ⚠️ 位置教训：最初放在内容 Box 里、`when(route)` **之前** ——
+            // Box 内后画的盖先画的，LandingScreen 不透明背景把它整个遮住，
+            // 表现为「提示条代码在、UI 永远看不到」。挪到 Column 层
+            // （TitleBar 之后）：占空间、被所有页面共用、不依赖 z-order。
+            if (initError != null) {
+                CcmNoticeBar(
+                    message = initError,
+                    // 点提示条才进设置；不点就不打扰（不再强制跳转）
+                    onClick = { showSettings = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.72.dp, vertical = 7.36.dp),
+                )
+            }
+
             // ── 页面内容 ──────────────────────────────────────────────
             Box(modifier = Modifier.fillMaxSize()) {
-                // ★ 未配置 API 的提示条（2026-09-27 加）
-                //
-                // 之前 initError 只存不显，用户看到的是「点哪都没反应」，
-                // 而不是「你需要先配 API」。现在把它顶到所有页面之上显示，
-                // 且整条可点 → 直接进设置页。
-                //
-                // 为什么放在 when **之外**：所有页面都该看得到它，
-                // 且它只由 AppGraph 的初始化结果决定，与路由无关。
-                if (initError != null) {
-                    CcmNoticeBar(
-                        message = initError,
-                        // 点提示条才进设置；不点就不打扰（不再强制跳转）
-                        onClick = { showSettings = true },
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(horizontal = 14.72.dp, vertical = 7.36.dp),
-                    )
-                }
-
                 when (route) {
                     CcmRoute.HOME -> LandingScreen(
                         greeting = greetingFor(profileName),
@@ -373,6 +385,8 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         ChatScreenConnected(
                             session = session,
                             title = chatTitle,
+                            modelName = modelName,
+                            onModelClick = { showModelPicker = true },
                             onExport = {
                                 // Web 的 Export 是导出 markdown；Android 用系统分享
                                 val text = session.state.value.bubbles.joinToString("\n\n") { b ->
@@ -425,6 +439,82 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                                 },
                             )
                         }
+
+                        // ── 模型选择器（2026-09-27，原来是 TODO 空转）────
+                        //
+                        // 数据源：ProviderStore.list()（与 CLI /config 同一份
+                        // config.json）。选中 = setCurrent + **重建当前会话** ——
+                        // ApiClient 是 ChatSession.create 时用当时 cfg 装配的，
+                        // 不重建的话切了不生效（CLI 那边是热读，这边是快照）。
+                        // 重建走 AppGraph.openSession(同 id)：dispose 会先 flush
+                        // 自动保存，历史不丢。
+                        if (showModelPicker) {
+                            val pstore = AppGraph.storage
+                                ?.let { com.ccm.app.core.provider.ProviderStore(it) }
+                            val items = pstore?.list() ?: emptyList()
+                            AlertDialog(
+                                onDismissRequest = { showModelPicker = false },
+                                title = { Text("选择模型") },
+                                text = {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .verticalScroll(rememberScrollState()),
+                                    ) {
+                                        if (items.isEmpty()) {
+                                            Text(
+                                                text = "还没有 Provider —— 到「设置 → 模型」里先加一个",
+                                                style = CCMText.body13,
+                                                color = CCMTheme.colors.textSecondary,
+                                            )
+                                        }
+                                        items.forEach { it2 ->
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                                                    .clickable(enabled = it2.enabled) {
+                                                        val ok = pstore?.setCurrent(it2.id) == true
+                                                        if (ok) {
+                                                            profileRefreshKey++   // 刷新顶栏/首页模型名
+                                                            // 重建会话让 ApiClient 吃到新配置（历史由 dispose flush 保住）
+                                                            AppGraph.openSession(AppGraph.sessionId)
+                                                                ?.let { activeSession = it }
+                                                        }
+                                                        showModelPicker = false
+                                                    }
+                                                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = it2.name,
+                                                        style = CCMText.body14,
+                                                        color = if (it2.enabled) CCMTheme.colors.textMain
+                                                        else CCMTheme.colors.textSecondary,
+                                                    )
+                                                    Text(
+                                                        text = it2.model,
+                                                        style = CCMText.body12,
+                                                        color = CCMTheme.colors.textSecondary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                    )
+                                                }
+                                                if (it2.isCurrent) {
+                                                    Text("✓", color = CCMTheme.colors.accent, style = CCMText.body14)
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                confirmButton = {},
+                                dismissButton = {
+                                    TextButton(onClick = { showModelPicker = false }) { Text("关闭") }
+                                },
+                            )
+                        }
                     } else {
                         // 没配 Provider —— 渲染空态而不是崩。
                         // 用户此时应该去设置页，这里给个能点的入口。
@@ -445,7 +535,8 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                                     updatedAt = it.updatedAt,
                                 )
                             },
-                            onSearchChange = { /* TODO 第3批: 内存过滤 */ },
+                            searchQuery = chatSearch,
+                            onSearchChange = { chatSearch = it },
                             onOpenChat = { ui -> openChat(ui.id) },
                             onNewChat = newChat,
                         )

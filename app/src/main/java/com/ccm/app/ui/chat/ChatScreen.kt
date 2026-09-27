@@ -90,6 +90,7 @@ fun ChatScreen(
     onStop: () -> Unit = {},
     onExport: () -> Unit = {},
     onRename: () -> Unit = {},
+    onModelClick: () -> Unit = {},
 ) {
     val colors = CCMTheme.colors
 
@@ -169,6 +170,7 @@ fun ChatScreen(
                 running = running,
                 modelName = modelName,
                 tokenCount = tokenCount,
+                onModelClick = onModelClick,
             )
 
             Spacer(Modifier.height(7.36.dp))

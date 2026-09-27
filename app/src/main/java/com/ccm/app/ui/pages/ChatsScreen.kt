@@ -139,8 +139,11 @@ fun ChatsScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // 搜索时显示匹配数（totalCount 是全量，搜索中直接用会误导）
+            val shownCount = if (searchQuery.isBlank()) totalCount
+            else chats.count { it.title.contains(searchQuery, ignoreCase = true) }
             Text(
-                text = "共 $totalCount 个对话",
+                text = "共 $shownCount 个对话",
                 style = CCMText.body13,
                 color = colors.textSecondary,
             )
@@ -156,9 +159,23 @@ fun ChatsScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // ── 列表 ──────────────────────────────────────────────────────
-        chats.forEach { chat ->
+        // ── 列表（按搜索词过滤，2026-09-27）─────────────────────────
+        //   原来直接 chats.forEach —— searchQuery 传了也白传，
+        //   搜什么都显示全量列表。
+        val shown = if (searchQuery.isBlank()) chats
+        else chats.filter { it.title.contains(searchQuery, ignoreCase = true) }
+        shown.forEach { chat ->
             ChatRow(chat = chat, onClick = { onOpenChat(chat) })
+        }
+        if (shown.isEmpty() && chats.isNotEmpty()) {
+            Spacer(Modifier.height(32.dp))
+            Text(
+                text = "没有匹配「$searchQuery」的对话",
+                style = CCMText.body13,
+                color = colors.textSecondary,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
         }
 
         Spacer(Modifier.height(24.dp))

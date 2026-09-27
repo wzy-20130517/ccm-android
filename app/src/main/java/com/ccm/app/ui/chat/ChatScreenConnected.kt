@@ -54,6 +54,7 @@ fun ChatScreenConnected(
     modelName: String = "Sonnet 4.6",
     onExport: () -> Unit = {},
     onRename: () -> Unit = {},
+    onModelClick: () -> Unit = {},
 ) {
     val coreState by session.state.collectAsState()
     val uiState = remember(coreState) { ChatAdapter.toUi(coreState) }
@@ -120,5 +121,6 @@ fun ChatScreenConnected(
         onStop = { session.stop() },
         onExport = onExport,
         onRename = onRename,
+        onModelClick = onModelClick,
     )
 }
