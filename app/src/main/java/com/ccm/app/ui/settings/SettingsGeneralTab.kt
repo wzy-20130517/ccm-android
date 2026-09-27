@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ccm.app.ui.theme.CCMText
+import com.ccm.app.ui.theme.CCMTheme
 
 /** 下拉选项集合（2026-09-27 加 —— 这些下拉之前全是 onClick 空转）。 */
 private val WORK_FUNCTION_OPTIONS = listOf(
@@ -45,7 +46,6 @@ private val SEND_KEY_OPTIONS = listOf(
     "Ctrl+Enter 发送",
 )
 private val NEWLINE_KEY_OPTIONS = listOf("Enter", "Shift+Enter", "Alt+Enter")
-import com.ccm.app.ui.theme.CCMTheme
 
 /**
  * 设置页 · General tab —— 对齐 `SettingsPage.tsx:515 renderGeneral()`。

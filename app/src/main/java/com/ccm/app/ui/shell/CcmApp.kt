@@ -559,9 +559,9 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         onNewArtifact = { },
                     )
 
-                    CcmRoute.COWORK -> CoworkScreen(onBack = { navigate(CcmRoute.HOME) })
+                    CcmRoute.COWORK -> CoworkScreen()
 
-                    CcmRoute.SCHEDULED -> ScheduledScreen(onBack = { navigate(CcmRoute.HOME) })
+                    CcmRoute.SCHEDULED -> ScheduledScreen()
 
                     else -> LandingScreen(
                         greeting = greetingFor(profileName),
