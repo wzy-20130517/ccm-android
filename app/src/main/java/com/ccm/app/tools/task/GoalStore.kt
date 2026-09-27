@@ -1,7 +1,6 @@
 package com.ccm.app.tools.task
 
 import com.ccm.app.tools.file.AtomicFile
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 

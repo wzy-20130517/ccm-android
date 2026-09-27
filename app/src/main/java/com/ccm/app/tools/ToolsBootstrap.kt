@@ -156,7 +156,9 @@ class ToolsBootstrap(
         val fileTools = FileTools(trashStore, undoStore)
         val searchTools = SearchTools()
         val webTools = settings?.let { WebTools(it) }
-        val imageTools = settings?.let { ImageTools(it, defaultCwd) }
+        // ImageTools 始终创建 —— ReverseImage 不需要任何 key，
+        // 若跟 FindImage/ImageGen 一起挂在 settings 下面会被误伤（没配 key 就整个消失）
+        val imageTools = ImageTools(settings, defaultCwd)
         val lookupTools = LookupTools(storage.rootDir)
         val visionTools = VisionTools(context, storage.rootDir)
         val phoneTools = PhoneTools(context, storage.rootDir)
@@ -205,10 +207,13 @@ class ToolsBootstrap(
                 add(it.WebSearchTool())
                 add(it.WebFetchTool())
             }
-            imageTools?.let {
-                add(it.FindImageTool())
-                add(it.ImageGenTool())
+            // 需要 key 的两个：没配就不注册 —— 免得模型调了才发现没 key
+            if (settings != null) {
+                add(imageTools.FindImageTool())
+                add(imageTools.ImageGenTool())
             }
+            // ReverseImage 不依赖任何 key（当前是诚实降级的占位，见类注释）
+            add(imageTools.ReverseImageTool())
             // SearchInfo/Lookup 不依赖任何 key（直连公开搜索源）
             add(lookupTools.SearchInfoTool())
             add(lookupTools.LookupTool())

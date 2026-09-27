@@ -81,7 +81,7 @@ class SystemTools(private val bridge: NativeBridge) {
         override val inputSchema: JsonObject = ToolSchema.noArgsSchema()
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult =
-            callBridge("sys.clipboardGet")
+            callBridge("sys.clipboard.get")
     }
 
     inner class ClipboardSetTool : Tool() {
@@ -98,7 +98,7 @@ class SystemTools(private val bridge: NativeBridge) {
             if (input["text"] == null) "text is required" else null
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult =
-            callBridge("sys.clipboardSet", JSONObject().put("text", input.str("text") ?: ""))
+            callBridge("sys.clipboard.set", JSONObject().put("text", input.str("text") ?: ""))
     }
 
     // ══════════════════════════════════════════════════════════════

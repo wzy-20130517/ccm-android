@@ -1,6 +1,5 @@
 package com.ccm.app.tools.system
 
-import com.ccm.app.core.tool.Attachment
 import com.ccm.app.core.tool.Tool
 import com.ccm.app.core.tool.ToolContext
 import com.ccm.app.core.tool.ToolResult

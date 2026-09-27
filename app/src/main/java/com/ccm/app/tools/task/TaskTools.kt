@@ -4,7 +4,6 @@ import com.ccm.app.core.tool.Tool
 import com.ccm.app.core.tool.ToolContext
 import com.ccm.app.core.tool.ToolResult
 import com.ccm.app.core.tool.ToolSchema
-import com.ccm.app.core.tool.ToolSchema.int
 import com.ccm.app.core.tool.ToolSchema.str
 import com.ccm.app.core.tool.ToolSchema.strList
 import kotlinx.serialization.json.JsonObject
