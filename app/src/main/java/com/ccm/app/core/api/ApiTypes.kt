@@ -17,25 +17,15 @@ import kotlinx.serialization.json.JsonObject
  */
 object ApiTypes {
 
-    /** 协议类型。 */
-    enum class Protocol(val id: String) {
-        /** OpenAI 兼容（`/chat/completions`）。兼容性最好，中转站基本都认。 */
-        OPENAI("openai"),
-
-        /** Anthropic 原生（`/v1/messages`）。thinking/cache 语义最准。 */
-        ANTHROPIC("anthropic"),
-
-        /** OpenAI Responses（`/responses`）。新协议，要求网关支持。 */
-        RESPONSES("responses");
-
-        companion object {
-            fun from(id: String?): Protocol = when (id?.lowercase()) {
-                "anthropic" -> ANTHROPIC
-                "responses" -> RESPONSES
-                else -> OPENAI
-            }
-        }
-    }
+    // ───────────────────────── 协议 ─────────────────────────
+    //
+    // ⚠️ 协议枚举**不在这里** —— 唯一真源是 `core.provider.Protocol`
+    // （带 `path` / `baseShouldHaveV1` / `normalizeBaseUrl` / `toConfigString`）。
+    //
+    // 【为什么删掉这里的重复定义】曾经这里也有一份 `enum class Protocol(val id)`，
+    // 同一件事有了两个真源：配置层存 `provider.Protocol`，请求层用 `ApiTypes.Protocol`。
+    // 加新协议要改两处，漏一处就是「配置能存但请求发不出」这类静默故障。
+    // 统一后**所有协议判断都走 `core.provider.Protocol`**。
 
     // ───────────────────────── 流式事件 ─────────────────────────
 

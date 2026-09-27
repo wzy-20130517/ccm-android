@@ -1,5 +1,6 @@
 package com.ccm.app.core.api
 
+import com.ccm.app.core.provider.Protocol
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -34,7 +35,7 @@ import kotlinx.serialization.json.jsonPrimitive
  * 让上层记 trace，然后继续。
  */
 class StreamParser(
-    private val protocol: ApiTypes.Protocol,
+    private val protocol: Protocol,
     private val json: Json = DEFAULT_JSON,
 ) {
 
@@ -69,7 +70,7 @@ class StreamParser(
         } catch (e: Throwable) {
             return listOf(
                 ApiTypes.StreamEvent.ParseError(
-                    protocol = protocol.id,
+                    protocol = Protocol.toConfigString(protocol),
                     error = e.message ?: "invalid SSE JSON",
                     raw = data.take(200),
                 )
@@ -78,14 +79,14 @@ class StreamParser(
 
         return try {
             when (protocol) {
-                ApiTypes.Protocol.OPENAI -> parseOpenAi(root)
-                ApiTypes.Protocol.ANTHROPIC -> parseAnthropic(root)
-                ApiTypes.Protocol.RESPONSES -> parseResponses(root)
+                Protocol.OPENAI -> parseOpenAi(root)
+                Protocol.ANTHROPIC -> parseAnthropic(root)
+                Protocol.RESPONSES -> parseResponses(root)
             }
         } catch (e: Throwable) {
             listOf(
                 ApiTypes.StreamEvent.ParseError(
-                    protocol = protocol.id,
+                    protocol = Protocol.toConfigString(protocol),
                     error = e.message ?: "parse failed",
                     raw = data.take(200),
                 )
@@ -252,7 +253,7 @@ class StreamParser(
                 val err = root["error"] as? JsonObject
                 val msg = (err?.get("message") as? JsonPrimitive)?.takeIf { it.isString }?.content
                     ?: "unknown anthropic stream error"
-                out += ApiTypes.StreamEvent.ParseError(protocol.id, msg, "")
+                out += ApiTypes.StreamEvent.ParseError(Protocol.toConfigString(protocol), msg, "")
             }
 
             // ping / content_block_stop 等：正常心跳，忽略
@@ -322,7 +323,7 @@ class StreamParser(
                     ?: ((root["response"] as? JsonObject)?.get("error") as? JsonObject)
                 val msg = (err?.get("message") as? JsonPrimitive)?.takeIf { it.isString }?.content
                     ?: "unknown responses stream error"
-                out += ApiTypes.StreamEvent.ParseError(protocol.id, msg, "")
+                out += ApiTypes.StreamEvent.ParseError(Protocol.toConfigString(protocol), msg, "")
             }
         }
         return out
