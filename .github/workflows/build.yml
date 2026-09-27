@@ -38,6 +38,31 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # ═══════════════════════════════════════════════════════════════
+      # 先跑 JVM 单测，再构建 APK。
+      #
+      # 【为什么必须有这一步】在此之前 CI 只有 `assembleDebug` ——
+      # **`src/test` 根本不参与编译**，于是：
+      #   · 写了测试也没人跑（等于死代码）
+      #   · 端到端链路「能不能跑通」只能靠装机点几下猜
+      # 而链路上最要命的 bug（工具调用在 OpenAI 协议下发出非法格式、
+      # 纯文本回复不进历史、中断后 Done 丢失）**装机时只表现为
+      # 「模型不听话 / 界面转圈」，根本定位不到**。
+      # 这些用例在 core/ 层用假网关跑真链路，几秒就能给出确定答案。
+      #
+      # 放在 APK 构建之前：测试挂了就不该浪费 5 分钟打包一个坏 APK。
+      # ═══════════════════════════════════════════════════════════════
+      - name: Run unit tests
+        run: gradle testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: app/build/reports/tests/testDebugUnitTest/
+          retention-days: 7
+
       - name: Build Debug APK
         env:
           # versionCode 每次构建递增 —— 否则覆盖安装会被 Android 拒（"已存在更高版本"）

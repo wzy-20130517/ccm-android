@@ -161,8 +161,17 @@ object SseReader {
             override fun onFailure(call: Call, e: IOException) {
                 // 协程已取消导致的失败是正常路径，不要报错
                 if (!isActive) return
+                // 看门狗主动断开 → 报超时（优先于下面的「主动取消」判断，
+                // 因为看门狗也是用 cancel() 断开的，不区分会把超时误报成用户中断）
                 if (watchdogFired.get()) {
                     close(streamTimeoutError(phase.get(), call))
+                    return
+                }
+                // 用户中断（AgentLoop.abort → cancelActiveStream）→ **静默收尾**。
+                // 报「网络错误: Canceled」会让用户以为是自己网断了，
+                // 而他只是按了中断 —— 这是主动行为，不是故障。
+                if (call.isCanceled()) {
+                    close()
                     return
                 }
                 close(ApiTypes.ApiException(

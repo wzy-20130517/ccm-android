@@ -293,6 +293,11 @@ class AgentLoop(
                 val messageId = java.util.UUID.randomUUID().toString()
                 val assistant = callModel(emit, messageId) ?: break
 
+                // 用户中断发生在流中途 → 流被 cancel，这里拿到的是**半截回复**。
+                // 必须先判中断再判空响应：否则会往历史里塞一条「空响应提示语」，
+                // 污染会话（用户下次打开会看到一条莫名其妙的系统消息）。
+                if (aborted) throw CancellationException("用户中断")
+
                 if (assistant.toolCalls.isEmpty()) {
                     // ── 空响应 / 占位符回复 → 重试（对齐 Node 版 `onlyPlaceholder` 处理）──
                     //
