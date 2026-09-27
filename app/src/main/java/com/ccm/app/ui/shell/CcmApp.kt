@@ -17,6 +17,7 @@ import com.ccm.app.ui.common.TitleBar
 import com.ccm.app.ui.pages.ArtifactsScreen
 import com.ccm.app.ui.pages.ChatsScreen
 import com.ccm.app.ui.pages.CoworkScreen
+import com.ccm.app.ui.pages.CustomizeScreen
 import com.ccm.app.ui.pages.LandingScreen
 import com.ccm.app.ui.pages.ProjectsScreen
 import com.ccm.app.ui.pages.ScheduledScreen
@@ -188,12 +189,7 @@ private fun AppScaffold() {
                         onCreate = { },
                     )
 
-                    // TODO(阶段4·B4-d): CustomizeScreen（1244 行，独立页面）
-                    CcmRoute.CUSTOMIZE -> LandingScreen(
-                        greeting = "定制（待实现）",
-                        onSend = { },
-                        onPickPrompt = { },
-                    )
+                    CcmRoute.CUSTOMIZE -> CustomizeScreen()
 
                     CcmRoute.ARTIFACTS -> ArtifactsScreen(
                         items = emptyList(),
