@@ -20,9 +20,11 @@ import com.ccm.app.core.tool.ToolUiCallback
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -279,6 +281,9 @@ class AgentLoop(
         )
 
         try {
+            // 空响应重试计数（连续几轮都吐空 → 放弃并如实报告）
+            var emptyRetries = 0
+
             while (turnCount < maxTurns) {
                 if (aborted) throw CancellationException("用户中断")
                 turnCount++
@@ -287,7 +292,49 @@ class AgentLoop(
                 // UI 据此丢弃上一轮的半截输出（见 AgentEvent 类注释）。
                 val messageId = java.util.UUID.randomUUID().toString()
                 val assistant = callModel(emit, messageId) ?: break
-                if (assistant.toolCalls.isEmpty()) break
+
+                if (assistant.toolCalls.isEmpty()) {
+                    // ── 空响应 / 占位符回复 → 重试（对齐 Node 版 `onlyPlaceholder` 处理）──
+                    //
+                    // 【为什么必须单独处理】历史里可能残留 `(continue)` 这类
+                    // **内部占位符**（角色交替补位用），模型看到就照着学、原封不动
+                    // 吐一个回来。此时 content 非空，只判 `isEmpty` 会当成正常回复
+                    // —— 那一轮白掉，用户还得手动催一次。
+                    if (isEmptyOrPlaceholder(assistant)) {
+                        if (emptyRetries < MAX_EMPTY_RETRIES) {
+                            emptyRetries++
+                            trace?.emit(
+                                TraceEvents.RUN_START,   // 复用（同属「运行中异常续跑」）
+                                mapOf(
+                                    "kind" to "empty_retry",
+                                    "attempt" to emptyRetries,
+                                    "text_len" to assistant.text.length,
+                                    "text_preview" to assistant.text.take(80),
+                                ),
+                            )
+                            messages += Message.user(EMPTY_RESPONSE_HINT)
+                            continue
+                        }
+                        // 重试耗尽：如实告诉用户，不要静默结束（静默 = 用户以为程序卡了）
+                        emit(
+                            AgentEvent.Error(
+                                "模型连续 $MAX_EMPTY_RETRIES 次返回空响应，已停止重试。" +
+                                    "可能原因：网关返回了空内容、或模型不兼容当前协议。",
+                                ToolResult.UNKNOWN,
+                            )
+                        )
+                        break
+                    }
+
+                    // ── 正常纯文本回复 → **必须写进历史** ──
+                    //
+                    // 【修的是真实 bug】早期实现只调 `appendToolResults()`（有工具调用时才走），
+                    // 于是**纯文本回复永远不进历史** —— 用户问「你好」，模型答「你好」，
+                    // 下一轮模型看不到自己说过什么，表现为「多轮对话失忆、反复自我介绍」。
+                    appendAssistantText(assistant)
+                    break
+                }
+                emptyRetries = 0
 
                 val results = executeTools(assistant.toolCalls, emit, messageId)
                 appendToolResults(assistant, results)
@@ -308,8 +355,20 @@ class AgentLoop(
                 trace = null
             } catch (_: Throwable) {
             }
-            // 保证恰好发一次 Done —— UI 靠它收尾（关 spinner、恢复输入框）
-            emit(AgentEvent.Done)
+            // 保证恰好发一次 Done —— UI 靠它收尾（关 spinner、恢复输入框）。
+            //
+            // ⚠️ 必须包在 `NonCancellable` 里：用户中断时 channelFlow 的
+            // 作用域已被取消，此时 `send()` 会**直接抛 CancellationException**
+            // —— Done 永远送不出去，UI 停在「生成中」转圈，输入框也锁着。
+            // 用户只能杀进程。这是「中断后界面卡死」的根因。
+            withContext(NonCancellable) {
+                try {
+                    emit(AgentEvent.Done)
+                } catch (_: Throwable) {
+                    // 连 NonCancellable 都发不出去（channel 已关）→ 只能放弃，
+                    // 但至少不要因为这个异常把 trace 收尾也带崩
+                }
+            }
         }
     }.flowOn(Dispatchers.IO)
 
@@ -689,6 +748,31 @@ class AgentLoop(
 
     // ═════════════════════════ 历史维护 ═════════════════════════
 
+    /**
+     * 判断这次回复是不是「空响应或内部占位符」。
+     *
+     * 两个条件**必须同时满足**才判真（对齐 Node 版的 `onlyPlaceholder`）：
+     * 1. **没有工具调用** —— 有工具调用就说明模型在正常干活，文本空是正常的
+     *    （很多模型调工具时正文就是空）
+     * 2. 正文去掉占位符后为空
+     *
+     * 【为什么第 1 条不能少】否则会把「正文里恰好提到 (continue) 的回复」误杀 ——
+     * 比如模型正在解释这个 bug 本身，结果被当成空响应重试，用户看到重复输出。
+     */
+    private fun isEmptyOrPlaceholder(turn: AssistantTurn): Boolean {
+        if (turn.toolCalls.isNotEmpty()) return false
+        val t = turn.text.trim()
+        if (t.isEmpty()) return true
+        return PLACEHOLDER_TEXTS.any { it.equals(t, ignoreCase = true) }
+    }
+
+    /** 把纯文本回复写进历史（无工具调用路径）。 */
+    private fun appendAssistantText(turn: AssistantTurn) {
+        val blocks = mutableListOf<ContentBlock>()
+        if (turn.text.isNotEmpty()) blocks += ContentBlock.Text(turn.text)
+        if (blocks.isNotEmpty()) messages += Message(Message.ROLE_ASSISTANT, blocks)
+    }
+
     /** 把 assistant 回复 + 工具结果写进历史。 */
     private fun appendToolResults(
         assistant: AssistantTurn,
@@ -854,6 +938,38 @@ class AgentLoop(
 
         /** 轮数硬上限（续轮也突破不了）。 */
         const val MAX_TURNS_HARD_CAP = 400
+
+        /**
+         * 空响应最多重试几次。
+         *
+         * 3 次对齐 Node 版。再多就是浪费 token —— 连续 3 次空说明是网关/模型问题，
+         * 重试解决不了，该如实报告给用户。
+         */
+        const val MAX_EMPTY_RETRIES = 3
+
+        /**
+         * 视为「内部占位符」的文本（大小写不敏感）。
+         *
+         * 这些字符串是**我们自己**往历史里塞的角色交替补位，模型看到会照着学。
+         * 识别出来重试，而不是当成正常回复（那一轮会白掉）。
+         */
+        private val PLACEHOLDER_TEXTS = setOf(
+            "(continue)",
+            "(empty)",
+            "(no content)",
+            "(空)",
+        )
+
+        /**
+         * 空响应重试时注入的提示语。
+         *
+         * **必须说清错在哪**：笼统说「响应为空」模型不知如何改正，
+         * 很可能再吐一个 `(continue)`。明确告诉它那是内部占位符、不可照抄。
+         */
+        private const val EMPTY_RESPONSE_HINT =
+            "（系统提示）你上一条回复是空的，或者原样输出了内部占位符如 (continue)。" +
+                "那些占位符是系统内部用于角色交替的标记，不是对话内容，不要照抄。" +
+                "请正常回复上一条消息。"
 
         /** 参数预览里优先展示的键（常见且信息量大）。 */
         private val PREVIEW_KEY_ORDER = listOf(

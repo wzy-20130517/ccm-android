@@ -4,6 +4,7 @@ import com.ccm.app.core.agent.AgentEvent
 import com.ccm.app.core.agent.AgentLoop
 import com.ccm.app.core.provider.AppConfig
 import com.ccm.app.core.session.Message
+import com.ccm.app.core.session.SessionStore
 import com.ccm.app.core.tool.ToolRegistry
 import com.ccm.app.core.tool.ToolRunner
 import kotlinx.coroutines.CoroutineScope
@@ -302,8 +303,14 @@ class ChatSession(
             scope: CoroutineScope,
             imageScaler: com.ccm.app.core.image.ImageScaler? = null,
             cwd: String = "/",
+            /** 会话 id（恢复旧会话时传，空 = 新建）。**Agent 与存盘共用这一个**。 */
+            sessionId: String = "",
         ): ChatSession? {
             val cfg = AppConfig.load(storage.configFile).config
+            // 先把 id 定下来 —— Agent 侧（工具/hooks/子 Agent 归属）和存盘侧
+            // 必须用同一个，否则「工具里拿不到会话 id」这类错位会静默发生
+            val sid = sessionId.ifBlank { SessionStore(storage).newSessionId() }
+
             val container = AppContainer.build(
                 storage = storage,
                 registry = registry,
@@ -311,9 +318,10 @@ class ChatSession(
                 config = cfg,
                 imageScaler = imageScaler,
                 cwd = cwd,
+                sessionId = sid,
             ) ?: return null
 
-            container.attachSessionAuto(scope)
+            container.attachSessionAuto(scope, sessionId = sid)
             return ChatSession(container, scope)
         }
     }

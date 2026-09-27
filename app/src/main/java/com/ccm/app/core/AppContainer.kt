@@ -201,12 +201,27 @@ class AppContainer private constructor(
             systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
             cwd: String = "/",
             imageScaler: ImageScaler? = null,
+            /**
+             * 会话 id。
+             *
+             * **必须由调用方给**（与 [attachSessionAuto] 用同一个）——
+             * 早期实现这里硬编码 `""`，而 `attachSessionAuto` 自己
+             * `newSessionId()` 生成一个新的，于是**同一场对话有两个 id**：
+             * - Agent 侧（工具、hooks 的 `SESSION_ID`、子 Agent 归属）看到空串
+             * - 存盘侧用的是另一个 id
+             * 表现为「工具里拿不到会话 id」「子 Agent 无法归属到会话」这类静默错位。
+             *
+             * 空串 = 由本方法生成一个（单测/无会话场景）。
+             */
+            sessionId: String = "",
         ): AppContainer? {
             val provider = config.currentProvider ?: return null
             val keys = provider.allKeys()
             if (keys.isEmpty()) return null
 
             storage.ensureDirs()
+
+            val effectiveSessionId = sessionId.ifBlank { SessionStore(storage).newSessionId() }
 
             // ── API 客户端 ──
             val apiClient = ApiClient(
@@ -240,7 +255,7 @@ class AppContainer private constructor(
                 permissionModeInit = config.permissionMode,
                 storage = AppBackedToolStorage(storage),
                 settings = buildSettings(config, provider),
-                sessionId = "",
+                sessionId = effectiveSessionId,
                 spawnSubAgent = null,   // 由上层在装配后注入（需要 Agent 工具支持）
                 toolRunner = toolRunner,
                 imageScaler = imageScaler,
