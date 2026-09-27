@@ -85,7 +85,7 @@ class UserProfileStore(private val storage: AppStorage) {
             val text = file.readText()
             val json = JSONObject(text)
             UserProfile.fromJson(json)
-        } catch {
+        } catch (e: Exception) {
             UserProfile.EMPTY
         }
     }
