@@ -24,6 +24,12 @@ import sys
 # ── 以下四个函数与 MarkdownRenderer.kt 逐行对应 ──────────────────
 
 
+HEADING_RE = re.compile(r'^#{1,6}\s+')
+HEADING_LINE_RE = re.compile(r'^(#{1,6})\s+(.*)$')
+UNORDERED_RE = re.compile(r'^\s*[-*+]\s+(.*)$')
+ORDERED_RE = re.compile(r'^\s*\d+[.)]\s+(.*)$')
+
+
 def is_table_separator(line: str) -> bool:
     """对应 Kotlin `isTableSeparator`：GFM 表格分隔行 `|---|---|` 或 `|:--|--:|`"""
     t = line.strip()
@@ -48,7 +54,8 @@ def is_block_start(lines: list, i: int) -> bool:
     t = l.lstrip()
     if t.startswith('```') or t.startswith('~~~'):
         return True
-    if t.startswith('#'):
+    # ⚠️ 必须与标题解析的 `#{1,6}\s+` 一致 —— 只判 '#' 会与主循环不匹配导致死循环
+    if HEADING_RE.match(t):
         return True
     if t.startswith('>'):
         return True
@@ -94,7 +101,7 @@ def parse_markdown(src: str) -> list:
             i += 1
             continue
 
-        m = re.match(r'^(#{1,6})\s+(.*)$', line)
+        m = HEADING_LINE_RE.match(line)
         if m:
             out.append(('h', len(m.group(1)), m.group(2).strip()))
             i += 1
@@ -118,15 +125,15 @@ def parse_markdown(src: str) -> list:
             out.append(('table', header, rows))
             continue
 
-        um = re.match(r'^\s*[-*+]\s+(.*)$', line)
-        om = re.match(r'^\s*\d+[.)]\s+(.*)$', line)
+        um = UNORDERED_RE.match(line)
+        om = ORDERED_RE.match(line)
         if um or om:
             ordered = om is not None
             items = []
             while i < len(lines):
                 l = lines[i]
-                a = re.match(r'^\s*[-*+]\s+(.*)$', l)
-                b = re.match(r'^\s*\d+[.)]\s+(.*)$', l)
+                a = UNORDERED_RE.match(l)
+                b = ORDERED_RE.match(l)
                 if not a and not b:
                     break
                 items.append((a or b).group(1).strip())
@@ -143,6 +150,11 @@ def parse_markdown(src: str) -> list:
             i += 1
         if buf:
             out.append(('p', '\n'.join(buf)))
+
+        # 兜底：无论如何必须推进，否则死循环（与 Kotlin 侧同一安全网）
+        if i < len(lines) and not buf:
+            out.append(('p', lines[i].strip()))
+            i += 1
     return out
 
 
@@ -181,6 +193,9 @@ CASES = [
     ("段落合并多行", "第一行\n第二行\n\n新段", ['p', 'p']),
     ("代码块带语言标签", "```js\nlet a=1\n```", ['code']),
     ("波浪围栏", "~~~\ncode\n~~~", ['code']),
+    # ★ 死循环回归（2026-09-27 发现）：'#' 后无空格时 isBlockStart 与标题解析不一致
+    ("井号后无空格不死循环", "#不是标题", ['p']),
+    ("井号后无空格 + 后续段落", "#不是标题\n\n正文", ['p', 'p']),
     ("空输入", "", []),
     ("纯空行", "\n\n\n", []),
     ("CRLF 换行", "# 标题\r\n\r\n正文", ['h', 'p']),

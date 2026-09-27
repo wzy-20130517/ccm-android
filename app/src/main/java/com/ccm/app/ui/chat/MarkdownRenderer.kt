@@ -457,7 +457,7 @@ internal fun parseMarkdown(src: String): List<MdBlock> {
         }
 
         // ── 标题 ────────────────────────────────────────────
-        val h = Regex("^(#{1,6})\\s+(.*)$").find(line)
+        val h = HEADING_LINE_RE.find(line)
         if (h != null) {
             out.add(MdBlock.Heading(h.groupValues[1].length, h.groupValues[2].trim()))
             i++; continue
@@ -488,15 +488,15 @@ internal fun parseMarkdown(src: String): List<MdBlock> {
         }
 
         // ── 列表 ────────────────────────────────────────────
-        val ulMatch = Regex("^\\s*[-*+]\\s+(.*)$").find(line)
-        val olMatch = Regex("^\\s*\\d+[.)]\\s+(.*)$").find(line)
+        val ulMatch = UNORDERED_RE.find(line)
+        val olMatch = ORDERED_RE.find(line)
         if (ulMatch != null || olMatch != null) {
             val ordered = olMatch != null
             val items = mutableListOf<MdListItem>()
             while (i < lines.size) {
                 val l = lines[i]
-                val um = Regex("^\\s*[-*+]\\s+(.*)$").find(l)
-                val om = Regex("^\\s*\\d+[.)]\\s+(.*)$").find(l)
+                val um = UNORDERED_RE.find(l)
+                val om = ORDERED_RE.find(l)
                 if (um == null && om == null) break
                 val text = (um ?: om!!).groupValues[1].trim()
                 // GFM 任务项 `- [ ]` / `- [x]`
@@ -523,23 +523,58 @@ internal fun parseMarkdown(src: String): List<MdBlock> {
             i++
         }
         if (buf.isNotEmpty()) out.add(MdBlock.Paragraph(buf.joinToString("\n")))
+
+        // ── 兜底：无论如何必须推进，否则死循环 ──────────────────
+        // 正常路径下上面每个分支都消费了行。这行是**安全网**：
+        // 万一将来新增了某个 isBlockStart 条件却忘了加对应分支，
+        // 宁可把该行当普通段落显示，也不要整页卡死。
+        if (i < lines.size && buf.isEmpty()) {
+            out.add(MdBlock.Paragraph(lines[i].trim()))
+            i++
+        }
     }
     return out
 }
 
-/** 该行是否是块级元素的起点（段落扫描的终止条件） */
+/**
+ * 该行是否是块级元素的起点（段落扫描的终止条件）。
+ *
+ * ## ⚠️ 致命约束：每个 `return true` 都必须有**对应分支消费该行**
+ * 段落扫描遇到块起点就 break，控制权回到主循环；若主循环没有任何分支
+ * 认领这一行，`i` 永不递增 → **无限循环**。
+ *
+ * 踩过的 bug：这里原本写 `t.startsWith("#")`（只看首字符），
+ * 而标题解析要求 `#{1,6}\s+`（`#` 后必须跟空格）。
+ * 输入 `#不是标题` 时 → 这里 true、标题分支不匹配、无其他分支认领 → 卡死。
+ * **两处的判定条件必须逐字一致**，改一处务必改另一处。
+ */
 private fun isBlockStart(lines: List<String>, i: Int): Boolean {
     val l = lines[i]
     val t = l.trimStart()
     if (t.startsWith("```") || t.startsWith("~~~")) return true
-    if (t.startsWith("#")) return true
+    if (HEADING_RE.containsMatchIn(t)) return true
     if (t.startsWith(">")) return true
     if (l.trim() in listOf("---", "***", "___")) return true
-    if (Regex("^\\s*[-*+]\\s+").containsMatchIn(l)) return true
-    if (Regex("^\\s*\\d+[.)]\\s+").containsMatchIn(l)) return true
+    if (UNORDERED_RE.containsMatchIn(l)) return true
+    if (ORDERED_RE.containsMatchIn(l)) return true
     if (l.contains('|') && i + 1 < lines.size && isTableSeparator(lines[i + 1])) return true
     return false
 }
+
+/** 标题：`#`~`######` + 至少一个空格（与 [isBlockStart] 共用，保证判定一致） */
+private val HEADING_RE = Regex("^#{1,6}\\s+")
+
+/** 标题行（含捕获组）：`#{1,6}` + 空格 + 内容 */
+private val HEADING_LINE_RE = Regex("^(#{1,6})\\s+(.*)$")
+
+/** 无序列表项：`- ` / `* ` / `+ ` */
+private val UNORDERED_RE = Regex("^\\s*[-*+]\\s+(.*)$")
+
+/** 有序列表项：`1. ` / `1) ` */
+private val ORDERED_RE = Regex("^\\s*\\d+[.)]\\s+(.*)$")
+
+/** 有序列表项：`1. ` / `1) ` */
+private val ORDERED_RE = Regex("^\\s*\\d+[.)]\\s+")
 
 /** GFM 表格分隔行：`|---|---|` 或 `|:--|--:|` */
 private fun isTableSeparator(line: String): Boolean {
