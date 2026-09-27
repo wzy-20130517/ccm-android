@@ -66,7 +66,11 @@ class SearchTools {
     //  Glob
     // ══════════════════════════════════════════════════════════════
 
-    class GlobTool : Tool() {
+    // ⚠️ 必须是 `inner class` 而不是嵌套 `class` ——
+    // 嵌套类不持有外部实例，访问不到 [SearchTools.resolveRoot] / [SearchTools.readTextSafe]
+    // 这些私有方法（CI 报了一串 Unresolved reference）。
+    // 代价是每个实例多一个外部引用，对这些短命工具对象无所谓。
+    inner class GlobTool : Tool() {
         override val name = "Glob"
         override val description = "glob 模式查找文件（如 **/*.kt）"
         override val isReadOnly = true
@@ -110,7 +114,7 @@ class SearchTools {
     //  Grep
     // ══════════════════════════════════════════════════════════════
 
-    class GrepTool : Tool() {
+    inner class GrepTool : Tool() {
         override val name = "Grep"
         override val description = "正则搜索文件内容"
         override val isReadOnly = true
@@ -176,7 +180,7 @@ class SearchTools {
     //  CodeSearch
     // ══════════════════════════════════════════════════════════════
 
-    class CodeSearchTool : Tool() {
+    inner class CodeSearchTool : Tool() {
         override val name = "CodeSearch"
         override val description =
             "关键词模糊找符号（函数/类/变量名）。空格分隔多个词时要全部命中；" +
