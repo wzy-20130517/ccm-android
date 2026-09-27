@@ -166,23 +166,53 @@ object ToolSchema {
     /** 取字符串参数，缺失时用 [default]。 */
     fun JsonObject.str(key: String, default: String): String = str(key) ?: default
 
-    /** 取整数参数（容忍模型给字符串数字，如 `"10"`）。 */
+    /**
+     * 取整数参数。同时接受 JSON number（`10`）和字符串数字（`"10"`）。
+     *
+     * ⚠️ 【曾经有个反了的判断】这里原先是 `if (!p.isString) return null`，
+     * 本意是「容忍模型给字符串数字」，实际效果却是**只接受字符串、拒绝一切真数字**：
+     * `JsonPrimitive.isString` 表示「这是 JSON 字符串字面量」，
+     * 所以 `{"limit": 10}` 的 `isString` 是 **false** → 直接返回 null。
+     *
+     * 后果是静默降级（不报错，工具用默认值）：
+     * - `Read` 的 `start_line`/`end_line` 被忽略 → 永远读整个文件
+     * - `Edit` 的 `replace_all: true` 被忽略 → 误报「不唯一」
+     * - `Bash` 的 `timeout`、`phone_wait` 的 `max_wait_ms` 全部失效
+     * 模型以为参数生效了，看到的却是默认行为 —— 会往完全错误的方向排查。
+     *
+     * 正确写法是**不检查 isString**：`content` 对 number 和 string 都返回原文。
+     */
     fun JsonObject.int(key: String): Int? {
         val p = this[key] as? JsonPrimitive ?: return null
-        if (!p.isString) return null
         return p.content.trim().toIntOrNull()
     }
 
-    /** 取布尔参数（容忍字符串 `"true"`）。 */
+    /** 取整数参数，缺失或解析失败时用 [default]。 */
+    fun JsonObject.int(key: String, default: Int): Int = int(key) ?: default
+
+    /** 取浮点参数（容忍 `"0.7"` 形式）。 */
+    fun JsonObject.double(key: String): Double? {
+        val p = this[key] as? JsonPrimitive ?: return null
+        return p.content.trim().toDoubleOrNull()
+    }
+
+    /**
+     * 取布尔参数。同时接受 JSON bool（`true`）和字符串（`"true"`）。
+     *
+     * 同 [int] 的坑：原先的 `if (!p.isString) return null` 会让真正的
+     * `{"replace_all": true}` 被丢弃。
+     */
     fun JsonObject.bool(key: String): Boolean? {
         val p = this[key] as? JsonPrimitive ?: return null
-        if (!p.isString) return null
         return when (p.content.trim().lowercase()) {
             "true" -> true
             "false" -> false
             else -> null
         }
     }
+
+    /** 取布尔参数，缺失时用 [default]。 */
+    fun JsonObject.bool(key: String, default: Boolean): Boolean = bool(key) ?: default
 
     /** 取字符串数组参数（单元素也接受裸字符串）。 */
     fun JsonObject.strList(key: String): List<String>? {
