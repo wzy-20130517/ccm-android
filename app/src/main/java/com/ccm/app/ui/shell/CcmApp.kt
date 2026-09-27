@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.ccm.app.AppGraph
 import com.ccm.app.core.ChatSession
 import com.ccm.app.core.session.SessionStore
 import com.ccm.app.ui.chat.ChatScreen
