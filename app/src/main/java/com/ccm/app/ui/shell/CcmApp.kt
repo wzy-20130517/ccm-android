@@ -3,11 +3,18 @@ package com.ccm.app.ui.shell
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.ccm.app.ui.common.SidebarDrawer
+import com.ccm.app.ui.common.TitleBar
 import com.ccm.app.ui.theme.CCMTheme
 import com.ccm.app.ui.theme.CCMText
 
@@ -22,29 +29,33 @@ import com.ccm.app.ui.theme.CCMText
  * 这是 dev-ui（阶段 4）与阶段 5 之间**唯一**的接口。阶段 5 不需要知道
  * 内部有哪些页面、怎么导航 —— 全在 ui/ 包内封装。
  *
- * ## 当前状态：骨架（B0）
- * 主题层已完成（ui/theme/），页面层待建。这里渲染一个可验证的最小骨架：
- * - 主题生效（背景 = `--bg-claude-main`）
- * - 居中占位文字（用实测的衬线标题样式）
+ * ## 当前状态：B1 骨架
+ * - ✅ 主题层（ui/theme/）
+ * - ✅ 顶栏（ui/common/TitleBar.kt）—— 44dp
+ * - ✅ 侧栏抽屉（ui/common/Sidebar.kt）—— 276dp + 遮罩
+ * - ⏳ 页面与聊天界面
  *
- * ## 后续填充顺序（B1 → B9，见 recon-b §5）
- * 1. `common/` 静态原子 → 用来校准 diff 工具链
- * 2. `common/` 基础组件
- * 3. `common/` 表单与弹窗
- * 4. `chat/` 聊天界面（MainContent 5537 行拆 8~12 块）
- * 5. `settings/` `pages/`
+ * ## 布局结构（对齐 Web 移动端）
+ * ```
+ * Box（根，承载抽屉浮层）
+ * ├── Column
+ * │   ├── TitleBar          44dp（不乘 0.92）
+ * │   └── 内容区             weight=1
+ * └── SidebarDrawer          浮在最上层（含遮罩）
+ * ```
+ * 抽屉用 `Box` 浮层而非 `ModalNavigationDrawer`，因为 Web 的实现是
+ * `fixed + z-60 + translateX`，用 Box 能 1:1 复刻它的动画与层级。
  *
  * ## 主题来源（对齐 Web）
- * Web 的判定顺序（`Onboarding.tsx:37-40`、`SettingsPage.tsx:135-139`）：
+ * Web 判定顺序（`Onboarding.tsx:37-40`、`SettingsPage.tsx:135-139`）：
  * 1. 用户显式选过 dark → 用用户选择
  * 2. 否则跟随系统 `prefers-color-scheme: dark`
  *
- * 所以初始值用 [isSystemInDarkTheme]（对应第 2 条），等设置页做完后
- * 接上持久化偏好（DataStore）实现第 1 条。
+ * 实测确认 Web 的 localStorage 默认值是 `"system"`（跟随系统）。
  */
 @Composable
 fun CcmApp() {
-    // 对齐 Web：未显式设置过主题时跟随系统
+    // 对齐 Web：未显式设置过主题时跟随系统（localStorage.theme === "system"）
     // TODO(阶段4·B5): 接 SettingsRepository —— 用户显式选择优先于系统
     val darkTheme = isSystemInDarkTheme()
 
@@ -54,33 +65,51 @@ fun CcmApp() {
 }
 
 /**
- * 应用骨架：内容区。
+ * 应用骨架：顶栏 + 内容区 + 侧栏抽屉。
  *
- * 移动端形态（MEASURED.md §0/§5）：
+ * 移动端形态（MEASURED.md §0/§5/§9）：
  * - 视口 393×852，全局 zoom 0.92（已固化进各尺寸常量）
- * - 顶栏 44dp，**不乘 0.92**（Web 有反向 zoom 抵消）
- * - **没有固定侧栏** —— `<768px` 时 `useIsMobile()` 为 true，
- *   `App.tsx:378` 会在每次路由变化时自动收起抽屉
+ * - 顶栏 44dp，**不乘 0.92**
+ * - **没有固定侧栏** —— 是 276dp 的抽屉，默认收起
+ * - Web 在每次路由变化时自动收起抽屉（`App.tsx:378`），B4 接路由时要保留这个行为
  */
 @Composable
 private fun AppScaffold() {
     val colors = CCMTheme.colors
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(colors.bgMain),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = "CCM",
-            style = CCMText.titleSerif,
-            color = colors.textSecondary,
-        )
+    var sidebarOpen by remember { mutableStateOf(false) }
 
-        // TODO(阶段4·B4): TitleBar() —— 44dp，bg=bgMain，底边 1dp border
-        // TODO(阶段4·B4): Sidebar 抽屉 —— ModalNavigationDrawer
-        //                 宽度 = 288 × 0.92 = 264.96dp（Web App.tsx:622 的 tuned value）
-        // TODO(阶段4·B4): ChatScreen / SettingsScreen / 各页面路由
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(colors.bgMain),
+        ) {
+            TitleBar(
+                onToggleSidebar = { sidebarOpen = !sidebarOpen },
+                onNavBack = null,      // 暂无导航历史 → 禁用态（灰 #B7B5B0）
+                onNavForward = null,
+            )
+
+            // ── 内容区 ────────────────────────────────────────────────
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                // B1 占位：验证主题、顶栏、抽屉渲染正确
+                // TODO(阶段4·B4): 替换为真实页面（首页 / 聊天 / 设置 …）
+                Text(
+                    text = "CCM",
+                    style = CCMText.titleSerif,
+                    color = colors.textSecondary,
+                )
+            }
+        }
+
+        // ── 侧栏抽屉（浮层，含遮罩）───────────────────────────────────
+        SidebarDrawer(
+            open = sidebarOpen,
+            onClose = { sidebarOpen = false },
+        )
     }
 }
