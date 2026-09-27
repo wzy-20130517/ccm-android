@@ -11,6 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.ccm.app.ui.chat.ChatScreen
 import com.ccm.app.ui.common.SidebarDrawer
 import com.ccm.app.ui.common.TitleBar
 import com.ccm.app.ui.pages.ArtifactsScreen
@@ -90,6 +91,8 @@ fun CcmApp() {
  */
 enum class CcmRoute(val path: String) {
     HOME("/"),
+    /** 单个对话 —— 路径含参数（`/chat/:id`），[path] 是前缀 */
+    CHAT("/chat"),
     CHATS("/chats"),
     CUSTOMIZE("/customize"),
     PROJECTS("/projects"),
@@ -103,7 +106,11 @@ enum class CcmRoute(val path: String) {
         /** 从路径解析路由（未知路径回 [HOME]，对齐 Web 的兜底重定向） */
         fun fromPath(path: String): CcmRoute {
             val clean = path.removePrefix("#").trimEnd('/').ifEmpty { "/" }
-            return entries.firstOrNull { it.path == clean } ?: HOME
+            // 精确匹配优先
+            entries.firstOrNull { it.path == clean }?.let { return it }
+            // 前缀匹配（处理 /chat/:id 这类带参数的路由）
+            return entries.firstOrNull { it != CHAT && clean.startsWith(it.path + "/") }
+                ?: if (clean.startsWith("/chat/")) CHAT else HOME
         }
     }
 }
@@ -150,6 +157,15 @@ private fun AppScaffold() {
                         greeting = greetingFor("Jay"),
                         onSend = { },
                         onPickPrompt = { },
+                    )
+
+                    // TODO(阶段4·B5-d): 接 ChatSession（dev-core 的门面）
+                    //   val session = ChatSession.create(...)
+                    //   val state by session.state.collectAsState()
+                    //   然后把 state 传给 ChatScreen
+                    CcmRoute.CHAT -> ChatScreen(
+                        bubbles = emptyList(),
+                        onSend = { },
                     )
 
                     CcmRoute.CHATS -> ChatsScreen(
