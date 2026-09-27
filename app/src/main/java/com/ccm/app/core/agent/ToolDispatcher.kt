@@ -5,6 +5,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 
 /**
  * 工具调度器 —— 决定「哪些工具能并发跑、哪些必须串行」，并管理取消域。
@@ -111,12 +112,23 @@ object ToolDispatcher {
         // 但回填给模型的结果**必须与请求顺序一致**（否则模型会配错）。
         val slots = arrayOfNulls<Any?>(calls.size)
 
+        // 「工具域」取消信号 —— 本协程的 Job，**整个 dispatch 只取一次**。
+        //
+        // 用 `currentCoroutineContext()` 而不是裸写 `coroutineContext`：
+        // 后者是 `kotlin.coroutines` 的 suspend 属性，**必须单独 import**
+        // （`import kotlin.coroutines.coroutineContext`），漏了就是
+        // `Unresolved reference 'coroutineContext'`，还会连带把
+        // `execute(...)` 的类型推断带崩（报一串看不懂的泛型错误）。
+        // `currentCoroutineContext()` 是 kotlinx.coroutines 的挂起函数，
+        // 语义相同、在任何 suspend 上下文都能调，不会踩这个坑。
+        val toolJob = currentCoroutineContext()[Job]
+
         for (batch in batches) {
             if (batch.concurrent) {
                 // ── 并发批：每个调用一个子协程，全跑完才继续 ──
                 coroutineScope {
                     val jobs = batch.calls.map { call ->
-                        async { call.index to execute(call, coroutineContext[Job]) }
+                        async { call.index to execute(call, toolJob) }
                     }
                     for ((idx, result) in jobs.awaitAll()) {
                         slots[idx] = result
@@ -125,14 +137,13 @@ object ToolDispatcher {
             } else {
                 // ── 串行批：一个一个来（有顺序依赖） ──
                 //
-                // ⚠️ 必须传**当前协程的 Job**，不能传 null。
+                // ⚠️ 必须传**真实的 Job**，不能传 null。
                 // 早期实现传 null，而 AgentLoop 里 `cancelSignal = parentJob ?: Job()`
                 // 会新建一个**永远 active 的 Job** —— 于是串行工具完全无法取消：
                 // 用户按了中断，工具照样跑到自己结束（长命令 = 卡住不动）。
-                // 传当前 Job 后，用户中断 → 协程取消 → Job 失效 → ctx.isCancelled 为真。
-                val selfJob = coroutineContext[Job]
+                // 传真实 Job 后，用户中断 → 协程取消 → Job 失效 → ctx.isCancelled 为真。
                 for (call in batch.calls) {
-                    slots[call.index] = execute(call, selfJob)
+                    slots[call.index] = execute(call, toolJob)
                 }
             }
         }
