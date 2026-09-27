@@ -53,16 +53,28 @@ val SidebarWidth = 276.dp
  * 暗色下侧栏文字是 `#BEBDB4`（暖灰），**不是** textMain（纯白）。
  * 亮色下等于 textMain。已封装在 [com.ccm.app.ui.theme.CCMColors.sidebarText]。
  *
- * @param open     是否展开
- * @param onClose  点击遮罩时回调
- * @param content  侧栏内容（B2 填充：新建对话、搜索、导航、用户区）
+ * @param open       是否展开
+ * @param onClose    点击遮罩时回调
+ * @param onNavigate 点导航项（key: chats / projects / artifacts）
+ * @param onNewChat  点「新对话」
+ * @param onSearch   点「搜索」
+ * @param onCustomize 点「定制」
+ * @param onOpenChat 点某个最近对话
  */
 @Composable
 fun SidebarDrawer(
     open: Boolean,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
-    content: @Composable () -> Unit = { SidebarContent() },
+    onNavigate: (String) -> Unit = {},
+    onNewChat: () -> Unit = {},
+    onSearch: () -> Unit = {},
+    onCustomize: () -> Unit = {},
+    onOpenChat: (ChatSummary) -> Unit = {},
+    activePill: String = "聊天",
+    recentChats: List<ChatSummary> = emptyList(),
+    userName: String = "Jay",
+    userSubtitle: String = "自部署",
 ) {
     val colors = CCMTheme.colors
 
@@ -112,7 +124,19 @@ fun SidebarDrawer(
                     .fillMaxSize()
                     .padding(end = 1.dp),
             ) {
-                content()
+                SidebarContent(
+                    activePill = activePill,
+                    recentChats = recentChats,
+                    userName = userName,
+                    userSubtitle = userSubtitle,
+                    onNewChat = onNewChat,
+                    onSearch = onSearch,
+                    onCustomize = onCustomize,
+                    onPillChange = {},
+                    onNavigate = onNavigate,
+                    onOpenChat = onOpenChat,
+                    onOpenProfile = {},
+                )
             }
 
             // 右边框 —— border-r border-claude-border
@@ -127,9 +151,3 @@ fun SidebarDrawer(
     }
 }
 
-
-/**
- * 侧栏列表项占位 —— B2 会按 Web 的真实样式重写。
- *
- * 这里先用最小实现验证 [com.ccm.app.ui.theme.CCMColors.sidebarText] 在明暗两套下都正确。
- */

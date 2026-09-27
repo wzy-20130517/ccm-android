@@ -13,7 +13,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.ccm.app.ui.common.SidebarDrawer
 import com.ccm.app.ui.common.TitleBar
+import com.ccm.app.ui.pages.ChatsScreen
 import com.ccm.app.ui.pages.LandingScreen
+import com.ccm.app.ui.pages.ProjectsScreen
 import com.ccm.app.ui.pages.greetingFor
 import com.ccm.app.ui.theme.CCMTheme
 
@@ -28,18 +30,18 @@ import com.ccm.app.ui.theme.CCMTheme
  * 这是 dev-ui（阶段 4）与阶段 5 之间**唯一**的接口。阶段 5 不需要知道
  * 内部有哪些页面、怎么导航 —— 全在 ui/ 包内封装。
  *
- * ## 当前状态：B1 骨架
+ * ## 当前状态：B4
  * - ✅ 主题层（ui/theme/）
- * - ✅ 顶栏（ui/common/TitleBar.kt）—— 44dp
- * - ✅ 侧栏抽屉（ui/common/Sidebar.kt）—— 276dp + 遮罩
- * - ⏳ 页面与聊天界面
+ * - ✅ 顶栏 + 侧栏抽屉（ui/common/）
+ * - ✅ 首页 / 对话列表 / 项目页（ui/pages/）
+ * - ⏳ 聊天主界面（B5，最难）
  *
  * ## 布局结构（对齐 Web 移动端）
  * ```
  * Box（根，承载抽屉浮层）
  * ├── Column
  * │   ├── TitleBar          44dp（不乘 0.92）
- * │   └── 内容区             weight=1
+ * │   └── 页面内容
  * └── SidebarDrawer          浮在最上层（含遮罩）
  * ```
  * 抽屉用 `Box` 浮层而非 `ModalNavigationDrawer`，因为 Web 的实现是
@@ -64,19 +66,68 @@ fun CcmApp() {
 }
 
 /**
- * 应用骨架：顶栏 + 内容区 + 侧栏抽屉。
+ * Web 的路由 —— 对应 `App.tsx:933-953`。
+ *
+ * Web 用 **HashRouter**，路径形如 `#/chats`。
+ * （踩坑记录：直接访问 `/chats` 会落到兜底路由渲染首页，
+ *   测量/复现时必须带 `#`。）
+ *
+ * 移动端实际可达的路由：
+ * ```
+ * /            首页（MainContent）
+ * /chats       对话列表
+ * /customize   定制
+ * /projects    项目
+ * /artifacts   产物
+ * /cowork      协作
+ * /scheduled   计划任务
+ * /chat/:id    单个对话
+ * /login       登录
+ * /admin 及其子页   管理后台（7 个）
+ * 其他任意路径      重定向到 /（对齐 Web 的 Navigate to="/" replace）
+ * ```
+ */
+enum class CcmRoute(val path: String) {
+    HOME("/"),
+    CHATS("/chats"),
+    CUSTOMIZE("/customize"),
+    PROJECTS("/projects"),
+    ARTIFACTS("/artifacts"),
+    COWORK("/cowork"),
+    SCHEDULED("/scheduled"),
+    LOGIN("/login"),
+    ADMIN("/admin");
+
+    companion object {
+        /** 从路径解析路由（未知路径回 [HOME]，对齐 Web 的兜底重定向） */
+        fun fromPath(path: String): CcmRoute {
+            val clean = path.removePrefix("#").trimEnd('/').ifEmpty { "/" }
+            return entries.firstOrNull { it.path == clean } ?: HOME
+        }
+    }
+}
+
+/**
+ * 应用骨架：顶栏 + 页面内容 + 侧栏抽屉。
  *
  * 移动端形态（MEASURED.md §0/§5/§9）：
  * - 视口 393×852，全局 zoom 0.92（已固化进各尺寸常量）
  * - 顶栏 44dp，**不乘 0.92**
- * - **没有固定侧栏** —— 是 276dp 的抽屉，默认收起
- * - Web 在每次路由变化时自动收起抽屉（`App.tsx:378`），B4 接路由时要保留这个行为
+ * - 侧栏是 276dp 的抽屉，默认收起
+ * - Web 在每次路由变化时自动收起抽屉（`App.tsx:378`）—— 已保留该行为
  */
 @Composable
 private fun AppScaffold() {
     val colors = CCMTheme.colors
 
     var sidebarOpen by remember { mutableStateOf(false) }
+    var route by remember { mutableStateOf(CcmRoute.HOME) }
+
+    /** 切页 —— 对齐 Web：路由变化时自动收起抽屉（`App.tsx:378`） */
+    fun navigate(to: CcmRoute) {
+        route = to
+        sidebarOpen = false
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -86,24 +137,56 @@ private fun AppScaffold() {
         ) {
             TitleBar(
                 onToggleSidebar = { sidebarOpen = !sidebarOpen },
-                onNavBack = null,      // 暂无导航历史 → 禁用态（灰 #B7B5B0）
+                // 非首页时启用「后退」（回首页）；首页时禁用（灰色 #B7B5B0）
+                onNavBack = if (route != CcmRoute.HOME) ({ navigate(CcmRoute.HOME) }) else null,
                 onNavForward = null,
             )
 
-            // ── 内容区 ────────────────────────────────────────────────
-            // B1：首页 Landing（校准 diff 工具链用）
-            // TODO(阶段4·B4): 换成路由分发（首页 / 聊天 / 设置 …）
-            LandingScreen(
-                greeting = greetingFor("Jay"),
-                onSend = { },
-                onPickPrompt = { },
-            )
+            // ── 页面内容 ──────────────────────────────────────────────
+            Box(modifier = Modifier.fillMaxSize()) {
+                when (route) {
+                    CcmRoute.HOME -> LandingScreen(
+                        greeting = greetingFor("Jay"),
+                        onSend = { },
+                        onPickPrompt = { },
+                    )
+
+                    CcmRoute.CHATS -> ChatsScreen(
+                        chats = emptyList(),
+                        onNewChat = { navigate(CcmRoute.HOME) },
+                    )
+
+                    CcmRoute.PROJECTS -> ProjectsScreen(
+                        projects = emptyList(),
+                        onCreate = { },
+                    )
+
+                    // TODO(阶段4·B4-c): Customize / Artifacts / Cowork / Scheduled
+                    // TODO(阶段4·B5): 聊天主界面（MainContent 5537 行）
+                    else -> LandingScreen(
+                        greeting = greetingFor("Jay"),
+                        onSend = { },
+                        onPickPrompt = { },
+                    )
+                }
+            }
         }
 
         // ── 侧栏抽屉（浮层，含遮罩）───────────────────────────────────
         SidebarDrawer(
             open = sidebarOpen,
             onClose = { sidebarOpen = false },
+            onNavigate = { key ->
+                val target = when (key) {
+                    "chats" -> CcmRoute.CHATS
+                    "projects" -> CcmRoute.PROJECTS
+                    "artifacts" -> CcmRoute.ARTIFACTS
+                    else -> CcmRoute.HOME
+                }
+                navigate(target)
+            },
+            onNewChat = { navigate(CcmRoute.HOME) },
+            onCustomize = { navigate(CcmRoute.CUSTOMIZE) },
         )
     }
 }
