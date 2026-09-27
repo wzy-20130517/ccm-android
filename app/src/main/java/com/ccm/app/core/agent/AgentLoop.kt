@@ -159,10 +159,13 @@ class AgentLoop(
                 if (aborted) throw CancellationException("用户中断")
                 turnCount++
 
-                val assistant = callModel(emit) ?: break
+                // 每次新的 API 响应 = 新 messageId（含重试）。
+                // UI 据此丢弃上一轮的半截输出（见 AgentEvent 类注释）。
+                val messageId = java.util.UUID.randomUUID().toString()
+                val assistant = callModel(emit, messageId) ?: break
                 if (assistant.toolCalls.isEmpty()) break
 
-                val results = executeTools(assistant.toolCalls, emit)
+                val results = executeTools(assistant.toolCalls, emit, messageId)
                 appendToolResults(assistant, results)
                 appendVisionFollowups(results)
 
@@ -187,7 +190,10 @@ class AgentLoop(
      *
      * @return assistant 回复；null = 无响应（防御性返回）
      */
-    private suspend fun callModel(emit: suspend (AgentEvent) -> Unit): AssistantTurn? {
+    private suspend fun callModel(
+        emit: suspend (AgentEvent) -> Unit,
+        messageId: String,
+    ): AssistantTurn? {
         val textSb = StringBuilder()
         val reasoningSb = StringBuilder()
 
@@ -205,11 +211,11 @@ class AgentLoop(
             val resp = api.chat(systemPrompt, apiMessages, toolDefs)
             if (resp.text.isNotEmpty()) {
                 textSb.append(resp.text)
-                emit(AgentEvent.TextDelta(resp.text))
+                emit(AgentEvent.TextDelta(resp.text, messageId))
             }
             resp.reasoning?.takeIf { it.isNotEmpty() }?.let {
                 reasoningSb.append(it)
-                emit(AgentEvent.ReasoningDelta(it))
+                emit(AgentEvent.ReasoningDelta(it, messageId))
             }
             emitUsage(emit, resp.usage)
             return AssistantTurn(textSb.toString(), reasoningSb.toString(), resp.toolCalls)
@@ -220,12 +226,12 @@ class AgentLoop(
             when (ev) {
                 is ApiTypes.StreamEvent.Text -> {
                     textSb.append(ev.text)
-                    emit(AgentEvent.TextDelta(ev.text))
+                    emit(AgentEvent.TextDelta(ev.text, messageId))
                 }
 
                 is ApiTypes.StreamEvent.Reasoning -> {
                     reasoningSb.append(ev.text)
-                    emit(AgentEvent.ReasoningDelta(ev.text))
+                    emit(AgentEvent.ReasoningDelta(ev.text, messageId))
                 }
 
                 // 参数是分片到达的，这里不发事件（避免 UI 显示半截 JSON），
@@ -253,7 +259,8 @@ class AgentLoop(
         // 流结束 —— 此时工具参数才拼装完整
         val toolCalls = api.lastToolCalls()
         toolCalls.forEach { tc ->
-            emit(AgentEvent.ToolStart(tc.id, tc.name, parseArgs(tc.arguments)))
+            val parsed = parseArgs(tc.arguments)
+            emit(AgentEvent.ToolStart(tc.id, tc.name, parsed, formatInputPreview(tc.name, parsed)))
         }
 
         return AssistantTurn(textSb.toString(), reasoningSb.toString(), toolCalls)
@@ -337,6 +344,7 @@ class AgentLoop(
     private suspend fun executeTools(
         toolCalls: List<ApiTypes.ToolCall>,
         emit: suspend (AgentEvent) -> Unit,
+        messageId: String,
     ): List<ToolExecResult> {
         val tools = toolsProvider()
         val results = mutableListOf<ToolExecResult>()
@@ -359,14 +367,14 @@ class AgentLoop(
                 // 并发批：每个工具一个子协程，全部完成才继续
                 coroutineScope {
                     val jobs = batch.map { tc ->
-                        async { runOneTool(tc, tools, emit, coroutineContext[Job]) }
+                        async { runOneTool(tc, tools, emit, coroutineContext[Job], messageId) }
                     }
                     results += jobs.awaitAll()
                 }
             } else {
                 // 串行批：一个一个来（有顺序依赖）
                 for (tc in batch) {
-                    results += runOneTool(tc, tools, emit, null)
+                    results += runOneTool(tc, tools, emit, null, messageId)
                 }
             }
         }
@@ -385,6 +393,7 @@ class AgentLoop(
         tools: List<Tool>,
         emit: suspend (AgentEvent) -> Unit,
         parentJob: Job?,
+        messageId: String,
     ): ToolExecResult {
         val tool = tools.find { it.name == tc.name }
             ?: return ToolExecResult(
@@ -416,7 +425,7 @@ class AgentLoop(
             extraDirs = extraDirs,
             permissionMode = permissionMode,
             cancelSignal = parentJob ?: Job(),
-            ui = makeUiCallback(emit),
+            ui = makeUiCallback(emit, messageId),
             spawnSubAgent = spawnSubAgent,
             storage = storage,
             settings = settings,
@@ -437,15 +446,66 @@ class AgentLoop(
         return ToolExecResult(tc.id, tc.name, result)
     }
 
+    /**
+     * 生成工具参数的**折叠态一行摘要**（给 UI 用）。
+     *
+     * 对齐 Node 版终端的显示习惯：`path="a.mjs", limit=50`。
+     *
+     * ## 为什么在 agent 层做而不是让 UI 做
+     * 「哪些字段值得显示」是**业务判断**（每个工具不一样），属于 agent 层的信息。
+     * 放 UI 层等于让 Compose 重复实现一遍，两边迟早漂移。
+     *
+     * ## 规则
+     * 1. 常见键优先排在前面（`path` / `command` / `query` 等，见 [PREVIEW_KEY_ORDER]）
+     * 2. 字符串值加引号；单值超过 [PREVIEW_VALUE_MAX] 字符截断加 `…`
+     * 3. 用 `, ` 连接；整体超过 [PREVIEW_TOTAL_MAX] 字符再截断
+     *
+     * 空参数返回空串（UI 自己决定显示什么，如「无参数」）。
+     */
+    private fun formatInputPreview(toolName: String, input: JsonObject): String {
+        if (input.isEmpty()) return ""
+
+        // 按优先级排序：常见键在前，其余保持原序
+        val ordered = input.entries.sortedBy { (k, _) ->
+            val idx = PREVIEW_KEY_ORDER.indexOf(k)
+            if (idx >= 0) idx else PREVIEW_KEY_ORDER.size
+        }
+
+        val parts = ordered.map { (key, value) ->
+            val raw = when (value) {
+                is JsonPrimitive -> if (value.isString) value.content else value.content
+                else -> value.toString()
+            }
+            val shown = if (raw.length > PREVIEW_VALUE_MAX) {
+                raw.take(PREVIEW_VALUE_MAX) + "…"
+            } else {
+                raw
+            }
+            // 字符串值加引号（数字/布尔不加，看起来更自然）
+            val quoted = if (value is JsonPrimitive && value.isString) "\"$shown\"" else shown
+            "$key=$quoted"
+        }
+
+        val joined = parts.joinToString(", ")
+        return if (joined.length > PREVIEW_TOTAL_MAX) {
+            joined.take(PREVIEW_TOTAL_MAX) + "…"
+        } else {
+            joined
+        }
+    }
+
     /** 给工具的 UI 回调（进度 → ToolProgress 事件）。 */
-    private fun makeUiCallback(emit: suspend (AgentEvent) -> Unit): ToolUiCallback =
+    private fun makeUiCallback(
+        emit: suspend (AgentEvent) -> Unit,
+        messageId: String,
+    ): ToolUiCallback =
         object : ToolUiCallback {
             override suspend fun onProgress(text: String) {
                 emit(AgentEvent.ToolProgress(id = "", text = text))
             }
 
             override suspend fun onContent(text: String) {
-                emit(AgentEvent.TextDelta(text))
+                emit(AgentEvent.TextDelta(text, messageId))
             }
         }
 
@@ -597,6 +657,20 @@ class AgentLoop(
             msg.contains("network", true) || msg.contains("fetch failed", true) -> AgentEvent.ERR_NETWORK
             else -> AgentEvent.ERR_UNKNOWN
         }
+    }
+
+    companion object {
+        /** 参数预览里优先展示的键（常见且信息量大）。 */
+        private val PREVIEW_KEY_ORDER = listOf(
+            "path", "file_path", "command", "query", "pattern", "url",
+            "content", "old_string", "new_string", "prompt",
+        )
+
+        /** 单个参数值在预览里的最大长度。 */
+        private const val PREVIEW_VALUE_MAX = 40
+
+        /** 整个预览串的最大长度。 */
+        private const val PREVIEW_TOTAL_MAX = 120
     }
 
     /** 一次 assistant 回复的聚合结果。 */

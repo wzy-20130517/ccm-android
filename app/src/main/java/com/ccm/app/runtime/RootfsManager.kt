@@ -35,18 +35,38 @@ class RootfsManager(private val context: Context) {
         private const val MARKER_FILE = "root/.ccm-installed"
         private const val ARCHIVE_NAME = "rootfs.tar.gz"
 
-        /** rootfs 版本。升级这个值会触发重新安装。 */
-        const val ROOTFS_VERSION = "24.04-v1"
+        /**
+         * rootfs 版本。升级这个值会触发重新安装。
+         *
+         * 【2026-09-27 → 24.04-v2】换 rootfs 方案（自打包 GitHub Release
+         * → Ubuntu 官方 base + 国内镜像站），并新增 RootfsPostSetup 三步后处理。
+         *
+         * ⚠️ 必须 bump 的原因：
+         *   · v1 的 rootfs 里没有宿主 UID 条目（/etc/passwd 缺 aid_u0_aXXX），
+         *     而修复它的 repairBaseSystem() 已被删除 —— 老 rootfs 留着就是坏的
+         *   · 镜像来源、体积、内容都变了，不是同一个东西
+         * 不 bump 的话，已装用户会继续用 v1 的坏 rootfs，且没有任何代码能救它。
+         */
+        const val ROOTFS_VERSION = "24.04-v2"
 
         /**
-         * 下载地址。
+         * rootfs 下载地址 —— Ubuntu 官方 base 镜像（国内镜像站）。
          *
-         * ⚠️ 指向**公开仓库** ccm-assets —— 代码仓库 ccm-android 是私有的，
-         * 裸 URL 下载会 404（GitHub 私有 Release 必须带 token 才能下）。
-         * 所以资源单独放一个公开仓库，代码保持私有。
+         * ═══════════════════════════════════════════════════════════
+         * 【2026-09-27 换了方案】原来是 GitHub Release 上自己打包的 rootfs，
+         * 现在直接用 Ubuntu 官方 base 镜像 + 国内镜像站。
+         *
+         * 为什么：
+         *   · 官方 base 只有 29MB（原来是自打包，体积更大）
+         *   · 清华/中科大都有 http 镜像，速度比 GitHub 直连快一个量级
+         *   · 不再依赖自建 Release，也不用绕 GitHub 代理
+         *
+         * 【关键前提】解压后必须做三步后处理，否则 apt 用不了 ——
+         * 见 [RootfsPostSetup]。官方镜像里没有宿主 UID，这是所有怪错误的根源。
+         * ═══════════════════════════════════════════════════════════
          */
         const val ROOTFS_URL =
-            "https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ubuntu-base-24.04-arm64.tar.gz"
+            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cdimage/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-arm64.tar.gz"
 
         /** Node 内核包（core + web + 前端 + 配置） */
         const val KERNEL_URL =
@@ -55,12 +75,25 @@ class RootfsManager(private val context: Context) {
         /** 内核安装目标（rootfs 内） */
         const val KERNEL_DIR = "root/ccm"
 
-        /** 国内加速（GitHub 直连慢时用） */
+        /**
+         * rootfs 镜像列表，按「实测可靠性」排序。
+         *
+         * 【2026-09-27 换国内镜像】原来走 gh-proxy/ghfast 绕 GitHub，
+         * 现在直接用 Ubuntu 官方镜像站的国内节点：
+         *   · 清华  —— 主站，速度最稳
+         *   · 中科大 —— 备选（清华挂了时用）
+         *   · 南大  —— 第二备选
+         *
+         * 三个站都是 HTTP/2 + 支持 Range（已实测 accept-ranges: bytes），
+         * 所以下游 downloadOne() 的断点续传逻辑照常工作。
+         *
+         * ⚠️ 三站内容完全一致（都是官方 release 目录的同步镜像），
+         * 文件大小均为 29865086 字节 —— 所以换镜像时清 .part 是安全的。
+         */
         private val MIRRORS = listOf(
-            // 同上：gh-proxy.com 实测可靠，排第一
-            "https://gh-proxy.com/https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ubuntu-base-24.04-arm64.tar.gz",
-            "https://ghfast.top/https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ubuntu-base-24.04-arm64.tar.gz",
             ROOTFS_URL,
+            "https://mirrors.ustc.edu.cn/ubuntu-cdimage/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-arm64.tar.gz",
+            "https://mirror.nju.edu.cn/ubuntu-cdimage/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-arm64.tar.gz",
         )
 
         /**
@@ -179,6 +212,19 @@ class RootfsManager(private val context: Context) {
 
             // 3) 配置（在 tmp 里做，用 rootfsPath 之外的路径）
             onProgress("config", 0, 1)
+
+            // 3.1) 三步后处理 —— **这一步是 apt 能不能用的分水岭**。
+            //
+            // 官方 ubuntu-base 镜像里没有宿主 UID（Android 的 App 沙箱 UID
+            // 如 10286 在 /etc/passwd 里根本不存在），不做这一步 apt 必挂，
+            // 且报错极具误导性（看着像网络问题/包损坏）。
+            // 详见 RootfsPostSetup 的类注释。
+            if (!RootfsPostSetup.applyAll(tmpPath)) {
+                Log.e(TAG, "rootfs 后处理失败：解压结果不是预期镜像")
+                tmpPath.deleteRecursively()
+                return false
+            }
+
             setupBaseConfigIn(tmpPath)
             fixPermissionsIn(tmpPath)
 
@@ -371,297 +417,19 @@ class RootfsManager(private val context: Context) {
 
     /** 写入 DNS / apt 源 / profile —— 让环境开箱可用 */
     /** 在正式 rootfs 上做基础配置（安装完成后的补配；安装流程用 setupBaseConfigIn） */
-    /**
-     * 手动包安装器脚本 —— 绕开 dpkg/apt。
-     *
-     * 【为什么需要】dpkg -i 在这个 proot 环境里必失败：它要用裸 link()
-     * 备份旧文件和自己的 status 数据库，而 Android 沙箱禁止硬链接，
-     * proot 的 --link2symlink 又只会产出指向宿主机路径的断链。
-     *
-     * 但 apt 的下载功能（纯 HTTP）和 dpkg-deb -x 的解包功能都正常，
-     * 所以这里自己实现「下载 → 解包 → 补链接 → 跑 postinst → 记状态」。
-     * 完整排查过程见 DEBUG-NOTES.md。
-     */
-    private val MANUAL_INSTALL_SH = """
-#!/bin/bash
-# ─────────────────────────────────────────────────────────────
-# 手动包安装器 —— 绕开 dpkg/apt，用于 Android proot 环境
-#
-# 【为什么需要它】2026-09-26 实测确认：
-#   · dpkg -i 在这个环境里**必失败** —— 它要用裸 link() 做两件事：
-#       升级前备份旧文件、备份自己的 status 数据库
-#     而 Android App 沙箱禁止普通应用建硬链接。
-#     proot 的 --link2symlink 帮不上（它建的是指向宿主机路径的断链）。
-#   · 但 apt 的**下载**功能（纯 HTTP）和 dpkg-deb -x 的**解包**功能都正常。
-# 所以这里自己实现「下载 → 解包 → 跑 postinst → 记状态」四步。
-#
-# 【已验证】用这套流程装 git，git init/add/commit/log 全部正常。
-# ─────────────────────────────────────────────────────────────
-set -u
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-export DEBIAN_FRONTEND=noninteractive
-export TERM=dumb
-export HOME=/root
-# ⚠️ 必须显式设 TMPDIR —— dpkg-deb 要建临时目录，默认位置在 proot 里不可用。
-# 症状：dpkg-deb: error: unable to create temporary directory: No such file or directory
-export TMPDIR=/tmp
-export TEMP=/tmp
-export TMP=/tmp
-
-WORK=/tmp/.ccm-pkg
-STATUS=/var/lib/dpkg/status
-
-# /tmp 必须存在且可写 —— 有些 rootfs 的 /tmp 权限不对
-mkdir -p /tmp 2>/dev/null
-chmod 1777 /tmp 2>/dev/null
-if [ ! -w /tmp ]; then
-  echo "❌ /tmp 不可写，无法继续"
-  exit 1
-fi
-
-mkdir -p "${'$'}WORK"
-cd "${'$'}WORK" || exit 1
-
-log() { echo "${'$'}@"; }
-
-# ── 1) 解析依赖（递归，一层）──────────────────────────────
-# apt-cache depends 不需要 dpkg 工作，可以拿来算依赖树。
-#
-# 【必须滤掉虚拟包 —— 2026-09-26 实测】
-# 报错现场：
-#   E: Can't select candidate version from package debconf-2.0 as it has no candidate
-#   已下载 0 个包
-#   ❌ 什么都没下到
-#
-# debconf-2.0 是**虚拟包**（virtual package），没有对应的 .deb 文件 ——
-# 真实提供者是 debconf / cdebconf / debconf-tiny 之类。
-# apt-cache depends 会把它当依赖列出来，但 apt-get download 拿不到它，
-# **并且一失败就中止整批下载** —— 所以症状是「一个包都没下到」，
-# 而不是「下了大部分、缺一个」。这个差别很关键：
-# 看起来像网络问题/源问题，实际是依赖列表里混了一个下不了的名字。
-#
-# 判据用 `apt-cache policy`：真实包会显示候选版本号，虚拟包显示 (none)。
-# 比维护一张「已知虚拟包」黑名单可靠 —— 虚拟包会随发行版变化。
-# 【必须递归到底 —— 2026-09-26 实测】
-# 原来只解析**一层**（只取直接依赖），漏了间接依赖。实测后果：
-#   curl 装上了，但跑起来报
-#     curl: error while loading shared libraries: libnghttp2.so.14:
-#     cannot open shared object file
-#   因为依赖链是 curl → libcurl4t64 → libnghttp2-14，是**两层**。
-#
-# 一层解析的假设是「apt 会把间接依赖也当直接依赖列出来」——
-# 那是错的：apt-cache depends 只给该包自己的 Depends。
-#
-# 现在用队列做广度优先展开，深度上限 6 层（防依赖环/爆炸；
-# 实测 Ubuntu 基础包的依赖深度很少超过 4）。
-# 【为什么用 apt-cache depends --recurse —— 2026-09-26 实测】
-#
-# 试过三个方案，前两个都不行：
-#
-#   ① 自己递归 apt-cache depends（只查直接依赖，逐层展开）
-#      · 只查一层 → 漏间接依赖：curl 缺 libnghttp2.so.14 跑不起来
-#        （依赖链 curl → libcurl4t64 → libnghttp2-14 是两层）
-#      · 改成递归 6 层 → 16 个包要跑几百次 apt-cache，
-#        **实测卡在「解析依赖」好几分钟没动静**，用户以为死机
-#
-#   ② apt-get install --print-uris
-#      · 已安装的包不输出 URI（apt 认为不需要下载）→ 漏包
-#      · 加 --reinstall 在 Termux 的 apt 上无效果
-#
-#   ③ **apt-cache depends --recurse** ← 采用这个
-#      一次调用拿到完整依赖闭包，输出形如：
-#        git
-#          Depends: libcurl
-#          Depends: libexpat
-#        libcurl
-#          Depends: libnghttp2      ← 间接依赖也在
-#      纯包名（顶格的行）就是全部依赖，含间接的。
-#
-# 实测对比：git 从「一层 8 个」变成「14 个」，多出来的正是
-# libnghttp2 / libnghttp3 / libngtcp2 / libssh2 这些漏掉的间接依赖。
-# 且只有**一次** apt-cache 调用，不再有性能问题。
-resolve_deps() {
-  apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts \
-    --no-breaks --no-replaces --no-enhances "${'$'}@" 2>/dev/null \
-    | grep -E '^[a-z0-9]' \
-    | grep -v '^libc6${'$'}' \
-    | sort -u
-}
-
-log "=== 解析依赖 ==="
-PKGS=${'$'}(resolve_deps "${'$'}@" | tr '\n' ' ')
-PKG_N=${'$'}(echo ${'$'}PKGS | wc -w)
-log "  需要 ${'$'}PKG_N 个包"
-
-log "=== 下载 ==="
-# 用 apt-get download 逐个下（不用 --print-uris 给的 URL 直接 curl，
-# 因为 apt-get download 会自动走配置好的镜像、处理重定向和校验，
-# 而且它同样不会调用 dpkg）。
-#
-# 【为什么逐个下载 —— 2026-09-26】
-# 一次传全部时，**只要列表里有一个包下不了，apt 就中止整批**，
-# 已下载的一个都不留 —— 于是「一个包失败」表现成「什么都没下到」，
-# 看起来像网络问题，排查方向完全跑偏（曾被 debconf-2.0 这个虚拟包坑过）。
-# 逐个下之后单个失败只影响它自己，最后打印失败清单。
-#
-# 【虚拟包问题】resolve_deps 走 apt-cache depends --recurse，
-# 它输出的是「依赖名」，虚拟包（如 debconf-2.0）仍可能出现 ——
-# 但 apt-get download 单个失败只跳过它自己，不再中止整批，
-# 所以不会像以前那样「一个虚拟包毁掉全部下载」。
-# 【批量下载，失败才降级逐个 —— 2026-09-26 实测】
-#
-# 原来是无脑逐个下载（为了「单个失败不影响整批」）。338 个包实测报错：
-#   执行失败: read interrupted by close() on another thread
-#   安装失败，重试…
-#
-# 这个错误**不是网络问题**，是 proot 的已知缺陷：多线程下
-# read() 被另一线程的 close() 打断。**频繁创建子进程会触发它** ——
-# 338 次 apt-get 就是 338 次进程创建，撞上的概率极高。
-#
-# 所以改成两段式：
-#   ① 先一次传 50 个包（减少进程创建次数）
-#   ② 只有①失败的批次才拆开逐个重试（此时数量少，触发概率低）
-# 既保留「单个失败不毁整批」的可诊断性，又避免高频进程创建。
-download_batch() {
-  # ${'$'}@ = 包名列表。返回 0 表示全部成功。
-  apt-get download "${'$'}@" >/dev/null 2>&1
-}
-
-DEB_FAIL=""
-BATCH=50
-set -- ${'$'}PKGS
-while [ ${'$'}# -gt 0 ]; do
-  chunk=""
-  n=0
-  while [ ${'$'}# -gt 0 ] && [ "${'$'}n" -lt "${'$'}BATCH" ]; do
-    chunk="${'$'}chunk ${'$'}1"
-    shift
-    n=${'$'}((n + 1))
-  done
-  # ① 整批下
-  # shellcheck disable=SC2086
-  if ! download_batch ${'$'}chunk; then
-    # ② 整批失败 → 拆开逐个，找出到底哪个不行
-    for p in ${'$'}chunk; do
-      download_batch "${'$'}p" || DEB_FAIL="${'$'}DEB_FAIL ${'$'}p"
-    done
-  fi
-done
-
-DEBS=${'$'}(ls *.deb 2>/dev/null | wc -l)
-log "  已下载 ${'$'}DEBS 个包"
-[ -n "${'$'}DEB_FAIL" ] && log "  ⚠️ 以下包下载失败（已跳过）：${'$'}DEB_FAIL"
-[ "${'$'}DEBS" -eq 0 ] && { log "❌ 什么都没下到"; exit 1; }
-
-# ── 3) 解包（不用 --link2symlink，硬链接失败不影响主文件）──
-log "=== 解包 ==="
-for d in *.deb; do
-  # 记录硬链接失败项 —— 解包后要手动补相对符号链接
-  out=${'$'}(dpkg-deb -x "${'$'}d" / 2>&1)
-  if echo "${'$'}out" | grep -qi "hard link"; then
-    echo "${'$'}out" | grep -i "hard link" | sed "s/^/  [${'$'}d] /"
-  fi
-done
-
-# ── 3.5) 补硬链接：把 tar 建不出来的硬链接改成相对符号链接 ──
-#
-# tar 解包时硬链接会失败（Android 沙箱禁止 link()），报错形如：
-#   tar: ./usr/bin/zipinfo: Cannot hard link to './usr/bin/unzip': Permission denied
-# 但**主文件（unzip）照常解出** —— 少的只是同一个 inode 的别名。
-# 用相对符号链接补上别名即可，客户机里必定可达。
-#
-# tar -tvf 输出格式（硬链接行）：
-#   hrwxr-xr-x root/root 0 2024-10-02 13:29 ./usr/bin/zipinfo link to ./usr/bin/unzip
-#     $1        $2      $3    $4       $5      $6（链接名）    $7  $8  $9（目标）
-# ⚠️ 早期版本用的是相对索引（awk 的 NF 相对字段）—— 取成了「目标」和单词 "link"，
-#    两个字段全错位，结果建出 /usr/bin/unzip -> /（目标解析成空串）这种废链接。
-#    字段位置是固定的，不要用 NF 相对索引（"link to" 可能缺失）。
-fix_hardlinks() {
-  local d link target lp tp dir
-  for d in *.deb; do
-    dpkg-deb --fsys-tarfile "${'$'}d" 2>/dev/null | tar -tvf - 2>/dev/null \
-      | awk '${'$'}1 ~ /^hrw/ && ${'$'}6 != "" {
-          # 标准格式 9 字段（… link to <目标>）；简化格式 7 字段（… <目标>）
-          tgt = (${'$'}9 != "") ? ${'$'}9 : ${'$'}7
-          if (tgt != "" && tgt != "link" && tgt != "to") print ${'$'}6, tgt
-        }' \
-      | while read -r link target; do
-        if [ -z "${'$'}link" ] || [ -z "${'$'}target" ]; then continue; fi
-        lp="/${'$'}{link#./}"
-        tp="/${'$'}{target#./}"
-        dir=$(dirname "${'$'}lp")
-        if [ -e "${'$'}tp" ] && [ ! -e "${'$'}lp" ]; then
-          # 同目录用相对路径（可搬迁），跨目录用绝对路径
-          if [ "$(dirname "${'$'}tp")" = "${'$'}dir" ]; then
-            ln -sfn "$(basename "${'$'}tp")" "${'$'}lp" 2>/dev/null \
-              && log "  补链接: ${'$'}lp -> $(basename "${'$'}tp")"
-          else
-            ln -sfn "${'$'}tp" "${'$'}lp" 2>/dev/null \
-              && log "  补链接: ${'$'}lp -> ${'$'}tp"
-          fi
-        fi
-      done
-  done
-}
-
-log "=== 补硬链接 ==="
-fix_hardlinks
-
-# ── 4) 跑 postinst（失败不中断）─────────────────────────────
-log "=== 配置（postinst）==="
-for d in *.deb; do
-  ctrl="${'$'}WORK/ctrl-${'$'}${'$'}"
-  rm -rf "${'$'}ctrl"; mkdir -p "${'$'}ctrl"
-  dpkg-deb -e "${'$'}d" "${'$'}ctrl" 2>/dev/null || continue
-  if [ -x "${'$'}ctrl/postinst" ]; then
-    if "${'$'}ctrl/postinst" configure 2>&1 | grep -viE '^${'$'}' | head -3; then
-      :
-    fi
-  fi
-  rm -rf "${'$'}ctrl"
-done
-
-# ── 5) 登记到 dpkg 数据库（让后续 apt 认为已装）─────────────
-log "=== 登记状态 ==="
-for d in *.deb; do
-  pkg=${'$'}(dpkg-deb -f "${'$'}d" Package)
-  ver=${'$'}(dpkg-deb -f "${'$'}d" Version)
-  arch=${'$'}(dpkg-deb -f "${'$'}d" Architecture)
-  [ -z "${'$'}pkg" ] && continue
-  # 已登记就跳过
-  if grep -q "^Package: ${'$'}pkg${'$'}" "${'$'}STATUS" 2>/dev/null; then
-    log "  ${'$'}pkg 已在状态库，跳过"
-    continue
-  fi
-  {
-    echo ""
-    echo "Package: ${'$'}pkg"
-    echo "Status: install ok installed"
-    echo "Priority: optional"
-    echo "Section: utils"
-    echo "Installed-Size: 1"
-    echo "Maintainer: ccm-manual-install"
-    echo "Architecture: ${'$'}arch"
-    echo "Version: ${'$'}ver"
-    echo "Description: installed by ccm manual installer"
-    echo "  (dpkg -i is unusable in this proot environment; see install.log)"
-  } >> "${'$'}STATUS"
-  log "  已登记 ${'$'}pkg ${'$'}ver"
-done
-
-log "=== 完成 ==="
-""".trimIndent()
 
     private fun setupBaseConfig() = setupBaseConfigIn(rootfsPath)
 
-    /** 在指定目录做基础配置（DNS/apt 源/shell 配置/挂载点）。参数化是为了支持原子安装。 */
+    /**
+     * 在指定目录做基础配置（apt 源/shell 配置/包管理器镜像/挂载点）。
+     * 参数化是为了支持原子安装。
+     *
+     * ⚠️ DNS 与 hosts 不在这里写 —— 它们归 [RootfsPostSetup] 管。
+     * 两边都写会形成「两个真源」：改一处漏一处，且这里原来用 writeText
+     * 会跟随符号链接写穿（RootfsPostSetup 用的是「先删再写」）。
+     */
     private fun setupBaseConfigIn(target: File) {
         try {
-            // DNS（Android 上 /etc/resolv.conf 不可写，proot 里用这个）
-            File(target, "etc/resolv.conf").writeText(
-                "nameserver 223.5.5.5\nnameserver 119.29.29.29\n"
-            )
-
             // apt 源换国内（Ubuntu 24.04 用新格式）
             //
             // ⚠️ 必须用 http 而不是 https！
@@ -853,9 +621,22 @@ log "=== 完成 ==="
                 }
             }
 
-            // 1.5) 补 debconf —— 见 repairBaseSystem 的说明，这是 ubuntu-base
-            //      最小镜像的已知缺陷，不修的话 apt install 必失败。
-            repairBaseSystem(exec, onLine)
+            // 【2026-09-27 删掉「补 debconf」这一步】
+            //
+            // 这里原来调 repairBaseSystem()（215 行），专门修 ubuntu-base 的
+            // 「perl-base 解包损坏 → debconf 死锁」问题。现在整个删掉，原因：
+            //
+            // 那个损坏的**根因**是宿主 UID 不在 rootfs 的 /etc/passwd 里
+            // （dpkg 解包时要 chown 到该 UID，查不到就报 error setting ownership，
+            //  perl-base 因此残缺 → debconf 的 postinst exit 127 → 死锁）。
+            // 而 RootfsPostSetup.registerAndroidIds() 已经在安装时就消除了这个根因，
+            // 所以「修」的前提不复存在 —— 留着只是在修一个不会发生的病。
+            //
+            // 同理，靠 .base-repaired 标记做的缓存也跟着删了（它本身就是
+            // 「修完还要防复发」的补丁，没有病就不需要补丁）。
+            //
+            // ⚠️ 配套：ROOTFS_VERSION 已 bump，老 rootfs 会被重装 ——
+            //    否则老用户继续用带损坏的旧 rootfs，而修复代码已经没了。
 
             // 【2026-09-23 加】先剔除已经装好的包。
             //
@@ -930,15 +711,18 @@ log "=== 完成 ==="
                 // 5.38.2-3.2ubuntu0.2 → 0.6）。用户勾选的包（git、curl、python3）
                 // 都依赖新版本，apt 会在同一次安装里升级它们。
                 //
-                // 实测：直接 apt-get install 时，dpkg 在「升级 perl-base」这一步失败
+                // 【曾经在这里失败过】dpkg 升级 perl-base 时报
                 //   error setting ownership of '/usr/bin/perl5.38.2.dpkg-new':
                 //       No such file or directory
                 //   dpkg-deb: zstd write error: Broken pipe
-                // 报错发生在 dpkg 自己依赖的包被替换的过程中。
+                // 当时的结论是「手动安装器绕开它」，**那个结论是错的** ——
+                // 真正的根因是宿主 UID 不在 rootfs 的 /etc/passwd 里，
+                // dpkg 解包时 chown 查不到属主就报这个错。
+                // 现在 RootfsPostSetup.registerAndroidIds() 已从源头消除，
+                // 所以这里保持「先 upgrade 再 install」只是常规做法，
+                // 不再是绕行手段。（2026-09-27 已实测 apt 原生可用）
                 //
-                // Operit 的做法是先 dpkg --configure -a、再 apt upgrade，
-                // 然后才 apt install 用户勾的包。照这个顺序拆开两步，
-                // 基础包升级失败时单独报，不和用户包混在一起。
+                // 分两步的好处：基础包升级失败时单独报，不和用户包混在一起。
                 if (updated) {
                     onLine("")
                     onLine("同步基础系统版本…")
@@ -963,47 +747,37 @@ log "=== 完成 ==="
                     if (!upgraded) onLine("  基础系统升级未完成，继续安装所选工具")
                 }
 
-                // 3) 安装 —— **不用 apt-get install，改用手动安装器**
+                // 3) 安装 —— 直接用 apt-get install
                 //
                 // ═══════════════════════════════════════════════════════════
-                // 【为什么不用 apt install】2026-09-26 实测确认：
-                // dpkg -i 在这个 proot 环境里**必失败**，而且原因无解 ——
-                // dpkg 自己要用**裸 link()** 做两件事：
-                //   · 升级前备份旧文件：unable to make backup link of './usr/bin/perl'
-                //   · 备份自己的数据库：error creating new backup file '/var/lib/dpkg/status-old'
-                // 这两处不经过 tar，所以 proot 的 --link2symlink 帮不上；
-                // 而 --link2symlink 本身在 CCM 的 proot 构建里只会产出
-                // 指向宿主机路径的**断链**（PROOT_L2S_DIR 四种取值全试过）。
+                // 【2026-09-27 改回 apt】这里原来是「手动安装器」（绕开 dpkg，
+                // 自己下载/解包/补链接/跑 postinst），现已整个删除。
                 //
-                // 但分解动作全都是好的：
-                //   · apt-get download（纯 HTTP，不碰 dpkg）        ✅
-                //   · dpkg-deb -x（纯解包，不做 dpkg 那两件事）      ✅
-                //   · 手动补相对符号链接替硬链接                     ✅
-                // 实测：用这套流程装 git，git init/add/commit/log 全部正常。
+                // 删除的原因：手动安装器是**为了绕开一个已经不存在的问题**。
+                // 它诞生的背景是「dpkg 建硬链接必失败」，而那个失败的真正根因
+                // 是 PROOT_L2S_DIR 指向了 rootfs 内部导致 --link2symlink 静默失效。
+                // 修好这个之后，dpkg/apt 本来就是好的 —— 手动安装器成了纯粹的技术债：
+                //   · 它不支持依赖解析（apt 会做，它只会照单抓药）
+                //   · 它不跑真实 dpkg 状态机（只能往 status 文件里塞条目）
+                //   · 出问题时没有任何标准排查手段
                 //
-                // 所以这里把「下载 → 解包 → 补链接 → 跑 postinst → 记状态」
-                // 五步交给 manual-install.sh（内容见 MANUAL_INSTALL_SH 常量）。
+                // 现在的做法：官方 ubuntu-base 镜像 + RootfsPostSetup 三步后处理，
+                // 让 apt 在原生状态下工作。已在 Termux 实测验证（recon-c-proot.md）：
+                // apt-get update 拉 36.7MB 无错误，apt install 直接跑通。
                 // ═══════════════════════════════════════════════════════════
                 onLine("")
-                onLine("开始安装（手动模式，绕开 dpkg）…")
-
-                // 把脚本落到 rootfs 里
-                val scriptHost = File(rootfsPath, "tmp/ccm-manual-install.sh")
-                try {
-                    scriptHost.parentFile?.mkdirs()
-                    scriptHost.writeText(MANUAL_INSTALL_SH)
-                    scriptHost.setExecutable(true)
-                } catch (e: Throwable) {
-                    onLine("❌ 写入安装脚本失败：${e.message}")
-                    return@installToolchains false
-                }
+                onLine("开始安装（apt）…")
 
                 for (attempt in 1..2) {
                     ok = exec(
                         listOf(
                             "/bin/bash", "-lc",
-                            "export TERM=dumb HOME=/root; " +
-                                "/bin/bash /tmp/ccm-manual-install.sh ${todoPackages.joinToString(" ")}"
+                            "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; " +
+                                "apt-get install -y -q " +
+                                "-o Dpkg::Options::=--force-confold " +
+                                "-o APT::Get::Allow-Downgrades=true " +
+                                todoPackages.joinToString(" ") +
+                                " 2>&1 | tail -30"
                         ),
                         onLine
                     )
@@ -1017,14 +791,12 @@ log "=== 完成 ==="
                 // 【2026-09-23 加校验】只看退出码不够 ——
                 // apt 可能部分失败（某个包不在源里）却仍返回 0，或者反过来
                 // 因为管道/子 shell 掩盖了真实退出码。
-                // 所以装完真去问一次 dpkg，把没装上的名字报给用户。
+                // 所以装完真去探一次命令能不能跑，把没装上的名字报给用户。
                 if (ok) {
                     onLine("")
                     onLine("校验安装结果…")
-                    // ⚠️ 不能用 `dpkg -s` 校验 —— 手动安装器不经过 dpkg，
-                    // 它只往 status 文件里追加条目，dpkg -s 对某些包可能查不到。
-                    // 改用「命令是否真的可执行」来判断，这更贴近用户关心的事：
-                    // 工具能不能用。
+                    // 判据是「命令是否真的可执行」，而不是 `dpkg -s` 的状态 ——
+                    // 后者只能说明「记录上装了」，前者才是用户关心的事：工具能不能用。
                     val probeCmds = mapOf(
                         "git" to "git --version",
                         "curl" to "curl --version",
@@ -1669,222 +1441,6 @@ log "=== 完成 ==="
         }
     }
 
-    /** 修复执行权限（apt 的 http method 等需要） */
-    /** 修正式 rootfs 的执行权限 */
-    /**
-     * 修复 ubuntu-base 最小镜像的 dpkg 残缺状态。
-     *
-     * ═══════════════════════════════════════════════════════════
-     * 【问题现象】（2026-09-24 用户实测日志）
-     *
-     *   Setting up libc6:arm64 (2.39-0ubuntu8.9) ...
-     *   /var/lib/dpkg/info/libc6:arm64.postinst: 17: exec:
-     *       /usr/share/debconf/frontend: not found
-     *   dpkg: error processing package libc6:arm64 (--configure):
-     *       installed libc6:arm64 package post-installation script
-     *       subprocess returned error exit status 127
-     *   E: Sub-process /usr/bin/dpkg returned an error code (1)
-     *
-     * 以及同源的：
-     *   /bin/sh: 1: /usr/sbin/dpkg-preconfigure: not found
-     *   29 not fully installed or removed.
-     *
-     * 【根因】
-     * ubuntu-base-24.04 是最小系统，**不带 debconf**。
-     * 但很多基础包（libc6、perl-base……）的 postinst 会调
-     * /usr/share/debconf/frontend —— 找不到就 exit 127，
-     * dpkg 判定「这个包没配置成功」→ 后续所有 apt install 全部失败。
-     *
-     * 日志里那句 `29 not fully installed or removed` 就是证据：
-     * rootfs 本身出厂时 dpkg 状态就是残缺的。
-     *
-     * 【为什么不能直接 `apt install debconf`】
-     * apt 现在就是坏的（dpkg 配置卡住），用它修自己是死循环。
-     * 正确做法见下：先 `dpkg --configure -a` 把已解包的配置掉，
-     * 再 apt 装 debconf（此时 apt 已可用）。
-     *
-     * 【为什么用 --force-confold】
-     * 避免 conffile 冲突时卡在交互提示（非交互环境下会直接失败）。
-     *
-     * @return true 表示修复动作执行了（不代表一定成功 —— 后续 apt 会验证）
-     */
-    private fun repairBaseSystem(
-        exec: (List<String>, (String) -> Unit) -> Boolean,
-        onLine: (String) -> Unit = {},
-    ): Boolean {
-        // 缓存标记：修成功过就不再重复探测。
-        // rootfs 是持久的，修一次就够 —— 而每次装工具链都跑一遍 dpkg --configure -a
-        // 要几十秒，用户会以为「又在下一遍」。
-        val stamp = File(rootfsPath, ".base-repaired")
-        if (stamp.exists()) {
-            // 标记只能省掉「重复修复」，不能掩盖「修复后又被弄坏」。
-            //
-            // 【为什么加这道检查】2026-09-26 的报错里，dpkg 卡在
-            //   Errors were encountered while processing: perl-base
-            // 而早先那次修复已经写过 .base-repaired —— 标记让后续每次安装
-            // 都跳过修复，用户就永远卡在同一个错上，重试多少次都一样。
-            //
-            // 【怎么判】写探针文件（exec 的 Boolean 只给退出码，拿不到输出）：
-            // dpkg --audit 列出「解包了但没配置完」的包，非空就是真坏了。
-            try {
-                exec(listOf("/bin/bash", "-lc", "rm -f /tmp/.dpkg-broken"), {})
-                exec(
-                    listOf(
-                        "/bin/bash", "-lc",
-                        "if [ -n \"$(dpkg --audit 2>/dev/null)\" ]; then touch /tmp/.dpkg-broken; fi"
-                    ),
-                    {}
-                )
-                val broken = exec(listOf("/bin/bash", "-lc", "test -f /tmp/.dpkg-broken"), {})
-                if (!broken) return true
-                try { stamp.delete() } catch (_: Throwable) {}
-            } catch (_: Throwable) {
-                return true   // 探测失败不阻塞安装，按原来的「已修复」处理
-            }
-        }
-
-        // 探一下：debconf 在不在？在就标记一下直接返回
-        //
-        // ⚠️ exec 返回 Boolean 表示退出码，**不是抛异常** ——
-        //    最早写成 try { exec(...); hasDebconf = true } 是错的：
-        //    那样只要不抛异常就认为「有 debconf」，检测恒真、修复永不执行。
-        // ⚠️ 判据必须是「debconf 能用」而不是「文件在」。
-        //
-        // 【踩过的坑】原来只测 `test -x /usr/share/debconf/frontend` —— 文件当然在
-        // （debconf 包装上了），但 **frontend 是 perl 脚本，perl 坏掉它就跑不起来**。
-        // 于是这里判定「已就绪」直接返回，修复被跳过，接着所有用 debconf 的包
-        // postinst 全部 exit 127（libpam0g 就是这么挂的）。
-        // 症状：错误换了个样子，但依然装不上，而且越查越像"别的问题"。
-        //
-        // 现在多跑一次 `perl -e 'exit 0'` —— 真能执行才算数。
-        val baseOk = try {
-            exec(
-                listOf(
-                    "/bin/bash", "-lc",
-                    "test -x /usr/share/debconf/frontend && perl -v >/dev/null 2>&1"
-                ),
-                {}
-            )
-        } catch (_: Throwable) { false }
-
-        if (baseOk) {
-            try { stamp.writeText("ok") } catch (_: Throwable) {}
-            return true
-        }
-
-        onLine("检测到系统基础组件不全（debconf/perl 不可用），先修复…")
-
-        // ① 把已经解包但没配置完的包配置掉（--force-confold 避免交互卡住）
-        //    ⚠️ 这一步会因为缺 debconf 而部分失败，但 dpkg 会把状态往前推，
-        //       让下一步的 apt 能跑起来。
-        exec(
-            listOf(
-                "/bin/bash", "-lc",
-                "export DEBIAN_FRONTEND=noninteractive TERM=dumb; " +
-                    "dpkg --configure -a --force-confold 2>&1 | tail -20"
-            ),
-            { line -> if (line.isNotBlank()) onLine("  $line") }
-        )
-
-        // ② 现在 apt 能用了，装 debconf 本体
-        exec(
-            listOf(
-                "/bin/bash", "-lc",
-                "export DEBIAN_FRONTEND=noninteractive TERM=dumb; " +
-                    "apt-get update -qq 2>&1 | tail -3; " +
-                    "apt-get install -y -q --fix-broken debconf 2>&1 | tail -15"
-            ),
-            { line -> if (line.isNotBlank()) onLine("  $line") }
-        )
-
-        // ③ 再配一遍，把之前卡住的包收尾
-        exec(
-            listOf(
-                "/bin/bash", "-lc",
-                "export DEBIAN_FRONTEND=noninteractive TERM=dumb; " +
-                    "dpkg --configure -a --force-confold 2>&1 | tail -10"
-            ),
-            { line -> if (line.isNotBlank()) onLine("  $line") }
-        )
-
-        // ②.5) 强制重装 perl-base + debconf —— **这是 exit 127 的真正病根**。
-        //
-        // 【因果链】libpam0g 等大量包 postinst 的第一行是
-        //     . /usr/share/debconf/confmodule
-        // 而 confmodule 内部会
-        //     exec /usr/share/debconf/frontend "$0"
-        // frontend 是个 **perl 脚本**（`#!/usr/bin/perl`）。
-        //
-        // 早期 perl-base 解包失败（硬链接建不出来的那个 bug）→ perl 残缺 →
-        // frontend 跑不起来 → confmodule 加载失败 → postinst 直接 exit 127。
-        //
-        // ②.4) 【破循环依赖】先把 perl-base 单独装上 —— 绕过 apt、跳过依赖检查。
-        //
-        // 【死锁长什么样】build-87 的实测日志：
-        //   /var/lib/dpkg/info/debconf.postinst: 17: exec:
-        //       /usr/share/debconf/frontend: not found        → exit 127
-        //   dpkg: error processing package debconf (--configure)
-        //   libpam0g:arm64 depends on debconf (>= 0.5); however:
-        //     Package debconf is not configured yet.
-        //   E: Internal Error, No file name for debconf:arm64
-        //
-        // debconf 的 postinst 要加载 confmodule → confmodule 会 exec
-        // /usr/share/debconf/frontend，而它是个 **perl 脚本**；
-        // 可这个 rootfs 里的 perl 是坏的（早期硬链接 bug 导致解包失败）。
-        // 于是：debconf 要 perl 才能装好，perl 要 debconf 才能被 apt 修好 ——
-        // 互相等对方，永远解不开。apt 一看到「30 not fully installed」
-        // 就拒绝动手，连 --reinstall 都不给走。
-        //
-        // 【破法】perl-base 的 postinst **不依赖 debconf**
-        // （实测：只调 dpkg-maintscript-helper 和 set -e）。所以单独直接把它
-        // 装上，让 perl 先可用，debconf 的死锁自然就解了。
-        //
-        // 用 **dpkg -i --force-depends** 而不是 apt：
-        // apt 会做依赖求解并拒绝，dpkg 不求解、只听指令 —— 这正是破循环需要的。
-        exec(
-            listOf(
-                "/bin/bash", "-lc",
-                "export DEBIAN_FRONTEND=noninteractive TERM=dumb; " +
-                    "d=\$(ls /var/cache/apt/archives/perl-base_*.deb 2>/dev/null | head -1); " +
-                    "if [ -n \"\$d\" ]; then dpkg -i --force-depends \"\$d\" 2>&1 | tail -8; " +
-                    "else echo '（缓存无 perl-base.deb，跳过）'; fi"
-            ),
-            { line -> if (line.isNotBlank()) onLine("  $line") }
-        )
-
-        // 【为什么必须强制重装】修好 link2symlink 之后，**旧包不会自动重来** ——
-        // dpkg 记着 perl-base 是 "installed"，apt 不会重试解包。
-        // 所以坏掉的 perl 会一直坏下去，表现为「换了个错误但依然装不上」。
-        // --reinstall 强制重新解包，这一步做完 perl 才真正可用。
-        exec(
-            listOf(
-                "/bin/bash", "-lc",
-                "export DEBIAN_FRONTEND=noninteractive TERM=dumb; " +
-                    "apt-get install -y -q --reinstall --fix-broken " +
-                    "perl-base perl debconf 2>&1 | tail -20"
-            ),
-            { line -> if (line.isNotBlank()) onLine("  $line") }
-        )
-
-        // 验证（同样看返回码，不靠异常）
-        // 验证要**真的跑一遍 perl** —— 只测文件存不存在会漏掉「perl 在但跑不起来」
-        // 这种情况（正是 exit 127 的来源：frontend 存在，但 shebang 解析失败）。
-        val ok = try {
-            exec(
-                listOf(
-                    "/bin/bash", "-lc",
-                    "test -x /usr/share/debconf/frontend && perl -v >/dev/null 2>&1"
-                ),
-                {}
-            )
-        } catch (_: Throwable) { false }
-        onLine(if (ok) "  ✓ 基础组件已修复" else "  ⚠️ 修复未完全成功，继续尝试安装")
-        if (ok) {
-            // 只有真修好才写标记 —— 否则下次会被跳过，永远修不上
-            try { stamp.writeText("ok") } catch (_: Throwable) {}
-        }
-        return ok
-    }
 
     private fun fixPermissionsInternal() = fixPermissionsIn(rootfsPath)
 
