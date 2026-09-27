@@ -111,8 +111,9 @@ fun ChatScreen(
                         streaming = streaming,
                         toolCards = toolCards,
                     )
-                    // 底部留白：给浮动输入栏让位
-                    Spacer(Modifier.height(140.dp))
+                    // 底部留白 —— 实测滚动容器 pad: `0px 0px 154px`（pb-154）
+                    // 给浮动输入栏 + 底部状态行让位
+                    Spacer(Modifier.height(154.dp))
                 }
             }
         }

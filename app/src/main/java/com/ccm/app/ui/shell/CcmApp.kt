@@ -16,9 +16,11 @@ import com.ccm.app.ui.common.SidebarDrawer
 import com.ccm.app.ui.common.TitleBar
 import com.ccm.app.ui.pages.ArtifactsScreen
 import com.ccm.app.ui.pages.ChatsScreen
+import com.ccm.app.ui.pages.CoworkScreen
 import com.ccm.app.ui.pages.LandingScreen
 import com.ccm.app.ui.pages.ProjectsScreen
 import com.ccm.app.ui.pages.greetingFor
+import com.ccm.app.ui.settings.SettingsScreen
 import com.ccm.app.ui.theme.CCMTheme
 
 /**
@@ -95,10 +97,14 @@ enum class CcmRoute(val path: String) {
     CHAT("/chat"),
     CHATS("/chats"),
     CUSTOMIZE("/customize"),
+    SETTINGS("/settings"),
     PROJECTS("/projects"),
     ARTIFACTS("/artifacts"),
     COWORK("/cowork"),
     SCHEDULED("/scheduled"),
+    SETTINGS("/settings"),
+    SETTINGS("/settings"),
+    SETTINGS("/settings"),
     LOGIN("/login"),
     ADMIN("/admin");
 
@@ -130,6 +136,8 @@ private fun AppScaffold() {
 
     var sidebarOpen by remember { mutableStateOf(false) }
     var route by remember { mutableStateOf(CcmRoute.HOME) }
+    // 设置是**覆盖层不是路由**（对齐 Web：showSettings 状态，location 不变）
+    var showSettings by remember { mutableStateOf(false) }
 
     /** 切页 —— 对齐 Web：路由变化时自动收起抽屉（`App.tsx:378`） */
     fun navigate(to: CcmRoute) {
@@ -173,9 +181,20 @@ private fun AppScaffold() {
                         onNewChat = { navigate(CcmRoute.HOME) },
                     )
 
+                    CcmRoute.SETTINGS -> SettingsScreen(
+                        onClose = { navigate(CcmRoute.HOME) },
+                    )
+
                     CcmRoute.PROJECTS -> ProjectsScreen(
                         projects = emptyList(),
                         onCreate = { },
+                    )
+
+                    // TODO(阶段4·B4-d): CustomizeScreen（1244 行，独立页面）
+                    CcmRoute.CUSTOMIZE -> LandingScreen(
+                        greeting = "定制（待实现）",
+                        onSend = { },
+                        onPickPrompt = { },
                     )
 
                     CcmRoute.ARTIFACTS -> ArtifactsScreen(
@@ -183,14 +202,27 @@ private fun AppScaffold() {
                         onNewArtifact = { },
                     )
 
-                    // TODO(阶段4·B4-c): Customize / Artifacts / Cowork / Scheduled
-                    // TODO(阶段4·B5): 聊天主界面（MainContent 5537 行）
+                    CcmRoute.COWORK -> CoworkScreen()
+
+                    // TODO(阶段4·B4-c): Cowork / Scheduled 的独立页面（已有 CoworkScreen，待接）
+                    // TODO(阶段4·B5-c): 聊天主界面剩余区块
                     else -> LandingScreen(
                         greeting = greetingFor("Jay"),
                         onSend = { },
                         onPickPrompt = { },
                     )
                 }
+            }
+        }
+
+        // ── 设置覆盖层（全屏，在抽屉之下）─────────────────────────────
+        if (showSettings) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(colors.bgMain),
+            ) {
+                SettingsScreen(onClose = { showSettings = false })
             }
         }
 
@@ -209,6 +241,7 @@ private fun AppScaffold() {
             },
             onNewChat = { navigate(CcmRoute.HOME) },
             onCustomize = { navigate(CcmRoute.CUSTOMIZE) },
+            onOpenProfile = { showSettings = true },
         )
     }
 }
