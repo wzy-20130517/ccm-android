@@ -71,7 +71,7 @@ class SystemTools(private val bridge: NativeBridge) {
     //  剪贴板
     // ══════════════════════════════════════════════════════════════
 
-    class ClipboardGetTool(private val tools: SystemTools) : Tool() {
+    inner class ClipboardGetTool : Tool() {
         override val name = "ClipboardGet"
         override val description = "读取系统剪贴板内容。"
         override val isReadOnly = true
@@ -81,10 +81,10 @@ class SystemTools(private val bridge: NativeBridge) {
         override val inputSchema: JsonObject = ToolSchema.noArgsSchema()
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult =
-            tools.callBridge("sys.clipboardGet")
+            callBridge("sys.clipboardGet")
     }
 
-    class ClipboardSetTool(private val tools: SystemTools) : Tool() {
+    inner class ClipboardSetTool : Tool() {
         override val name = "ClipboardSet"
         override val description = "将文本设置到系统剪贴板。避免长文本手动复制。"
         override val maxResultSizeChars = 300
@@ -98,14 +98,14 @@ class SystemTools(private val bridge: NativeBridge) {
             if (input["text"] == null) "text is required" else null
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult =
-            tools.callBridge("sys.clipboardSet", JSONObject().put("text", input.str("text") ?: ""))
+            callBridge("sys.clipboardSet", JSONObject().put("text", input.str("text") ?: ""))
     }
 
     // ══════════════════════════════════════════════════════════════
     //  Toast / 通知 / 震动
     // ══════════════════════════════════════════════════════════════
 
-    class ToastTool(private val tools: SystemTools) : Tool() {
+    inner class ToastTool : Tool() {
         override val name = "Toast"
         override val description = "显示 Android Toast 短消息（屏幕底部弹出短提示）。"
         override val maxResultSizeChars = 200
@@ -120,7 +120,7 @@ class SystemTools(private val bridge: NativeBridge) {
             if (input.str("text").isNullOrBlank()) "text is required" else null
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult =
-            tools.callBridge(
+            callBridge(
                 "sys.toast",
                 JSONObject()
                     .put("text", input.str("text") ?: "")
@@ -128,7 +128,7 @@ class SystemTools(private val bridge: NativeBridge) {
             )
     }
 
-    class NotifyTool(private val tools: SystemTools) : Tool() {
+    inner class NotifyTool : Tool() {
         override val name = "Notify"
         override val description = "发送 Android 系统通知。支持标题、内容、震动等。"
         override val maxResultSizeChars = 300
@@ -151,11 +151,11 @@ class SystemTools(private val bridge: NativeBridge) {
             input.bool("vibrate")?.let { p.put("vibrate", it) }
             input.bool("sound")?.let { p.put("sound", it) }
             input.str("priority")?.let { p.put("priority", it) }
-            return tools.callBridge("sys.notify", p)
+            return callBridge("sys.notify", p)
         }
     }
 
-    class VibrateTool(private val tools: SystemTools) : Tool() {
+    inner class VibrateTool : Tool() {
         override val name = "Vibrate"
         override val description = "让手机震动指定毫秒。"
         override val maxResultSizeChars = 200
@@ -165,7 +165,7 @@ class SystemTools(private val bridge: NativeBridge) {
         )
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult =
-            tools.callBridge(
+            callBridge(
                 "sys.vibrate",
                 JSONObject().put("duration", input.int("duration") ?: 200),
             )
@@ -175,7 +175,7 @@ class SystemTools(private val bridge: NativeBridge) {
     //  电量 / 定位
     // ══════════════════════════════════════════════════════════════
 
-    class BatteryTool(private val tools: SystemTools) : Tool() {
+    inner class BatteryTool : Tool() {
         override val name = "Battery"
         override val description = "获取电池状态（电量百分比、是否充电、温度等）。"
         override val isReadOnly = true
@@ -185,10 +185,10 @@ class SystemTools(private val bridge: NativeBridge) {
         override val inputSchema: JsonObject = ToolSchema.noArgsSchema()
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult =
-            tools.callBridge("sys.battery")
+            callBridge("sys.battery")
     }
 
-    class LocationTool(private val tools: SystemTools) : Tool() {
+    inner class LocationTool : Tool() {
         override val name = "Location"
         override val description = "获取 GPS 位置信息（纬度、经度、海拔等）。"
         override val isReadOnly = true
@@ -204,7 +204,7 @@ class SystemTools(private val bridge: NativeBridge) {
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
             val p = JSONObject()
             input.str("provider")?.let { p.put("provider", it) }
-            return tools.callBridge("sys.location", p)
+            return callBridge("sys.location", p)
         }
     }
 
@@ -212,7 +212,7 @@ class SystemTools(private val bridge: NativeBridge) {
     //  打开链接 / 分享 / TTS
     // ══════════════════════════════════════════════════════════════
 
-    class OpenUrlTool(private val tools: SystemTools) : Tool() {
+    inner class OpenUrlTool : Tool() {
         override val name = "OpenUrl"
         override val description = "在浏览器中打开 URL，或用系统应用打开本地文件（如 .html/.png）。"
         override val maxResultSizeChars = 300
@@ -226,10 +226,10 @@ class SystemTools(private val bridge: NativeBridge) {
             if (input.str("url").isNullOrBlank()) "url is required" else null
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult =
-            tools.callBridge("sys.openUrl", JSONObject().put("url", input.str("url") ?: ""))
+            callBridge("sys.openUrl", JSONObject().put("url", input.str("url") ?: ""))
     }
 
-    class ShareTool(private val tools: SystemTools) : Tool() {
+    inner class ShareTool : Tool() {
         override val name = "Share"
         override val description = "通过 Android 分享菜单分享文件或文本到其他 App。"
         override val maxResultSizeChars = 300
@@ -246,7 +246,7 @@ class SystemTools(private val bridge: NativeBridge) {
             input.str("file")?.let { p.put("file", it) }
             input.str("action")?.let { p.put("action", it) }
             if (p.length() == 0) return ToolResult.invalidInput("至少要给 text 或 file")
-            return tools.callBridge("sys.share", p)
+            return callBridge("sys.share", p)
         }
     }
 
@@ -259,7 +259,7 @@ class SystemTools(private val bridge: NativeBridge) {
      *
      * 这里实现的是前者（走 NativeBridge → NativeTts.kt 现有实现）。
      */
-    class TtsTool(private val tools: SystemTools) : Tool() {
+    inner class TtsTool : Tool() {
         override val name = "TTS"
         override val description = "用 Android TTS 朗读文本。"
         override val maxResultSizeChars = 300
@@ -278,7 +278,7 @@ class SystemTools(private val bridge: NativeBridge) {
             val p = JSONObject().put("text", input.str("text") ?: "")
             input.str("language")?.let { p.put("language", it) }
             input.str("pitch")?.let { p.put("pitch", it) }
-            return tools.callBridge("sys.tts", p)
+            return callBridge("sys.tts", p)
         }
     }
 }

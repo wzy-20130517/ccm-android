@@ -56,9 +56,13 @@ class AgentTools(
     /**
      * 后台子 Agent 的观察窗 —— 由 Agent 层注入。
      *
+     * ⚠️ 必须是普通 interface 而不是 `fun interface` ——
+     * 它有 4 个抽象方法，而 SAM 转换只允许**恰好一个**
+     * （CI 报错原文：`Functional interface must have exactly one abstract function`）。
+     *
      * 若未注入（如单测），AgentStatus/Stop/Output 会返回「无运行中的子 Agent」。
      */
-    fun interface SubAgentObserver {
+    interface SubAgentObserver {
         /** 列出所有子 Agent 的快照 */
         suspend fun list(): List<Snapshot>
 

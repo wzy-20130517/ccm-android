@@ -73,14 +73,14 @@ class AgentLoop(
      * 用法：`AgentLoop(..., toolsProvider = { registry.list })`
      */
     private val toolsProvider: () -> List<Tool>,
-    /** 最大轮次。 */
-    private var maxTurns: Int = 200,
+    /** 最大轮次（构造值；运行期改请用 [extendMaxTurns] / [setMaxTurns]）。 */
+    maxTurnsInit: Int = 200,
     /** 工作目录。 */
     private val cwd: String = "/",
     /** 额外可访问目录（`/add-dir`）。 */
     private val extraDirs: List<String> = emptyList(),
     /** 权限模式。 */
-    private var permissionMode: String = "default",
+    permissionModeInit: String = "default",
     /** 应用存储（工具用）。 */
     private val storage: ToolStorage? = null,
     /** 只读配置快照（工具用）。 */
@@ -116,6 +116,16 @@ class AgentLoop(
     private val useStream: Boolean = true,
 ) {
 
+    /**
+     * 当前最大轮次。
+     *
+     * ⚠️ **必须是 `@Volatile`**：续轮（[extendMaxTurns]）可能在别的协程里调
+     * （子 Agent 走工具回调），而 `run()` 的 while 循环在另一个协程读它。
+     * 不加的话可能读到旧值 —— 表现为「续了轮但没生效」。
+     */
+    @Volatile
+    private var maxTurns: Int = maxTurnsInit
+
     /** 对话历史（协议无关的中间表示）。 */
     private val messages = mutableListOf<Message>()
 
@@ -127,6 +137,15 @@ class AgentLoop(
     private var totalInputTokens = 0
     private var totalOutputTokens = 0
 
+    /**
+     * 当前权限模式。
+     *
+     * 与 [maxTurns] 同理：UI 可能在运行中改（用户切模式），
+     * 而工具执行在另一个协程读它。
+     */
+    @Volatile
+    private var permissionMode: String = permissionModeInit
+
     /** 中断标志。 */
     @Volatile
     private var aborted = false
@@ -134,16 +153,79 @@ class AgentLoop(
     /** 当前 trace（每轮 run 建一个）。 */
     private var trace: TraceStore? = null
 
+    /** 续轮次数（ExtendTurns 用，最多 [MAX_EXTENSIONS] 次）。 */
+    @Volatile
+    private var extensionCount: Int = 0
+
     /** 主动中断当前 run。 */
     fun abort() {
         aborted = true
         api.cancelActiveStream()
     }
 
-    /** 设置最大轮次（deep 模式用）。 */
+    /** 设置最大轮次（deep 模式用）。**不计数、不受闸门限制** —— 这是用户/系统行为。 */
     fun setMaxTurns(n: Int) {
-        maxTurns = n
+        maxTurns = n.coerceAtMost(MAX_TURNS_HARD_CAP)
     }
+
+    /**
+     * 续轮（子 Agent 调 `ExtendTurns` 工具时走这里）。
+     *
+     * ## 三道闸门（**约束必须在持有实例的这一层做**）
+     * 1. 单次 ≤ [MAX_EXTENSION_PER_CALL]（60）
+     * 2. 最多 [MAX_EXTENSIONS] 次（4）
+     * 3. 硬上限 [MAX_TURNS_HARD_CAP]（400）
+     *
+     * **为什么工具层做了这里还要做**：工具层是「模型友好」的提示，
+     * 但它是**模型可绕过的**（将来加新调用路径、或模型直接调内部方法）。
+     * 真正的约束必须在持有 `maxTurns` 的地方。
+     *
+     * ## 为什么上限是 400 不是无限
+     * 子 Agent 在后台跑，用户看不见。给它无限轮次 = 可能烧光额度还不出结果。
+     * 400 轮足够跑完一个复杂任务，也够用户反应过来去中止。
+     *
+     * @param turns 本次要追加的轮数（会被夹取到 1..60）
+     * @param reason 为什么需要续（记进 trace，也给用户看）
+     * @return 给模型看的结果文本
+     */
+    fun extendMaxTurns(turns: Int, reason: String): String {
+        // 闸门 1：单次夹取
+        val add = turns.coerceIn(1, MAX_EXTENSION_PER_CALL)
+
+        // 闸门 2：次数
+        if (extensionCount >= MAX_EXTENSIONS) {
+            return "已达续轮次数上限（$MAX_EXTENSIONS 次）。请收尾：把已完成的、未完成的、" +
+                "以及卡在哪里如实交代清楚，不要无声中断。"
+        }
+
+        // 闸门 3：硬上限
+        val target = (maxTurns + add).coerceAtMost(MAX_TURNS_HARD_CAP)
+        val actualAdd = target - maxTurns
+        if (actualAdd <= 0) {
+            return "已达轮数硬上限（$MAX_TURNS_HARD_CAP 轮），无法再续。请立刻收尾并如实交代未完成部分。"
+        }
+
+        maxTurns = target
+        extensionCount++
+
+        trace?.emit(
+            TraceEvents.RUN_START,   // 复用 run_start 类型记续轮（同属「运行配置变更」）
+            mapOf(
+                "kind" to "extend_turns",
+                "requested" to turns,
+                "added" to actualAdd,
+                "new_max" to target,
+                "extension_count" to extensionCount,
+                "reason" to reason.take(300),
+            ),
+        )
+
+        return "已续 $actualAdd 轮（当前上限 $target，第 $extensionCount/$MAX_EXTENSIONS 次续轮）。" +
+            "继续干活，但注意：真做完了就收尾，不要在原地打转。"
+    }
+
+    /** 当前续轮次数（UI 可显示）。 */
+    val extensionsUsed: Int get() = extensionCount
 
     /** 设置权限模式。 */
     fun setPermissionMode(mode: String) {
@@ -764,6 +846,15 @@ class AgentLoop(
     }
 
     companion object {
+        /** 单次续轮上限。 */
+        const val MAX_EXTENSION_PER_CALL = 60
+
+        /** 最多续轮次数。 */
+        const val MAX_EXTENSIONS = 4
+
+        /** 轮数硬上限（续轮也突破不了）。 */
+        const val MAX_TURNS_HARD_CAP = 400
+
         /** 参数预览里优先展示的键（常见且信息量大）。 */
         private val PREVIEW_KEY_ORDER = listOf(
             "path", "file_path", "command", "query", "pattern", "url",

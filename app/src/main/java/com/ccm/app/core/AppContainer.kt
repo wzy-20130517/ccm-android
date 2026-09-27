@@ -233,9 +233,9 @@ class AppContainer private constructor(
                 systemPrompt = systemPrompt,
                 // 惰性取（不是快照）—— 后注册的工具（如 Agent 自己）也要能看见
                 toolsProvider = { registry.list },
-                maxTurns = DEFAULT_MAX_TURNS,
+                maxTurnsInit = DEFAULT_MAX_TURNS,
                 cwd = cwd,
-                permissionMode = config.permissionMode,
+                permissionModeInit = config.permissionMode,
                 storage = AppBackedToolStorage(storage),
                 settings = buildSettings(config, provider),
                 sessionId = "",

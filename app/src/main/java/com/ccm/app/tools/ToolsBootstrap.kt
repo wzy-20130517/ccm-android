@@ -38,6 +38,7 @@ import com.ccm.app.tools.task.TaskStore
 import com.ccm.app.tools.task.TaskTools
 import com.ccm.app.tools.task.TeamStore
 import com.ccm.app.tools.task.TeamTools
+import com.ccm.app.tools.task.asToolObserver
 import java.io.File
 
 /**
@@ -85,8 +86,14 @@ class ToolsBootstrap(
     private val bridge: NativeBridge,
     /** 当前会话 id 的取值函数（Goal 工具用）—— **必须是 getter**，见 GoalTools 注释 */
     private val getSessionId: () -> String = { "default" },
-    /** 子 Agent 观察器（AgentStatus/Stop/Output 用）—— 未注入时那些工具会提示未接入 */
-    private val subAgentObserver: AgentTools.SubAgentObserver? = null,
+    /**
+     * 子 Agent 管理器（AgentStatus/Stop/Output 用）。
+     *
+     * 直接传 core 层的 [com.ccm.app.core.agent.SubAgentManager]，
+     * **适配器在本类内部做**（依赖方向 tools → core，不能倒挂）。
+     * 不传时那三个工具会提示「观察器未接入」—— 不崩，但子 Agent 就看不见了。
+     */
+    private val subAgentManager: com.ccm.app.core.agent.SubAgentManager? = null,
     /** 程序内命令执行器（CommandExec 用）—— App 层注入 */
     private val commandExec: (suspend (String) -> String)? = null,
     /** 用户提问回调（AskUserQuestion 用）—— 子 Agent **不应**注入（会永久阻塞） */
@@ -151,13 +158,13 @@ class ToolsBootstrap(
 
         // 批 5：任务/团队/目标/Agent
         val taskStore = TaskStore(File(storage.rootDir, "tasks"))
-        val teamStore = TeamStore(File(storage.rootDir, "teams"), taskStore)
+        val teamStore = TeamStore(File(storage.rootDir, "teams"))
         val goalStore = GoalStore(File(storage.rootDir, "goals"))
         val taskTools = TaskTools(taskStore)
         val teamTools = TeamTools(teamStore, taskStore)
         val goalTools = GoalTools(goalStore, getSessionId)
         val agentTools = AgentTools(getRegistry = { registry })
-        subAgentObserver?.let { agentTools.observer = it }
+        subAgentManager?.let { agentTools.observer = it.asToolObserver() }
         val miscTools = MiscTools(
             storageRoot = storage.rootDir,
             memoryFile = File(storage.rootDir, "CLAUDE.md"),
@@ -214,16 +221,16 @@ class ToolsBootstrap(
             add(phoneTools.PhoneDeviceTool())
 
             // 系统能力
-            add(systemTools.ClipboardGetTool(systemTools))
-            add(systemTools.ClipboardSetTool(systemTools))
-            add(systemTools.ToastTool(systemTools))
-            add(systemTools.NotifyTool(systemTools))
-            add(systemTools.VibrateTool(systemTools))
-            add(systemTools.BatteryTool(systemTools))
-            add(systemTools.LocationTool(systemTools))
-            add(systemTools.OpenUrlTool(systemTools))
-            add(systemTools.ShareTool(systemTools))
-            add(systemTools.TtsTool(systemTools))
+            add(systemTools.ClipboardGetTool())
+            add(systemTools.ClipboardSetTool())
+            add(systemTools.ToastTool())
+            add(systemTools.NotifyTool())
+            add(systemTools.VibrateTool())
+            add(systemTools.BatteryTool())
+            add(systemTools.LocationTool())
+            add(systemTools.OpenUrlTool())
+            add(systemTools.ShareTool())
+            add(systemTools.TtsTool())
 
             // 语音播报（与 TTS 的区别：多一个 secret 模式）
             add(SayTool(context))

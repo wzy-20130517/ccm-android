@@ -317,7 +317,7 @@ class TeamTools(
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
             val team = input.str("team")!!
             val me = input.str("agent")?.takeIf { it.isNotBlank() } ?: agentId
-            return if (store.leave(team, me)) {
+            return if (store.setMemberStatus(team, me, TeamStore.INACTIVE)) {
                 ToolResult.ok("$me 已退出团队「$team」（记录保留，可复盘）")
             } else {
                 ToolResult.notFound("找不到成员 $me（团队 $team）")
