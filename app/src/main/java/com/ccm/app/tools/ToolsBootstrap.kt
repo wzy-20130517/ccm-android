@@ -19,11 +19,16 @@ import com.ccm.app.tools.file.FileTools
 import com.ccm.app.tools.file.SearchTools
 import com.ccm.app.tools.file.TrashStore
 import com.ccm.app.tools.file.UndoStore
+import com.ccm.app.tools.dev.DevTools
 import com.ccm.app.tools.net.ImageTools
 import com.ccm.app.tools.net.LookupTools
+import com.ccm.app.tools.net.VisionTools
 import com.ccm.app.tools.net.WebTools
 import com.ccm.app.tools.phone.PhoneTools
 import com.ccm.app.tools.phone.SayTool
+import com.ccm.app.tools.system.CronStore
+import com.ccm.app.tools.system.CronTools
+import com.ccm.app.tools.system.QqTools
 import com.ccm.app.tools.system.SystemTools
 import com.ccm.app.tools.task.AgentTools
 import com.ccm.app.tools.task.GoalStore
@@ -82,6 +87,14 @@ class ToolsBootstrap(
     private val getSessionId: () -> String = { "default" },
     /** 子 Agent 观察器（AgentStatus/Stop/Output 用）—— 未注入时那些工具会提示未接入 */
     private val subAgentObserver: AgentTools.SubAgentObserver? = null,
+    /** 程序内命令执行器（CommandExec 用）—— App 层注入 */
+    private val commandExec: (suspend (String) -> String)? = null,
+    /** 用户提问回调（AskUserQuestion 用）—— 子 Agent **不应**注入（会永久阻塞） */
+    private val askUser: (suspend (String, List<String>) -> String?)? = null,
+    /** QQ 推送器（QQPush 用）—— App 层注入 */
+    private val qqPusher: QqTools.Pusher? = null,
+    /** QQ 群消息回溯器（QQRecall 用）—— App 层注入 */
+    private val qqRecaller: QqTools.Recaller? = null,
 ) {
 
     /** 装配结果（供诊断与 UI 展示） */
@@ -132,6 +145,7 @@ class ToolsBootstrap(
         val webTools = settings?.let { WebTools(it) }
         val imageTools = settings?.let { ImageTools(it, defaultCwd) }
         val lookupTools = LookupTools(storage.rootDir)
+        val visionTools = VisionTools(context, storage.rootDir)
         val phoneTools = PhoneTools(context, storage.rootDir)
         val systemTools = SystemTools(bridge)
 
@@ -149,6 +163,11 @@ class ToolsBootstrap(
             memoryFile = File(storage.rootDir, "CLAUDE.md"),
             todoFile = File(storage.rootDir, "todos.json"),
         )
+
+        // 批 3 补全 + P1
+        val devTools = DevTools(primary, trashStore, commandExec)
+        val cronTools = CronTools(CronStore(File(storage.rootDir, "cron")))
+        val qqTools = QqTools(qqPusher, qqRecaller)
 
         val all: List<Tool> = buildList {
             // 批 1：文件
@@ -244,7 +263,29 @@ class ToolsBootstrap(
             add(miscTools.SleepTool())
             add(miscTools.MemoryTool())
             add(miscTools.UserInputHistoryTool(File(storage.rootDir, "input-history.jsonl")))
-            add(miscTools.AskUserQuestionTool())
+            add(miscTools.AskUserQuestionTool(askUser))
+
+            // P1：视觉
+            add(visionTools.ViewImageTool())
+            add(visionTools.ViewVideoTool())
+            add(visionTools.ScreencapTool())
+
+            // P1：开发辅助
+            add(devTools.TestTool())
+            add(devTools.DiagnosticsTool())
+            add(devTools.RepoMapTool())
+            add(devTools.SymbolsTool())
+            add(devTools.SafeRenameTool())
+            add(devTools.CommandExecTool())
+
+            // P1：定时任务
+            add(cronTools.CronCreateTool())
+            add(cronTools.CronListTool())
+            add(cronTools.CronDeleteTool())
+
+            // P1：QQ
+            add(qqTools.QQPushTool())
+            add(qqTools.QQRecallTool())
         }
 
         val rejected = registry.registerAll(*all.toTypedArray())
