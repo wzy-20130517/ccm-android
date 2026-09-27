@@ -409,7 +409,10 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         var chatTitle by remember { mutableStateOf("新对话") }
                         var showRename by remember { mutableStateOf(false) }
 
-                        LaunchedEffect(route) {
+                        // key 必须含 activeSession：标题栏 caret 切会话时
+                        // route 不变（都在 CHAT），只 key route 会漏刷新 ——
+                        // 标题停在上一个会话的名字。
+                        LaunchedEffect(route, activeSession) {
                             // 进对话页读标题（loadTitle 只读文件头 4KB）
                             chatTitle = store?.loadTitle(AppGraph.sessionId) ?: "新对话"
                         }
