@@ -96,6 +96,7 @@ fun LandingScreen(
     greeting: String = greetingFor(null),
     onSend: (String) -> Unit = {},
     onPickPrompt: (String) -> Unit = {},
+    modelLabel: String = "未配置模型",
 ) {
     val colors = CCMTheme.colors
 
@@ -142,6 +143,7 @@ fun LandingScreen(
             InputCard(
                 onSend = onSend,
                 modifier = Modifier.fillMaxWidth(),
+                modelLabel = modelLabel,
             )
 
             // 卡片底 256.37 → 胶囊顶 271.09
@@ -202,6 +204,7 @@ fun greetingFor(name: String?, hourOfDay: Int = java.util.Calendar.getInstance()
 private fun InputCard(
     onSend: (String) -> Unit,
     modifier: Modifier = Modifier,
+    modelLabel: String = "未配置模型",
 ) {
     val colors = CCMTheme.colors
     // ★ 真输入框（2026-09-27 修）：原来这里是 `Text("今天需要什么帮助？")`
@@ -304,11 +307,13 @@ private fun InputCard(
                     horizontalArrangement = Arrangement.spacedBy(Gap2),
                 ) {
                     // ★ 2026-09-27：ModelChip 原来写死 "Sonnet 4.6" 且 onClick 是空的
+                    //
+                    // ⚠️ 模型名**不能**在这里直接读配置 —— InputCard 每帧都在重组，
+                    //    而 AppConfig.load 会读磁盘 + 解析 JSON，实测导致
+                    //    `Skipped 39 frames`（主线程堵死 → 所有按钮点不动）。
+                    //    所以从上层传入（LandingScreen 用 remember 缓存过一次）。
                     ModelChip(
-                        modelName = com.ccm.app.AppGraph.storage
-                            ?.let { com.ccm.app.core.provider.AppConfig.load(it.configFile).config.currentProvider?.model }
-                            ?.takeIf { it.isNotBlank() }
-                            ?: "未配置模型",
+                        modelName = modelLabel,
                         onClick = { /* TODO: 模型选择器弹窗（需要 /v1/models 列表） */ },
                     )
                     // ★ 2026-09-27：麦克风原来也没有 clickable

@@ -28,6 +28,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ccm.app.ui.theme.CCMText
 import com.ccm.app.ui.theme.CCMTheme
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.Alignment
+import com.ccm.app.ui.common.SvgIcons
 
 /**
  * 设置页 —— 对齐 Web `SettingsPage.tsx`（1056 行）。
@@ -108,20 +111,48 @@ fun SettingsScreen(
             .background(colors.bgMain),
     ) {
         // ── 横向 tab 条（移动端形态）──────────────────────────────────
+        //
+        // ★ 2026-09-27 加关闭按钮（用户报「所有按钮点不动、侧边栏都点不开」的真因）：
+        //   设置是**全屏覆盖层**（CcmApp.kt:316 用 fillMaxSize 盖住整个界面），
+        //   而本函数声明了 `onClose` 却**从未调用** —— 没有任何 UI 元素挂它。
+        //   加上全项目 0 处 BackHandler（系统返回键也不管用），
+        //   结果就是：**一旦进了设置页就出不来**，整个 App 看起来「死了」。
+        //   实测用户路径：点侧栏搜索 / 点首页提示条 → 进设置页 → 被困。
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
                 .background(colors.bgMain)
-                .padding(horizontal = 9.40.dp, vertical = 7.23.dp),
-            horizontalArrangement = Arrangement.spacedBy(3.68.dp),
+                .padding(start = 4.dp, end = 9.40.dp, top = 7.23.dp, bottom = 7.23.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            tabs.forEach { t ->
-                SettingsTabButton(
-                    label = t.label,
-                    active = t == tab,
-                    onClick = { tab = t },
+            // 关闭（返回）按钮 —— 40×40，对齐 TitleBar 的按钮规格
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(onClick = onClose),
+                contentAlignment = Alignment.Center,
+            ) {
+                androidx.compose.material3.Icon(
+                    imageVector = SvgIcons.ArrowLeft,
+                    contentDescription = "关闭设置",
+                    modifier = Modifier.size(18.dp),
+                    tint = colors.textMain,
                 )
+            }
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(3.68.dp),
+            ) {
+                tabs.forEach { t ->
+                    SettingsTabButton(
+                        label = t.label,
+                        active = t == tab,
+                        onClick = { tab = t },
+                    )
+                }
             }
         }
 

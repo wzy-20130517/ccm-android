@@ -185,6 +185,34 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
     val colors = CCMTheme.colors
 
     var sidebarOpen by remember { mutableStateOf(false) }
+
+    // ★★ 2026-09-27 修「大多数按钮点不动」的真因 ★★
+    //
+    // 原来这里（以及下面 259/306/347 行）直接在 Composable 函数体里写：
+    //     AppGraph.userProfileStore?.load()
+    //     AppConfig.load(it.configFile)
+    // 这两个都会**读磁盘 + 解析 JSON**，而 Compose 的重组频率极高
+    // （每帧、每次状态变化、键盘弹出/收起都触发）。
+    //
+    // 实测后果（真机 logcat）：
+    //     I/Choreographer: Skipped 39 frames! The application may be doing
+    //     too much work on its main thread.
+    // 39 帧 ≈ 650ms —— 主线程被磁盘 IO 堵死，触摸事件排在后面，
+    // 表现就是「所有按钮都点不动」（不是回调没接，是根本没轮到处理点击）。
+    //
+    // 修法：用 remember 缓存，只在「依赖变化」时重读。
+    //   - profileName：进程内基本不变（用户改设置后走 refreshKey 刷新）
+    //   - modelName：同上
+    var profileRefreshKey by remember { mutableStateOf(0) }
+    val profileName = remember(profileRefreshKey) {
+        com.ccm.app.AppGraph.userProfileStore?.load()?.callName?.ifBlank { null }
+    }
+    val modelName = remember(profileRefreshKey) {
+        com.ccm.app.AppGraph.storage
+            ?.let { com.ccm.app.core.provider.AppConfig.load(it.configFile).config.currentProvider?.model }
+            ?.takeIf { it.isNotBlank() }
+            ?: "未配置模型"
+    }
     var route by remember { mutableStateOf(CcmRoute.HOME) }
     // 设置是**覆盖层不是路由**（对齐 Web：showSettings 状态，location 不变）
     var showSettings by remember { mutableStateOf(false) }
@@ -253,11 +281,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
 
                 when (route) {
                     CcmRoute.HOME -> LandingScreen(
-                        greeting = greetingFor(
-                            // 从用户资料读称呼，没配时传 null → 自动降级为通用问候
-                            // 对齐 Web MainContent.tsx:1586 的降级链
-                            com.ccm.app.AppGraph.userProfileStore?.load()?.callName?.ifBlank { null }
-                        ),
+                        greeting = greetingFor(profileName),
                         // ★ 接线：首页输入框真的能发消息了
                         onSend = { sendAndOpen(it) },
                         onPickPrompt = { sendAndOpen(it) },
@@ -302,9 +326,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     CcmRoute.SCHEDULED -> ScheduledScreen()
 
                     else -> LandingScreen(
-                        greeting = greetingFor(
-                            com.ccm.app.AppGraph.userProfileStore?.load()?.callName?.ifBlank { null }
-                        ),
+                        greeting = greetingFor(profileName),
                         onSend = { sendAndOpen(it) },
                         onPickPrompt = { sendAndOpen(it) },
                     )
@@ -344,7 +366,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
             //   → 点「搜索」「聊天/协作/代码」胶囊完全没反应。
             onSearch = { showSettings = true },   // TODO: 真正的会话搜索页
             onPillChange = { /* TODO: 协作/代码模式路由（Web 是 /cowork 切换） */ },
-            userName = com.ccm.app.AppGraph.userProfileStore?.load()?.callName ?: "",
+            userName = profileName ?: "",
         )
     }
 }
