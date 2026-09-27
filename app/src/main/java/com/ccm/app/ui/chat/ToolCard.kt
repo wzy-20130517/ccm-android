@@ -205,6 +205,23 @@ fun ToolCard(
                 Spacer(Modifier.width(14.72.dp))        // pl-4
 
                 Column(modifier = Modifier.weight(1f)) {
+                    // ★ 工具入参可视化（2026-09-27）：Edit 显示 diff、
+                    //   Bash 显示命令、Read/Write 显示文件内容。
+                    //   之前 467 行的 ToolDiffView 写好了零调用。
+                    //   input 空（老事件/非标准工具）→ 组件内部 return，退化为原样。
+                    if (card.input.isNotBlank()) {
+                        ToolDiffView(
+                            toolName = card.name,
+                            oldString = inputField(card.input, "old_string"),
+                            newString = inputField(card.input, "new_string"),
+                            filePath = inputField(card.input, "file_path"),
+                            command = inputField(card.input, "command"),
+                            // Bash/Read 的内容来自执行结果，不是入参
+                            output = if (card.name == "Bash" || card.name == "Read") card.result else "",
+                        )
+                        Spacer(Modifier.height(5.52.dp))
+                    }
+
                     // 进度（覆盖式 —— 只显示最新一行）
                     if (isRunning && card.progress.isNotBlank()) {
                         Text(
@@ -341,4 +358,19 @@ fun buildWebStylePreview(toolName: String, filePath: String?, command: String?, 
         command ?: rawInput?.take(80)?.let { if (rawInput.length > 80) "$it..." else it } ?: ""
     }
     return listOf(prefix, fileOrCmd).filter { it.isNotBlank() }.joinToString(" ")
+}
+
+
+/**
+ * 从工具入参 JSON 里取一个字符串字段（ToolDiffView 用）。
+ *
+ * 解析失败返回空串 —— diff 组件对空字段直接 return，退化为原结果展示，
+ * 不会因为一条畸形入参崩掉整个卡片。
+ */
+private fun inputField(json: String, key: String): String = try {
+    val obj = kotlinx.serialization.json.Json.parseToJsonElement(json)
+        as? kotlinx.serialization.json.JsonObject ?: return ""
+    (obj[key] as? kotlinx.serialization.json.JsonPrimitive)?.content ?: ""
+} catch (_: Throwable) {
+    ""
 }

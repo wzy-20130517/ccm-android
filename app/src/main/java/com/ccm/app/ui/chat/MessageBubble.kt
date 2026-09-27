@@ -125,8 +125,19 @@ fun MessageList(
     streamingThinking: String = "",
     /** 是否还在跑（决定思考链的 isThinking 动效）。 */
     streamingRunning: Boolean = false,
+    /** 待办清单（TodoWrite 维护，渲染在消息流顶部）。 */
+    todos: List<com.ccm.app.ui.common.TodoItem> = emptyList(),
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
+        // 待办面板 —— Web 行为：清单挂在消息流顶部，随 TodoWrite 更新
+        if (todos.isNotEmpty()) {
+            com.ccm.app.ui.common.TodoPanel(
+                todos = todos,
+                running = streamingRunning,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        }
+
         bubbles.forEach { bubble ->
             if (bubble.isUser) {
                 UserBubble(text = bubble.text)
@@ -205,4 +216,6 @@ data class ChatToolCard(
     val isError: Boolean = false,
     val progress: String = "",
     val result: String = "",
+    /** 完整入参 JSON —— ToolDiffView 展开渲染用（2026-09-27 加）。 */
+    val input: String = "",
 )

@@ -35,10 +35,15 @@ object ChatAdapter {
         thinking = bubble.thinking,
     )
 
+    /** core 待办 → UI 待办 */
+    fun toUi(entry: ChatSession.TodoEntry): com.ccm.app.ui.common.TodoItem =
+        com.ccm.app.ui.common.TodoItem(content = entry.content, status = entry.status)
+
     /** core 工具卡片 → UI 工具卡片 */
     fun toUi(card: ChatSession.ToolCard): ChatToolCard = ChatToolCard(
         id = card.id,
         name = card.name,
+        input = card.input,
         // Web 风格的显示文本：`Read a.mjs` 这种由 agent 层格式化在 preview 里，
         // 这里 displayName 留空 → UI 回退用 name
         displayName = "",
@@ -54,6 +59,7 @@ object ChatAdapter {
         bubbles = state.bubbles.map(::toUi),
         streaming = state.streaming,
         streamingThinking = state.thinking,
+        todos = state.todos.map(::toUi),
         running = state.running,
         toolCards = state.toolCards.map(::toUi),
         error = state.error,
@@ -73,6 +79,8 @@ data class UiChatState(
     val streaming: String = "",
     /** 正在流式生成的思考（AssistantThinkingChain 用，isThinking = running）。 */
     val streamingThinking: String = "",
+    /** 当前待办清单（TodoPanel 渲染）。 */
+    val todos: List<com.ccm.app.ui.common.TodoItem> = emptyList(),
     val running: Boolean = false,
     val toolCards: List<ChatToolCard> = emptyList(),
     val error: String? = null,

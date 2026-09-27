@@ -107,6 +107,7 @@ fun ChatScreenConnected(
         modifier = modifier,
         streaming = stableStreaming.ifBlank { uiState.streaming },
         streamingThinking = uiState.streamingThinking,
+        todos = uiState.todos,
         toolCards = uiState.toolCards,
         input = coreState.draft,
         running = uiState.running,

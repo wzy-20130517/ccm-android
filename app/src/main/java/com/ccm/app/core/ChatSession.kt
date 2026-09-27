@@ -190,8 +190,31 @@ class ChatSession(
                     }
 
                     is AgentEvent.ToolStart -> {
-                        toolCards += ToolCard(id = ev.id, name = ev.name, preview = ev.inputPreview, running = true)
+                        toolCards += ToolCard(
+                            id = ev.id, name = ev.name, preview = ev.inputPreview,
+                            running = true,
+                            // 完整入参（ToolDiffView 展开渲染用；原来只存 preview）
+                            input = ev.input.toString(),
+                        )
                         _state.value = _state.value.copy(toolCards = toolCards.toList())
+
+                        // ★ TodoWrite 拦截（2026-09-27）：更新 State.todos，
+                        //   UI 的 TodoPanel 由此拿到数据（之前零调用）。
+                        if (ev.name == "TodoWrite") {
+                            val arr = ev.input["todos"]
+                            if (arr is kotlinx.serialization.json.JsonArray) {
+                                val entries = arr.mapNotNull { el ->
+                                    val obj = el as? kotlinx.serialization.json.JsonObject
+                                        ?: return@mapNotNull null
+                                    val c = (obj["content"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+                                        ?: return@mapNotNull null
+                                    val st = (obj["status"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+                                        ?: "pending"
+                                    TodoEntry(content = c, status = st)
+                                }
+                                _state.value = _state.value.copy(todos = entries)
+                            }
+                        }
                     }
 
                     is AgentEvent.ToolProgress -> {
@@ -296,10 +319,25 @@ class ChatSession(
          * TurnEnd 时定型进 [Bubble.thinking] 并清空本字段。
          */
         val thinking: String = "",
+        /**
+         * 当前待办清单（TodoWrite 工具调用时更新，2026-09-27 加）。
+         *
+         * 之前 core 层没有这个字段 → UI 的 TodoPanel（写好了零调用）
+         * 永远拿不到数据。拦截点在 collectEvents 的 ToolStart：
+         * `name == "TodoWrite"` 时解析 input.todos。
+         * 存在 todos.json（TodoWriteTool 自己落盘），进程重启可从那恢复。
+         */
+        val todos: List<TodoEntry> = emptyList(),
     ) {
         /** 是否为空对话（UI 据此显示欢迎页）。 */
         val isEmpty: Boolean get() = bubbles.isEmpty() && streaming.isBlank()
     }
+
+    /** 一条待办（TodoWrite 的 todos 数组元素，core 侧形态）。 */
+    data class TodoEntry(
+        val content: String,
+        val status: String = "pending",
+    )
 
     /** 一个消息气泡。 */
     data class Bubble(
@@ -319,6 +357,8 @@ class ChatSession(
         val name: String,
         /** 折叠态一行参数预览（由 agent 层格式化，见 `AgentEvent.ToolStart`）。 */
         val preview: String = "",
+        /** 完整入参 JSON（ToolDiffView 展开渲染时按字段取；空 = 非 ToolStart 来源）。 */
+        val input: String = "",
         /** 是否还在跑。 */
         val running: Boolean = false,
         val isError: Boolean = false,

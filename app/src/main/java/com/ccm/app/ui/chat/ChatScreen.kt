@@ -80,6 +80,7 @@ fun ChatScreen(
     streaming: String = "",
     toolCards: List<ChatToolCard> = emptyList(),
     streamingThinking: String = "",
+    todos: List<com.ccm.app.ui.common.TodoItem> = emptyList(),
     input: String = "",
     running: Boolean = false,
     title: String = "新对话",
@@ -146,6 +147,7 @@ fun ChatScreen(
                         toolCards = toolCards,
                         streamingThinking = streamingThinking,
                         streamingRunning = running,
+                        todos = todos,
                     )
                     // 底部留白 —— 实测滚动容器 pad: `0px 0px 154px`（pb-154）
                     // 给浮动输入栏 + 底部状态行让位
