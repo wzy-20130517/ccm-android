@@ -19,6 +19,7 @@ import com.ccm.app.ui.pages.ChatsScreen
 import com.ccm.app.ui.pages.CoworkScreen
 import com.ccm.app.ui.pages.LandingScreen
 import com.ccm.app.ui.pages.ProjectsScreen
+import com.ccm.app.ui.pages.ScheduledScreen
 import com.ccm.app.ui.pages.greetingFor
 import com.ccm.app.ui.settings.SettingsScreen
 import com.ccm.app.ui.theme.CCMTheme
@@ -203,6 +204,8 @@ private fun AppScaffold() {
                     )
 
                     CcmRoute.COWORK -> CoworkScreen()
+
+                    CcmRoute.SCHEDULED -> ScheduledScreen()
 
                     // TODO(阶段4·B4-c): Cowork / Scheduled 的独立页面（已有 CoworkScreen，待接）
                     // TODO(阶段4·B5-c): 聊天主界面剩余区块
