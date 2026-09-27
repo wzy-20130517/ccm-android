@@ -327,7 +327,7 @@ class EndToEndLinkTest {
     // ═══════════════════════ 场景 8：占位符回复 ═══════════════════════
 
     @Test
-    fun `占位符回复 —— 视为空响应重试`() = runBlocking {
+    fun `占位符回复 —— 视为空响应重试且不落进历史`() = runBlocking {
         // 模型照抄历史里的内部占位符
         enqueueSse(
             """data: {"choices":[{"delta":{"content":"(continue)"}}]}""",
@@ -341,9 +341,27 @@ class EndToEndLinkTest {
         val loop = newLoop()
         val events = loop.run("hi").toList()
 
-        val text = events.filterIsInstance<AgentEvent.TextDelta>().joinToString("") { it.text }
-        assertEquals("正常了", text)
+        // 1) 触发了重试（第二次请求真的发出去了）
         assertEquals("占位符应触发重试", 2, server.requestCount)
+
+        // 2) 重试后拿到了正常内容
+        val text = events.filterIsInstance<AgentEvent.TextDelta>().joinToString("") { it.text }
+        assertTrue("重试后应拿到正常内容，实际: $text", text.endsWith("正常了"))
+
+        // 3) ★ 关键：占位符**不能落进历史**。
+        //
+        // 注意不能断言「TextDelta 里没有 (continue)」—— 它是**实时流**给 UI 的，
+        // 出现是对的（UI 靠 messageId 变化丢弃上一轮半截输出，见 ChatSession）。
+        // 真正要防的是它被写进会话历史：那样下一轮模型又会看到它、继续照抄，
+        // 形成「每轮都吐占位符」的死循环。
+        val history = loop.getHistory()
+        assertTrue(
+            "占位符不能进历史，否则模型会一直照抄它",
+            history.none { it.role == Message.ROLE_ASSISTANT && it.text.contains("(continue)") },
+        )
+        // 重试后的正常回复要进历史（最后一条 assistant）
+        val lastAssistant = history.last { it.role == Message.ROLE_ASSISTANT }
+        assertEquals("正常了", lastAssistant.text)
     }
 
     // ═══════════════════════ 场景 9：工具结果顺序 ═══════════════════════
