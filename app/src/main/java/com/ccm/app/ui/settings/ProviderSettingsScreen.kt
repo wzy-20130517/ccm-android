@@ -1,0 +1,791 @@
+package com.ccm.app.ui.settings
+
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.ccm.app.ui.theme.CCMText
+import com.ccm.app.ui.theme.CCMTheme
+import com.ccm.app.ui.theme.CcmMono
+
+/**
+ * 模型供应商配置 —— 对齐 `ProviderSettings.tsx`（1469 行）。
+ *
+ * ## ★ 移动端形态（index.css:1398-1436）
+ *
+ * ```css
+ * @media (max-width: 767px) {
+ *   .provider-split { flex-direction: column !important; gap: 12px !important; }
+ *   .provider-list {
+ *     width: 100% !important;
+ *     max-height: 34vh !important;            // 列表限高，自己滚
+ *     padding-bottom: 6px !important;
+ *     border-bottom: 1px solid var(--claude-border);
+ *   }
+ *   .provider-detail { width: 100% !important; flex: 1 1 auto !important; }
+ *   .provider-detail input, select, textarea { width: 100% !important; }
+ *   .provider-detail button { width: auto !important; }    // 按钮不被拉满
+ *   .provider-detail [class*="p-6"] { padding: 12px !important; }
+ *   .provider-detail [class*="p-5"] { padding: 11px !important; }
+ * }
+ * ```
+ *
+ * **所以移动端是**：
+ * ```
+ * ┌─ 供应商列表（限高 34vh，超出自己滚）
+ * │    每行：色块头像(28) + 名字 + 「N models」+ 状态点
+ * ├─ 分隔线
+ * └─ 详情区（占满剩余）
+ *      ├─ SettingGroup「连接信息」：API 密钥 / API 地址
+ *      ├─ SettingGroup「模型行为」：思考强度 / API 格式
+ *      ├─ SettingGroup「能力开关」：网页搜索 / Tavily key / 图片识别
+ *      └─ SettingGroup「模型清单」：模型列表 + 勾选
+ * ```
+ *
+ * ## SettingGroup 实测（Tailwind × 0.92）
+ * `rounded-[12px] border p-4 space-y-3.5` →
+ * 圆角 **11.04** · 内距 **14.72** · 间距 **12.88** · 边框 `border-claude-border/60`
+ *
+ * 标题 `text-[13px] font-semibold` → 11.21；提示 `text-[11px] opacity-70` → 9.48
+ *
+ * ## 与 CLI 的对应
+ * 这个页面的每个字段都对应 CLI 的 slash 命令（注释里逐一标注），
+ * 两边的**行为契约必须一致** —— 尤其「改 ID 会同步更新引用」这条。
+ */
+@Composable
+fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
+    val colors = CCMTheme.colors
+    var selected by remember { mutableStateOf(0) }
+
+    Column(modifier = modifier) {
+        Text(
+            text = "模型供应商",
+            style = CCMText.body16.copy(
+                fontSize = 12.29.sp,
+                fontWeight = FontWeight.SemiBold,
+            ),
+            color = colors.textMain,
+        )
+        Spacer(Modifier.height(14.72.dp))       // mb-4
+
+        // ── 供应商列表（移动端限高 34vh）──────────────────────────
+        Column(modifier = Modifier.heightIn(max = 300.dp)) {
+            // 头部：「供应商」+「+ 添加」
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 11.04.dp),        // mb-3
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "供应商",
+                    style = CCMText.body13.copy(
+                        fontSize = 11.21.sp,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    color = colors.textSecondary,
+                )
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(5.52.dp))
+                        .clickable { }
+                        .padding(horizontal = 7.36.dp, vertical = 3.68.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.68.dp),
+                ) {
+                    PlusIcon(color = colors.textSecondary, size = 11.96.dp)
+                    Text(
+                        text = "添加",
+                        style = CCMText.body12.copy(fontSize = 11.04.sp),
+                        color = colors.textSecondary,
+                    )
+                }
+            }
+
+            // 列表项
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 245.dp)
+                    .horizontalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(1.84.dp),   // space-y-0.5
+            ) {
+                ProviderListItem(
+                    name = "WorkBuddy",
+                    modelCount = 3,
+                    webSearchOk = false,
+                    enabled = true,
+                    selected = selected == 0,
+                    onClick = { selected = 0 },
+                )
+                ProviderListItem(
+                    name = "sharellm",
+                    modelCount = 12,
+                    webSearchOk = true,
+                    enabled = true,
+                    selected = selected == 1,
+                    onClick = { selected = 1 },
+                )
+                ProviderListItem(
+                    name = "英伟达",
+                    modelCount = 47,
+                    webSearchOk = false,
+                    enabled = false,
+                    selected = selected == 2,
+                    onClick = { selected = 2 },
+                )
+            }
+        }
+
+        Spacer(Modifier.height(11.04.dp))       // gap-12 × 0.92
+        SettingsDivider()
+        Spacer(Modifier.height(11.04.dp))
+
+        // ── 详情区 ────────────────────────────────────────────────
+        Column(verticalArrangement = Arrangement.spacedBy(11.04.dp)) {
+
+            // ── SettingGroup 1：连接信息 ─────────────────────────
+            ProviderSettingGroup(
+                title = "连接信息",
+                hint = "这个供应商怎么连、用什么身份",
+            ) {
+                var apiKey by remember { mutableStateOf("sk-xxxxxxxxxxxxxxxx") }
+                var baseUrl by remember { mutableStateOf("http://127.0.0.1:3011/v1") }
+                var showKey by remember { mutableStateOf(false) }
+
+                ProviderField(label = "API 密钥") {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.36.dp),
+                    ) {
+                        SettingsTextField(
+                            value = apiKey,
+                            onValueChange = { apiKey = it },
+                            placeholder = "sk-...",
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "池 · 4 个",
+                            style = CCMText.body11.copy(fontSize = 10.12.sp),
+                            color = colors.textSecondary,
+                        )
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(7.36.dp))
+                                .clickable { showKey = !showKey }
+                                .padding(7.36.dp),
+                        ) {
+                            EyeIcon(
+                                open = showKey,
+                                color = colors.textSecondary,
+                                size = 12.88.dp,
+                            )
+                        }
+                    }
+                }
+
+                ProviderField(label = "API 地址") {
+                    SettingsTextField(
+                        value = baseUrl,
+                        onValueChange = { baseUrl = it },
+                    )
+                }
+            }
+
+            // ── SettingGroup 2：模型行为 ─────────────────────────
+            ProviderSettingGroup(
+                title = "模型行为",
+                hint = "这个供应商的默认模型怎么工作",
+            ) {
+                var effort by remember { mutableStateOf("继承全局") }
+                var format by remember { mutableStateOf("openai") }
+
+                ProviderField(label = "思考强度") {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.36.dp),
+                    ) {
+                        SettingsSelect(
+                            value = effort,
+                            onClick = { },
+                            modifier = Modifier.weight(1f),
+                        )
+                        // 状态徽章：已开启 / 已关闭
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(7.36.dp))
+                                .border(
+                                    1.dp,
+                                    Color(0xFF387EE0).copy(alpha = 0.3f),
+                                    RoundedCornerShape(7.36.dp),
+                                )
+                                .padding(horizontal = 9.2.dp, vertical = 5.52.dp),
+                        ) {
+                            Text(
+                                text = "已开启",
+                                style = CCMText.body12.copy(
+                                    fontSize = 11.04.sp,
+                                    fontWeight = FontWeight.Medium,
+                                ),
+                                color = Color(0xFF387EE0),
+                            )
+                        }
+                    }
+                }
+
+                ProviderField(label = "API 格式") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(7.36.dp)) {
+                        FormatChip(
+                            label = "OpenAI 兼容",
+                            selected = format == "openai",
+                            onClick = { format = "openai" },
+                        )
+                        FormatChip(
+                            label = "Anthropic",
+                            selected = format == "anthropic",
+                            onClick = { format = "anthropic" },
+                        )
+                    }
+                }
+            }
+
+            // ── SettingGroup 3：能力开关 ─────────────────────────
+            ProviderSettingGroup(
+                title = "能力开关",
+                hint = "联网搜索与图片识别，决定模型能做什么",
+            ) {
+                var webSearch by remember { mutableStateOf(true) }
+                var vision by remember { mutableStateOf(false) }
+                var tavilyKey by remember { mutableStateOf("") }
+
+                // 网页搜索（带测试按钮）
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "网页搜索",
+                            style = CCMText.body13.copy(
+                                fontSize = 11.21.sp,
+                                fontWeight = FontWeight.Medium,
+                            ),
+                            color = colors.textMain,
+                        )
+                        Text(
+                            text = "模型可调用搜索引擎查最新信息",
+                            style = CCMText.body11.copy(fontSize = 9.48.sp),
+                            color = colors.textSecondary.copy(alpha = 0.7f),
+                        )
+                    }
+                    Spacer(Modifier.width(7.36.dp))
+                    SettingsSwitch(checked = webSearch, onCheckedChange = { webSearch = it })
+                }
+
+                // Tavily key
+                ProviderField(label = "Tavily 密钥（可选）") {
+                    SettingsTextField(
+                        value = tavilyKey,
+                        onValueChange = { tavilyKey = it },
+                        placeholder = "tvly-...",
+                    )
+                }
+
+                // 图片识别
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "图片识别",
+                            style = CCMText.body13.copy(
+                                fontSize = 11.21.sp,
+                                fontWeight = FontWeight.Medium,
+                            ),
+                            color = colors.textMain,
+                        )
+                        Text(
+                            text = "该供应商的模型能看图（vision）",
+                            style = CCMText.body11.copy(fontSize = 9.48.sp),
+                            color = colors.textSecondary.copy(alpha = 0.7f),
+                        )
+                    }
+                    Spacer(Modifier.width(7.36.dp))
+                    SettingsSwitch(checked = vision, onCheckedChange = { vision = it })
+                }
+            }
+
+            // ── SettingGroup 4：模型清单 ─────────────────────────
+            ProviderSettingGroup(
+                title = "模型清单",
+                hint = "下拉框里能选到哪些模型（不勾选的不出现）",
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(3.68.dp)) {
+                    ProviderModelRow(
+                        id = "deepseek-v4.1-flash",
+                        tierLabel = "日常档",
+                        thinking = false,
+                        checked = true,
+                    )
+                    ProviderModelRow(
+                        id = "deepseek-v4.1-pro",
+                        tierLabel = "主力档",
+                        thinking = true,
+                        checked = true,
+                    )
+                    ProviderModelRow(
+                        id = "deepseek-v4.1-lite",
+                        tierLabel = "快速档",
+                        thinking = false,
+                        checked = false,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 供应商列表项 —— 对应源码
+ * `<button className="w-full flex items-center gap-3 px-3 py-3 rounded-[12px] border
+ *   ${active ? 'bg-claude-input border-claude-border shadow-sm' : 'border-transparent'}">`
+ *
+ * 实测（Tailwind × 0.92）：内距 **11.04** · 圆角 **11.04** · 间距 **11.04** ·
+ * 头像 28 → **25.76** · 名字 `text-[13px]` → 11.21 · 副行 `text-[10px]` → 9.2。
+ *
+ * 未启用时右侧显示一个 `w-1.5 h-1.5 rounded-full bg-claude-textSecondary/30` 小点。
+ */
+@Composable
+private fun ProviderListItem(
+    name: String,
+    modelCount: Int,
+    webSearchOk: Boolean,
+    enabled: Boolean,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val colors = CCMTheme.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(11.04.dp))
+            .background(if (selected) colors.input else Color.Transparent)
+            .border(
+                width = 1.dp,
+                color = if (selected) colors.border else Color.Transparent,
+                shape = RoundedCornerShape(11.04.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 11.04.dp, vertical = 11.04.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(11.04.dp),      // gap-3
+    ) {
+        ProviderAvatar(name = name, size = 25.76.dp)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = name,
+                style = CCMText.body13.copy(
+                    fontSize = 11.21.sp,
+                    fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+                ),
+                color = if (selected) colors.textMain else colors.textSecondary,
+                maxLines = 1,
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.52.dp),
+            ) {
+                Text(
+                    text = "$modelCount models",
+                    style = CCMText.body10.copy(fontSize = 9.2.sp),
+                    color = colors.textSecondary.copy(alpha = 0.5f),
+                )
+                if (webSearchOk) {
+                    GlobeIcon(color = Color(0xFF387EE0), size = 8.28.dp)
+                }
+            }
+        }
+        if (!enabled) {
+            Box(
+                modifier = Modifier
+                    .size(1.38.dp)
+                    .clip(CircleShape)
+                    .background(colors.textSecondary.copy(alpha = 0.3f)),
+            )
+        }
+    }
+}
+
+/**
+ * 供应商头像 —— 源码 `ProviderIcon`：圆形色块 + 首字母。
+ *
+ * 源码里每个供应商有专属色（`PROVIDER_LOGOS`），未知供应商走
+ * `getProviderMeta()` 生成的哈希色。这里用首字母 + 稳定哈希色。
+ */
+@Composable
+private fun ProviderAvatar(name: String, size: androidx.compose.ui.unit.Dp) {
+    val palette = listOf(
+        Color(0xFFD97757), Color(0xFF387EE0), Color(0xFF22C55E),
+        Color(0xFFF59E0B), Color(0xFF8B5CF6), Color(0xFFEC4899),
+    )
+    val idx = (name.hashCode().let { if (it < 0) -it else it }) % palette.size
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(palette[idx]),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = name.take(1).uppercase(),
+            style = CCMText.body13.copy(
+                fontSize = 12.88.sp,
+                fontWeight = FontWeight.Medium,
+            ),
+            color = Color.White,
+        )
+    }
+}
+
+/**
+ * SettingGroup —— 对应源码
+ * `<div className="rounded-[12px] border border-claude-border/60
+ *   bg-black/[0.012] dark:bg-white/[0.015] p-4 space-y-3.5">`
+ *
+ * 实测（Tailwind × 0.92）：圆角 **11.04** · 内距 **14.72** · 间距 **12.88**。
+ * 背景是极淡的黑（亮色 `rgba(0,0,0,0.012)`），暗色是极淡的白 —— 近乎不可见，
+ * 但确实存在，别省掉。
+ */
+@Composable
+private fun ProviderSettingGroup(
+    title: String,
+    hint: String? = null,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    val colors = CCMTheme.colors
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(11.04.dp))
+            .background(colors.textMain.copy(alpha = 0.012f))
+            .border(
+                width = 1.dp,
+                color = colors.border.copy(alpha = 0.6f),
+                shape = RoundedCornerShape(11.04.dp),
+            )
+            .padding(14.72.dp),
+        verticalArrangement = Arrangement.spacedBy(12.88.dp),        // space-y-3.5
+    ) {
+        Column {
+            Text(
+                text = title,
+                style = CCMText.body13.copy(
+                    fontSize = 11.21.sp,
+                    fontWeight = FontWeight.SemiBold,
+                ),
+                color = colors.textMain,
+            )
+            if (hint != null) {
+                Spacer(Modifier.height(1.84.dp))     // mt-0.5
+                Text(
+                    text = hint,
+                    style = CCMText.body11.copy(fontSize = 9.48.sp),
+                    color = colors.textSecondary.copy(alpha = 0.7f),
+                )
+            }
+        }
+        content()
+    }
+}
+
+/**
+ * 详情区字段 —— 对应源码
+ * `<div><label text-[12px] text-claude-textSecondary mb-1.5 block font-medium>…</label>控件</div>`
+ *
+ * 实测：标签 `text-[12px]` 移动端 clamp(11,2.9vw,12) → 11.397 → **10.48**。
+ */
+@Composable
+private fun ProviderField(
+    label: String,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Column(modifier = modifier) {
+        Text(
+            text = label,
+            style = CCMText.body12.copy(
+                fontSize = 10.48.sp,
+                fontWeight = FontWeight.Medium,
+            ),
+            color = CCMTheme.colors.textSecondary,
+        )
+        Spacer(Modifier.height(5.52.dp))            // mb-1.5
+        content()
+    }
+}
+
+/**
+ * 格式切换 chip —— 对应源码
+ * `<button className="px-3.5 py-1.5 rounded-lg text-[12px] font-medium border
+ *   ${active ? 'bg-black/[0.05] border-claude-textSecondary/50 text-claude-text'
+ *            : 'border-claude-border/40 text-claude-textSecondary'}">`
+ *
+ * 实测（Tailwind × 0.92）：内距 **12.88 × 5.52** · 圆角 **7.36** · 字号 **11.04**。
+ * ⚠️ 移动端 `.provider-detail button { width: auto !important }` —— 按钮**不拉满**。
+ */
+@Composable
+private fun FormatChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val colors = CCMTheme.colors
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(7.36.dp))
+            .background(if (selected) colors.textMain.copy(alpha = 0.05f) else Color.Transparent)
+            .border(
+                width = 1.dp,
+                color = if (selected) colors.textSecondary.copy(alpha = 0.5f)
+                else colors.border.copy(alpha = 0.4f),
+                shape = RoundedCornerShape(7.36.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.88.dp, vertical = 5.52.dp),
+    ) {
+        Text(
+            text = label,
+            style = CCMText.body12.copy(
+                fontSize = 11.04.sp,
+                fontWeight = FontWeight.Medium,
+            ),
+            color = if (selected) colors.textMain else colors.textSecondary,
+        )
+    }
+}
+
+/**
+ * 模型清单行 —— 对应源码里的模型列表项：
+ * 勾选框 + 模型 id + 档位标签 + `Thinking` 徽章（可选）。
+ *
+ * 源码里 Thinking 徽章：
+ * `<span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10
+ *   text-amber-600 dark:text-amber-400">Thinking</span>`
+ * 实测（Tailwind × 0.92）：字号 **8.28** · 内距 **5.52 × 1.84** · 圆角 **3.68**。
+ */
+@Composable
+private fun ProviderModelRow(
+    id: String,
+    tierLabel: String,
+    thinking: Boolean,
+    checked: Boolean,
+) {
+    val colors = CCMTheme.colors
+    var isChecked by remember { mutableStateOf(checked) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(5.52.dp))
+            .clickable { isChecked = !isChecked }
+            .padding(vertical = 3.68.dp, horizontal = 5.52.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(7.36.dp),
+    ) {
+        Checkbox(checked = isChecked, size = 12.88.dp)
+        Text(
+            text = id,
+            style = CCMText.body12.copy(
+                fontSize = 10.48.sp,
+                fontFamily = CcmMono,
+            ),
+            color = colors.textMain,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+        )
+        if (thinking) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(3.68.dp))
+                    .background(Color(0xFFF59E0B).copy(alpha = 0.1f))
+                    .padding(horizontal = 5.52.dp, vertical = 1.84.dp),
+            ) {
+                Text(
+                    text = "Thinking",
+                    style = CCMText.body10.copy(fontSize = 8.28.sp),
+                    color = Color(0xFFD97706),
+                )
+            }
+        }
+        Text(
+            text = tierLabel,
+            style = CCMText.body11.copy(fontSize = 9.2.sp),
+            color = colors.textSecondary,
+        )
+    }
+}
+
+/** 勾选框 —— 对应源码 `<input type="checkbox">`，14×14 → 12.88，选中 `#387EE0` */
+@Composable
+private fun Checkbox(checked: Boolean, size: androidx.compose.ui.unit.Dp) {
+    val colors = CCMTheme.colors
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(RoundedCornerShape(2.76.dp))
+            .background(if (checked) Color(0xFF387EE0) else colors.input)
+            .border(
+                width = 1.dp,
+                color = if (checked) Color(0xFF387EE0) else colors.border,
+                shape = RoundedCornerShape(2.76.dp),
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (checked) {
+            Canvas(modifier = Modifier.size(size)) {
+                val w = this.size.width
+                val h = this.size.height
+                val p = androidx.compose.ui.graphics.Path().apply {
+                    moveTo(w * 0.24f, h * 0.5f)
+                    lineTo(w * 0.43f, h * 0.7f)
+                    lineTo(w * 0.76f, h * 0.31f)
+                }
+                drawPath(
+                    path = p,
+                    color = Color.White,
+                    style = Stroke(width = 1.38.dp.toPx(), cap = StrokeCap.Round),
+                )
+            }
+        }
+    }
+}
+
+/** 加号图标 —— 源码 lucide `Plus size={13}` → 11.96 */
+@Composable
+private fun PlusIcon(color: Color, size: androidx.compose.ui.unit.Dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val stroke = 1.38.dp.toPx()
+        val c = this.size.width / 2f
+        val r = this.size.width / 2f - stroke / 2
+        drawLine(color, Offset(c - r, c), Offset(c + r, c), stroke, StrokeCap.Round)
+        drawLine(color, Offset(c, c - r), Offset(c, c + r), stroke, StrokeCap.Round)
+    }
+}
+
+/** 眼睛图标 —— 源码 lucide `Eye` / `EyeOff size={14}` → 12.88 */
+@Composable
+private fun EyeIcon(open: Boolean, color: Color, size: androidx.compose.ui.unit.Dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+        val stroke = 1.2.dp.toPx()
+        if (open) {
+            // 眼形：上下两段弧
+            drawArc(
+                color = color,
+                startAngle = 180f,
+                sweepAngle = 180f,
+                useCenter = false,
+                style = Stroke(width = stroke),
+                topLeft = Offset(stroke / 2, h * 0.28f),
+                size = androidx.compose.ui.geometry.Size(w - stroke, h * 0.44f),
+            )
+            drawArc(
+                color = color,
+                startAngle = 0f,
+                sweepAngle = 180f,
+                useCenter = false,
+                style = Stroke(width = stroke),
+                topLeft = Offset(stroke / 2, h * 0.28f),
+                size = androidx.compose.ui.geometry.Size(w - stroke, h * 0.44f),
+            )
+            drawCircle(color, radius = h * 0.13f, center = Offset(w / 2, h / 2))
+        } else {
+            // 眼形 + 斜杠
+            drawArc(
+                color = color,
+                startAngle = 180f,
+                sweepAngle = 180f,
+                useCenter = false,
+                style = Stroke(width = stroke),
+                topLeft = Offset(stroke / 2, h * 0.28f),
+                size = androidx.compose.ui.geometry.Size(w - stroke, h * 0.44f),
+            )
+            drawArc(
+                color = color,
+                startAngle = 0f,
+                sweepAngle = 180f,
+                useCenter = false,
+                style = Stroke(width = stroke),
+                topLeft = Offset(stroke / 2, h * 0.28f),
+                size = androidx.compose.ui.geometry.Size(w - stroke, h * 0.44f),
+            )
+            drawLine(
+                color,
+                Offset(w * 0.2f, h * 0.8f),
+                Offset(w * 0.8f, h * 0.2f),
+                stroke,
+                StrokeCap.Round,
+            )
+        }
+    }
+}
+
+/** 地球图标 —— 源码 lucide `Globe size={9}` → 8.28，表示「已验证支持网页搜索」 */
+@Composable
+private fun GlobeIcon(color: Color, size: androidx.compose.ui.unit.Dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val stroke = 0.92.dp.toPx()
+        val r = this.size.minDimension / 2f - stroke / 2
+        val c = Offset(this.size.width / 2f, this.size.height / 2f)
+        drawCircle(color, radius = r, center = c, style = Stroke(width = stroke))
+        // 经线（椭圆）
+        drawOval(
+            color = color,
+            topLeft = Offset(c.x - r * 0.45f, c.y - r),
+            size = androidx.compose.ui.geometry.Size(r * 0.9f, r * 2f),
+            style = Stroke(width = stroke),
+        )
+        // 纬线（横线）
+        drawLine(
+            color,
+            Offset(c.x - r, c.y),
+            Offset(c.x + r, c.y),
+            stroke,
+        )
+    }
+}
