@@ -120,6 +120,12 @@ def check_file(path):
     if unused:
         errors.append(f'未使用的 import: {", ".join(unused)}')
 
+    # ── 1.5 顶层重复声明 ──────────────────────────────────────────
+    # CI 报 `Conflicting declarations` 时，还会级联出 `Overload resolution
+    # ambiguity` / `Unresolved reference`（编译器无法确定用哪个）。
+    # 那些级联信息极具误导性，必须在本地拦住根因。
+    errors.extend(check_duplicate_declarations(path, src))
+
     # ── 2. 括号平衡（用去注释后的代码）─────────────────────────────
     code = strip_comments_and_strings(src)
     for op, cl, name in (('{', '}', '花括号'), ('(', ')', '圆括号'), ('[', ']', '方括号')):
@@ -251,6 +257,57 @@ def check_cross_file(files, defs):
                 errors.append(f'{f}: 调用 {fname}() 传了不存在的参数 {sorted(unknown)}'
                               f'（{fname} 定义在 {os.path.basename(d["file"])}，'
                               f'可用: {sorted(d["params"])}）')
+    return errors
+
+
+def check_duplicate_declarations(path, src):
+    """检查同一文件里的顶层重复声明。
+
+    ⚠️ 为什么需要（2026-09-27 踩坑）：用 MultiEdit 替换「注释+定义」时，
+    如果 old_string 只覆盖到定义的第一行，旧定义会残留 → 同一文件出现
+    两个同名 `private val X` → CI 报 `Conflicting declarations`，
+    并级联出一堆看似无关的 `Overload resolution ambiguity` /
+    `Unresolved reference`（因为编译器无法确定用哪个）。
+
+    而 check_kotlin.py 当时只查「未使用 import + 括号平衡」，**完全没抓到**，
+    导致我 push 后才发现。重复声明的级联报错极具误导性，必须在本地拦住。
+    """
+    # 只查顶层（行首无缩进）的 val/var/fun/class/object/interface/enum
+    seen = {}
+    errors = []
+    for i, line in enumerate(src.split('\n'), 1):
+        m = re.match(r'^(?:private\s+|internal\s+|public\s+)?'
+                     r'(?:const\s+)?'
+                     r'(val|var|fun|class|object|interface)\s+'
+                     r'(?:<[^>]*>\s*)?([A-Za-z_][A-Za-z0-9_]*)', line)
+        if not m:
+            continue
+        kind, name = m.group(1), m.group(2)
+        # ★ 排除扩展属性/扩展函数：`val Foo.bar` / `fun Foo.bar()`
+        #   正则会把接收者 `Foo` 当成声明名 → 与真正的 `class Foo` 撞车误报
+        #   （踩过：AppContainer.kt 的 `val AppContainer.providerLabel`）
+        after = line[line.find(name) + len(name):]
+        # 覆盖三种扩展写法：`Foo.bar` / `Foo?.bar`（可空接收者）/ `Foo<T>.bar`
+        if after.startswith('.') or after.startswith('?.'):
+            continue
+        # ★ Kotlin 允许「函数」与「类型/属性」同名（不同命名空间）：
+        #     `fun CCMTheme(...)` + `object CCMTheme` 是 Compose 惯用法，合法。
+        #   所以只在**同类命名空间内**比重复：
+        #     类型空间 = class/object/interface（彼此冲突）
+        #     值空间   = val/var（彼此冲突）
+        #     fun 与谁都不冲突（重载是常态）
+        #   （踩过：CCMTheme.kt 被误报）
+        if kind == 'fun':
+            continue
+        space = 'type' if kind in ('class', 'object', 'interface') else 'value'
+        key = (space, name)
+        if key in seen:
+            prev_kind, prev_line = seen[key]
+            errors.append(
+                f"第 {i} 行重复声明: {kind} {name}（第 {prev_line} 行已声明为 {prev_kind}）"
+            )
+        else:
+            seen[key] = (kind, i)
     return errors
 
 

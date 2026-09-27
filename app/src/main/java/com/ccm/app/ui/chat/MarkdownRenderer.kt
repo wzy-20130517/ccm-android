@@ -570,11 +570,8 @@ private val HEADING_LINE_RE = Regex("^(#{1,6})\\s+(.*)$")
 /** 无序列表项：`- ` / `* ` / `+ ` */
 private val UNORDERED_RE = Regex("^\\s*[-*+]\\s+(.*)$")
 
-/** 有序列表项：`1. ` / `1) ` */
+/** 有序列表项（含捕获组）：`1. ` / `1) ` */
 private val ORDERED_RE = Regex("^\\s*\\d+[.)]\\s+(.*)$")
-
-/** 有序列表项：`1. ` / `1) ` */
-private val ORDERED_RE = Regex("^\\s*\\d+[.)]\\s+")
 
 /** GFM 表格分隔行：`|---|---|` 或 `|:--|--:|` */
 private fun isTableSeparator(line: String): Boolean {
