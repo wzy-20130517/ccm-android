@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -138,9 +139,19 @@ fun LandingScreen(
 
             // ── 建议胶囊（横向可滚动）─────────────────────────────────
             //   mx-[-8px] 抵消外层 px-2，让可滚区域回到满宽（Web 的 scrollWidth=571）
+            //
+            // ⚠️ 【2026-09-27 修崩溃】原来写的是 `Modifier.padding(horizontal = (-8).dp)`
+            //    —— Compose 的 padding() **不接受负值**，运行时会抛
+            //    IllegalArgumentException（要求 ≥ 0）。这不是编译期能发现的：
+            //    check_kotlin 只查语法，CI 只编译，都要等**真机点开这一屏**才崩。
+            //    实测崩溃栈：LandingScreen.kt:143 → PaddingKt.padding-VpY3zN4
+            //
+            //    CSS 的负 margin 在 Compose 里的等价物是 `offset`（允许负值）。
+            //    offset 只影响绘制位置、不改变测量尺寸，正好符合「把可滚区域往左挪
+            //    8dp 抵消父容器 padding」的意图。
             PromptPills(
                 onPick = onPickPrompt,
-                modifier = Modifier.padding(horizontal = (-8).dp),
+                modifier = Modifier.offset(x = (-8).dp),
             )
 
             Spacer(Modifier.height(40.dp))
