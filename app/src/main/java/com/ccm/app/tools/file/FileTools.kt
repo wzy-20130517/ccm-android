@@ -291,15 +291,147 @@ class FileTools(
 
         override val inputSchema: JsonObject = ToolSchema.objectSchema(
             "file_path" to ToolSchema.string("目标文件路径"),
-            "edits" to ToolSchema.stringArray("替换操作列表（按顺序应用）"),
+            "edits" to EDITS_SCHEMA,
             "backup_note" to ToolSchema.string("（可选）这次修改的目的"),
             required = listOf("file_path", "edits"),
         )
 
+        override fun validateInput(input: JsonObject): String? {
+            if (input.str("file_path").isNullOrBlank()) return "file_path is required"
+            val edits = input["edits"] as? kotlinx.serialization.json.JsonArray
+                ?: return "edits 必须是数组，形如 [{old_string, new_string}, ...]"
+            if (edits.isEmpty()) return "edits 不能为空"
+            edits.forEachIndexed { i, el ->
+                val obj = el as? JsonObject ?: return "edits[$i] 不是对象"
+                if (obj.str("old_string") == null) return "edits[$i].old_string is required"
+                if (obj.str("new_string") == null) return "edits[$i].new_string is required"
+            }
+            return null
+        }
+
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
-            // 详细实现见 MultiEditToolImpl（为保持文件可读性拆出去）
-            return MultiEditImpl(trashStore, undoStore).run(input, ctx) { key, def ->
-                if (key == "file_path") resolve(input, ctx, def) else null
+            val file = try {
+                resolve(input, ctx)
+            } catch (e: Throwable) {
+                return pathError(e)
+            }
+            if (!file.exists()) return ToolResult.notFound("File not found: ${file.absolutePath}")
+
+            val editsArr = input["edits"] as? kotlinx.serialization.json.JsonArray
+                ?: return ToolResult.invalidInput("edits 必须是数组")
+            if (editsArr.isEmpty()) return ToolResult.invalidInput("edits 不能为空")
+
+            // 并发守卫放最前：校验失败不产生任何副作用
+            FileVersionTracker.staleReason(file)?.let {
+                return ToolResult.Error(it, ToolResult.INVALID_INPUT)
+            }
+
+            val original = try {
+                file.readText()
+            } catch (e: Throwable) {
+                return ToolResult.Error("读取失败：${e.message}", ToolResult.INTERNAL)
+            }
+
+            // ⚠️ 全部在内存里应用，任一失败则整体不改（原子性）
+            // 不做「边改边写」——否则第 3 个编辑失败时前 2 个已落盘，文件处于破碎状态
+            var current = original
+            val applied = mutableListOf<String>()
+
+            for ((i, el) in editsArr.withIndex()) {
+                val edit = el as? JsonObject
+                    ?: return ToolResult.invalidInput("edits[$i] 不是对象")
+                val oldStr = edit.str("old_string")
+                    ?: return ToolResult.invalidInput("edits[$i].old_string is required")
+                val newStr = edit.str("new_string")
+                    ?: return ToolResult.invalidInput("edits[$i].new_string is required")
+                val replaceAll = edit.bool("replace_all") ?: false
+
+                val count = countOccurrences(current, oldStr)
+                if (count == 0) {
+                    return ToolResult.Error(
+                        "edits[$i].old_string 未找到。前 ${applied.size} 个编辑已通过校验但**未写盘**，文件保持原样。",
+                        ToolResult.INVALID_INPUT,
+                    )
+                }
+                if (count > 1 && !replaceAll) {
+                    return ToolResult.Error(
+                        "edits[$i].old_string 不唯一（出现 $count 次）。请扩大上下文，或设 replace_all=true。",
+                        ToolResult.INVALID_INPUT,
+                    )
+                }
+                current = if (replaceAll) {
+                    current.split(oldStr).joinToString(newStr)
+                } else {
+                    val idx = current.indexOf(oldStr)
+                    current.substring(0, idx) + newStr + current.substring(idx + oldStr.length)
+                }
+                applied += "  [$i] 替换${if (replaceAll) " $count 处" else ""}"
+            }
+
+            val note = input.str("backup_note") ?: ""
+            trashStore.backupBeforeOverwrite(file, current, note)
+            try {
+                undoStore.saveSnapshot(file, original, note)
+            } catch (_: Throwable) {
+            }
+
+            return try {
+                AtomicFile.writeText(file, current)
+                FileVersionTracker.track(file)
+                ToolResult.ok(
+                    "MultiEdit 完成 ${file.absolutePath}（${editsArr.size} 个编辑）\n" +
+                        applied.joinToString("\n"),
+                )
+            } catch (e: Throwable) {
+                ToolResult.Error("写入失败：${e.message}", ToolResult.INTERNAL)
+            }
+        }
+
+        private fun countOccurrences(haystack: String, needle: String): Int {
+            if (needle.isEmpty()) return 0
+            var count = 0
+            var idx = haystack.indexOf(needle)
+            while (idx >= 0) {
+                count++
+                idx = haystack.indexOf(needle, idx + needle.length)
+            }
+            return count
+        }
+
+        companion object {
+            /**
+             * edits 数组的 schema。
+             *
+             * ⚠️ 必须是 **array of object**（每个元素含 old_string/new_string），
+             * 不是 stringArray —— 用 `ToolSchema.stringArray()` 会让模型以为要传字符串数组，
+             * 直接导致参数错误。
+             */
+            val EDITS_SCHEMA: JsonObject = kotlinx.serialization.json.buildJsonObject {
+                put("type", kotlinx.serialization.json.JsonPrimitive("array"))
+                put("description", kotlinx.serialization.json.JsonPrimitive("替换操作列表，按顺序应用"))
+                put(
+                    "items",
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("type", kotlinx.serialization.json.JsonPrimitive("object"))
+                        put(
+                            "properties",
+                            kotlinx.serialization.json.buildJsonObject {
+                                put("old_string", ToolSchema.string("要替换的原文（必须唯一匹配）"))
+                                put("new_string", ToolSchema.string("替换成的新文本"))
+                                put("replace_all", ToolSchema.boolean("替换所有出现（默认 false）"))
+                            },
+                        )
+                        put(
+                            "required",
+                            kotlinx.serialization.json.JsonArray(
+                                listOf(
+                                    kotlinx.serialization.json.JsonPrimitive("old_string"),
+                                    kotlinx.serialization.json.JsonPrimitive("new_string"),
+                                ),
+                            ),
+                        )
+                    },
+                )
             }
         }
     }
