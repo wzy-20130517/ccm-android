@@ -268,10 +268,15 @@ private fun InputCard(
                             color = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
                         ),
                         cursorBrush = SolidColor(colors.claudeOrange),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        // 回车行为跟设置走（与对话页 InputBar 同一机制）
+                        keyboardOptions = KeyboardOptions(
+                            imeAction = if (com.ccm.app.ui.theme.UiPrefs.sendByEnter.value) {
+                                ImeAction.Send
+                            } else ImeAction.Default,
+                        ),
                         keyboardActions = KeyboardActions(
                             onSend = {
-                                if (input.isNotBlank()) {
+                                if (input.isNotBlank() && com.ccm.app.ui.theme.UiPrefs.sendByEnter.value) {
                                     onSend(input)
                                     input = ""
                                 }

@@ -138,11 +138,18 @@ fun InputBar(
                             color = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
                         ),
                         cursorBrush = SolidColor(colors.claudeOrange),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        // 回车行为跟设置走（2026-09-28 打通 —— 原来写死 Send，
+                        // 设置页选「仅按钮」没用）。读 MutableState = 订阅，
+                        // 设置页改了这里自动重组。
+                        keyboardOptions = KeyboardOptions(
+                            imeAction = if (com.ccm.app.ui.theme.UiPrefs.sendByEnter.value) {
+                                ImeAction.Send
+                            } else ImeAction.Default,
+                        ),
                         keyboardActions = KeyboardActions(
                             onSend = {
                                 // 回车发送：空文本不触发（与 SendButton 的 enabled 一致）
-                                if (value.isNotBlank()) onSend()
+                                if (value.isNotBlank() && com.ccm.app.ui.theme.UiPrefs.sendByEnter.value) onSend()
                             },
                         ),
                     )

@@ -32,12 +32,34 @@ object UiPrefs {
     private const val FILE = "ccm_ui_prefs"
     private const val KEY_THEME = "theme_mode"
     private const val KEY_FONT = "chat_font"
+    private const val KEY_SEND = "send_key"
+    private const val KEY_NEWLINE = "newline_key"
 
     /** light / auto / dark（ThemeMode.key 同集） */
     val themeMode: MutableState<String> = mutableStateOf("auto")
 
     /** default / sans / system / dyslexic（ChatFont.key 同集） */
     val chatFont: MutableState<String> = mutableStateOf("default")
+
+    /**
+     * 发送键行为 —— 决定输入框的 imeAction（2026-09-28 打通）。
+     * 原来设置页选了只是本地 remember，输入框根本不理会：
+     * 永远 ImeAction.Send（回车=发送），选「仅按钮」的用户没法换行。
+     * - "仅按钮（回车只换行）"     → Default（回车换行，只能点发送钮）
+     * - "回车发送（Shift+Enter 换行）" → Send（IME 出发送键）
+     * - "Ctrl+Enter 发送"          → Default（Android IME 无 Ctrl，等价仅按钮）
+     */
+    val sendKey: MutableState<String> = mutableStateOf("仅按钮（回车只换行）")
+
+    /** 换行键提示（纯显示 —— Android IME 的换行由 sendKey 决定）。 */
+    val newlineKey: MutableState<String> = mutableStateOf("Enter")
+
+    /**
+     * 回车是否=发送（输入框 imeAction 直接读它）。
+     * 「回车发送（Shift+Enter 换行）」为 true；另两项都是回车换行
+     * （Android IME 没有 Ctrl 修饰键，「Ctrl+Enter 发送」等价仅按钮）。
+     */
+    val sendByEnter: MutableState<Boolean> = mutableStateOf(false)
 
     private var prefs: SharedPreferences? = null
 
@@ -49,6 +71,10 @@ object UiPrefs {
         prefs = p
         themeMode.value = p.getString(KEY_THEME, "auto") ?: "auto"
         chatFont.value = p.getString(KEY_FONT, "default") ?: "default"
+        // 默认「仅按钮」对齐 Web（回车只换行，发送靠按钮）
+        sendKey.value = p.getString(KEY_SEND, "仅按钮（回车只换行）") ?: "仅按钮（回车只换行）"
+        sendByEnter.value = sendKey.value.contains("回车发送")
+        newlineKey.value = p.getString(KEY_NEWLINE, "Enter") ?: "Enter"
     }
 
     fun setThemeMode(mode: String) {
@@ -59,5 +85,16 @@ object UiPrefs {
     fun setChatFont(font: String) {
         chatFont.value = font
         prefs?.edit()?.putString(KEY_FONT, font)?.apply()
+    }
+
+    fun setSendKey(v: String) {
+        sendKey.value = v
+        sendByEnter.value = v.contains("回车发送")
+        prefs?.edit()?.putString(KEY_SEND, v)?.apply()
+    }
+
+    fun setNewlineKey(v: String) {
+        newlineKey.value = v
+        prefs?.edit()?.putString(KEY_NEWLINE, v)?.apply()
     }
 }

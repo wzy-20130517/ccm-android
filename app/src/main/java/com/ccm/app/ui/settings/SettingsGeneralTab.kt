@@ -77,8 +77,10 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
     var callName by remember { mutableStateOf(initialProfile.displayName) }
     var workFunction by remember { mutableStateOf(initialProfile.workFunction) }
     var preferences by remember { mutableStateOf(initialProfile.personalPreferences) }
-    var sendKey by remember { mutableStateOf("仅按钮（回车只换行）") }
-    var newlineKey by remember { mutableStateOf("Enter") }
+    // ★ 2026-09-28：落 UiPrefs —— 原来是本地 remember，重启丢 +
+    //   输入框根本不读它（设置是假的）。
+    var sendKey by remember { mutableStateOf(com.ccm.app.ui.theme.UiPrefs.sendKey.value) }
+    var newlineKey by remember { mutableStateOf(com.ccm.app.ui.theme.UiPrefs.newlineKey.value) }
     // ★ 2026-09-27：原来是本地 remember —— 选完重启就丢，且主题没有
     //   消费端。现在读写 UiPrefs（SharedPreferences + MutableState）：
     //   这里改 → CcmApp 的 darkTheme 自动重组；重启后从磁盘恢复。
@@ -263,7 +265,10 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                         SettingsSelectMenu(
                             value = sendKey,
                             options = SEND_KEY_OPTIONS,
-                            onPick = { sendKey = it },
+                            onPick = {
+                                sendKey = it
+                                com.ccm.app.ui.theme.UiPrefs.setSendKey(it)
+                            },
                             title = "发送消息",
                         )
                     }
@@ -273,7 +278,10 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                         SettingsSelectMenu(
                             value = newlineKey,
                             options = NEWLINE_KEY_OPTIONS,
-                            onPick = { newlineKey = it },
+                            onPick = {
+                                newlineKey = it
+                                com.ccm.app.ui.theme.UiPrefs.setNewlineKey(it)
+                            },
                             title = "换行",
                         )
                     }
