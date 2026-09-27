@@ -47,6 +47,22 @@ EXTERNAL_QUALIFIERS = {
     'LazyListState', 'ScrollState', 'TextFieldValue', 'ImageBitmap',
     'AnimatedVisibility', 'EnterTransition', 'ExitTransition', 'tween', 'spring',
     'Path', 'Stroke', 'Fill', 'Saver', 'CoroutineStart',
+    # kotlin.Result（标准库，有 success/failure 工厂）
+    'Result',
+}
+
+# 枚举/类内置属性（Kotlin 语言自带，不在成员表里但合法）
+BUILTIN_MEMBERS = {
+    'entries',      # Kotlin 1.9+ EnumClass.entries（替代 values()）
+    'values',       # 枚举 values()
+    'valueOf',      # 枚举 valueOf()
+    'name', 'ordinal', 'companion', 'Companion',
+    'hashCode', 'toString', 'equals', 'copy', 'component1',
+    'javaClass', 'instance',
+    # kotlinx.serialization 编译期生成（源码里看不到定义，但一定存在）
+    'serializer', 'descriptor',
+    # kotlin.Result 伴生对象工厂
+    'success', 'failure',
 }
 
 # Kotlin 语言关键字/内置，看到就跳过
@@ -185,6 +201,9 @@ def find_object_members(raw):
     return result
 
 
+EXTENSION_NAMES = set()
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     quiet = '--quiet' in sys.argv
@@ -202,7 +221,22 @@ def main():
         print("未找到 .kt 文件")
         return 1
 
-    # 第一遍：收集所有类型成员
+    # 第一遍：收集所有类型成员 + 全局扩展函数名
+    global EXTENSION_NAMES
+    for f in files:
+        try:
+            with open(f, encoding='utf-8') as fh:
+                raw = fh.read()
+        except Exception:
+            continue
+        # `fun Receiver.name(` / `val Receiver.name` / `fun Receiver<T>.name(`
+        for mm in re.finditer(
+            r'\b(?:fun|val|var)\s+(?:<[^>]*>\s*)?'
+            r'[A-Za-z_][A-Za-z0-9_]*(?:<[^>]*>)?\.([A-Za-z_][A-Za-z0-9_]*)',
+            raw,
+        ):
+            EXTENSION_NAMES.add(mm.group(1))
+
     all_members = {}
     for f in files:
         try:
@@ -226,6 +260,10 @@ def main():
         # 收集本文件定义的局部名（避免把局部变量当类型名）
         local_defs = set(re.findall(r'\b(?:val|var|fun|class|object|interface)\s+([A-Za-z_][A-Za-z0-9_]*)', code))
         local_defs |= set(all_members.keys())
+        # ★ 扩展函数/属性（`fun Qualifier.name` / `val Qualifier.name`）：
+        #   定义在被扩展类型**之外**的文件里，成员表里查不到 → 必须单独收集，
+        #   否则每个扩展函数都会误报成 Unresolved（踩过：CCMColors.toMaterialColorScheme）
+        local_defs |= EXTENSION_NAMES
 
         errors = []
         seen = set()
@@ -237,6 +275,8 @@ def main():
             if qual not in all_members:
                 continue        # 不是本项目已知类型（可能是外部库）
             if member in all_members[qual]:
+                continue
+            if member in BUILTIN_MEMBERS:
                 continue
             # 该类型可能通过 `import X.Y` 引入的外部扩展；项目里 object 也可能有扩展函数
             # 保守起见：只要**全项目任何地方**定义过同名 fun/val 就放过
