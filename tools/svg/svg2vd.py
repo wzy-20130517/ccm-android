@@ -44,6 +44,45 @@ def parse_svg(text):
                       'fillRule': fr.group(1) if fr else None})
     return vw, vh, paths
 
+# SVG 颜色关键字 → Android 需要的十六进制。
+#
+# ⚠️ 踩坑：Android 的 VectorDrawable fillColor 属性类型是 `color`，
+# **不接受** CSS 颜色关键字（black/white/red…），AAPT 会报
+#   error: 'black' is incompatible with attribute fillColor (attr) color.
+# 而 SVG 里 `fill="black"` 很常见（Figma 导出、手写 SVG 都有）。
+# 必须在转换时就规范化，否则问题会在 AAPT 阶段才暴露（Kotlin 编译之后）。
+CSS_COLOR_KEYWORDS = {
+    'black': '#000000', 'white': '#FFFFFF', 'red': '#FF0000', 'green': '#008000',
+    'blue': '#0000FF', 'yellow': '#FFFF00', 'cyan': '#00FFFF', 'magenta': '#FF00FF',
+    'gray': '#808080', 'grey': '#808080', 'silver': '#C0C0C0', 'maroon': '#800000',
+    'olive': '#808000', 'lime': '#00FF00', 'aqua': '#00FFFF', 'teal': '#008080',
+    'navy': '#000080', 'fuchsia': '#FF00FF', 'purple': '#800080', 'orange': '#FFA500',
+    'pink': '#FFC0CB', 'brown': '#A52A2A', 'gold': '#FFD700', 'transparent': '#00000000',
+}
+
+def normalize_color(value):
+    """把 SVG 颜色值转成 Android 可接受的格式。"""
+    if value is None:
+        return None
+    v = value.strip()
+    if v.startswith('#') or v.startswith('@') or v.startswith('?'):
+        return v
+    low = v.lower()
+    if low in CSS_COLOR_KEYWORDS:
+        return CSS_COLOR_KEYWORDS[low]
+    if low == 'none':
+        return None
+    # rgb(r,g,b) / rgba(r,g,b,a)
+    m = re.match(r'rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)', low)
+    if m:
+        r, g, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        a = float(m.group(4)) if m.group(4) else 1.0
+        return f'#{int(a*255):02X}{r:02X}{g:02X}{b:02X}'
+    # 未知格式：返回黑色兜底 + 警告
+    print(f'  ⚠ 未识别的颜色值 {value!r}，已用 #000000 兜底', file=sys.stderr)
+    return '#000000'
+
+
 def to_android_path(d):
     """SVG path → Android pathData（主要差异：Android 不支持隐式重复命令的某些写法，但基本兼容）"""
     # Android 的 pathData 与 SVG 语法基本一致，直接透传
@@ -72,8 +111,8 @@ def convert(svg_path, out_path, name, size=24, default_fill='#000000'):
     lines.append(f'    android:viewportHeight="{vh}">')
 
     for p in paths:
-        fill = p['fill'] or default_fill
-        if fill in ('none', 'transparent'):
+        fill = normalize_color(p['fill'] or default_fill)
+        if fill is None:
             continue
         attrs = [f'        android:pathData="{p["d"]}"',
                  f'        android:fillColor="{fill}"']

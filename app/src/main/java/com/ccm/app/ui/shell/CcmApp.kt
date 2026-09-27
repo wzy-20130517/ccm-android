@@ -13,6 +13,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.ccm.app.ui.common.SidebarDrawer
 import com.ccm.app.ui.common.TitleBar
+import com.ccm.app.ui.pages.ArtifactsScreen
 import com.ccm.app.ui.pages.ChatsScreen
 import com.ccm.app.ui.pages.LandingScreen
 import com.ccm.app.ui.pages.ProjectsScreen
@@ -159,6 +160,11 @@ private fun AppScaffold() {
                     CcmRoute.PROJECTS -> ProjectsScreen(
                         projects = emptyList(),
                         onCreate = { },
+                    )
+
+                    CcmRoute.ARTIFACTS -> ArtifactsScreen(
+                        items = emptyList(),
+                        onNewArtifact = { },
                     )
 
                     // TODO(阶段4·B4-c): Customize / Artifacts / Cowork / Scheduled
