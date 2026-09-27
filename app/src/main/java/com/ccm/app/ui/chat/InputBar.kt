@@ -88,10 +88,18 @@ fun InputBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 14.72.dp)          // ★ 对话页是 8px→14.72（与首页不同）
+                // ★ 顺序要紧：shadow 必须在 clip **之前**（同 LandingScreen）。
+                //   排在 clip 之后时阴影被圆角裁掉外侧、内部留一圈深色灰环。
+                .shadow(elevation = 1.dp, shape = RoundedCornerShape(22.dp), clip = false)
                 .clip(RoundedCornerShape(22.dp))         // ★ 22，inline style 未被覆盖
                 .background(colors.input)
-                .border(1.dp, colors.border, RoundedCornerShape(22.dp))
-                .shadow(elevation = 2.dp, shape = RoundedCornerShape(22.dp), clip = false),
+                // 亮色下 Web 的卡片边框是**透明**的（1.08696px solid rgba(0,0,0,0)），
+                // 画成 colors.border 会多一圈灰边。暗色才真画（#3a3a38）。
+                .border(
+                    width = 1.dp,
+                    color = if (CCMTheme.isDark) Color(0xFF3A3A38) else Color.Transparent,
+                    shape = RoundedCornerShape(22.dp),
+                ),
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 // ── 输入区（px-4 pt-4，min-h 48.6）──────────────────────

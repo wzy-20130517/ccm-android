@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -87,46 +88,63 @@ fun LandingScreen(
 ) {
     val colors = CCMTheme.colors
 
-    Column(
+    // ★ 结构对齐 Web 的三层（实测链，见 KDoc）：
+    //   scroll 容器  px-2 (8) + pt-[64px]
+    //     └ 内容列  max-w-[373px]（= 672 × 0.92 / 1.08696 的反向 zoom 折算）居中
+    //         └ 胶囊行  mx-[-8px] + px-[8px]，抵消父级内边距后**满宽可滚**
+    //   原来用 `padding(horizontal = 24.92)` 一把梭，导致胶囊行被压在 24.92 边距里、
+    //   起点 x=24.92（Web 是 12.05），且可滚区域变窄、第 5 个胶囊提前被裁。
+    Box(
         modifier = modifier
             .fillMaxSize()
             .background(colors.bgMain)
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.92.dp),   // 卡片 x=24.92 → 左右边距
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .padding(horizontal = 8.dp),          // Web: px-2
     ) {
-        // ── 标题（实测 y=107.69，顶栏 44 → 需再留 63.69）────────────────
-        Spacer(Modifier.height(63.69.dp))
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(7.36.dp),
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 373.dp)            // Web: max-w-[672px] 折算后 373
+                .align(Alignment.TopCenter),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // 花朵图标（hero-star.svg，橙色 #D97757）
-            PainterIcon(R.drawable.ic_hero_star, size = 22.dp, tint = colors.claudeOrange)
-            Text(
-                text = greeting,
-                style = CCMText.titleSerif,
-                color = if (CCMTheme.isDark) Color(0xFFD6CEC3) else Color(0xFF373734),
-                textAlign = TextAlign.Center,
+            // ── 标题（实测 y=107.69，顶栏 40.47 → 需再留 67.22）──────────
+            Spacer(Modifier.height(67.22.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.36.dp),
+            ) {
+                // 花朵图标（hero-star.svg，橙色 #D97757）
+                PainterIcon(R.drawable.ic_hero_star, size = 22.dp, tint = colors.claudeOrange)
+                Text(
+                    text = greeting,
+                    style = CCMText.titleSerif,
+                    color = if (CCMTheme.isDark) Color(0xFFD6CEC3) else Color(0xFF373734),
+                    textAlign = TextAlign.Center,
+                )
+            }
+
+            // 标题底 130.77 → 卡片顶 151.39
+            Spacer(Modifier.height(20.62.dp))
+
+            // ── 输入卡片 ─────────────────────────────────────────────
+            InputCard(
+                onSend = onSend,
+                modifier = Modifier.fillMaxWidth(),
             )
+
+            // 卡片底 256.37 → 胶囊顶 271.09
+            Spacer(Modifier.height(14.72.dp))
+
+            // ── 建议胶囊（横向可滚动）─────────────────────────────────
+            //   mx-[-8px] 抵消外层 px-2，让可滚区域回到满宽（Web 的 scrollWidth=571）
+            PromptPills(
+                onPick = onPickPrompt,
+                modifier = Modifier.padding(horizontal = (-8).dp),
+            )
+
+            Spacer(Modifier.height(40.dp))
         }
-
-        // 标题底 130.77 → 卡片顶 151.39
-        Spacer(Modifier.height(20.62.dp))
-
-        // ── 输入卡片 ─────────────────────────────────────────────────
-        InputCard(
-            onSend = onSend,
-            modifier = Modifier.fillMaxWidth(),
-        )
-
-        // 卡片底 256.37 → 胶囊顶 271.09
-        Spacer(Modifier.height(14.72.dp))
-
-        // ── 建议胶囊（横向可滚动）───────────────────────────────────
-        PromptPills(onPick = onPickPrompt)
-
-        Spacer(Modifier.height(40.dp))
     }
 }
 
@@ -165,24 +183,44 @@ private fun InputCard(
     modifier: Modifier = Modifier,
 ) {
     val colors = CCMTheme.colors
-    // 暗色下 Web 用 #3a3a38 而非 --border-claude
-    val borderColor = if (CCMTheme.isDark) Color(0xFF3A3A38) else colors.border
+    // ★ 亮色下 Web 的卡片边框是**透明**的（computed: 1.08696px solid rgba(0,0,0,0)）。
+    //   类名里的 `border` 只是占位，hover/focus 时才显色。画成 colors.border 会多出
+    //   一圈肉眼可见的灰边 —— 这是「卡片比 Web 脏」的第一来源。
+    //   暗色下 Web 覆盖成 #3a3a38，所以只有暗色才真的画。
+    val borderColor = if (CCMTheme.isDark) Color(0xFF3A3A38) else Color.Transparent
 
     Box(
         modifier = modifier
+            // ★ 顺序要紧：shadow 必须在 clip **之前**。
+            //   Compose 的 modifier 链从左到右绘制，shadow 排在 clip 之后时，
+            //   阴影会被圆角裁掉外侧、只在内部留下一圈深色，看着像卡片里套了个灰环
+            //   （实测 9dp 宽、#C9C9C9）—— 这是「卡片比 Web 脏」的第二来源。
+            //   Web 原值：`0 3.68px 18.4px rgba(0,0,0,0.04)`，4% 极淡，用 1dp 近似。
+            .shadow(
+                elevation = 1.dp,
+                shape = RoundedCornerShape(CCMRadius.r20),
+                clip = false,
+            )
             .clip(RoundedCornerShape(CCMRadius.r20))     // 11.57dp
             .background(colors.input)
-            .border(1.dp, borderColor, RoundedCornerShape(CCMRadius.r20))
-            // Web: shadow-[0_2px_8px_rgba(0,0,0,0.02)] hover 时加深
-            .shadow(elevation = 2.dp, shape = RoundedCornerShape(CCMRadius.r20), clip = false),
+            .border(1.dp, borderColor, RoundedCornerShape(CCMRadius.r20)),
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            // ── 输入区（pt-4=14.72）──────────────────────────────────
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                // ★ 实测推导（屏幕值）：textarea.x(36.41) − card.x(24.92) = **11.49**
+                //   垂直同理：textarea.y(161.06) − card.y(151.39) = **9.67**
+                //   底部也自洽：card.bottom(256.37) − row.bottom(246.70) = 9.67 ✓
+                //   （原来写 14.72，卡片因此矮了 14.4dp）
+                .padding(horizontal = 11.49.dp, vertical = 9.67.dp),
+        ) {
+            // ── 输入区（min-h 50.42）──────────────────────────────────
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 50.42.dp)
-                    .padding(start = 14.72.dp, end = 14.72.dp, top = 14.72.dp),
+                    // textarea 自身 padding-left 6px × 0.92
+                    .padding(start = 5.52.dp),
             ) {
                 Text(
                     text = "今天需要什么帮助？",
@@ -192,12 +230,14 @@ private fun InputCard(
                 // TODO(阶段4·B5): 换成真实 TextField（需处理 slash 命令、多行自适应高度）
             }
 
-            // ── 底部行（h=29.44, mt=11.04）──────────────────────────
+            // ── 底部行（h=29.44，与输入区间距 5.82）────────────────
+            //   ★ 不要再加水平 padding —— 外层 Column 已经有 11.49，
+            //     实测 + 按钮 x=36.40 与 textarea x=36.41 左对齐。
+            Spacer(Modifier.height(5.82.dp))
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(29.44.dp)
-                    .padding(start = 14.72.dp, end = 14.72.dp),
+                    .height(29.44.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
@@ -221,8 +261,6 @@ private fun InputCard(
                     )
                 }
             }
-
-            Spacer(Modifier.height(11.04.dp))
         }
     }
 }
@@ -273,12 +311,21 @@ private fun ModelChip() {
  * > Web 隐藏了滚动条（`.landing-prompt-tabs` 在 index.css 里有 `display:none` 规则）。
  */
 @Composable
-private fun PromptPills(onPick: (String) -> Unit) {
+private fun PromptPills(
+    onPick: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            // Web: `h-[32px] px-[8px]`（右侧另有 pr-[28px] 是滚动渐隐留白，
+            //  在 Compose 里由 horizontalScroll 自身处理，不重复加）
+            .height(29.44.dp)
+            .padding(start = 7.36.dp, end = 25.76.dp)
             .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        // Web: gap-[8px] → 8 × 0.92 = 7.36
+        horizontalArrangement = Arrangement.spacedBy(7.36.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         PromptSection.entries.forEach { sec ->
             CcmPillButton(

@@ -116,15 +116,18 @@ fun SlashCommandMenu(
     Column(
         modifier = modifier
             .heightIn(max = maxHeight)
-            .clip(RoundedCornerShape(11.04.dp))
-            .background(colors.input)
-            .border(1.dp, colors.border, RoundedCornerShape(11.04.dp))
+            // ★ shadow 必须在 clip **之前** —— 排在后面时会被圆角裁掉外侧，
+            //   内部留一圈深色灰环（同 LandingScreen / InputBar 的坑）。
             .shadow(
                 elevation = 8.dp,
                 shape = RoundedCornerShape(11.04.dp),
                 ambientColor = Color(0x24000000),
                 spotColor = Color(0x24000000),
+                clip = false,
             )
+            .clip(RoundedCornerShape(11.04.dp))
+            .background(colors.input)
+            .border(1.dp, colors.border, RoundedCornerShape(11.04.dp))
             .verticalScroll(scroll),
     ) {
         // ── 头部 ──────────────────────────────────────────────
