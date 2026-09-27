@@ -64,18 +64,13 @@ fun AssistantBubble(
             // 实测 pad: 15.72px 16px
             .padding(horizontal = 16.dp, vertical = 15.72.dp),
     ) {
-        // TODO(阶段4·B5-c): 换成真实 markdown 渲染
-        //   需要处理：标题/列表/代码块/表格/链接/行内代码
-        //   流式时还要处理未闭合 fence（见 StreamingText.kt）
-        Text(
-            text = text,
-            // 实测 fs 13.362 / lh 20.043，衬线族
-            style = CCMText.body13.copy(
-                fontFamily = FontFamily.Serif,
-                fontSize = 13.362.sp,
-                lineHeight = 20.043.sp,
-            ),
-            color = colors.textModelBody,   // 暗色下是 #EDEAE1（暖白），与 textMain 不同
+        // ★ 2026-09-27：原来是死 Text —— 加粗/代码块/列表全显示成
+        //   星号和井号原文。MarkdownRenderer（690 行）写好了一直没人调，
+        //   这里是它第一处上场。流式时的未闭合 fence 由
+        //   parseMarkdown 的缓存路径处理（每帧重算，见 remember(content)）。
+        MarkdownRenderer(
+            content = text,
+            modifier = Modifier.fillMaxWidth(),
         )
     }
 }

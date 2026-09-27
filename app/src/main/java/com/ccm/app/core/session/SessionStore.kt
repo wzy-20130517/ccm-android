@@ -149,6 +149,23 @@ class SessionStore(
         return null
     }
 
+    /**
+     * 只读文件头 4KB 拿标题 —— 对话页顶栏显示用。
+     *
+     * 为什么不 [load] 全量：会话 JSON 可能几 MB（几百条消息），
+     * 进对话页只为读一个标题就解析整个文件太重。
+     * 复用 [findByTitle] 的头部正则路径。
+     */
+    fun loadTitle(sessionId: String): String? = try {
+        val head = readHead(fileFor(sessionId), 4096)
+        val m = TITLE_RE.find(head) ?: return null
+        json.parseToJsonElement(m.groupValues[1]).let {
+            (it as? kotlinx.serialization.json.JsonPrimitive)?.content
+        }
+    } catch (_: Throwable) {
+        null
+    }
+
     /** 删除会话（先备份到回收站）。 */
     fun delete(sessionId: String): Boolean {
         val f = fileFor(sessionId)

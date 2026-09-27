@@ -17,6 +17,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -99,12 +106,37 @@ fun ChatScreen(
                 onExport = onExport,
             )
 
-            // ── 消息区（可滚动，底部留出输入栏高度）──────────────────
+            // ── 消息区（可滚动 + 自动跟底，底部留出输入栏高度）────────
             Box(modifier = Modifier.weight(1f)) {
+                val scrollState = rememberScrollState()
+
+                // ★ 2026-09-27：原来没有自动滚动 —— 新消息只画在
+                //   视口外，用户必须手动往下滑，流式回复时看不到内容。
+                //   行为对齐 Web（跟底；用户上翻即停止跟随）。
+                var followBottom by remember { mutableStateOf(true) }
+
+                // 判据：离底部 120px 内算「在底部」→ 继续跟；上翻则停
+                LaunchedEffect(scrollState) {
+                    snapshotFlow { scrollState.value to scrollState.maxValue }
+                        .collect { (v, max) -> followBottom = v >= max - 120 }
+                }
+
+                // 内容变化 → 跟到底。
+                // withFrameNanos 等一帧：新内容刚挂上时 maxValue 还是旧值，
+                // 不等这一帧会滚到旧底部（看起来像没滚）。
+                // 用瞬时 scrollTo 而非 animate：流式每个 chunk 都会触发，
+                // 动画叠加会抖。
+                LaunchedEffect(bubbles.size, streaming.length, toolCards.size) {
+                    if (followBottom) {
+                        withFrameNanos {}
+                        scrollState.scrollTo(scrollState.maxValue)
+                    }
+                }
+
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .verticalScroll(rememberScrollState()),
+                        .verticalScroll(scrollState),
                 ) {
                     MessageList(
                         bubbles = bubbles,
@@ -193,11 +225,12 @@ private fun ChatHeaderBar(
                 overflow = TextOverflow.Ellipsis,
             )
             // 下拉箭头（表示可切换对话）
-            Box(
-                modifier = Modifier
-                    .size(13.8.dp)
-                    .clip(RoundedCornerShape(3.68.dp))
-                    .background(colors.hover),
+            // ★ 2026-09-27：原来是 13.8dp 灰方块占位（没人实现图标），
+            //   换成首页模型选择器同款 caret。
+            com.ccm.app.ui.common.PainterIcon(
+                com.ccm.app.R.drawable.ic_model_caret,
+                size = 13.8.dp,
+                tint = colors.textSecondary,
             )
         }
 

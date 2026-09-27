@@ -9,15 +9,24 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.padding
+import android.content.Intent
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.ccm.app.core.ChatSession
+import com.ccm.app.core.session.SessionStore
 import com.ccm.app.ui.chat.ChatScreen
 import com.ccm.app.ui.chat.ChatScreenConnected
 import com.ccm.app.ui.common.CcmNoticeBar
@@ -309,7 +318,73 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     CcmRoute.CHAT -> if (session != null) {
                         // ★ 接线：真数据。ChatScreenConnected 内部订阅
                         //   session.state（StateFlow），把 core 类型适配成 UI 类型。
-                        ChatScreenConnected(session = session)
+                        //
+                        // ★ 2026-09-27：补 title / Export / Rename（原来全是默认空转）。
+                        val ctx = LocalContext.current
+                        val store = AppGraph.storage?.let { SessionStore(it) }
+                        var chatTitle by remember { mutableStateOf("新对话") }
+                        var showRename by remember { mutableStateOf(false) }
+
+                        LaunchedEffect(route) {
+                            // 进对话页读标题（loadTitle 只读文件头 4KB）
+                            chatTitle = store?.loadTitle(AppGraph.sessionId) ?: "新对话"
+                        }
+
+                        ChatScreenConnected(
+                            session = session,
+                            title = chatTitle,
+                            onExport = {
+                                // Web 的 Export 是导出 markdown；Android 用系统分享
+                                val text = session.state.value.bubbles.joinToString("\n\n") { b ->
+                                    (if (b.isUser) "**我**：" else "**AI**：") + b.text
+                                }
+                                if (text.isNotBlank()) {
+                                    val send = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, text)
+                                    }
+                                    ctx.startActivity(Intent.createChooser(send, "导出对话"))
+                                }
+                            },
+                            onRename = { showRename = true },
+                        )
+
+                        if (showRename) {
+                            var nameInput by remember { mutableStateOf(chatTitle) }
+                            AlertDialog(
+                                onDismissRequest = { showRename = false },
+                                title = { Text("重命名对话") },
+                                text = {
+                                    BasicTextField(
+                                        value = nameInput,
+                                        onValueChange = { nameInput = it },
+                                        textStyle = androidx.compose.ui.text.TextStyle(
+                                            color = CCMTheme.colors.textMain,
+                                            fontSize = androidx.compose.ui.unit.TextUnit.Unspecified,
+                                        ),
+                                        cursorBrush = SolidColor(CCMTheme.colors.claudeOrange),
+                                    )
+                                },
+                                confirmButton = {
+                                    TextButton(onClick = {
+                                        val st = AppGraph.storage
+                                        if (st != null) {
+                                            val ss = SessionStore(st)
+                                            val cur = ss.load(AppGraph.sessionId)
+                                            if (cur != null) {
+                                                val nt = nameInput.trim().ifBlank { null }
+                                                ss.save(cur.copy(title = nt, updatedAt = System.currentTimeMillis()))
+                                                chatTitle = nt ?: chatTitle
+                                            }
+                                        }
+                                        showRename = false
+                                    }) { Text("确定") }
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { showRename = false }) { Text("取消") }
+                                },
+                            )
+                        }
                     } else {
                         // 没配 Provider —— 渲染空态而不是崩。
                         // 用户此时应该去设置页，这里给个能点的入口。

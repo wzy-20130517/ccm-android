@@ -66,6 +66,11 @@ class ChatSession(
     /** 是否正在跑。 */
     val isRunning: Boolean get() = runningJob?.isActive == true
 
+    /** 更新输入框草稿（InputBar 的 onValueChange 直连这里）。 */
+    fun setDraft(text: String) {
+        _state.value = _state.value.copy(draft = text)
+    }
+
     /**
      * 发一条消息并跑一轮。
      *
@@ -87,6 +92,7 @@ class ChatSession(
             running = true,
             toolCards = emptyList(),
             error = null,
+            draft = "",   // 发出去就清空输入框（Web 行为）
         )
 
         runningJob = scope.launch {
@@ -251,6 +257,8 @@ class ChatSession(
         val inputTokens: Int = 0,
         /** 最近一次请求的输出 token。 */
         val outputTokens: Int = 0,
+        /** 输入框草稿（打字内容）。放 State 里 = 配置变化/屏幕旋转不丢。 */
+        val draft: String = "",
     ) {
         /** 是否为空对话（UI 据此显示欢迎页）。 */
         val isEmpty: Boolean get() = bubbles.isEmpty() && streaming.isBlank()

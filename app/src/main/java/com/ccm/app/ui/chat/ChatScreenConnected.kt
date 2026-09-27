@@ -58,8 +58,10 @@ fun ChatScreenConnected(
     val coreState by session.state.collectAsState()
     val uiState = remember(coreState) { ChatAdapter.toUi(coreState) }
 
-    // 输入框文本（UI 本地状态，不进 core）
-    var input by remember { mutableStateOf("") }
+    // 输入框文本 —— ★ 2026-09-27 改走 core 的 State.draft：
+    //   原来是 UI 本地 remember，屏幕旋转/进程重建就丢草稿；
+    //   走 core 后单一数据源，发送时由 ChatSession.send() 统一清空
+    //   （draft = ""），外部 sendAndOpen 触发的发送也能清到。
 
     // 流式记账器（跨重组保持）
     val md = remember { StreamingMarkdown() }
@@ -104,19 +106,16 @@ fun ChatScreenConnected(
         modifier = modifier,
         streaming = stableStreaming.ifBlank { uiState.streaming },
         toolCards = uiState.toolCards,
-        input = input,
+        input = coreState.draft,
         running = uiState.running,
         title = title,
         modelName = modelName,
         tokenCount = uiState.displayTokens,
         errorMessage = uiState.error,
-        onInputChange = { input = it },
+        onInputChange = session::setDraft,
         onSend = {
-            val text = input.trim()
-            if (text.isNotEmpty()) {
-                session.send(text)
-                input = ""
-            }
+            val text = coreState.draft.trim()
+            if (text.isNotEmpty()) session.send(text)   // send() 内部清 draft
         },
         onStop = { session.stop() },
         onExport = onExport,

@@ -15,6 +15,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -22,6 +25,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -109,6 +114,10 @@ fun InputBar(
                         .heightIn(min = 48.6.dp)
                         .padding(start = 14.72.dp, end = 14.72.dp, top = 14.72.dp),
                 ) {
+                    // ★ 2026-09-27：原来是两层死 Text（只显示不接受输入，
+                    //   且 value 变化要靠外部驱动 —— 对话页 State 没绑 draft，
+                    //   打字完全无效）。换成 BasicTextField 叠 placeholder，
+                    //   写法照抄首页 LandingScreen（同一天修过的）。
                     if (value.isEmpty()) {
                         Text(
                             text = "今天需要什么帮助？",
@@ -116,14 +125,25 @@ fun InputBar(
                             style = CCMText.body16.copy(fontSize = 16.sp, lineHeight = 24.sp),
                             color = colors.textSecondary,
                         )
-                    } else {
-                        Text(
-                            text = value,
-                            style = CCMText.body16.copy(fontSize = 16.sp, lineHeight = 24.sp),
-                            color = Color(0xFF373734),
-                        )
                     }
-                    // TODO(阶段4·B5-c): 换成真实 TextField（多行自适应 + 回车发送）
+                    BasicTextField(
+                        value = value,
+                        onValueChange = onValueChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = CCMText.body16.copy(
+                            fontSize = 16.sp,
+                            lineHeight = 24.sp,
+                            color = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
+                        ),
+                        cursorBrush = SolidColor(colors.claudeOrange),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(
+                            onSend = {
+                                // 回车发送：空文本不触发（与 SendButton 的 enabled 一致）
+                                if (value.isNotBlank()) onSend()
+                            },
+                        ),
+                    )
                 }
 
                 Spacer(Modifier.height(11.04.dp))
