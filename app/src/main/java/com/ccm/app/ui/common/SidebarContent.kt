@@ -17,6 +17,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -86,9 +94,19 @@ fun SidebarContent(
     onPillChange: (String) -> Unit = {},
     onNavigate: (String) -> Unit = {},
     onOpenChat: (ChatSummary) -> Unit = {},
+    /** 「…」菜单：重命名（2026-09-28，对齐列表页）。 */
+    onRenameChat: (id: String, title: String) -> Unit = { _, _ -> },
+    /** 「…」菜单：删除（SessionStore 先备份）。 */
+    onDeleteChat: (id: String) -> Unit = {},
     onOpenProfile: () -> Unit = {},
 ) {
     val colors = CCMTheme.colors
+
+    // 「…」菜单状态（2026-09-28）
+    var menuFor by remember { mutableStateOf<ChatSummary?>(null) }
+    var renaming by remember { mutableStateOf<ChatSummary?>(null) }
+    var deleting by remember { mutableStateOf<ChatSummary?>(null) }
+    var renameInput by remember { mutableStateOf("") }
 
     Column(modifier = modifier.fillMaxSize()) {
         // ── 顶部胶囊导航（pt: 51.5 − 顶栏44 ≈ 7.5）────────────────────
@@ -154,7 +172,11 @@ fun SidebarContent(
                 .padding(horizontal = 8.27.dp),
         ) {
             recentChats.forEach { chat ->
-                RecentChatRow(chat = chat, onClick = { onOpenChat(chat) })
+                RecentChatRow(
+                    chat = chat,
+                    onClick = { onOpenChat(chat) },
+                    onMore = { menuFor = chat },
+                )
             }
         }
 
@@ -163,6 +185,100 @@ fun SidebarContent(
             userName = userName,
             subtitle = userSubtitle,
             onClick = onOpenProfile,
+        )
+    }
+
+    // ── 行菜单：重命名 / 删除（与列表页同款交互）─────────────────────
+    menuFor?.let { target ->
+        AlertDialog(
+            onDismissRequest = { menuFor = null },
+            title = { Text(target.title, style = CCMText.body14) },
+            text = {
+                Column {
+                    Text(
+                        text = "重命名",
+                        style = CCMText.body13,
+                        color = colors.textMain,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                renameInput = target.title
+                                renaming = target
+                                menuFor = null
+                            }
+                            .padding(vertical = 10.dp, horizontal = 4.dp),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "删除（进回收站）",
+                        style = CCMText.body13,
+                        color = Color(0xFFDC2626),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                deleting = target
+                                menuFor = null
+                            }
+                            .padding(vertical = 10.dp, horizontal = 4.dp),
+                    )
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { menuFor = null }) { Text("取消", style = CCMText.body13) }
+            },
+        )
+    }
+
+    renaming?.let { target ->
+        AlertDialog(
+            onDismissRequest = { renaming = null },
+            title = { Text("重命名对话", style = CCMText.body14) },
+            text = {
+                BasicTextField(
+                    value = renameInput,
+                    onValueChange = { renameInput = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = CCMText.body13.copy(color = colors.textMain),
+                    cursorBrush = SolidColor(colors.claudeOrange),
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val nt = renameInput.trim()
+                    if (nt.isNotEmpty()) onRenameChat(target.id, nt)
+                    renaming = null
+                }) { Text("确定", style = CCMText.body13) }
+            },
+            dismissButton = {
+                TextButton(onClick = { renaming = null }) { Text("取消", style = CCMText.body13) }
+            },
+        )
+    }
+
+    deleting?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("删除对话", style = CCMText.body14) },
+            text = {
+                Text(
+                    text = "「${target.title}」将被删除（先备份到回收站，可恢复）。",
+                    style = CCMText.body13,
+                    color = colors.textSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteChat(target.id)
+                    deleting = null
+                }) { Text("删除", style = CCMText.body13, color = Color(0xFFDC2626)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleting = null }) { Text("取消", style = CCMText.body13) }
+            },
         )
     }
 }
@@ -297,7 +413,7 @@ private fun SidebarNavRow(iconRes: Int, label: String, onClick: () -> Unit) {
  * 右侧 hover 时才显示「…」按钮（实测 opacity-0，手机侧改为常显）。
  */
 @Composable
-private fun RecentChatRow(chat: ChatSummary, onClick: () -> Unit) {
+private fun RecentChatRow(chat: ChatSummary, onClick: () -> Unit, onMore: () -> Unit = {}) {
     val colors = CCMTheme.colors
     Row(
         modifier = Modifier
@@ -340,8 +456,12 @@ private fun RecentChatRow(chat: ChatSummary, onClick: () -> Unit) {
         )
 
         // 「…」更多操作（实测 18.38×18.38）—— 手机无 hover，常显
+        // ★ 2026-09-28：原来没接点击（死装饰），长按整行也开菜单。
         Box(
-            modifier = Modifier.size(18.38.dp),
+            modifier = Modifier
+                .size(18.38.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .clickable(onClick = onMore),
             contentAlignment = Alignment.Center,
         ) {
             PainterIcon(

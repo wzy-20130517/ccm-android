@@ -273,6 +273,29 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
             ?.sortedByDescending { it.updatedAt }
             ?: emptyList()
     }
+    // 重命名/删除（列表页与侧栏共用 —— 两处各写一遍是漂移温床）
+    val renameChat: (String, String) -> Unit = { id, title ->
+        AppGraph.storage?.let { st ->
+            val ss = SessionStore(st)
+            val cur = ss.load(id)
+            if (cur != null) {
+                ss.save(cur.copy(title = title, updatedAt = System.currentTimeMillis()))
+            }
+        }
+        refreshSessions()
+    }
+    val deleteChat: (String) -> Unit = { id ->
+        AppGraph.storage?.let { SessionStore(it).delete(id) }
+        // 删的正是当前会话 → 切回新会话，别让 activeSession 悬空
+        if (id == AppGraph.sessionId) {
+            AppGraph.storage?.let { st ->
+                AppGraph.openSession(SessionStore(st).newSessionId())
+                    ?.let { activeSession = it }
+            }
+        }
+        refreshSessions()
+    }
+
     LaunchedEffect(Unit) { refreshSessions() }   // 启动先灌一次
 
     // 打开指定会话并进对话页；id 空/失败则留在原地
@@ -545,31 +568,9 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                             onSearchChange = { chatSearch = it },
                             onOpenChat = { ui -> openChat(ui.id) },
                             onNewChat = newChat,
-                            // 行菜单：重命名 / 删除（2026-09-28）
-                            onRenameChat = { id, title ->
-                                AppGraph.storage?.let { st ->
-                                    val ss = SessionStore(st)
-                                    val cur = ss.load(id)
-                                    if (cur != null) {
-                                        ss.save(cur.copy(
-                                            title = title,
-                                            updatedAt = System.currentTimeMillis(),
-                                        ))
-                                    }
-                                }
-                                refreshSessions()
-                            },
-                            onDeleteChat = { id ->
-                                AppGraph.storage?.let { SessionStore(it).delete(id) }
-                                // 删的正是当前会话 → 切回新会话，别让 activeSession 悬空
-                                if (id == AppGraph.sessionId) {
-                                    AppGraph.storage?.let { st ->
-                                        AppGraph.openSession(SessionStore(st).newSessionId())
-                                            ?.let { activeSession = it }
-                                    }
-                                }
-                                refreshSessions()
-                            },
+                            // 行菜单：重命名 / 删除（公用 lambda）
+                            onRenameChat = renameChat,
+                            onDeleteChat = deleteChat,
                         )
                     }
 
@@ -663,6 +664,8 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                 sidebarOpen = false
                 openChat(c.id)
             },
+            onRenameChat = renameChat,
+            onDeleteChat = deleteChat,
         )
 
         // 侧栏打开时刷新一次（刚在别处新建的会话要出现）

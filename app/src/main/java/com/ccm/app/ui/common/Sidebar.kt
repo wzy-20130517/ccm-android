@@ -74,6 +74,10 @@ fun SidebarDrawer(
     onSearch: () -> Unit = {},
     onCustomize: () -> Unit = {},
     onOpenChat: (ChatSummary) -> Unit = {},
+    /** 「…」菜单：重命名（透传给 SidebarContent）。 */
+    onRenameChat: (id: String, title: String) -> Unit = { _, _ -> },
+    /** 「…」菜单：删除。 */
+    onDeleteChat: (id: String) -> Unit = {},
     /** 点底部用户区（Web: 打开用户菜单 → 可进设置） */
     onOpenProfile: () -> Unit = {},
     /** 点顶部胶囊导航（聊天 / 协作 / 代码）。空实现会让这三个胶囊点了没反应。 */
@@ -156,6 +160,8 @@ fun SidebarDrawer(
                     onPillChange = onPillChange,
                     onNavigate = onNavigate,
                     onOpenChat = onOpenChat,
+                    onRenameChat = onRenameChat,
+                    onDeleteChat = onDeleteChat,
                     onOpenProfile = onOpenProfile,
                 )
             }
