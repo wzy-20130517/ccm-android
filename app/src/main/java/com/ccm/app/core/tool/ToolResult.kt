@@ -18,6 +18,23 @@ package com.ccm.app.core.tool
  * 抛出的异常在 Agent 层会被捕获，但**错误分类会退化成 `unknown`** ——
  * 而 `unknown` 意味着「不重试」，一次网络抖动就变成硬失败。
  * 明确返回 [Error] 并给出正确的 [Error.category]，才能让重试策略正常工作。
+ *
+ * ## 多模态附件（[Attachment]）—— 为什么不能塞进文本
+ * 图片类工具（ViewImage / ViewVideo / Screencap / phone_screenshot / ImageGen /
+ * FindImage）产出的**必须以图片形式进模型上下文**，不能塞进 tool_result 文本里
+ * （文本里只能给个路径，模型看不见画面）。
+ *
+ * Node 版的机制是：工具返回 `{__type:'vision', text, images}` → Agent 循环
+ * **先推 tool_result（只存文本摘要），再追加一条多模态 user 消息**（图片走
+ * `image_url` / `image` block）。Kotlin 版对应 [Success.attachments]。
+ *
+ * ⚠️ **两条必须遵守的纪律**（Node 版踩过坑）：
+ * 1. **模型看不到图时必须如实告知**。若端点已知不支持图片（收到过
+ *    `image not supported` 类 400），不能只把图丢掉就完事 —— 工具文本还写着
+ *    「手机屏幕截图（关注：xxx）」，模型会以为图到了，**凭上下文编造画面内容**。
+ *    这是最糟的错，因为从输出上看不出来。要追加 `<vision_unsupported>` 提示。
+ * 2. **图片被缩放时要透明**。缩过就追加 `<image_resize_notice>` 说明
+ *    原尺寸 → 新尺寸，否则模型可能把「细节看不清」误判成「图里本来就没有」。
  */
 sealed class ToolResult {
 
@@ -26,8 +43,15 @@ sealed class ToolResult {
      *
      * @param content 给模型看的文本。会被截断（超 [Tool.maxResultSizeChars]）并可能写盘。
      * @param isError 业务层是否算失败。true 时 UI 标红，且模型会看到失败提示。
+     * @param attachments 多模态附件（图片等）。**默认空 = 纯文本工具零改动**。
+     *   非空时 Agent 循环会在 tool_result 之后**追加一条多模态 user 消息**，
+     *   让模型直接看到图片 —— 见下方说明。
      */
-    data class Success(val content: String, val isError: Boolean = false) : ToolResult()
+    data class Success(
+        val content: String,
+        val isError: Boolean = false,
+        val attachments: List<Attachment> = emptyList(),
+    ) : ToolResult()
 
     /**
      * 执行失败（参数错、权限拒、工具崩溃、被中断）。
@@ -101,5 +125,78 @@ sealed class ToolResult {
 
         /** 文件/资源不存在。 */
         fun notFound(message: String): ToolResult = Error(message, NOT_FOUND)
+
+        // ───────── 带附件的便捷构造 ─────────
+
+        /** 成功 + 图片附件（图片类工具的主力构造）。 */
+        fun okWithImages(
+            content: String,
+            images: List<Attachment>,
+            isError: Boolean = false,
+        ): ToolResult = Success(content, isError, images)
     }
+}
+
+/**
+ * 工具产出的附件 —— 会被 Agent 循环转成多模态消息块。
+ *
+ * 由 dev-tools 构造（图片类工具），dev-core 的 Agent 循环消费。
+ *
+ * ## 三种形态怎么选
+ * | 形态 | 用在哪 | 代价 |
+ * |---|---|---|
+ * | [ImageFile] | 图片已在磁盘上（Screencap / phone_screenshot / FindImage） | 最小 —— 注入时才读盘 |
+ * | [ImageBytes] | 图片在内存里，没落盘（ImageGen 的返回、裁剪/缩放后的结果） | 内存占用，但省一次写盘 |
+ * | [FileLink] | 非图片文件（视频/音频/文档），**不进多模态**，只在文本里给链接 | 无 |
+ *
+ * ## 为什么 ImageFile 优先
+ * 图片可能很大（截图 1080x2400）。传路径让 Agent 在**真正注入时**才读取 + 缩放，
+ * 避免「工具执行完就把几十 MB 图片常驻内存」——手机上这是会 OOM 的。
+ *
+ * ## ⚠️ 缩放信息（`resizedFrom`）
+ * 若 Agent 注入时缩放了图片，要在提示里告诉模型原尺寸。
+ * Node 版的 `<image_resize_notice>` 就是干这个的 —— 见 [ToolResult] 的类注释。
+ */
+sealed class Attachment {
+
+    /**
+     * 磁盘上的图片文件。**最常用**。
+     *
+     * @property path 绝对路径
+     * @property mimeType 图片格式，默认 png
+     */
+    data class ImageFile(
+        val path: String,
+        val mimeType: String = "image/png",
+    ) : Attachment()
+
+    /**
+     * 内存中的图片字节。用于还没落盘的图片（如生成结果、裁剪后的小图）。
+     *
+     * ⚠️ `ByteArray` 的 `equals` 是引用比较，data class 的自动相等性对它无效 ——
+     * 不要拿 [ImageBytes] 做去重或集合成员判断。
+     */
+    class ImageBytes(
+        val bytes: ByteArray,
+        val mimeType: String = "image/png",
+    ) : Attachment() {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is ImageBytes) return false
+            return mimeType == other.mimeType && bytes.contentEquals(other.bytes)
+        }
+
+        override fun hashCode(): Int = 31 * bytes.contentHashCode() + mimeType.hashCode()
+    }
+
+    /**
+     * 非图片文件（视频 / 音频 / 文档 / 压缩包）。
+     *
+     * **不进多模态**，只用于在结果文本里给一个可点击的路径。
+     * 典型：ViewVideo 抽帧后，原视频用这个给出链接。
+     */
+    data class FileLink(
+        val path: String,
+        val name: String,
+    ) : Attachment()
 }

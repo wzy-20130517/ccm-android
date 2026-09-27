@@ -20,6 +20,12 @@ import kotlinx.coroutines.Job
  * @property cancelSignal 取消信号。**长任务必须监听它**，否则用户中断后进程残留。
  * @property ui 进度与内容回调。
  * @property spawnSubAgent 派生子 Agent 的能力。`null` = 当前工具不允许派子 Agent。
+ * @property storage 应用存储（回收站 / 撤销快照 / 大输出落盘 / 会话目录）。
+ *   `null` = 无持久化场景（纯计算工具、单测）。
+ * @property settings 只读配置快照（Provider 的 baseUrl/apiKey/model、各服务的 key）。
+ *   `null` = 未注入，需要配置的工具应给出「未配置」提示而非崩溃。
+ * @property sessionId 当前会话 id。Hooks 会把它写进环境变量 `SESSION_ID`，
+ *   Agent 工具也用它区分「哪个会话派生的子任务」。空串 = 无会话（单测）。
  */
 class ToolContext(
     val cwd: String,
@@ -28,6 +34,9 @@ class ToolContext(
     val cancelSignal: Job,
     val ui: ToolUiCallback,
     val spawnSubAgent: (suspend (SubAgentSpec) -> SubAgentResult)? = null,
+    val storage: ToolStorage? = null,
+    val settings: ToolSettings? = null,
+    val sessionId: String = "",
 ) {
 
     /** 便捷判断：取消信号是否已失效（用户中断 / 超时）。 */
