@@ -183,6 +183,78 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
             }
         }
 
+        // ── 1.5 默认模型（源码第 2 节；移动端一直没渲染 —— 2026-09-28 补）──
+        //
+        // 文件头注释写着「2. 默认模型（模型下拉 + 扩展思考开关）」，
+        // 但实际渲染里根本没有这节 —— 模型只能去「模型」tab 配，主 tab 缺位。
+        SettingsSection(title = "默认模型") {
+            val pstore = com.ccm.app.AppGraph.storage?.let {
+                com.ccm.app.core.provider.ProviderStore(it)
+            }
+            var modelRefresh by remember { mutableStateOf(0) }
+            val items = remember(modelRefresh) { pstore?.list() ?: emptyList() }
+            val enabledItems = items.filter { it.enabled }
+            val current = items.firstOrNull { it.isCurrent }
+            var effortOn by remember(modelRefresh) {
+                val st = com.ccm.app.AppGraph.storage
+                mutableStateOf(
+                    st?.let { com.ccm.app.core.provider.AppConfig.load(it.configFile).config.effort }
+                        ?.let { it.isNotBlank() && it != "none" } ?: false
+                )
+            }
+
+            SettingsField(label = "模型") {
+                SettingsSelectMenu(
+                    value = current?.let { "${it.name} · ${it.model}" } ?: "未配置",
+                    options = enabledItems.map { "${it.name} · ${it.model}" },
+                    onPick = { label ->
+                        val target = enabledItems.firstOrNull {
+                            "${it.name} · ${it.model}" == label
+                        }
+                        if (target != null && pstore != null) {
+                            pstore.setCurrent(target.id)
+                            modelRefresh++
+                            // ApiClient 是会话装配期快照 —— 重建才生效
+                            // （与对话页模型选择器同一机制）
+                            com.ccm.app.AppGraph.openSession(com.ccm.app.AppGraph.sessionId)
+                        }
+                    },
+                    title = "默认模型",
+                )
+            }
+
+            Spacer(Modifier.height(11.04.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    SettingsLabel("扩展思考")
+                    Spacer(Modifier.height(3.68.dp))
+                    Text(
+                        text = "开启后模型先深度思考再回答（对应 effort=high；关闭 = none）。",
+                        style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                        color = CCMTheme.colors.textSecondary,
+                    )
+                }
+                SettingsSwitch(
+                    checked = effortOn,
+                    onCheckedChange = { on ->
+                        effortOn = on
+                        pstore?.setGlobalEffort(if (on) "high" else "none")
+                        com.ccm.app.AppGraph.openSession(com.ccm.app.AppGraph.sessionId)
+                        modelRefresh++
+                    },
+                )
+            }
+        }
+
+        Spacer(Modifier.height(SettingsHrGap))
+        SettingsDivider()
+        Spacer(Modifier.height(SettingsHrGap))
+
         // ── 2. 发送消息 ──────────────────────────────────────────
         SettingsSection(title = "发送消息") {
             Row(horizontalArrangement = Arrangement.spacedBy(22.08.dp)) {
