@@ -73,6 +73,9 @@ fun SidebarDrawer(
     onOpenChat: (ChatSummary) -> Unit = {},
     /** 点底部用户区（Web: 打开用户菜单 → 可进设置） */
     onOpenProfile: () -> Unit = {},
+    /** 点顶部胶囊导航（聊天 / 协作 / 代码）。空实现会让这三个胶囊点了没反应。 */
+    onPillChange: (String) -> Unit = {},
+    /** 当前激活的胶囊（由调用方根据路由决定） */
     activePill: String = "聊天",
     recentChats: List<ChatSummary> = emptyList(),
     userName: String = "",   // 空 = 未配置，调用方从 UserProfileStore 读
@@ -87,7 +90,12 @@ fun SidebarDrawer(
         label = "sidebarProgress",
     ).value
 
-    // 完全收起后不渲染（省性能，也避免挡住触摸）
+    // 完全收起后不渲染（省性能，也避免挡住触摸）。
+    //
+    // 注：这里**不需要**额外的命中测试门控 —— `animateFloatAsState` 在
+    // 收起动画结束后会收敛到精确的 0f，触发重组进入本分支。
+    // 曾误判为「遮罩残留吞掉点击」，实测不成立（遮罩挂在最后的子元素位置，
+    // 但 progress=0 时整个抽屉根本不挂载）。
     if (progress <= 0f) return
 
     // dp → px（graphicsLayer 用像素）
@@ -134,7 +142,10 @@ fun SidebarDrawer(
                     onNewChat = onNewChat,
                     onSearch = onSearch,
                     onCustomize = onCustomize,
-                    onPillChange = {},
+                    // ★ 2026-09-27 修：原来这里写死 `onPillChange = {}`，
+                    //   侧栏顶部「聊天 / 协作 / 代码」三个胶囊点了**完全没反应**
+                    //   —— 用户报的「侧边栏点不动」主要就是这三颗 + 搜索。
+                    onPillChange = onPillChange,
                     onNavigate = onNavigate,
                     onOpenChat = onOpenChat,
                     onOpenProfile = onOpenProfile,

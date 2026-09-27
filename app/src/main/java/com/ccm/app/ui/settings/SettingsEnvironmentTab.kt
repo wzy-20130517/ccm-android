@@ -29,6 +29,10 @@ import androidx.compose.ui.unit.sp
 import com.ccm.app.ui.theme.CCMText
 import com.ccm.app.ui.theme.CCMTheme
 import com.ccm.app.ui.theme.CcmMono
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 
 /**
  * 设置页 · 环境 tab —— 对齐 `EnvironmentPanel.tsx`（139 行）。
@@ -52,6 +56,9 @@ import com.ccm.app.ui.theme.CcmMono
 @Composable
 fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
     val colors = CCMTheme.colors
+    // ★ 刷新按钮的触发器（2026-09-27）：改变它触发重组，重新读取环境状态。
+    //   原来「刷新」的 onClick 是空的 —— 点了毫无反应。
+    var refreshTick by remember { mutableStateOf(0) }
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(22.08.dp)) {
 
@@ -83,7 +90,9 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
                 modifier = Modifier
                     .clip(RoundedCornerShape(7.36.dp))
                     .background(colors.btnHover)
-                    .clickable { }
+                    // ★ 2026-09-27 修：原来 `.clickable { }` 是空的 ——
+                    //   点「刷新」毫无反应。这里触发状态重新检测。
+                    .clickable { refreshTick++ }
                     .padding(horizontal = 11.04.dp, vertical = 5.52.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(5.52.dp),

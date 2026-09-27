@@ -1,6 +1,7 @@
 package com.ccm.app.ui.settings
 
 import androidx.compose.foundation.background
+import android.widget.Toast
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -196,6 +197,7 @@ private fun SessionRow(
 @Composable
 private fun CcmPasswordDialog(onDismiss: () -> Unit) {
     val colors = CCMTheme.colors
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     var current by remember { mutableStateOf("") }
     var newPwd by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
@@ -236,7 +238,18 @@ private fun CcmPasswordDialog(onDismiss: () -> Unit) {
             )
             com.ccm.app.ui.common.CcmPrimaryButton(
                 label = "更新密码",
-                onClick = { },
+                // ★ 2026-09-27：原来 `onClick = { }` 是空的 —— 点了毫无反应。
+                //   本地版没有账号后端（配置全在本机），改密码无处可存。
+                //   按「不静默吞掉操作」原则：弹提示说明，并把输入清掉。
+                onClick = {
+                    Toast.makeText(
+                        ctx,
+                        "本地版没有账号后端，密码不适用（配置都在本机）",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    current = ""; newPwd = ""; confirm = ""
+                    onDismiss()
+                },
                 enabled = current.isNotEmpty() && newPwd.length >= 6 && newPwd == confirm,
                 modifier = Modifier.width(90.16.dp),
             )
@@ -252,6 +265,7 @@ private fun CcmPasswordDialog(onDismiss: () -> Unit) {
 @Composable
 private fun CcmDeleteAccountDialog(onDismiss: () -> Unit) {
     val colors = CCMTheme.colors
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     var password by remember { mutableStateOf("") }
 
     com.ccm.app.ui.common.CcmModal(onDismiss = onDismiss, cardWidth = 343.16.dp) {
@@ -284,7 +298,17 @@ private fun CcmDeleteAccountDialog(onDismiss: () -> Unit) {
             )
             com.ccm.app.ui.common.CcmPrimaryButton(
                 label = "永久删除",
-                onClick = { },
+                // ★ 2026-09-27：同样原来是空的。真删账号需要服务端，
+                //   本地版只能提示（不做「看似删了其实没删」的假动作）。
+                onClick = {
+                    Toast.makeText(
+                        ctx,
+                        "本地版没有账号后端，无法删除账号",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    password = ""
+                    onDismiss()
+                },
                 enabled = password.isNotEmpty(),
                 modifier = Modifier.width(90.16.dp),
             )

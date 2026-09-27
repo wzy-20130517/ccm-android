@@ -339,6 +339,11 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
             onNewChat = { navigate(CcmRoute.HOME) },
             onCustomize = { navigate(CcmRoute.CUSTOMIZE) },
             onOpenProfile = { navigate(CcmRoute.SETTINGS) },
+            // ★ 2026-09-27 修「侧边栏点不动」：
+            //   下面两个回调原来**根本没传**，UI 侧拿到的是默认空实现
+            //   → 点「搜索」「聊天/协作/代码」胶囊完全没反应。
+            onSearch = { showSettings = true },   // TODO: 真正的会话搜索页
+            onPillChange = { /* TODO: 协作/代码模式路由（Web 是 /cowork 切换） */ },
             userName = com.ccm.app.AppGraph.userProfileStore?.load()?.callName ?: "",
         )
     }
