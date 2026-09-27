@@ -72,35 +72,6 @@ class ChatSession(
     }
 
     /**
-     * 灌入历史消息 —— 打开旧会话时用（[AppGraph.openSession] 调）。
-     *
-     * 两处都要灌，缺一不可：
-     * 1. **AgentLoop**：下一轮请求的上下文（不灌 = 模型失忆）
-     * 2. **State.bubbles**：UI 显示（不灌 = 页面空白）
-     *
-     * 过滤掉 system/tool 角色 —— 它们不对应聊天气泡。
-     * 必须在 `send()` 之前调（send 会 append 到 bubbles）。
-     */
-    fun loadHistory(messages: List<Message>) {
-        container.agentLoop.setHistory(messages)
-        _state.value = _state.value.copy(
-            bubbles = messages
-                .filter { it.role == Message.ROLE_USER || it.role == Message.ROLE_ASSISTANT }
-                .map { m ->
-                    Bubble(
-                        role = m.role,
-                        text = m.text,
-                        messageId = "hist-${m.timestamp}",
-                    )
-                },
-            streaming = "",
-            running = false,
-            toolCards = emptyList(),
-            error = null,
-        )
-    }
-
-    /**
      * 释放会话 —— 切到别的会话前调。
      *
      * [AppContainer.shutdown] 先 flush 自动保存再停（最后 30 秒的对话不丢），
