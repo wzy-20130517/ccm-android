@@ -1,6 +1,7 @@
 package com.ccm.app.ui.chat
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -167,6 +168,48 @@ fun ChatScreen(
                 Spacer(Modifier.height(7.36.dp))
             }
 
+            // ── slash 命令候选（2026-09-28）──────────────────────────
+            // 输入 "/" 开头且还没敲到空格 → 浮出候选（对齐 Web 的
+            // slash 面板；点选填入输入框，再按发送执行）。
+            val slashQuery = input.trim()
+            val slashCandidates = if (slashQuery.startsWith("/") && !slashQuery.contains(" ")) {
+                SLASH_COMMANDS.filter { it.first.startsWith(slashQuery) }
+            } else emptyList()
+            if (slashCandidates.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.72.dp)
+                        .clip(RoundedCornerShape(11.04.dp))
+                        .background(colors.input)
+                        .border(1.dp, colors.border, RoundedCornerShape(11.04.dp))
+                        .padding(vertical = 4.dp),
+                ) {
+                    slashCandidates.forEach { (cmd, desc) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onInputChange(cmd) }
+                                .padding(horizontal = 12.88.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = cmd,
+                                style = CCMText.body13.copy(fontWeight = FontWeight.Medium),
+                                color = colors.textMain,
+                            )
+                            Text(
+                                text = desc,
+                                style = CCMText.body12,
+                                color = colors.textSecondary,
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(7.36.dp))
+            }
+
             InputBar(
                 value = input,
                 onValueChange = onInputChange,
@@ -283,3 +326,14 @@ private fun ErrorBanner(message: String) {
         )
     }
 }
+
+/**
+ * slash 命令候选表 —— 与 `ChatScreenConnected.onSend` 的拦截表**必须同步**。
+ * （那边新增命令忘了加这里 → 面板里看不见；反之点了没反应。）
+ */
+private val SLASH_COMMANDS = listOf(
+    "/clear" to "清空当前对话",
+    "/model" to "打开模型选择器",
+    "/export" to "导出对话（系统分享）",
+    "/help" to "显示可用命令",
+)
