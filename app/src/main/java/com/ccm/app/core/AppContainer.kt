@@ -76,6 +76,8 @@ class AppContainer private constructor(
      * 用户被自动压缩搞丢过记忆，明确反感 —— 只有他显式设阈值才会启用。
      */
     val autoCompact: AutoCompact,
+) {
+
     /**
      * 子 Agent 管理器（并发上限 + 观察窗）。
      *
@@ -83,7 +85,7 @@ class AppContainer private constructor(
      */
     var subAgents: SubAgentManager? = null
         private set
-) {
+
 
     /**
      * 接上子 Agent 能力。
