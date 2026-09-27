@@ -55,6 +55,7 @@ fun ChatScreenConnected(
     onExport: () -> Unit = {},
     onRename: () -> Unit = {},
     onModelClick: () -> Unit = {},
+    onSwitchClick: () -> Unit = {},
 ) {
     val coreState by session.state.collectAsState()
     val uiState = remember(coreState) { ChatAdapter.toUi(coreState) }
@@ -150,5 +151,6 @@ fun ChatScreenConnected(
         onExport = onExport,
         onRename = onRename,
         onModelClick = onModelClick,
+        onSwitchClick = onSwitchClick,
     )
 }

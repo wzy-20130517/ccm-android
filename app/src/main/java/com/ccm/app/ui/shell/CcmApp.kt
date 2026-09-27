@@ -21,6 +21,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import com.ccm.app.ui.theme.CCMText
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -266,6 +267,8 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
     var chatSearch by remember { mutableStateOf("") }
     // 模型选择器弹窗
     var showModelPicker by remember { mutableStateOf(false) }
+    // 对话切换弹窗（标题栏 caret → 列表选一个会话）
+    var showSwitcher by remember { mutableStateOf(false) }
 
     fun refreshSessions() {
         sessions = AppGraph.storage
@@ -416,6 +419,10 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                             title = chatTitle,
                             modelName = modelName,
                             onModelClick = { showModelPicker = true },
+                            onSwitchClick = {
+                                refreshSessions()   // 打开时拉最新
+                                showSwitcher = true
+                            },
                             onExport = {
                                 // Web 的 Export 是导出 markdown；Android 用系统分享
                                 val text = session.state.value.bubbles.joinToString("\n\n") { b ->
@@ -465,6 +472,60 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                                 },
                                 dismissButton = {
                                     TextButton(onClick = { showRename = false }) { Text("取消") }
+                                },
+                            )
+                        }
+
+                        // ── 对话切换（2026-09-28：caret 原是死图标）──────
+                        if (showSwitcher) {
+                            AlertDialog(
+                                onDismissRequest = { showSwitcher = false },
+                                title = { Text("切换对话", style = CCMText.body14) },
+                                text = {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 420.dp)
+                                            .verticalScroll(rememberScrollState()),
+                                    ) {
+                                        if (sessions.isEmpty()) {
+                                            Text(
+                                                text = "还没有其他对话",
+                                                style = CCMText.body13,
+                                                color = CCMTheme.colors.textSecondary,
+                                            )
+                                        }
+                                        sessions.forEach { it2 ->
+                                            val cur = it2.sessionId == AppGraph.sessionId
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                                                    .clickable {
+                                                        openChat(it2.sessionId)
+                                                        showSwitcher = false
+                                                    }
+                                                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                            ) {
+                                                Text(
+                                                    text = it2.displayName,
+                                                    style = CCMText.body13,
+                                                    color = if (cur) CCMTheme.colors.accent
+                                                    else CCMTheme.colors.textMain,
+                                                    modifier = Modifier.weight(1f),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                                if (cur) Text("✓", style = CCMText.body13, color = CCMTheme.colors.accent)
+                                            }
+                                        }
+                                    }
+                                },
+                                confirmButton = {},
+                                dismissButton = {
+                                    TextButton(onClick = { showSwitcher = false }) { Text("关闭", style = CCMText.body13) }
                                 },
                             )
                         }

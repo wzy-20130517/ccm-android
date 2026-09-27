@@ -94,6 +94,8 @@ fun ChatScreen(
     onExport: () -> Unit = {},
     onRename: () -> Unit = {},
     onModelClick: () -> Unit = {},
+    /** 点标题旁的下拉箭头 → 切换对话（Web 是会话下拉；2026-09-28 接通）。 */
+    onSwitchClick: () -> Unit = {},
 ) {
     val colors = CCMTheme.colors
 
@@ -108,6 +110,7 @@ fun ChatScreen(
                 title = title,
                 onRename = onRename,
                 onExport = onExport,
+                onSwitchClick = onSwitchClick,
             )
 
             // ── 消息区（可滚动 + 自动跟底，底部留出输入栏高度）────────
@@ -247,6 +250,7 @@ private fun ChatHeaderBar(
     title: String,
     onRename: () -> Unit,
     onExport: () -> Unit,
+    onSwitchClick: () -> Unit = {},
 ) {
     val colors = CCMTheme.colors
 
@@ -277,11 +281,19 @@ private fun ChatHeaderBar(
             // 下拉箭头（表示可切换对话）
             // ★ 2026-09-27：原来是 13.8dp 灰方块占位（没人实现图标），
             //   换成首页模型选择器同款 caret。
-            com.ccm.app.ui.common.PainterIcon(
-                com.ccm.app.R.drawable.ic_model_caret,
-                size = 13.8.dp,
-                tint = colors.textSecondary,
-            )
+            // ★ 2026-09-28：再补点击 —— 之前图标换了但点了没反应。
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable(onClick = onSwitchClick)
+                    .padding(2.dp),
+            ) {
+                com.ccm.app.ui.common.PainterIcon(
+                    com.ccm.app.R.drawable.ic_model_caret,
+                    size = 13.8.dp,
+                    tint = colors.textSecondary,
+                )
+            }
         }
 
         // 右：Export 按钮（实测 77.92×40 / 圆角 8 / 1px 描边 / px-4 / fs 14 / fw 500）
