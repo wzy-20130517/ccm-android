@@ -1,5 +1,7 @@
 package com.ccm.app.ui.chat
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -37,8 +39,12 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -46,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ccm.app.ui.theme.CCMText
 import com.ccm.app.ui.theme.CCMTheme
+import kotlinx.coroutines.delay
 
 /**
  * 思考链 —— 对齐 `AssistantThinkingChain.tsx`（850 行）。
@@ -303,7 +310,26 @@ private fun ThinkingTimelineEvent(
 ) {
     val muted = event.kind != ThinkingEventKind.DONE
 
-    Column(modifier = Modifier.fillMaxWidth()) {
+    // ── 行进入动画（`thought-chain-row-enter 220ms cubic-bezier(.22,1,.36,1) both`）
+    // 延迟 index × 45ms —— 逐行错开是「时间线在推进」的关键观感，
+    // 去掉延迟会变成所有行同时闪入，失去「一条条发生」的语义。
+    val enter = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        delay(index * 45L)
+        enter.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(220, easing = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)),
+        )
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                alpha = enter.value
+                translationY = (1f - enter.value) * 4f   // translateY(4px)
+            },
+    ) {
         // 行首竖轨（index > 0 时可见）
         RailSpacer(visible = index > 0, height = 8.dp)
 
@@ -329,16 +355,29 @@ private fun ThinkingTimelineEvent(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Text(
-                        text = event.label,
-                        style = CCMText.body14.copy(
-                            fontSize = 14.sp,
-                            lineHeight = if (isActive || !muted) 19.6.sp else 20.sp,
-                            letterSpacing = (-0.1504).sp,
-                        ),
-                        color = if (isActive || !muted) ThinkingBody else ThinkingMuted,
-                        modifier = Modifier.weight(1f),
-                    )
+                    if (isActive) {
+                        // 活动行用 shimmer 文字（对应 `renderSparkStatusCopy` 的 TextShimmer 分支）
+                        TextShimmer(
+                            text = event.label,
+                            style = CCMText.body14.copy(
+                                fontSize = 14.sp,
+                                lineHeight = 19.6.sp,
+                                letterSpacing = (-0.1504).sp,
+                            ),
+                            modifier = Modifier.weight(1f),
+                        )
+                    } else {
+                        Text(
+                            text = event.label,
+                            style = CCMText.body14.copy(
+                                fontSize = 14.sp,
+                                lineHeight = if (!muted) 19.6.sp else 20.sp,
+                                letterSpacing = (-0.1504).sp,
+                            ),
+                            color = if (!muted) ThinkingBody else ThinkingMuted,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                     if (!event.meta.isNullOrEmpty()) {
                         Text(
                             text = event.meta,
@@ -622,3 +661,79 @@ private val ThinkingRail = Color(0x261F1F1E)
 /** 预览块底色（`bg-claude-bg/60` 的近似） */
 @Composable
 private fun colors0(): Color = CCMTheme.colors.bgMain.copy(alpha = 0.6f)
+
+/**
+ * 文字流光 —— 对应源码 `TextShimmer`。
+ *
+ * ## 源码实现（必须理解才能等价移植）
+ * ```css
+ * background-image: linear-gradient(90deg,
+ *     rgba(123,121,116,0.72) 0%, rgba(55,55,52,0.92) 48%, rgba(123,121,116,0.72) 100%);
+ * background-size: 220% 100%;
+ * background-clip: text;
+ * animation: thought-chain-text-shimmer 1.6s linear infinite;
+ * @keyframes: background-position 200% center → 0% center
+ * ```
+ *
+ * ## 换算（为什么是 2.4W）
+ * `background-position` 的百分比**不是**相对容器宽，而是相对 `容器宽 − 背景宽`：
+ * - 背景宽 = 2.2W（`background-size: 220%`）
+ * - 可移动距离 = W − 2.2W = **−1.2W**
+ * - position 200% → x = −1.2W × 2.0 = **−2.4W**
+ * - position 0%   → x = **0**
+ *
+ * 所以渐变窗口从 −2.4W 线性滑到 0（窗口自身宽 2.2W）。
+ * 这解释了为什么**必须先量到文字宽度** —— 不知道 W 就没法定位渐变，
+ * 用固定值会让长标签的流光卡在半路。
+ */
+@Composable
+private fun TextShimmer(
+    text: String,
+    style: TextStyle,
+    modifier: Modifier = Modifier,
+    maxLines: Int = 1,
+) {
+    var width by remember { mutableStateOf(0f) }
+
+    val transition = rememberInfiniteTransition(label = "think-shimmer")
+    val t by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1600, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "think-shimmer-pos",
+    )
+
+    val brush = remember(width, t) {
+        if (width <= 0f) {
+            SolidColor(ThinkingMuted)
+        } else {
+            val start = -2.4f * width + 2.4f * width * t
+            androidx.compose.ui.graphics.Brush.linearGradient(
+                colorStops = arrayOf(
+                    0.00f to ShimmerMuted,
+                    0.48f to ShimmerBody,
+                    1.00f to ShimmerMuted,
+                ),
+                start = Offset(start, 0f),
+                end = Offset(start + 2.2f * width, 0f),
+            )
+        }
+    }
+
+    Text(
+        text = text,
+        style = style.copy(brush = brush),
+        modifier = modifier.onSizeChanged { width = it.width.toFloat() },
+        maxLines = maxLines,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+/** 流光渐变端点 `rgba(123,121,116,0.72)` */
+private val ShimmerMuted = Color(0xB87B7974)
+
+/** 流光渐变中点 `rgba(55,55,52,0.92)` */
+private val ShimmerBody = Color(0xEB373734)

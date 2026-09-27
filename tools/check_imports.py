@@ -62,8 +62,6 @@ EXTENSION_SYMBOLS = {
     'wrapContentSize': 'androidx.compose.foundation.layout',
     'defaultMinSize': 'androidx.compose.foundation.layout',
     'aspectRatio': 'androidx.compose.foundation.layout',
-    'offset': 'androidx.compose.foundation.layout',
-    'absoluteOffset': 'androidx.compose.foundation.layout',
     'imePadding': 'androidx.compose.foundation.layout',
     'systemBarsPadding': 'androidx.compose.foundation.layout',
     'statusBarsPadding': 'androidx.compose.foundation.layout',
@@ -80,8 +78,56 @@ EXTENSION_SYMBOLS = {
     'drawBehind': 'androidx.compose.ui.draw',
     'drawWithContent': 'androidx.compose.ui.draw',
     'graphicsLayer': 'androidx.compose.ui.graphics',
-    # ui 扩展
+    'zIndex': 'androidx.compose.ui.zIndex',
+    'animateContentSize': 'androidx.compose.animation',
+    'AnimatedVisibility': 'androidx.compose.animation',
+    'animateFloatAsState': 'androidx.compose.animation.core',
+    'animateDpAsState': 'androidx.compose.animation.core',
+    'animateColorAsState': 'androidx.compose.animation.core',
+    'Animatable': 'androidx.compose.animation.core',
+    'tween': 'androidx.compose.animation.core',
+    'spring': 'androidx.compose.animation.core',
+    'LinearEasing': 'androidx.compose.animation.core',
+    'CubicBezierEasing': 'androidx.compose.animation.core',
+    'RepeatMode': 'androidx.compose.animation.core',
+    'infiniteRepeatable': 'androidx.compose.animation.core',
+    'rememberInfiniteTransition': 'androidx.compose.animation.core',
+    'delay': 'kotlinx.coroutines',
+    'withTimeout': 'kotlinx.coroutines',
+    'withTimeoutOrNull': 'kotlinx.coroutines',
+    'supervisorScope': 'kotlinx.coroutines',
+    'coroutineScope': 'kotlinx.coroutines',
+    'awaitCancellation': 'kotlinx.coroutines',
+    'runBlocking': 'kotlinx.coroutines',
+    'coroutineContext': 'kotlin.coroutines',
+    'suspendCoroutine': 'kotlin.coroutines',
+    'suspendCancellableCoroutine': 'kotlinx.coroutines',
+    'MutableSharedFlow': 'kotlinx.coroutines.flow',
+    'SharedFlow': 'kotlinx.coroutines.flow',
+    'stateIn': 'kotlinx.coroutines.flow',
+    'channelFlow': 'kotlinx.coroutines.flow',
+    'callbackFlow': 'kotlinx.coroutines.flow',
+    'MutableStateFlow': 'kotlinx.coroutines.flow',
+    'asStateFlow': 'kotlinx.coroutines.flow',
+    'collectLatest': 'kotlinx.coroutines.flow',
+    'flatMapLatest': 'kotlinx.coroutines.flow',
+    'debounce': 'kotlinx.coroutines.flow',
+    'distinctUntilChanged': 'kotlinx.coroutines.flow',
+    'emitAll': 'kotlinx.coroutines.flow',
+    'emptyFlow': 'kotlinx.coroutines.flow',
+    'flowOf': 'kotlinx.coroutines.flow',
+    'SolidColor': 'androidx.compose.ui.graphics',
+    'TextStyle': 'androidx.compose.ui.text',
+    'SpanStyle': 'androidx.compose.ui.text',
+    'buildAnnotatedString': 'androidx.compose.ui.text',
+    'AnnotatedString': 'androidx.compose.ui.text',
+    'withStyle': 'androidx.compose.ui.text',
     'onSizeChanged': 'androidx.compose.ui.layout',
+    'onPlaced': 'androidx.compose.ui.layout',
+    'layoutId': 'androidx.compose.ui.layout',
+    'interceptAsObservable': 'androidx.compose.ui.layout',
+    'placeRelative': 'androidx.compose.ui.layout',
+    # ui 扩展
     'onGloballyPositioned': 'androidx.compose.ui.layout',
     'semantics': 'androidx.compose.ui.semantics',
     'contentDescription': 'androidx.compose.ui.semantics',
@@ -189,7 +235,6 @@ TOPLEVEL_SYMBOLS = {
     'Path': 'androidx.compose.ui.graphics',
     'PathEffect': 'androidx.compose.ui.graphics',
     'Brush': 'androidx.compose.ui.graphics',
-    'SolidColor': 'androidx.compose.ui.graphics',
     'ImageBitmap': 'androidx.compose.ui.graphics',
     'DrawScope': 'androidx.compose.ui.graphics.drawscope',
     'Stroke': 'androidx.compose.ui.graphics.drawscope',
@@ -225,7 +270,6 @@ TOPLEVEL_SYMBOLS = {
     'ImeAction': 'androidx.compose.ui.text.input',
     'PasswordVisualTransformation': 'androidx.compose.ui.text.input',
     'VisualTransformation': 'androidx.compose.ui.text.input',
-    'TextStyle': 'androidx.compose.ui.text',
     # kotlin 标准库顶层函数
     'min': 'kotlin.math',
     'max': 'kotlin.math',
@@ -241,7 +285,6 @@ TOPLEVEL_SYMBOLS = {
     'coerceIn': 'kotlin.ranges',
     'coerceAtLeast': 'kotlin.ranges',
     'coerceAtMost': 'kotlin.ranges',
-    'delay': 'kotlinx.coroutines',
     'launch': 'kotlinx.coroutines',
     'async': 'kotlinx.coroutines',
     'withContext': 'kotlinx.coroutines',
@@ -250,10 +293,7 @@ TOPLEVEL_SYMBOLS = {
     'Dispatchers': 'kotlinx.coroutines',
     'flow': 'kotlinx.coroutines.flow',
     'collect': 'kotlinx.coroutines.flow',
-    'MutableStateFlow': 'kotlinx.coroutines.flow',
     'StateFlow': 'kotlinx.coroutines.flow',
-    'Flow': 'kotlinx.coroutines.flow',
-    'asStateFlow': 'kotlinx.coroutines.flow',
 }
 
 # 这些符号是「自动可用」的（Kotlin 默认导入），不需要 import
@@ -345,10 +385,16 @@ def check_file(path, quiet=False):
     code = strip_comments_and_strings(raw)
 
     imports = set()
+    star_packages = set()      # `import a.b.*` 展开的包
     for m in re.finditer(r'^\s*import\s+([A-Za-z0-9_.*]+)', raw, re.M):
         full = m.group(1)
         imports.add(full)
-        imports.add(full.split('.')[-1])          # 简单名
+        if full.endswith('.*'):
+            # ★ 星号导入（如 `androidx.compose.foundation.layout.*`）会把该包下
+            #   所有符号带进作用域。不处理的话整批误报「缺 import」（踩过：MainActivity）
+            star_packages.add(full[:-2])
+        else:
+            imports.add(full.split('.')[-1])      # 简单名
 
     defined = collect_defined_names(raw)
     # 同包内的其他文件（同目录）也算「已定义」—— 交由调用方通过 extra_defined 传入
@@ -360,14 +406,28 @@ def check_file(path, quiet=False):
     # ⚠️ 两类必须分开匹配（分类错误 = 漏检，见文件头注释）：
     #   - 扩展符号：`Modifier.horizontalScroll(` / `horizontalScroll(` 都算
     #   - 顶层符号：只算 `Text(`，不算 `foo.Text(`
+    # ★ 全限定名调用（`androidx.compose.ui.graphics.SolidColor(...)`）不需要 import，
+    #   检测时必须排除 —— 否则每个「懒得 import 直接写全名」的地方都会误报。
+    #   做法：把所有 `a.b.c.Sym(` 形态的符号名收集起来，从待查集合里剔除。
+    fully_qualified = set(
+        m.group(1)
+        for m in re.finditer(r'(?<![A-Za-z0-9_.])(?:[a-z][A-Za-z0-9_]*\.)+([A-Za-z][A-Za-z0-9_]*)\s*[(<]', code)
+    )
+
     for sym, pkg in EXTENSION_SYMBOLS.items():
-        if sym in KOTLIN_DEFAULT or sym in imports or sym in defined:
+        if sym in KOTLIN_DEFAULT or sym in imports or sym in defined or sym in fully_qualified:
             continue
-        if re.search(r'(?<![A-Za-z0-9_])' + re.escape(sym) + r'\s*[(<]', code):
+        if pkg in star_packages:
+            continue
+        # ⚠️ 尾部允许 `{`：`Modifier.graphicsLayer { ... }` 是尾 lambda 形式，
+        #    只匹配 `(` `<` 会漏掉它（踩过：AssistantThinkingChain 少 import 未报）
+        if re.search(r'(?<![A-Za-z0-9_])' + re.escape(sym) + r'\s*[(<{]', code):
             errors.append(f"缺 import: {sym}  →  import {pkg}.{sym}")
 
     for sym, pkg in TOPLEVEL_SYMBOLS.items():
-        if sym in KOTLIN_DEFAULT or sym in imports or sym in defined:
+        if sym in KOTLIN_DEFAULT or sym in imports or sym in defined or sym in fully_qualified:
+            continue
+        if pkg in star_packages:
             continue
         if re.search(r'(?<![A-Za-z0-9_.])' + re.escape(sym) + r'\s*[(<]', code):
             errors.append(f"缺 import: {sym}  →  import {pkg}.{sym}")
