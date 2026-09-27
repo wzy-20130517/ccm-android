@@ -2,6 +2,8 @@ package com.ccm.app.core.agent
 
 import com.ccm.app.core.api.ApiClient
 import com.ccm.app.core.api.ApiTypes
+import com.ccm.app.core.image.ImageProcessor
+import com.ccm.app.core.image.ImageScaler
 import com.ccm.app.core.session.ContentBlock
 import com.ccm.app.core.session.Message
 import com.ccm.app.core.tool.Attachment
@@ -85,6 +87,14 @@ class AgentLoop(
     private val sessionId: String = "",
     /** 派生子 Agent 的能力（由上层注入）。 */
     private val spawnSubAgent: (suspend (SubAgentSpec) -> SubAgentResult)? = null,
+    /**
+     * 图片缩放器（生产用 Android 的，单测用 JVM 的）。
+     *
+     * `null` = 不缩放，图片原样注入。**生产环境应该传** ——
+     * 一张 4000×3000 的手机原图不缩放要 16000 token（吃掉半个上下文），
+     * 且部分网关会因解码像素数超限直接拒掉请求。
+     */
+    private val imageScaler: ImageScaler? = null,
     /**
      * 工具执行器（**唯一入口**，见 [ToolRunner] 类注释）。
      *
@@ -550,15 +560,30 @@ class AgentLoop(
             for (att in success.attachments) {
                 when (att) {
                     is Attachment.ImageFile -> {
-                        val b64 = readImageAsBase64(att.path)
-                        if (b64 != null) {
-                            blocks += ContentBlock.Image(b64, att.mimeType)
-                            att.resizedFrom?.let {
+                        // 走 ImageProcessor：超长边的图会**真正缩放**（省 token + 防网关拒收）
+                        val loaded = imageScaler?.let {
+                            ImageProcessor.loadOrNull(att.path, it)
+                        }
+                        if (loaded != null) {
+                            blocks += ContentBlock.Image(loaded.base64, loaded.mimeType)
+                            // 缩放透明化（工具自己标了 resizedFrom 也要带上）
+                            loaded.resizedFrom?.let { from ->
+                                resizeNotes += "图片已从 $from 缩放到 ${loaded.resizedTo}（节省 token；微小文字/细节可能受影响）"
+                            } ?: att.resizedFrom?.let {
                                 resizeNotes += "图片已从 $it 缩放（节省 token；微小细节可能受影响）"
                             }
                         } else {
-                            // 读失败要如实说，不能让模型以为图到了
-                            blocks += ContentBlock.Text("[图片读取失败: ${att.path}]")
+                            // 没有 scaler 或读失败 → 退回原样读（至少让模型能看到图）
+                            val b64 = readImageAsBase64(att.path)
+                            if (b64 != null) {
+                                blocks += ContentBlock.Image(b64, att.mimeType)
+                                att.resizedFrom?.let {
+                                    resizeNotes += "图片已从 $it 缩放（节省 token；微小细节可能受影响）"
+                                }
+                            } else {
+                                // 读失败要如实说，不能让模型以为图到了
+                                blocks += ContentBlock.Text("[图片读取失败: ${att.path}]")
+                            }
                         }
                     }
 
@@ -588,11 +613,7 @@ class AgentLoop(
 
         // ⚠️ 端点已知不支持图片 —— 必须如实告知，否则模型会凭上下文编造画面内容
         if (api.isVisionUnsupported) {
-            blocks += ContentBlock.Text(
-                "<vision_unsupported>\n当前模型不支持读图，本次图片已被丢弃，你看不到画面内容。\n" +
-                    "不要再猜测或编造图里的内容；需要看图请换一个支持视觉的模型（切 Provider），" +
-                    "或让用户直接用文字描述关键信息。\n</vision_unsupported>"
-            )
+            blocks += ContentBlock.Text(ImageProcessor.visionUnsupportedNotice())
         }
 
         if (blocks.isNotEmpty()) {

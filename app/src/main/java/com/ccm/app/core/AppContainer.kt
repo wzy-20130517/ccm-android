@@ -3,8 +3,10 @@ package com.ccm.app.core
 import com.ccm.app.core.agent.AgentLoop
 import com.ccm.app.core.api.ApiClient
 import com.ccm.app.core.compact.Compactor
+import com.ccm.app.core.image.ImageScaler
 import com.ccm.app.core.provider.AppConfig
 import com.ccm.app.core.provider.ProviderConfig
+import com.ccm.app.core.session.SessionAuto
 import com.ccm.app.core.session.SessionStore
 import com.ccm.app.core.tool.AppBackedToolStorage
 import com.ccm.app.core.tool.MapToolSettings
@@ -68,8 +70,44 @@ class AppContainer private constructor(
     val compactor: Compactor,
 ) {
 
+    /**
+     * 会话自动保存（`null` = 未启用）。
+     *
+     * 需要协程作用域，所以不能在这里直接建 —— 由调用方
+     * [attachSessionAuto] 注入（App 级 scope）。
+     */
+    var sessionAuto: SessionAuto? = null
+        private set
+
+    /**
+     * 接上自动保存。
+     *
+     * @param scope App 级协程作用域（通常是 `lifecycleScope` 或自建 scope）
+     * @param sessionId 初始会话 id（空 = 新建）
+     */
+    fun attachSessionAuto(
+        scope: kotlinx.coroutines.CoroutineScope,
+        sessionId: String = "",
+    ): SessionAuto {
+        val auto = SessionAuto(
+            store = sessionStore,
+            sessionId = sessionId.ifBlank { sessionStore.newSessionId() },
+            historyProvider = { agentLoop.getHistory() },
+            scope = scope,
+        )
+        auto.start()
+        sessionAuto = auto
+        return auto
+    }
+
     /** 释放资源（切 Provider 或退出前调）。 */
     fun shutdown() {
+        try {
+            // 先 flush 再停 —— 否则最后 30 秒的对话还在内存里
+            sessionAuto?.stop()
+            sessionAuto = null
+        } catch (_: Throwable) {
+        }
         try {
             apiClient.shutdown()
         } catch (_: Throwable) {
@@ -91,9 +129,17 @@ class AppContainer private constructor(
         storage: AppStorage,
         registry: ToolRegistry,
         toolRunner: ToolRunner,
+        imageScaler: ImageScaler? = null,
     ): AppContainer {
         shutdown()
-        return build(storage, registry, toolRunner, newConfig, agentLoop.getHistory())
+        return build(
+            storage = storage,
+            registry = registry,
+            toolRunner = toolRunner,
+            config = newConfig,
+            initialHistory = agentLoop.getHistory(),
+            imageScaler = imageScaler,
+        )
     }
 
     companion object {
@@ -121,6 +167,7 @@ class AppContainer private constructor(
             initialHistory: List<com.ccm.app.core.session.Message> = emptyList(),
             systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
             cwd: String = "/",
+            imageScaler: ImageScaler? = null,
         ): AppContainer? {
             val provider = config.currentProvider ?: return null
             val keys = provider.allKeys()
@@ -163,6 +210,7 @@ class AppContainer private constructor(
                 sessionId = "",
                 spawnSubAgent = null,   // 由上层在装配后注入（需要 Agent 工具支持）
                 toolRunner = toolRunner,
+                imageScaler = imageScaler,
             )
             agentLoop.setHistory(initialHistory)
 
