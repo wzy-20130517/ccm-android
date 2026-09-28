@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -94,6 +95,12 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
     //   所有按钮 onClick 都是空的 —— 用户点了「什么都不发生」，看起来像界面坏了。
     val store = remember { com.ccm.app.AppGraph.storage?.let { ProviderStore(it) } }
     var items by remember { mutableStateOf(store?.list() ?: emptyList()) }
+    // ★ #6：联网图标真值（remember 一次，别在 map 里每行读盘 —— 主线程 IO 教训）
+    val webSearchOn = remember(refreshTick) {
+        com.ccm.app.AppGraph.storage?.let {
+            AppConfig.load(it.configFile).config.webSearch
+        } == true
+    }
     var selectedId by remember { mutableStateOf(items.firstOrNull()?.id ?: "") }
     var showAddDialog by remember { mutableStateOf(false) }
     var refreshTick by remember { mutableStateOf(0) }
@@ -176,7 +183,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         ProviderListItem(
                             name = item.name,
                             modelCount = item.modelCount,   // ★ audit-settings #3：原用 keyCount 冒充模型数
-                            webSearchOk = false,
+                            webSearchOk = webSearchOn,   // ★ #6：原写死 false → 图标恒不显示
                             enabled = item.enabled,
                             selected = item.id == selectedId,
                             onClick = { selectedId = item.id },
@@ -215,18 +222,38 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(7.36.dp),
                     ) {
+                        // ★★ audit-settings #7（数据破坏级）：setKey 的实现是
+                        //   `apiKeys = null`（单 key 语义），而池模式 provider
+                        //   在这里每敲一个字符都会**静默清空整组轮换池**（11 个
+                        //   key 的池打一个字母就没了），右侧「池·N」还读旧
+                        //   items 不刷新 —— 用户完全看不出。
+                        //   修：池模式输入框只读 + 说明；单 key 模式保持即时
+                        //   落盘并刷新列表。
+                        val keyPoolMode = (selected?.keyCount ?: 0) > 1
                         SettingsTextField(
                             value = apiKey,
-                            onValueChange = {
-                                apiKey = it
-                                // 立刻落盘（对齐 CLI 的 /key 命令「立即生效」）
-                                selected?.let { sel -> store?.setKey(sel.id, it) }
+                            onValueChange = { v ->
+                                // 池模式完全忽略敲键（保护 apiKeys 不被 setKey 清空）
+                                if (!keyPoolMode) {
+                                    apiKey = v
+                                    // 立刻落盘（对齐 CLI 的 /key 命令「立即生效」）
+                                    selected?.let { sel -> store?.setKey(sel.id, v) }
+                                    refreshTick++   // 让「池·N」等派生显示跟着变
+                                }
                             },
-                            placeholder = "sk-...",
+                            placeholder = if (keyPoolMode) "轮换池（只读）" else "sk-...",
                             modifier = Modifier.weight(1f),
                         )
+                        // 池模式禁敲 —— 保护 apiKeys（setKeyPool 才是池的安全入口，
+                        // CCM 暂无池编辑 UI，提示到 CLI 配）
+                        if (keyPoolMode) {
+                            LaunchedEffect(selectedId) {
+                                // 进入池 provider 时把显示值换成占位说明（不写盘）
+                                apiKey = "轮换池 · ${selected?.keyCount} 个 key（编辑会清空整组）"
+                            }
+                        }
                         Text(
-                            text = if ((selected?.keyCount ?: 0) > 1) "池 · ${selected?.keyCount} 个" else "",
+                            text = if (keyPoolMode) "池 · ${selected?.keyCount} 个" else "",
                             style = CCMText.body11.copy(fontSize = 10.12.sp),
                             color = colors.textSecondary,
                         )

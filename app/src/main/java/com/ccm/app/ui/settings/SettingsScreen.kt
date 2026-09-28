@@ -90,6 +90,10 @@ import com.ccm.app.ui.common.SvgIcons
 fun SettingsScreen(
     modifier: Modifier = Modifier,
     initialTab: SettingsTab = SettingsTab.GENERAL,
+    // audit-settings #8 判定：这两个"写死"在 APK 语境是**正确值** ——
+    // APK 本来就是自部署（无账号/额度后端），selfHosted=true → 显示
+    // 模型/环境 tab、隐藏账号/额度 tab，正是应有的形态。
+    // audit 对照的 Web 多租户场景（按部署模式切换）在单机 App 不适用。
     ccmAvailable: Boolean = true,
     selfHosted: Boolean = true,
     onClose: () -> Unit = {},
