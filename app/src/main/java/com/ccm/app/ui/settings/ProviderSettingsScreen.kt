@@ -95,15 +95,15 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
     //   所有按钮 onClick 都是空的 —— 用户点了「什么都不发生」，看起来像界面坏了。
     val store = remember { com.ccm.app.AppGraph.storage?.let { ProviderStore(it) } }
     var items by remember { mutableStateOf(store?.list() ?: emptyList()) }
+    var selectedId by remember { mutableStateOf(items.firstOrNull()?.id ?: "") }
+    var showAddDialog by remember { mutableStateOf(false) }
+    var refreshTick by remember { mutableStateOf(0) }
     // ★ #6：联网图标真值（remember 一次，别在 map 里每行读盘 —— 主线程 IO 教训）
     val webSearchOn = remember(refreshTick) {
         com.ccm.app.AppGraph.storage?.let {
             AppConfig.load(it.configFile).config.webSearch
         } == true
     }
-    var selectedId by remember { mutableStateOf(items.firstOrNull()?.id ?: "") }
-    var showAddDialog by remember { mutableStateOf(false) }
-    var refreshTick by remember { mutableStateOf(0) }
 
     // 重新从磁盘读（写操作后调）
     fun refresh() {
