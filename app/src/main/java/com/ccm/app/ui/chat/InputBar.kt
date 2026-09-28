@@ -86,6 +86,10 @@ fun InputBar(
     tokenCount: Int = 0,
     /** 点模型选择器（2026-09-27 接通 —— 原来是写死的 TODO 空转） */
     onModelClick: () -> Unit = {},
+    /** 点 + → 拉起图片多选（第18批）。 */
+    onAttach: () -> Unit = {},
+    /** 已选待发图片数（+ 按钮角标，0 不显示）。 */
+    attachedCount: Int = 0,
 ) {
     val colors = CCMTheme.colors
 
@@ -165,7 +169,7 @@ fun InputBar(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    // 左：+ 按钮 + token 计数
+                    // 左：+ 按钮 + 附件角标 + token 计数
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(7.36.dp),
@@ -174,7 +178,15 @@ fun InputBar(
                             R.drawable.ic_input_plus,
                             size = 20.dp,
                             tint = colors.textMain,
+                            modifier = Modifier.clickable(onClick = onAttach),
                         )
+                        if (attachedCount > 0) {
+                            Text(
+                                text = "图×$attachedCount",
+                                style = CCMText.body12,
+                                color = colors.claudeOrange,
+                            )
+                        }
                         if (tokenCount > 0) {
                             Text(
                                 text = "$tokenCount tokens",

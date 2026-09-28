@@ -329,8 +329,8 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
      * 现在改成：session 为空 → 直接跳设置页（配 API 的唯一入口）。
      * 首页顶部同时会显示 [initError] 提示条（见下方 notice）。
      */
-    fun sendAndOpen(text: String) {
-        activeSession?.send(text)
+    fun sendAndOpen(text: String, images: List<String> = emptyList()) {
+        activeSession?.send(text, images)
         // ★ 不管有没有 session 都切到对话页 —— 用户按了发送/点了胶囊，
         //   就该看到「消息已发出」的界面。没配 Provider 时对话页会显示
         //   提示条（由 initError 驱动），而不是把人踢去设置页。
@@ -392,8 +392,8 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                 when (route) {
                     CcmRoute.HOME -> LandingScreen(
                         greeting = greetingFor(profileName),
-                        // ★ 接线：首页输入框真的能发消息了
-                        onSend = { sendAndOpen(it) },
+                        // ★ 接线：首页输入框真的能发消息了（第18批带图）
+                        onSend = { t, imgs -> sendAndOpen(t, imgs) },
                         // onPickPrompt 已删（第17批）：点胶囊不再直接发 label 文本，
                         // 改为展开建议面板，点建议填入输入框（Web 行为）。
                     )
@@ -661,7 +661,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
 
                     else -> LandingScreen(
                         greeting = greetingFor(profileName),
-                        onSend = { sendAndOpen(it) },
+                        onSend = { t, imgs -> sendAndOpen(t, imgs) },
                     )
                 }
             }

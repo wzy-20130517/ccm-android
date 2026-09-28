@@ -257,12 +257,35 @@ class AgentLoop(
      * @param userMessage 用户输入
      * @return 事件流。**必须在协程里 collect**，否则不会执行（冷流）。
      */
-    fun run(userMessage: String): Flow<AgentEvent> = channelFlow {
+    fun run(userMessage: String, imagePaths: List<String> = emptyList()): Flow<AgentEvent> = channelFlow {
         // 显式把 send 包成 emit —— 避免用 ProducerScope 扩展函数（隐式接收者在
         // 嵌套 coroutineScope/async 里容易解析到错误的作用域）
         val emit: suspend (AgentEvent) -> Unit = { ev -> send(ev) }
 
-        messages += Message.user(userMessage)
+        // 用户消息带图（2026-09-28 第18批）：imagePaths 空时走原路径零变化。
+        // 图在协程内加载（readImageAsBase64/ImageProcessor 都是 IO，
+        // 放在 run 外会让 send() 阻塞主线程）。
+        if (imagePaths.isEmpty()) {
+            messages += Message.user(userMessage)
+        } else {
+            val blocks = mutableListOf<ContentBlock>(ContentBlock.Text(userMessage))
+            for (path in imagePaths) {
+                val loaded = imageScaler?.let { ImageProcessor.loadOrNull(path, it) }
+                if (loaded != null) {
+                    blocks += ContentBlock.Image(loaded.base64, loaded.mimeType)
+                } else {
+                    val b64 = readImageAsBase64(path)
+                    if (b64 != null) {
+                        // 读原始字节猜 MIME（readImageAsBase64 只给 b64）
+                        val mime = guessImageMime(path)
+                        blocks += ContentBlock.Image(b64, mime)
+                    } else {
+                        blocks += ContentBlock.Text("[图片读取失败: $path]")
+                    }
+                }
+            }
+            messages += Message(Message.ROLE_USER, blocks)
+        }
         turnCount = 0
         aborted = false
 
@@ -885,6 +908,15 @@ class AgentLoop(
     }
 
     /** 读图片文件并编码成 base64。失败返回 null（不抛）。 */
+    /** 按扩展名猜图片 MIME（readImageAsBase64 只返回 base64，这里补 mime）。 */
+    private fun guessImageMime(path: String): String = when (path.substringAfterLast('.').lowercase()) {
+        "png" -> "image/png"
+        "gif" -> "image/gif"
+        "webp" -> "image/webp"
+        "bmp" -> "image/bmp"
+        else -> "image/jpeg"
+    }
+
     private fun readImageAsBase64(path: String): String? = try {
         val f = java.io.File(path)
         if (f.exists() && f.isFile) {

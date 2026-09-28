@@ -1,6 +1,9 @@
 package com.ccm.app.ui.chat
 
 import androidx.compose.runtime.Composable
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -59,6 +62,25 @@ fun ChatScreenConnected(
 ) {
     val coreState by session.state.collectAsState()
     val uiState = remember(coreState) { ChatAdapter.toUi(coreState) }
+
+    // ── 图片附件（第18批）───────────────────────────────────────
+    var pendingImages by remember { mutableStateOf<List<String>>(emptyList()) }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val ioScope = rememberCoroutineScope()
+    val attachLauncher = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents(),
+    ) { uris ->
+        if (!uris.isNullOrEmpty()) {
+            ioScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                val paths = uris.mapNotNull {
+                    com.ccm.app.core.image.AttachmentCache.copyToCache(ctx, it)
+                }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    if (paths.isNotEmpty()) pendingImages = pendingImages + paths
+                }
+            }
+        }
+    }
 
     // 输入框文本 —— ★ 2026-09-27 改走 core 的 State.draft：
     //   原来是 UI 本地 remember，屏幕旋转/进程重建就丢草稿；
@@ -141,16 +163,24 @@ fun ChatScreenConnected(
                     }
                     text == "/model" -> onModelClick()
                     text == "/export" -> onExport()
-                    else -> session.send(text)   // send() 内部清 draft
+                    else -> {
+                        // 带图发送（第18批）：pendingImages 随消息走，发完清零
+                        session.send(text, pendingImages)
+                        pendingImages = emptyList()
+                    }
                 }
                 // slash 分支不走 send，draft 得自己清（send 的清空够不着）
                 if (text.startsWith("/")) session.setDraft("")
             }
         },
+        onAttach = { attachLauncher.launch("image/*") },
+        attachedCount = pendingImages.size,
         onStop = { session.stop() },
         onExport = onExport,
         onRename = onRename,
         onModelClick = onModelClick,
         onSwitchClick = onSwitchClick,
+        onAttach = { attachLauncher.launch("image/*") },
+        attachedCount = pendingImages.size,
     )
 }

@@ -111,13 +111,15 @@ class ChatSession(
      * 已有任务在跑时**直接忽略**（防用户连点发送）。
      * 要打断当前任务用 [stop]。
      */
-    fun send(text: String) {
+    fun send(text: String, imagePaths: List<String> = emptyList()) {
         if (text.isBlank()) return
         if (isRunning) return
 
         val userBubble = Bubble(
             role = Message.ROLE_USER,
-            text = text,
+            // 气泡里给图片行数占位提示（Bubble 无图字段，缩略图是 UI 层的事）
+            text = if (imagePaths.isEmpty()) text
+            else text + imagePaths.joinToString("") { "\n[图片]" },
             messageId = "user-${System.currentTimeMillis()}",
         )
         _state.value = _state.value.copy(
@@ -130,7 +132,8 @@ class ChatSession(
         )
 
         runningJob = scope.launch {
-            collectEvents(container.agentLoop.run(text))
+            // imagePaths 空 = 原路径，零行为变化（第18批向后兼容点）
+            collectEvents(container.agentLoop.run(text, imagePaths))
         }
     }
 

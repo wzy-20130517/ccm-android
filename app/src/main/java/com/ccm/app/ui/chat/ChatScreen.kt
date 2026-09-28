@@ -96,6 +96,8 @@ fun ChatScreen(
     onModelClick: () -> Unit = {},
     /** 点标题旁的下拉箭头 → 切换对话（Web 是会话下拉；2026-09-28 接通）。 */
     onSwitchClick: () -> Unit = {},
+    onAttach: () -> Unit = {},
+    attachedCount: Int = 0,
 ) {
     val colors = CCMTheme.colors
 
@@ -222,6 +224,8 @@ fun ChatScreen(
                 modelName = modelName,
                 tokenCount = tokenCount,
                 onModelClick = onModelClick,
+                onAttach = onAttach,
+                attachedCount = attachedCount,
             )
 
             Spacer(Modifier.height(7.36.dp))

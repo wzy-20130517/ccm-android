@@ -33,6 +33,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -95,7 +98,7 @@ import com.ccm.app.ui.theme.CCMTheme
 fun LandingScreen(
     modifier: Modifier = Modifier,
     greeting: String = greetingFor(null),
-    onSend: (String) -> Unit = {},
+    onSend: (String, List<String>) -> Unit = { _, _ -> },
     modelLabel: String = "未配置模型",
 ) {
     val colors = CCMTheme.colors
@@ -103,11 +106,33 @@ fun LandingScreen(
     // ★ 2026-09-28 第17批：input 从 InputCard 内上提到这里 ——
     //   建议面板要点「填入输入框」，state 在子组件里外面够不着。
     var input by remember { mutableStateOf("") }
+    // 待发送的图片路径（第18批：+ 按钮选图 → 发送时随消息带上）
+    var pendingImages by remember { mutableStateOf<List<String>>(emptyList()) }
     // 展开的建议分类（null = 收起）—— 对齐 Web activeLandingPromptSection 的 toggle
     var activeSection by remember { mutableStateOf<PromptSection?>(null) }
     // 灵感库（assets/inspirations.json，首次组合加载一次）
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val library = remember { com.ccm.app.core.inspiration.InspirationLibrary.ensure(ctx) }
+
+    // ── 图片选择（第18批）─────────────────────────────────────────
+    // PhotoPicker（GetMultipleContents）免权限；URI 要拷成真实路径
+    // （core 按路径读），拷贝放 IO 线程防卡主线程。
+    val ioScope = rememberCoroutineScope()
+    val launcher = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents(),
+    ) { uris ->
+        if (!uris.isNullOrEmpty()) {
+            ioScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                val paths = uris.mapNotNull {
+                    com.ccm.app.core.image.AttachmentCache.copyToCache(ctx, it)
+                }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    if (paths.isNotEmpty()) pendingImages = pendingImages + paths
+                }
+            }
+        }
+    }
+
 
     // ★ 结构对齐 Web 的三层（实测链，见 KDoc）：
     //   scroll 容器  px-2 (8) + pt-[64px]
@@ -152,9 +177,16 @@ fun LandingScreen(
             InputCard(
                 value = input,
                 onValueChange = { input = it },
-                onSend = onSend,
+                onSend = { text ->
+                    sendWithImages(onSend, text, pendingImages) {
+                        pendingImages = emptyList()
+                        input = ""
+                    }
+                },
                 modifier = Modifier.fillMaxWidth(),
                 modelLabel = modelLabel,
+                attachedCount = pendingImages.size,
+                onAttach = { launcher.launch("image/*") },
             )
 
             // 卡片底 256.37 → 胶囊顶 271.09
@@ -240,6 +272,10 @@ private fun InputCard(
     //   （建议面板要往里填 prompt），这里只转发。
     value: String = "",
     onValueChange: (String) -> Unit = {},
+    /** 已选待发图片数（第18批，+ 按钮角标）。 */
+    attachedCount: Int = 0,
+    /** 点 + → 拉起图片多选。 */
+    onAttach: () -> Unit = {},
 ) {
     val colors = CCMTheme.colors
     // 别名保持函数体内既有引用不变
@@ -310,8 +346,7 @@ private fun InputCard(
                         keyboardActions = KeyboardActions(
                             onSend = {
                                 if (input.isNotBlank() && com.ccm.app.ui.theme.UiPrefs.sendByEnter.value) {
-                                    onSend(input)
-                                    onValueChange("")   // 受控清空（state 在上层）
+                                    onSend(input)   // 外层已是带图包装（card call 处）
                                 }
                             },
                         ),
@@ -332,12 +367,25 @@ private fun InputCard(
             ) {
                 // 左：+ 按钮（上传文件）
                 // ★ 2026-09-27：原来只有图标没有 clickable —— 点了什么都不发生。
-                PainterIcon(
-                    R.drawable.ic_input_plus,
-                    size = 20.dp,
-                    tint = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
-                    modifier = Modifier.clickable { /* TODO: 附件选择器（需 SAF 权限） */ },
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    PainterIcon(
+                        R.drawable.ic_input_plus,
+                        size = 20.dp,
+                        tint = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
+                        modifier = Modifier.clickable(onClick = onAttach),
+                    )
+                    // 已选图片数（有才显示 —— 发送后清零消失）
+                    if (attachedCount > 0) {
+                        Text(
+                            text = "图×$attachedCount",
+                            style = CCMText.body12,
+                            color = colors.claudeOrange,
+                        )
+                    }
+                }
 
                 // 右：模型选择器 + 麦克风 + 发送（★ 2026-09-27 加发送按钮）
                 Row(
@@ -371,8 +419,7 @@ private fun InputCard(
                                 else Color.Transparent
                             )
                             .clickable(enabled = input.isNotBlank()) {
-                                onSend(input)
-                                onValueChange("")   // 受控清空
+                                onSend(input)   // 外层带图包装负责清空 input/pending
                             },
                         contentAlignment = Alignment.Center,
                     ) {
@@ -600,4 +647,21 @@ private fun PromptSuggestionPanel(
             }
         }
     }
+}
+
+/**
+ * 首页发送包装（第18批）：带图发送 + 清空输入/待发图片。
+ *
+ * 抽成顶层函数是因为 InputCard 的两个发送入口（回车 / ↑按钮）都只拿得到
+ * `(String) -> Unit`，pendingImages 的清空必须在能访问它的外层完成。
+ */
+private fun sendWithImages(
+    onSend: (String, List<String>) -> Unit,
+    text: String,
+    images: List<String>,
+    onSent: () -> Unit,
+) {
+    if (text.isBlank()) return
+    onSend(text, images)
+    onSent()   // 清 pendingImages（input 的清空在 onSend 成功路径由外层做）
 }
