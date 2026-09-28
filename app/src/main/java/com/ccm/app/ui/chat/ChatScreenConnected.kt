@@ -180,7 +180,5 @@ fun ChatScreenConnected(
         onRename = onRename,
         onModelClick = onModelClick,
         onSwitchClick = onSwitchClick,
-        onAttach = { attachLauncher.launch("image/*") },
-        attachedCount = pendingImages.size,
     )
 }

@@ -23,17 +23,21 @@ object AttachmentCache {
     )
 
     /** 把 content URI 拷进 cache，返回绝对路径；失败返回 null。 */
-    fun copyToCache(context: Context, uri: Uri): String? = try {
-        val dir = File(context.cacheDir, "attachments").apply { mkdirs() }
-        val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
-        val ext = MIME_EXT[mime] ?: "jpg"
-        val out = File(dir, "img_${System.currentTimeMillis()}_${(0..9999).random()}.$ext")
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            FileOutputStream(out).use { output -> input.copyTo(output) }
-        } ?: return null
-        out.absolutePath
-    } catch (_: Throwable) {
-        null
+    fun copyToCache(context: Context, uri: Uri): String? {
+        // 块体而非表达式体 —— 中途要 return null（expression body 禁止 return）
+        return try {
+            val dir = File(context.cacheDir, "attachments").apply { mkdirs() }
+            val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+            val ext = MIME_EXT[mime] ?: "jpg"
+            val out = File(dir, "img_${System.currentTimeMillis()}_${(0..9999).random()}.$ext")
+            val input = context.contentResolver.openInputStream(uri) ?: return null
+            input.use { inp ->
+                FileOutputStream(out).use { output -> inp.copyTo(output) }
+            }
+            out.absolutePath
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     /** 清理超过 7 天的附件（发送完的图留在 cache 里会无限涨）。 */
