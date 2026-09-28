@@ -100,6 +100,28 @@ class ChatSession(
         )
     }
 
+    /**
+     * `/compact` 手动压缩（audit-core #7，对齐 CLI 的手动压缩纪律）。
+     *
+     * 第一版走 [com.ccm.app.core.compact.Compactor.microCompact]：
+     * 只截断**可再生的旧工具输出**、零 API 调用、不动对话本体 ——
+     * 工具输出正是上下文大头。摘要式压缩（要打一次模型）后续再接。
+     *
+     * ⚠️ **刻意不做自动压缩**：用户明确要求过「不主动压缩上下文」，
+     *    CLI 侧的自动压缩也是关的 —— APK 延续同一纪律，只有手动 /compact。
+     *
+     * @return 给用户看的报告（未变化时说明原因）
+     */
+    fun compactNow(): String {
+        if (isRunning) return "正在执行任务，等这轮结束再压缩。"
+        val history = container.agentLoop.getHistory()
+        if (history.size < 6) return "历史仅 ${history.size} 条，无需压缩。"
+        val r = container.compactor.microCompact(history)
+        if (!r.changed) return "无可回收的旧工具输出（最近的都在保护区）。"
+        container.agentLoop.setHistory(r.messages)   // MicroResult.messages = 压缩后列表
+        return "已压缩：回收约 ${r.reclaimedTokens} tokens（截断了旧工具输出）。"
+    }
+
     /** 更新输入框草稿（InputBar 的 onValueChange 直连这里）。 */
     fun setDraft(text: String) {
         _state.value = _state.value.copy(draft = text)

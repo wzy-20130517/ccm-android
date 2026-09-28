@@ -116,10 +116,36 @@ data class AppConfig(
         }
 
         /** 从文件加载。**永不抛异常** —— 失败返回默认配置 + 错误信息。 */
+        /** 已建模字段名单（load 时差集保留、save 时顶层合并用）。 */
+        private val KNOWN_KEYS = setOf(
+            "providers", "current", "greeting", "stream", "temperature",
+            "maxContextTokens", "permissionMode", "vision", "visionProviderId",
+            "keyRotateEvery", "imageGen", "effort", "tavilyKey", "webSearch",
+            "_extra",
+        )
+
         fun load(file: File): Result {
             if (!file.exists()) return Result(AppConfig(), null)
             return try {
-                Result(json.decodeFromString(serializer(), file.readText()), null)
+                val text = file.readText()
+                val cfg = json.decodeFromString(serializer(), text)
+                // ★ audit-core #5：ignoreUnknownKeys 会把用户手工加的键
+                //   （hooks/markdown 等）直接丢掉，save 后永久消失。
+                //   这里把「原始 JSON − 已知键」存进 extra，save 时再展平回去。
+                val withExtra = try {
+                    val root = json.parseToJsonElement(text)
+                        as? kotlinx.serialization.json.JsonObject
+                    if (root == null) cfg else {
+                        val extras = root.keys
+                            .filter { it !in KNOWN_KEYS }
+                            .associateWith { root[it]!! }
+                        if (extras.isEmpty()) cfg
+                        else cfg.copy(
+                            extra = kotlinx.serialization.json.JsonObject(extras),
+                        )
+                    }
+                } catch (_: Throwable) { cfg }
+                Result(withExtra, null)
             } catch (e: Throwable) {
                 // 配置坏了不该让 App 起不来 —— 用默认值 + 把错误带给 UI
                 Result(AppConfig(), e.message ?: "配置解析失败")
@@ -130,7 +156,25 @@ data class AppConfig(
         fun save(config: AppConfig, file: File): Boolean = try {
             file.parentFile?.mkdirs()
             val tmp = File(file.parentFile, "${file.name}.tmp")
-            tmp.writeText(json.encodeToString(serializer(), config))
+            var out = json.encodeToString(serializer(), config)
+            // ★ audit-core #5：把 extra 的键**展平**回顶层（已建模字段优先，
+            //   不让 extra 覆盖同名真字段），并去掉 "_extra" 嵌套本身。
+            config.extra?.let { ex ->
+                if (ex.isNotEmpty()) {
+                    try {
+                        val root = json.parseToJsonElement(out)
+                            as kotlinx.serialization.json.JsonObject
+                        val merged = kotlinx.serialization.json.JsonObject(
+                            ex.toMap() + root.toMap().filterKeys { it != "_extra" },
+                        )
+                        out = json.encodeToString(
+                            kotlinx.serialization.json.JsonObject.serializer(),
+                            merged,
+                        )
+                    } catch (_: Throwable) {}
+                }
+            }
+            tmp.writeText(out)
             if (!tmp.renameTo(file)) {
                 tmp.copyTo(file, overwrite = true)
                 tmp.delete()

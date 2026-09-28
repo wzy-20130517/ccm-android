@@ -181,6 +181,33 @@ class AppContainer private constructor(
         private const val DEFAULT_SYSTEM_PROMPT = "你是 CCM，一个运行在 Android 上的 AI 编程助手。"
 
         /**
+         * 组装系统提示词 = 常量基底 + 用户资料（audit-core #6）。
+         *
+         * 设置页填的「称呼/职业/回复偏好」原来**对模型完全不可见**
+         * （DEFAULT_SYSTEM_PROMPT 是死常量，profile 只有 callName 用于问候语）。
+         * 这里拼进去 —— 改了资料后需重建会话（切会话/重启）才生效，
+         * 设置页关闭时会自动重建（AppScaffold 的 showSettings 监听）。
+         */
+        private fun assembleSystemPrompt(storage: AppStorage): String = try {
+            val prof = com.ccm.app.core.user.UserProfileStore(storage).load()
+            val sb = StringBuilder(DEFAULT_SYSTEM_PROMPT)
+            val lines = buildList {
+                prof.fullName.takeIf { it.isNotBlank() }?.let { add("用户姓名：$it") }
+                prof.displayName.takeIf { it.isNotBlank() }?.let { add("怎么称呼用户：$it") }
+                prof.workFunction.takeIf { it.isNotBlank() }?.let { add("用户职业：$it") }
+                prof.personalPreferences.takeIf { it.isNotBlank() }
+                    ?.let { add("回复偏好（务必遵守）：$it") }
+            }
+            if (lines.isNotEmpty()) {
+                sb.append("\n\n## 关于用户\n")
+                lines.forEach { sb.append("- ").append(it).append('\n') }
+            }
+            sb.toString()
+        } catch (_: Throwable) {
+            DEFAULT_SYSTEM_PROMPT
+        }
+
+        /**
          * 装配一个容器。
          *
          * @param storage 应用存储
@@ -198,7 +225,7 @@ class AppContainer private constructor(
             toolRunner: ToolRunner,
             config: AppConfig,
             initialHistory: List<com.ccm.app.core.session.Message> = emptyList(),
-            systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
+            systemPrompt: String = assembleSystemPrompt(storage),
             cwd: String = "/",
             imageScaler: ImageScaler? = null,
             /**

@@ -400,4 +400,5 @@ private val SLASH_COMMANDS = listOf(
     "/model" to "打开模型选择器",
     "/export" to "导出对话（系统分享）",
     "/help" to "显示可用命令",
+    "/compact" to "压缩历史（截断旧工具输出，免流量）",
 )

@@ -186,6 +186,31 @@ class CronStore(private val rootDir: File) {
 
     /** 标记已触发（循环任务据此重算下次） */
     @Synchronized
+    /**
+     * 调度器心跳（audit-core #8：loadDurable/saveDurable 齐全但
+     * nextRun/markFired **零调用方** —— 持久任务存盘重启后永不触发）。
+     *
+     * 由 AppGraph 的 appScope 每 30s 调一次：
+     * 1. 重读 durable 文件（能感知 CronCreate/删除工具的新写入）
+     * 2. nextRun 到点 → onFire 投递；**返回 true 才记账**
+     *    （返回 false = 目标正忙、下个 tick 重试，不丢任务）
+     * 3. recurring 记 lastFiredAt；一次性任务投递成功即从清单移除
+     */
+    fun schedulerTick(now: Long = System.currentTimeMillis(), onFire: (Task) -> Boolean) {
+        loadDurable()
+        val due = durableTasks.filter { t -> nextRun(t)?.let { it <= now } == true }
+        for (t in due) {
+            val ok = try { onFire(t) } catch (_: Throwable) { false }
+            if (!ok) continue
+            if (t.recurring) {
+                markFired(t.id)
+            } else {
+                durableTasks.removeAll { it.id == t.id }
+                saveDurable()
+            }
+        }
+    }
+
     fun markFired(id: String) {
         val idx = durableTasks.indexOfFirst { it.id == id }
         if (idx >= 0) {

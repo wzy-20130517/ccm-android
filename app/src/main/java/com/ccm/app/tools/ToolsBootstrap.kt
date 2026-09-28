@@ -128,6 +128,8 @@ class ToolsBootstrap(
         val undoStore: UndoStore,
         /** 读 todos.json（audit-core #3：写路径齐全、恢复没人接 → 重启待办清空）。 */
         val loadTodos: () -> List<Triple<String, String, String>> = { emptyList() },
+        /** cron 调度器（#8：AppGraph 起心跳调 schedulerTick）。 */
+        val cron: com.ccm.app.tools.system.CronTools? = null,
         val bashChannel: com.ccm.app.tools.bash.BashChannel,
     )
 
@@ -383,6 +385,7 @@ class ToolsBootstrap(
             trashStore = trashStore,
             undoStore = undoStore,
             loadTodos = { miscTools.loadTodos() },
+            cron = cronTools,
             bashChannel = primary,
         )
     }

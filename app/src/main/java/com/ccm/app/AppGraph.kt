@@ -15,6 +15,7 @@ import com.ccm.app.runtime.ProotRuntime
 import com.ccm.app.tools.AndroidImageScaler
 import com.ccm.app.tools.ToolsBootstrap
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import java.io.File
 
 /**
@@ -304,6 +305,22 @@ object AppGraph {
             initError = null
             // 待办看板恢复（audit-core #3）
             try { sess.restoreTodos(tools.loadTodos()) } catch (_: Throwable) {}
+
+            // ★ cron 心跳（audit-core #8：持久任务存盘但没人调度 → 永不触发）。
+            //   每 30s 扫一次；目标会话在忙就跳过本轮（返回 false 不记账，
+            //   下个 tick 重试，任务不会丢）。init 幂等 → 只会起一个循环。
+            appScope?.launch {
+                while (true) {
+                    kotlinx.coroutines.delay(30_000)
+                    try {
+                        tools.cron?.schedulerTick { task ->
+                            val s = session
+                            if (s == null || s.isRunning) false
+                            else { s.send(task.prompt); true }
+                        }
+                    } catch (_: Throwable) {}
+                }
+            }
             // 清理 7 天前的图片附件（发送完拷进 cache 的图不清理会无限涨）
             try { com.ccm.app.core.image.AttachmentCache.pruneOld(app) } catch (_: Throwable) {}
             sess

@@ -1,6 +1,11 @@
 package com.ccm.app.ui.chat
 
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.draw.clip
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
@@ -65,6 +70,25 @@ fun ChatScreenConnected(
 
     // ── 图片附件（第18批）───────────────────────────────────────
     var pendingImages by remember { mutableStateOf<List<String>>(emptyList()) }
+    // 待发文件（webgap #2：+ 原来直接塌成选图，文件/其他入口全无）。
+    // 文件不进多模态 —— 发送时以 `[附件: 名 @ 路径]` 文本随消息走，
+    // 模型用 Read 工具读内容（core 的用户消息通道只支持图片）。
+    var pendingFiles by remember { mutableStateOf<List<String>>(emptyList()) }
+    var showAttachMenu by remember { mutableStateOf(false) }
+    val fileLauncher = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents(),
+    ) { uris ->
+        if (!uris.isNullOrEmpty()) {
+            ioScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                val paths = uris.mapNotNull {
+                    com.ccm.app.core.image.AttachmentCache.copyToCache(ctx, it)
+                }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    if (paths.isNotEmpty()) pendingFiles = pendingFiles + paths
+                }
+            }
+        }
+    }
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val ioScope = rememberCoroutineScope()
     val attachLauncher = rememberLauncherForActivityResult(
@@ -125,6 +149,39 @@ fun ChatScreenConnected(
         wasRunning = nowRunning
     }
 
+    // ── + 附件菜单（webgap #2：原「+」直接塌成选图）───────────────
+    if (showAttachMenu) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showAttachMenu = false },
+            title = { androidx.compose.material3.Text("添加附件", style = com.ccm.app.ui.theme.CCMText.body14) },
+            text = {
+                androidx.compose.foundation.layout.Column {
+                    listOf(
+                        "图片（可多选，随消息发给模型看）" to { attachLauncher.launch("image/*"); showAttachMenu = false },
+                        "文件（以路径附带，模型用 Read 读）" to { fileLauncher.launch("*/*"); showAttachMenu = false },
+                    ).forEach { (label, act) ->
+                        androidx.compose.material3.Text(
+                            text = label,
+                            style = com.ccm.app.ui.theme.CCMText.body13,
+                            color = com.ccm.app.ui.theme.CCMTheme.colors.textMain,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                                .clickable { act() }
+                                .padding(vertical = 11.dp, horizontal = 4.dp),
+                        )
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { showAttachMenu = false }) {
+                    androidx.compose.material3.Text("取消", style = com.ccm.app.ui.theme.CCMText.body13)
+                }
+            },
+        )
+    }
+
     ChatScreen(
         bubbles = uiState.bubbles,
         modifier = modifier,
@@ -157,25 +214,39 @@ fun ChatScreenConnected(
                             "- `/clear` — 清空当前对话\n" +
                             "- `/model` — 打开模型选择器\n" +
                             "- `/export` — 导出对话（系统分享）\n" +
-                            "- `/help` — 显示本帮助\n\n" +
+                            "- `/help` — 显示本帮助\n" +
+                            "- `/compact` — 压缩历史（截断旧工具输出）\n\n" +
                             "其余输入会直接发给模型。"
                         )
                     }
                     text == "/model" -> onModelClick()
                     text == "/export" -> onExport()
+                    text == "/compact" -> {
+                        // audit-core #7：原来无任何压缩入口，长会话必撞 400。
+                        // microCompact 免 API；摘要式后续再接。
+                        session.injectNotice("**/compact**\n\n" + session.compactNow())
+                    }
                     else -> {
-                        // 带图发送（第18批）：pendingImages 随消息走，发完清零
-                        session.send(text, pendingImages)
+                        // 带附件发送：图走多模态通道；文件以路径文本随消息
+                        //（模型拿 Read 读 —— core 用户消息通道只支持图片）
+                        val fileLines = pendingFiles.joinToString("") { p ->
+                            "\n[附件: ${p.substringAfterLast('/')} @ $p]"
+                        }
+                        session.send(text + fileLines, pendingImages)
                         pendingImages = emptyList()
+                        pendingFiles = emptyList()
                     }
                 }
                 // slash 分支不走 send，draft 得自己清（send 的清空够不着）
                 if (text.startsWith("/")) session.setDraft("")
             }
         },
-        onAttach = { attachLauncher.launch("image/*") },
-        attachedPaths = pendingImages,
-        onRemoveImage = { path -> pendingImages = pendingImages - path },
+        onAttach = { showAttachMenu = true },   // ★ #2：+ 弹菜单（原直接开选图）
+        attachedPaths = pendingImages + pendingFiles,
+        onRemoveImage = { path ->
+            pendingImages = pendingImages - path
+            pendingFiles = pendingFiles - path
+        },
         onStop = { session.stop() },
         onExport = onExport,
         onRename = onRename,
