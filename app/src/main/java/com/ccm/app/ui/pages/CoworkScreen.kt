@@ -70,6 +70,10 @@ fun CoworkScreen(
     onSend: (String) -> Unit = {},
 ) {
     val colors = CCMTheme.colors
+    var showSafeTips by remember { mutableStateOf(false) }   // 说明弹窗（第23批）
+    var projectChoice by remember { mutableStateOf("在项目中工作") }   // 项目下拉
+    // 模型下拉：真实 Provider（点选 = setCurrent + 重建会话，与对话页同机制）
+    var modelChoice by remember { mutableStateOf(modelName) }
 
     Column(
         modifier = modifier
@@ -110,9 +114,34 @@ fun CoworkScreen(
             style = CCMText.body13,
             color = colors.textMain,
             modifier = Modifier
-                .clickable { /* TODO(B5): 打开说明弹窗 */ }
+                .clickable { showSafeTips = true }
                 .padding(vertical = 0.dp),
         )
+
+        // 协作模式说明（第23批 —— 原 TODO 空转。文案按 Web 副标题语义自撰）
+        if (showSafeTips) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { showSafeTips = false },
+                title = { androidx.compose.material3.Text("安全使用协作模式") },
+                text = {
+                    androidx.compose.material3.Text(
+                        "协作模式下，AI 会在你确认后执行多步骤任务" +
+                            "（改文件、跑命令、调用工具）。建议：
+
+" +
+                            "· 先在小范围任务里试，确认输出符合预期再放大\n" +
+                            "· 涉及删除/发布等不可逆操作时，逐条审阅它要做的事\n" +
+                            "· 敏感凭据不要粘进对话，交给工具的环境变量处理",
+                        style = CCMText.body13,
+                    )
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(
+                        onClick = { showSafeTips = false },
+                    ) { androidx.compose.material3.Text("知道了") }
+                },
+            )
+        }
 
         Spacer(Modifier.height(20.41.dp))       // 副标题底 235.44 → 卡片顶 256.41
 
@@ -205,10 +234,33 @@ private fun CoworkInputCard(modelName: String, onSend: (String) -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            CoworkDropdown(label = "在项\n目中\n工作", value = "")
+            // 项目下拉（Web PROJECT_OPTIONS 三选项）
+            CoworkDropdown(
+                label = "在项\n目中\n工作",
+                value = projectChoice,
+                options = listOf("在项目中工作", "个人", "研究"),
+                onPick = { projectChoice = it },
+            )
+            // 「提问」：Web 端（CoworkPage.tsx:271）这个按钮**本身也没接
+            // onClick** —— 对齐 Web 保持展示态，不假接。
             CoworkDropdown(label = "提\n问", value = "")
             Spacer(Modifier.weight(1f))
-            CoworkDropdown(label = "", value = modelName)
+            // 模型下拉：走真实 Provider 列表（不照抄 Web 的写死 Opus 4.7）
+            CoworkDropdown(
+                label = "",
+                value = modelChoice,
+                options = modelOptions(),
+                onPick = { pick ->
+                    modelChoice = pick
+                    // 切 Provider 让下次请求生效（ApiClient 是装配期快照）
+                    com.ccm.app.AppGraph.storage?.let { st ->
+                        val store = com.ccm.app.core.provider.ProviderStore(st)
+                        store.list().firstOrNull { "${it.name} · ${it.model}" == pick }
+                            ?.let { store.setCurrent(it.id) }
+                        com.ccm.app.AppGraph.openSession(com.ccm.app.AppGraph.sessionId)
+                    }
+                },
+            )
         }
     }
 }
@@ -219,15 +271,56 @@ private fun CoworkInputCard(modelName: String, onSend: (String) -> Unit) {
  * 结构：上方小 label（可多行）+ 下方值 + 右侧箭头。
  */
 @Composable
-private fun CoworkDropdown(label: String, value: String) {
+private fun CoworkDropdown(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    options: List<String> = emptyList(),
+    onPick: (String) -> Unit = {},
+) {
+    var open by remember { mutableStateOf(false) }
+
     Row(
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(6.dp))
-            .clickable { /* TODO(B5): 打开下拉菜单 */ }
+            // 无 options 的下拉（如「提问」）保持展示态 —— 对齐 Web
+            .clickable(enabled = options.isNotEmpty()) { open = true }
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        if (options.isNotEmpty() && open) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { open = false },
+                title = { androidx.compose.material3.Text("选择", style = CCMText.body14) },
+                text = {
+                    Column {
+                        options.forEach { opt ->
+                            androidx.compose.material3.Text(
+                                text = opt + if (opt == value) "  ✓" else "",
+                                style = CCMText.body13,
+                                color = if (opt == value) CCMTheme.colors.accent
+                                else CCMTheme.colors.textMain,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        onPick(opt)
+                                        open = false
+                                    }
+                                    .padding(vertical = 10.dp, horizontal = 4.dp),
+                            )
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { open = false }) {
+                        androidx.compose.material3.Text("取消", style = CCMText.body13)
+                    }
+                },
+            )
+        }
         if (label.isNotEmpty()) {
             Text(
                 text = label,
@@ -340,3 +433,11 @@ val DefaultCoworkChecklist = listOf(
     CoworkChecklistItem("让 Claude 创建内容", "试试创建表格、文档或演示文稿。"),
     CoworkChecklistItem("安排周期性任务", "让 Claude 自动完成重复的工作。"),
 )
+
+/** 当前配置里可选的模型（`名称 · 模型`），给协作页模型下拉用。 */
+private fun modelOptions(): List<String> =
+    com.ccm.app.AppGraph.storage
+        ?.let { com.ccm.app.core.provider.ProviderStore(it).list() }
+        ?.filter { it.enabled }
+        ?.map { "${it.name} · ${it.model}" }
+        ?: emptyList()

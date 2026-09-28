@@ -349,7 +349,10 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
 
         // ── 4. 关于 ──────────────────────────────────────────────
         SettingsSection(title = "关于") {
-            SettingsInfoRow(label = "当前版本", value = "v0.8.100")
+            // ★ 版本号走 PackageManager 真值 —— 原来写死 "v0.8.100"，
+            //   那是 CLI（claude-code-mobile）的版本，APK 自己是 0.1.x。
+            //   记得 CI 每次构建会 bump versionName（workflow 里 0.1.run_number）。
+            SettingsInfoRow(label = "当前版本", value = appVersion())
         }
     }
 }
@@ -650,5 +653,18 @@ fun ThinkingRing(color: Color, modifier: Modifier = Modifier, size: androidx.com
                 this.size.height - stroke,
             ),
         )
+    }
+}
+
+/** 当前 APK 版本号（versionName，如 "0.1.199"）。Composable 内读一次 context。 */
+@Composable
+private fun appVersion(): String {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    return remember(ctx) {
+        try {
+            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "unknown"
+        } catch (_: Throwable) {
+            "unknown"
+        }
     }
 }

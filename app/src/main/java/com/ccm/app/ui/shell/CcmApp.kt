@@ -429,9 +429,31 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                                 showSwitcher = true
                             },
                             onExport = {
-                                // Web 的 Export 是导出 markdown；Android 用系统分享
-                                val text = session.state.value.bubbles.joinToString("\n\n") { b ->
-                                    (if (b.isUser) "**我**：" else "**AI**：") + b.text
+                                // Web 的 Export 是导出 markdown（第23批升级格式）：
+                                // 二级标题 + 段落 + 思考折叠块，粘进任何 md 编辑器可读
+                                val text = buildString {
+                                    appendLine("# ${chatTitle}")
+                                    appendLine()
+                                    appendLine("> 导出自 CCM · ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}")
+                                    appendLine()
+                                    session.state.value.bubbles.forEach { b ->
+                                        if (b.isUser) {
+                                            appendLine("## 我")
+                                        } else {
+                                            appendLine("## Claude")
+                                            if (b.thinking.isNotBlank()) {
+                                                appendLine()
+                                                appendLine("<details><summary>思考过程</summary>")
+                                                appendLine()
+                                                appendLine(b.thinking)
+                                                appendLine()
+                                                appendLine("</details>")
+                                            }
+                                        }
+                                        appendLine()
+                                        appendLine(b.text)
+                                        appendLine()
+                                    }
                                 }
                                 if (text.isNotBlank()) {
                                     val send = Intent(Intent.ACTION_SEND).apply {
