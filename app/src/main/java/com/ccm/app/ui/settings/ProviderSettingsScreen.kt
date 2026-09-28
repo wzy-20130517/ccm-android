@@ -477,7 +477,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(5.52.dp))
                                 .background(colors.input.copy(alpha = 0.5f))
-                                .padding(start = 7.36.dp, end = 4.dp, vertical = 3.68.dp),
+                                .padding(start = 7.36.dp, top = 3.68.dp, end = 4.dp, bottom = 3.68.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
