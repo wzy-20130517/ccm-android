@@ -33,6 +33,7 @@ object ChatAdapter {
         text = bubble.text,
         messageId = bubble.messageId,
         thinking = bubble.thinking,
+        images = bubble.images,
     )
 
     /** core 待办 → UI 待办 */

@@ -117,10 +117,9 @@ class ChatSession(
 
         val userBubble = Bubble(
             role = Message.ROLE_USER,
-            // 气泡里给图片行数占位提示（Bubble 无图字段，缩略图是 UI 层的事）
-            text = if (imagePaths.isEmpty()) text
-            else text + imagePaths.joinToString("") { "\n[图片]" },
+            text = text,
             messageId = "user-${System.currentTimeMillis()}",
+            images = imagePaths,
         )
         _state.value = _state.value.copy(
             bubbles = _state.value.bubbles + userBubble,
@@ -368,6 +367,13 @@ class ChatSession(
         val messageId: String,
         /** 该消息的思考过程（TurnEnd 时从 State.thinking 定型过来；历史恢复无此项）。 */
         val thinking: String = "",
+        /**
+         * 该消息附带的图片本地路径（第20批）。
+         * 只给 UI 渲染缩略图用 —— 模型侧的图走 Message.content，
+         * 落盘历史里没有这些路径（附件 cache 7 天清理，历史恢复后图挂了
+         * 显示占位即可，不影响对话）。
+         */
+        val images: List<String> = emptyList(),
     ) {
         val isUser: Boolean get() = role == Message.ROLE_USER
     }

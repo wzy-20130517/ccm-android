@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -85,6 +86,7 @@ fun AssistantBubble(
 fun UserBubble(
     text: String,
     modifier: Modifier = Modifier,
+    images: List<String> = emptyList(),
 ) {
     val colors = CCMTheme.colors
 
@@ -101,11 +103,30 @@ fun UserBubble(
                 .background(colors.hover)
                 .padding(horizontal = 12.88.dp, vertical = 8.28.dp),
         ) {
-            Text(
-                text = text,
-                style = CCMText.body14,
-                color = colors.textMain,
-            )
+            Column {
+                // 附带图片缩略图（第20批 —— 原来只有 [图片] 文字，用户看不到自己发了啥）
+                if (images.isNotEmpty()) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(bottom = if (text.isNotBlank()) 6.dp else 0.dp),
+                    ) {
+                        images.forEach { path ->
+                            com.ccm.app.ui.common.ThumbImage(
+                                path = path,
+                                modifier = Modifier.size(72.dp),
+                                cornerRadius = 6.dp,
+                            )
+                        }
+                    }
+                }
+                if (text.isNotBlank()) {
+                    Text(
+                        text = text,
+                        style = CCMText.body14,
+                        color = colors.textMain,
+                    )
+                }
+            }
         }
     }
 }
@@ -140,7 +161,7 @@ fun MessageList(
 
         bubbles.forEach { bubble ->
             if (bubble.isUser) {
-                UserBubble(text = bubble.text)
+                UserBubble(text = bubble.text, images = bubble.images)
             } else {
                 // 定型消息：思考已结束（isThinking=false，组件自己合成 done 事件）
                 if (bubble.thinking.isNotBlank()) {
@@ -191,6 +212,8 @@ data class ChatBubble(
     val messageId: String,
     /** 该消息的思考过程（空 = 没有/历史消息）。AssistantThinkingChain 渲染。 */
     val thinking: String = "",
+    /** 附带图片路径（用户消息；渲染缩略图，第20批）。 */
+    val images: List<String> = emptyList(),
 ) {
     val isUser: Boolean get() = role == "user"
 

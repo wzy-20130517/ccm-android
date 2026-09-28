@@ -186,23 +186,29 @@ fun ChatScreen(
                     horizontalArrangement = Arrangement.spacedBy(7.36.dp),
                 ) {
                     attachedPaths.forEach { path ->
-                        Row(
+                        // 缩略图 chip（第20批：文件名 → 真缩略图，点 × 删除）
+                        Box(
                             modifier = Modifier
+                                .size(56.dp)
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(colors.input)
-                                .border(1.dp, colors.border, RoundedCornerShape(8.dp))
-                                .clickable { onRemoveImage(path) }
-                                .padding(horizontal = 9.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                .clickable { onRemoveImage(path) },
                         ) {
-                            Text(
-                                text = path.substringAfterLast('/').take(16),
-                                style = CCMText.body12,
-                                color = colors.textSecondary,
-                                maxLines = 1,
+                            com.ccm.app.ui.common.ThumbImage(
+                                path = path,
+                                modifier = Modifier.fillMaxSize(),
+                                cornerRadius = 8.dp,
                             )
-                            Text("✕", style = CCMText.body12, color = colors.textMain)
+                            // 删除角标（右上）
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .size(16.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(colors.textMain),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text("✕", style = CCMText.body10, color = colors.bgMain)
+                            }
                         }
                     }
                     Text(
