@@ -100,6 +100,8 @@ fun LandingScreen(
     greeting: String = greetingFor(null),
     onSend: (String, List<String>) -> Unit = { _, _ -> },
     modelLabel: String = "未配置模型",
+    /** 点首页模型 chip → 打开模型选择器（第22批接通，原 TODO 空转）。 */
+    onModelClick: () -> Unit = {},
 ) {
     val colors = CCMTheme.colors
 
@@ -227,6 +229,7 @@ fun LandingScreen(
                 },
                 modifier = Modifier.fillMaxWidth(),
                 modelLabel = modelLabel,
+                onModelClick = onModelClick,
                 attachedCount = pendingImages.size,
                 onAttach = { launcher.launch("image/*") },
             )
@@ -310,6 +313,7 @@ private fun InputCard(
     onSend: (String) -> Unit,
     modifier: Modifier = Modifier,
     modelLabel: String = "未配置模型",
+    onModelClick: () -> Unit = {},
     // ★ 2026-09-28：受控化 —— input state 上提到 LandingScreen
     //   （建议面板要往里填 prompt），这里只转发。
     value: String = "",
@@ -442,7 +446,7 @@ private fun InputCard(
                     //    所以从上层传入（LandingScreen 用 remember 缓存过一次）。
                     ModelChip(
                         modelName = modelLabel,
-                        onClick = { /* TODO: 模型选择器弹窗（需要 /v1/models 列表） */ },
+                        onClick = onModelClick,
                     )
                     // ★ 2026-09-27：麦克风原来也没有 clickable
                     PainterIcon(

@@ -18,6 +18,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -158,14 +162,27 @@ private fun CoworkInputCard(modelName: String, onSend: (String) -> Unit) {
             .border(1.dp, Color(0xFFC7C7C7), RoundedCornerShape(12.576.dp))
             .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 12.dp),
     ) {
-        // 输入区
+        // 输入区 —— ★ 2026-09-28 第22批：死 Text → BasicTextField
+        //   （原来只有一个灰色占位文案，打不了字）。协作会话的发送链
+        //   尚未接 core（Cowork 页整体还是静态壳），先让输入能打字。
+        var coworkInput by remember { androidx.compose.runtime.mutableStateOf("") }
         Box(modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp)) {
-            Text(
-                text = "今天需要什么帮助？",
-                style = CCMText.body14,
-                color = colors.textSecondary,
+            if (coworkInput.isEmpty()) {
+                Text(
+                    text = "今天需要什么帮助？",
+                    style = CCMText.body14,
+                    color = colors.textSecondary,
+                )
+            }
+            androidx.compose.foundation.text.BasicTextField(
+                value = coworkInput,
+                onValueChange = { coworkInput = it },
+                textStyle = CCMText.body14.copy(
+                    color = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
+                ),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(colors.claudeOrange),
+                modifier = Modifier.fillMaxWidth(),
             )
-            // TODO(阶段4·B5): 真实 TextField
         }
 
         Spacer(Modifier.height(12.dp))

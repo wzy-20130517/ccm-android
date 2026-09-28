@@ -326,15 +326,32 @@ private fun SearchField(query: String, onQueryChange: (String) -> Unit) {
             modifier = Modifier.padding(start = 11.04.dp),
         )
 
-        Text(
-            text = query.ifEmpty { "搜索对话…" },
-            style = CCMText.body16.copy(fontSize = 16.sp, lineHeight = 24.sp),
-            color = if (query.isEmpty()) colors.textSecondary else colors.textMain,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(start = 36.8.dp, end = 14.72.dp),
+        // ★ 2026-09-28 第22批：死 Text → BasicTextField。
+        //   第3批做的过滤逻辑（searchQuery 受控 + contains 匹配）一直
+        //   没有输入入口 —— 搜索框本身打不了字，过滤等于白做。
+        // placeholder 与原死 Text 同款叠加（value 空时画灰字）。
+        if (query.isEmpty()) {
+            Text(
+                text = "搜索对话…",
+                style = CCMText.body16.copy(fontSize = 16.sp, lineHeight = 24.sp),
+                color = colors.textSecondary,
+                modifier = Modifier.padding(start = 36.8.dp, end = 14.72.dp),
+            )
+        }
+        androidx.compose.foundation.text.BasicTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            textStyle = CCMText.body16.copy(
+                fontSize = 16.sp,
+                lineHeight = 24.sp,
+                color = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
+            ),
+            cursorBrush = androidx.compose.ui.graphics.SolidColor(colors.claudeOrange),
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 36.8.dp, end = 14.72.dp),
         )
-        // TODO(阶段4·B5): 换成真实 TextField
     }
 }
 
