@@ -88,8 +88,10 @@ fun InputBar(
     onModelClick: () -> Unit = {},
     /** 点 + → 拉起图片多选（第18批）。 */
     onAttach: () -> Unit = {},
-    /** 已选待发图片数（+ 按钮角标，0 不显示）。 */
-    attachedCount: Int = 0,
+    /** 已选待发图片（管理条渲染，第19批）。 */
+    attachedPaths: List<String> = emptyList(),
+    /** 从待发列表移除一张。 */
+    onRemoveImage: (String) -> Unit = {},
 ) {
     val colors = CCMTheme.colors
 
@@ -180,9 +182,9 @@ fun InputBar(
                             tint = colors.textMain,
                             modifier = Modifier.clickable(onClick = onAttach),
                         )
-                        if (attachedCount > 0) {
+                        if (attachedPaths.isNotEmpty()) {
                             Text(
-                                text = "图×$attachedCount",
+                                text = "图×${attachedPaths.size}",
                                 style = CCMText.body12,
                                 color = colors.claudeOrange,
                             )

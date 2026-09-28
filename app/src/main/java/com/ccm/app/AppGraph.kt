@@ -302,6 +302,8 @@ object AppGraph {
 
             session = sess
             initError = null
+            // 清理 7 天前的图片附件（发送完拷进 cache 的图不清理会无限涨）
+            try { com.ccm.app.core.image.AttachmentCache.pruneOld(app) } catch (_: Throwable) {}
             sess
         } catch (t: Throwable) {
             initError = "${t::class.java.simpleName}: ${t.message}"

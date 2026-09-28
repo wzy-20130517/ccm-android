@@ -174,7 +174,8 @@ fun ChatScreenConnected(
             }
         },
         onAttach = { attachLauncher.launch("image/*") },
-        attachedCount = pendingImages.size,
+        attachedPaths = pendingImages,
+        onRemoveImage = { path -> pendingImages = pendingImages - path },
         onStop = { session.stop() },
         onExport = onExport,
         onRename = onRename,

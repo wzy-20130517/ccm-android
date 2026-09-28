@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -97,7 +98,8 @@ fun ChatScreen(
     /** 点标题旁的下拉箭头 → 切换对话（Web 是会话下拉；2026-09-28 接通）。 */
     onSwitchClick: () -> Unit = {},
     onAttach: () -> Unit = {},
-    attachedCount: Int = 0,
+    attachedPaths: List<String> = emptyList(),
+    onRemoveImage: (String) -> Unit = {},
 ) {
     val colors = CCMTheme.colors
 
@@ -173,6 +175,45 @@ fun ChatScreen(
                 Spacer(Modifier.height(7.36.dp))
             }
 
+            // ── 已选图片管理条（第19批：选了才能删，原来只能发出去）──
+            if (attachedPaths.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.72.dp)
+                        .horizontalScroll(rememberScrollState())
+                        .padding(bottom = 7.36.dp),
+                    horizontalArrangement = Arrangement.spacedBy(7.36.dp),
+                ) {
+                    attachedPaths.forEach { path ->
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(colors.input)
+                                .border(1.dp, colors.border, RoundedCornerShape(8.dp))
+                                .clickable { onRemoveImage(path) }
+                                .padding(horizontal = 9.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Text(
+                                text = path.substringAfterLast('/').take(16),
+                                style = CCMText.body12,
+                                color = colors.textSecondary,
+                                maxLines = 1,
+                            )
+                            Text("✕", style = CCMText.body12, color = colors.textMain)
+                        }
+                    }
+                    Text(
+                        text = "点标签删除",
+                        style = CCMText.body11,
+                        color = colors.textSecondary,
+                        modifier = Modifier.padding(vertical = 5.dp),
+                    )
+                }
+            }
+
             // ── slash 命令候选（2026-09-28）──────────────────────────
             // 输入 "/" 开头且还没敲到空格 → 浮出候选（对齐 Web 的
             // slash 面板；点选填入输入框，再按发送执行）。
@@ -225,7 +266,8 @@ fun ChatScreen(
                 tokenCount = tokenCount,
                 onModelClick = onModelClick,
                 onAttach = onAttach,
-                attachedCount = attachedCount,
+                attachedPaths = attachedPaths,
+                onRemoveImage = onRemoveImage,
             )
 
             Spacer(Modifier.height(7.36.dp))

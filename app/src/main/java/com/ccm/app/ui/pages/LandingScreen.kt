@@ -173,6 +173,44 @@ fun LandingScreen(
             // 标题底 130.77 → 卡片顶 151.39
             Spacer(Modifier.height(20.62.dp))
 
+            // ── 已选图片管理条（第19批）─────────────────────────────
+            if (pendingImages.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(7.36.dp),
+                ) {
+                    pendingImages.forEach { path ->
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(colors.input)
+                                .border(1.dp, colors.border, RoundedCornerShape(8.dp))
+                                .clickable { pendingImages = pendingImages - path }
+                                .padding(horizontal = 9.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Text(
+                                text = path.substringAfterLast('/').take(16),
+                                style = CCMText.body12,
+                                color = colors.textSecondary,
+                                maxLines = 1,
+                            )
+                            Text("✕", style = CCMText.body12, color = colors.textMain)
+                        }
+                    }
+                    Text(
+                        text = "点标签删除",
+                        style = CCMText.body11,
+                        color = colors.textSecondary,
+                        modifier = Modifier.padding(vertical = 5.dp),
+                    )
+                }
+            }
+
             // ── 输入卡片 ─────────────────────────────────────────────
             InputCard(
                 value = input,
