@@ -71,12 +71,9 @@ fun CoworkScreen(
 ) {
     val colors = CCMTheme.colors
     var showSafeTips by remember { mutableStateOf(false) }   // 说明弹窗（第23批）
-    // 第24批：落 UiPrefs —— 原本地 remember，重启丢选择
-    var projectChoice by remember { mutableStateOf(com.ccm.app.ui.theme.UiPrefs.coworkProject.value) }
+
     // 模型下拉：真实 Provider（点选 = setCurrent + 重建会话，与对话页同机制）
-    // ★ M5：key=modelName —— 设置页换模型后（profileRefreshKey 刷新 modelName），
-    //   这里原来缓存旧值不更新（无 key），下拉显示与实际不符。
-    var modelChoice by remember(modelName) { mutableStateOf(modelName) }
+
 
     Column(
         modifier = modifier
@@ -200,6 +197,15 @@ private fun CoworkInputCard(modelName: String, onSend: (String) -> Unit) {
                 com.ccm.app.ui.theme.UiPrefs.coworkDraft.value,
             )
         }
+        // 下拉 state 必须在本函数内 —— 下拉行是输入卡的一部分，
+        // 声明放主函数会够不着（#202 unresolved reference 实锤）。
+        var projectChoice by remember {
+            androidx.compose.runtime.mutableStateOf(
+                com.ccm.app.ui.theme.UiPrefs.coworkProject.value,
+            )
+        }
+        // ★ M5：key=modelName —— 设置页换模型后下拉要跟着刷新
+        var modelChoice by remember(modelName) { androidx.compose.runtime.mutableStateOf(modelName) }
         Box(modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp)) {
             if (coworkInput.isEmpty()) {
                 Text(
