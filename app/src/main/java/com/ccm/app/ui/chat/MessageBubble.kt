@@ -13,6 +13,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import androidx.compose.foundation.clickable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -106,6 +111,9 @@ fun UserBubble(
             Column {
                 // 附带图片缩略图（第20批 —— 原来只有 [图片] 文字，用户看不到自己发了啥）
                 if (images.isNotEmpty()) {
+                    // 第21批：点缩略图 → 全屏查看（每气泡独立 state，谁点谁显示）
+                    var viewing by remember { mutableStateOf<String?>(null) }
+
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.padding(bottom = if (text.isNotBlank()) 6.dp else 0.dp),
@@ -113,8 +121,19 @@ fun UserBubble(
                         images.forEach { path ->
                             com.ccm.app.ui.common.ThumbImage(
                                 path = path,
-                                modifier = Modifier.size(72.dp),
+                                modifier = Modifier
+                                    .size(72.dp)
+                                    .clickable { viewing = path },
                                 cornerRadius = 6.dp,
+                            )
+                        }
+                    }
+
+                    viewing?.let { p ->
+                        androidx.compose.ui.window.Dialog(onDismissRequest = { viewing = null }) {
+                            com.ccm.app.ui.common.ImageViewerDialog(
+                                path = p,
+                                onDismiss = { viewing = null },
                             )
                         }
                     }
