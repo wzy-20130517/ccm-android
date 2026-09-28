@@ -39,6 +39,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ccm.app.R
 import com.ccm.app.ui.common.CcmPillButton
@@ -88,17 +89,24 @@ import com.ccm.app.ui.theme.CCMTheme
  *
  * @param greeting     标题文案（动态，见 [greetingFor]）
  * @param onSend       发送消息（输入框回车）
- * @param onPickPrompt 点击建议胶囊
  */
 @Composable
 fun LandingScreen(
     modifier: Modifier = Modifier,
     greeting: String = greetingFor(null),
     onSend: (String) -> Unit = {},
-    onPickPrompt: (String) -> Unit = {},
     modelLabel: String = "未配置模型",
 ) {
     val colors = CCMTheme.colors
+
+    // ★ 2026-09-28 第17批：input 从 InputCard 内上提到这里 ——
+    //   建议面板要点「填入输入框」，state 在子组件里外面够不着。
+    var input by remember { mutableStateOf("") }
+    // 展开的建议分类（null = 收起）—— 对齐 Web activeLandingPromptSection 的 toggle
+    var activeSection by remember { mutableStateOf<PromptSection?>(null) }
+    // 灵感库（assets/inspirations.json，首次组合加载一次）
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val library = remember { com.ccm.app.core.inspiration.InspirationLibrary.ensure(ctx) }
 
     // ★ 结构对齐 Web 的三层（实测链，见 KDoc）：
     //   scroll 容器  px-2 (8) + pt-[64px]
@@ -141,6 +149,8 @@ fun LandingScreen(
 
             // ── 输入卡片 ─────────────────────────────────────────────
             InputCard(
+                value = input,
+                onValueChange = { input = it },
                 onSend = onSend,
                 modifier = Modifier.fillMaxWidth(),
                 modelLabel = modelLabel,
@@ -148,6 +158,23 @@ fun LandingScreen(
 
             // 卡片底 256.37 → 胶囊顶 271.09
             Spacer(Modifier.height(14.72.dp))
+
+            // ── 建议面板（点胶囊展开，对齐 Web activePromptSection）──
+            //   位置：input 卡与胶囊行之间（Web 同序：mt-12 面板在 tabs 上方）。
+            activeSection?.let { sec ->
+                PromptSuggestionPanel(
+                    section = sec,
+                    library = library,
+                    onDismiss = { activeSection = null },
+                    onPick = { item ->
+                        // Web 行为（MainContent.tsx:4867）：收起面板 +
+                        // setInputText(starting_prompt)，**不直接发送**
+                        input = item.starting_prompt
+                        activeSection = null
+                    },
+                )
+                Spacer(Modifier.height(14.72.dp))
+            }
 
             // ── 建议胶囊（横向可滚动）─────────────────────────────────
             //   mx-[-8px] 抵消外层 px-2，让可滚区域回到满宽（Web 的 scrollWidth=571）
@@ -162,7 +189,10 @@ fun LandingScreen(
             //    offset 只影响绘制位置、不改变测量尺寸，正好符合「把可滚区域往左挪
             //    8dp 抵消父容器 padding」的意图。
             PromptPills(
-                onPick = onPickPrompt,
+                // Web（MainContent.tsx:4842）：toggle —— 再点同一个分类收起
+                onPick = { sec ->
+                    activeSection = if (activeSection == sec) null else sec
+                },
                 modifier = Modifier.offset(x = (-8).dp),
             )
 
@@ -205,12 +235,14 @@ private fun InputCard(
     onSend: (String) -> Unit,
     modifier: Modifier = Modifier,
     modelLabel: String = "未配置模型",
+    // ★ 2026-09-28：受控化 —— input state 上提到 LandingScreen
+    //   （建议面板要往里填 prompt），这里只转发。
+    value: String = "",
+    onValueChange: (String) -> Unit = {},
 ) {
     val colors = CCMTheme.colors
-    // ★ 真输入框（2026-09-27 修）：原来这里是 `Text("今天需要什么帮助？")`
-    //   —— 一个静态的 Text，打不了字、按不了发送。
-    //   用户报「所有按钮点不动」就包括它：看着像输入框，实际是块死文字。
-    var input by remember { mutableStateOf("") }
+    // 别名保持函数体内既有引用不变
+    val input = value
     // ★ 亮色下 Web 的卡片边框是**透明**的（computed: 1.08696px solid rgba(0,0,0,0)）。
     //   类名里的 `border` 只是占位，hover/focus 时才显色。画成 colors.border 会多出
     //   一圈肉眼可见的灰边 —— 这是「卡片比 Web 脏」的第一来源。
@@ -261,7 +293,7 @@ private fun InputCard(
                     }
                     BasicTextField(
                         value = input,
-                        onValueChange = { input = it },
+                        onValueChange = onValueChange,
                         modifier = Modifier.fillMaxWidth(),
                         textStyle = CCMText.body16.copy(
                             fontSize = CCMText.body16.fontSize,
@@ -278,7 +310,7 @@ private fun InputCard(
                             onSend = {
                                 if (input.isNotBlank() && com.ccm.app.ui.theme.UiPrefs.sendByEnter.value) {
                                     onSend(input)
-                                    input = ""
+                                    onValueChange("")   // 受控清空（state 在上层）
                                 }
                             },
                         ),
@@ -339,7 +371,7 @@ private fun InputCard(
                             )
                             .clickable(enabled = input.isNotBlank()) {
                                 onSend(input)
-                                input = ""
+                                onValueChange("")   // 受控清空
                             },
                         contentAlignment = Alignment.Center,
                     ) {
@@ -405,7 +437,7 @@ private fun ModelChip(
  */
 @Composable
 private fun PromptPills(
-    onPick: (String) -> Unit,
+    onPick: (PromptSection) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -424,7 +456,7 @@ private fun PromptPills(
             CcmPillButton(
                 label = sec.label,
                 iconRes = sec.iconRes,
-                onClick = { onPick(sec.label) },
+                onClick = { onPick(sec) },
             )
         }
     }
@@ -440,10 +472,131 @@ enum class PromptSection(
     val label: String,
     val iconRes: Int,
     val width: Float,
+    /**
+     * 该分类的 5 个灵感名 —— 与 Web `LANDING_PROMPT_SECTIONS` 的
+     * `pickInspirations([...])` 名单逐字对齐（2026-09-28 第17批）。
+     * 名字去 [InspirationLibrary] 查完整 starting_prompt。
+     */
+    val items: List<String>,
 ) {
-    WRITE("写作", R.drawable.ic_prompt_write, 82.609f),
-    LEARN("学习", R.drawable.ic_prompt_learn, 83.703f),
-    CODE("编程", R.drawable.ic_prompt_code, 81.688f),
-    LIFE("生活", R.drawable.ic_prompt_life, 106.484f),
-    CHOICE("Claude 推荐", R.drawable.ic_prompt_choice, 148.453f),
+    WRITE("写作", R.drawable.ic_prompt_write, 82.609f, listOf(
+        "Writing editor", "Email writing assistant", "Meeting notes summary",
+        "One-pager PRD maker", "My weekly chronicle",
+    )),
+    LEARN("学习", R.drawable.ic_prompt_learn, 83.703f, listOf(
+        "Flashcards", "PyLingo", "Molecule studio",
+        "Language learning tutor", "Origin stories",
+    )),
+    CODE("编程", R.drawable.ic_prompt_code, 81.688f, listOf(
+        "CodeVerter", "Project dashboard generator", "Interactive drum machine",
+        "Join dots", "Piano",
+    )),
+    LIFE("生活", R.drawable.ic_prompt_life, 106.484f, listOf(
+        "Your life in weeks", "Dream interpreter", "Team activity ideas",
+        "Magic in the grass", "How petty are you?",
+    )),
+    CHOICE("Claude 推荐", R.drawable.ic_prompt_choice, 148.453f, listOf(
+        "Historical SVG amphitheater", "Stories in the sky", "Word cloud maker",
+        "Sakura serenity", "Better than very",
+    )),
+}
+
+/**
+ * 首页建议面板 —— 对齐 Web `MainContent.tsx:4881-4916` 的 activePromptSection。
+ *
+ * 结构：圆角 16 卡片 = 头部（图标 + 分类名 + 关闭 X）→ 分割线 → items 列表。
+ * 实测（Tailwind × 0.92）：外框 border rgba(31,31,30,0.15) / 阴影 0 4px 20px 4%；
+ * 头部 px-16 py-12；每项 min-h-44 + px-16 py-10，项间 border-b 12%；
+ * 点项 = 收起面板 + **填入输入框**（不发送，Web setInputText 同款）。
+ *
+ * @param library 灵感库（name → item，查 starting_prompt）
+ */
+@Composable
+private fun PromptSuggestionPanel(
+    section: PromptSection,
+    library: Map<String, com.ccm.app.core.inspiration.InspirationItem>,
+    onDismiss: () -> Unit,
+    onPick: (com.ccm.app.core.inspiration.InspirationItem) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = CCMTheme.colors
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .border(1.dp, Color(0x261F1F1E), RoundedCornerShape(16.dp))   // rgba(31,31,30,0.15)
+            .background(if (CCMTheme.isDark) colors.input else Color.White)
+            .shadow(elevation = 1.dp, shape = RoundedCornerShape(16.dp), clip = false),
+    ) {
+        // ── 头部（px-16 py-12）────────────────────────────────────
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                PainterIcon(section.iconRes, size = 18.dp, tint = colors.textMain)
+                Text(
+                    text = section.label,
+                    style = CCMText.body14,
+                    color = colors.textSecondary,
+                )
+            }
+            // 关闭 X（Web Close suggestions 按钮）
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(onClick = onDismiss),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("✕", style = CCMText.body12, color = colors.textSecondary)
+            }
+        }
+
+        CcmDivider(color = Color(0x1F1F1F1E))   // rgba(31,31,30,0.12)
+
+        // ── 建议列表 ───────────────────────────────────────────────
+        section.items.forEachIndexed { index, name ->
+            val item = library[name] ?: return@forEachIndexed
+            // 项间分隔线（Web: border-b rgba(31,31,30,0.12)，最后一项无）
+            // ⚠️ 不能用 Modifier.border(bottom=...) —— Compose 的 border()
+            //    只有整体边框 (width,color,shape)，没有方向参数。
+            if (index > 0) {
+                CcmDivider(color = Color(0x1F1F1F1E))
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onPick(item) }
+                    .heightIn(min = 44.dp)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = item.name,
+                        style = CCMText.body14,
+                        color = colors.textMain,
+                    )
+                    if (item.description.isNotBlank()) {
+                        Text(
+                            text = item.description,
+                            style = CCMText.body12,
+                            color = colors.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                Text("→", style = CCMText.body14, color = colors.textSecondary)
+            }
+        }
+    }
 }

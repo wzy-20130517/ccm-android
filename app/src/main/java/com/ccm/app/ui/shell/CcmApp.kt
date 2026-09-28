@@ -394,7 +394,8 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         greeting = greetingFor(profileName),
                         // ★ 接线：首页输入框真的能发消息了
                         onSend = { sendAndOpen(it) },
-                        onPickPrompt = { sendAndOpen(it) },
+                        // onPickPrompt 已删（第17批）：点胶囊不再直接发 label 文本，
+                        // 改为展开建议面板，点建议填入输入框（Web 行为）。
                     )
 
                     CcmRoute.CHAT -> if (activeSession != null) {
@@ -661,7 +662,6 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     else -> LandingScreen(
                         greeting = greetingFor(profileName),
                         onSend = { sendAndOpen(it) },
-                        onPickPrompt = { sendAndOpen(it) },
                     )
                 }
             }
