@@ -404,6 +404,13 @@ class CronExpr(
  */
 class CronTools(private val store: CronStore) {
 
+    /**
+     * 调度心跳转发（实现在 CronStore —— loadDurable/nextRun/markFired 都在那，
+     * 其中 loadDurable 是 private，只能同类调）。
+     */
+    fun schedulerTick(now: Long = System.currentTimeMillis(), onFire: (CronStore.Task) -> Boolean): Unit =
+        store.schedulerTick(now, onFire)
+
     inner class CronCreateTool : Tool() {
         override val name = "CronCreate"
         override val description =

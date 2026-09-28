@@ -16,6 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.ccm.app.core.ChatSession
 
 /**
@@ -75,20 +76,6 @@ fun ChatScreenConnected(
     // 模型用 Read 工具读内容（core 的用户消息通道只支持图片）。
     var pendingFiles by remember { mutableStateOf<List<String>>(emptyList()) }
     var showAttachMenu by remember { mutableStateOf(false) }
-    val fileLauncher = rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents(),
-    ) { uris ->
-        if (!uris.isNullOrEmpty()) {
-            ioScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                val paths = uris.mapNotNull {
-                    com.ccm.app.core.image.AttachmentCache.copyToCache(ctx, it)
-                }
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    if (paths.isNotEmpty()) pendingFiles = pendingFiles + paths
-                }
-            }
-        }
-    }
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val ioScope = rememberCoroutineScope()
     val attachLauncher = rememberLauncherForActivityResult(
@@ -101,6 +88,21 @@ fun ChatScreenConnected(
                 }
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                     if (paths.isNotEmpty()) pendingImages = pendingImages + paths
+                }
+            }
+        }
+    }
+
+    val fileLauncher = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents(),
+    ) { uris ->
+        if (!uris.isNullOrEmpty()) {
+            ioScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                val paths = uris.mapNotNull {
+                    com.ccm.app.core.image.AttachmentCache.copyToCache(ctx, it)
+                }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    if (paths.isNotEmpty()) pendingFiles = pendingFiles + paths
                 }
             }
         }
