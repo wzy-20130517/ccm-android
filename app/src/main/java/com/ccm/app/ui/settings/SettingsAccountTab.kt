@@ -57,7 +57,9 @@ fun SettingsAccountTab(modifier: Modifier = Modifier) {
                     SettingsLabel("邮箱地址")
                     Spacer(Modifier.height(SettingsLabelGap))
                     Text(
-                        text = "3843364195@qq.com",
+                        // ★ audit-settings #1：原写死真实邮箱 —— 自部署无账号体系，
+                        //   不该显示（也无从获取）。诚实文案。
+                        text = "仅本机模式（无账号体系）",
                         style = CCMText.body14.copy(fontSize = SettingsBody14Sp),
                         color = colors.textMain,
                     )
@@ -90,16 +92,20 @@ fun SettingsAccountTab(modifier: Modifier = Modifier) {
                 // 登录设备列表（源码是 table，移动端横向挤压 → 改为纵向卡片）
                 SettingsLabel("登录设备")
                 Column(verticalArrangement = Arrangement.spacedBy(7.36.dp)) {
+                    // ★ audit-settings #1：原写死机型/地点/日期（日期永久停在某天）。
+                    //   机型取 Build.MODEL 真值；地点无来源不显示；
+                    //   时间改为语义状态（无首装时间记录）。
                     SessionRow(
-                        device = "REDMI Note 15 Pro",
-                        location = "江西 景德镇",
-                        created = "Sep 27, 2026, 10:12 AM",
-                        lastActive = "Sep 27, 2026, 11:04 AM",
+                        device = android.os.Build.MODEL,
+                        location = "本机",
+                        created = "单机运行",
+                        lastActive = "活跃中",
                         isCurrent = true,
                     )
                 }
                 Text(
-                    text = "No active sessions",
+                    text = "",   // 原 "No active sessions" 与上面的设备行自相矛盾（写死遗留）
+
                     style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
                     color = colors.textSecondary,
                     modifier = Modifier.padding(vertical = 3.68.dp),
@@ -353,13 +359,13 @@ fun SettingsUsageTab(modifier: Modifier = Modifier) {
                             color = colors.textMain,
                         )
                         Text(
-                            text = "已使用 12.34%",
+                            text = "本机模式无配额（自部署不走服务端额度）",
                             style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
                             color = colors.textSecondary,
                         )
                     }
                     Spacer(Modifier.height(7.36.dp))        // mb-2
-                    UsageBar(percent = 12.34f)
+                    // 原 12.34% 是假数据（webgap #10）—— 无配额不画进度条
                 }
 
                 // 存储空间
@@ -375,13 +381,13 @@ fun SettingsUsageTab(modifier: Modifier = Modifier) {
                             color = colors.textMain,
                         )
                         Text(
-                            text = "已使用 128.0 MB / 1.0 GB",
+                            text = "本地用量请到系统设置查看",
                             style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
                             color = colors.textSecondary,
                         )
                     }
                     Spacer(Modifier.height(7.36.dp))
-                    UsageBar(percent = 12.8f, fixedColor = Color(0xFFD97757))
+                    // 原 12.8% 假数据（webgap #10）—— 不画
                 }
 
                 // 计划卡片
@@ -395,7 +401,7 @@ fun SettingsUsageTab(modifier: Modifier = Modifier) {
                     verticalArrangement = Arrangement.spacedBy(3.68.dp),
                 ) {
                     Text(
-                        text = "免费版",
+                        text = "本机自部署",
                         style = CCMText.body16.copy(
                             fontSize = 12.29.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -411,8 +417,13 @@ fun SettingsUsageTab(modifier: Modifier = Modifier) {
 
                 // 消息统计（两列）
                 Row(horizontalArrangement = Arrangement.spacedBy(11.04.dp)) {
-                    StatCard(value = "12", label = "今日消息", modifier = Modifier.weight(1f))
-                    StatCard(value = "348", label = "本月消息", modifier = Modifier.weight(1f))
+                    // ★ audit-settings #2：原 12/348 假数据。改为可得真值：
+                    //   历史会话数（SessionStore）+ 当前会话消息数（live state）。
+                    val stStore = com.ccm.app.AppGraph.storage?.let { com.ccm.app.core.session.SessionStore(it) }
+                    val historyCount = remember(stStore) { stStore?.list()?.size ?: 0 }
+                    val liveMsgs = com.ccm.app.AppGraph.session?.state?.value?.bubbles?.size ?: 0
+                    StatCard(value = "$historyCount", label = "历史会话", modifier = Modifier.weight(1f))
+                    StatCard(value = "$liveMsgs", label = "本会话消息", modifier = Modifier.weight(1f))
                 }
             }
         }

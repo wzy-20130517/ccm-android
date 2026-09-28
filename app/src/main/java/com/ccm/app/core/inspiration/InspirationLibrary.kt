@@ -22,6 +22,8 @@ data class InspirationItem(
     val name: String = "",
     val description: String = "",
     val starting_prompt: String = "",
+    /** Web 原始分类：life-hacks / learn / games / creative / touch-grass。 */
+    val category: String = "",
 )
 
 @Serializable

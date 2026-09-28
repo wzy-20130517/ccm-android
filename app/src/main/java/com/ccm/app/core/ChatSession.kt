@@ -84,6 +84,22 @@ class ChatSession(
         )
     }
 
+    /**
+     * 从 todos.json 恢复待办看板（audit-core #3，2026-09-28）。
+     *
+     * TodoWriteTool 写盘齐全但**没人读** —— 进程重启后看板清空，
+     * todos.json 成了永久垃圾。建会话后由 AppGraph 调一次。
+     * 入参是 `List<Triple<content, status, activeForm>>`（MiscTools.loadTodos 形状）。
+     * 注意：只在看板为空时灌，避免覆盖正在进行的新一轮清单。
+     */
+    fun restoreTodos(todos: List<Triple<String, String, String>>) {
+        if (todos.isEmpty()) return
+        if (_state.value.todos.isNotEmpty()) return
+        _state.value = _state.value.copy(
+            todos = todos.map { TodoEntry(content = it.first, status = it.second) },
+        )
+    }
+
     /** 更新输入框草稿（InputBar 的 onValueChange 直连这里）。 */
     fun setDraft(text: String) {
         _state.value = _state.value.copy(draft = text)

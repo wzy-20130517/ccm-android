@@ -66,14 +66,17 @@ import com.ccm.app.ui.theme.CCMTheme
 fun CoworkScreen(
     modifier: Modifier = Modifier,
     checklist: List<CoworkChecklistItem> = DefaultCoworkChecklist,
-    modelName: String = "Sonnet 4.6",
+    modelName: String = "未配置模型",
     onSend: (String) -> Unit = {},
 ) {
     val colors = CCMTheme.colors
     var showSafeTips by remember { mutableStateOf(false) }   // 说明弹窗（第23批）
-    var projectChoice by remember { mutableStateOf("在项目中工作") }   // 项目下拉
+    // 第24批：落 UiPrefs —— 原本地 remember，重启丢选择
+    var projectChoice by remember { mutableStateOf(com.ccm.app.ui.theme.UiPrefs.coworkProject.value) }
     // 模型下拉：真实 Provider（点选 = setCurrent + 重建会话，与对话页同机制）
-    var modelChoice by remember { mutableStateOf(modelName) }
+    // ★ M5：key=modelName —— 设置页换模型后（profileRefreshKey 刷新 modelName），
+    //   这里原来缓存旧值不更新（无 key），下拉显示与实际不符。
+    var modelChoice by remember(modelName) { mutableStateOf(modelName) }
 
     Column(
         modifier = modifier
@@ -191,10 +194,14 @@ private fun CoworkInputCard(modelName: String, onSend: (String) -> Unit) {
             .border(1.dp, Color(0xFFC7C7C7), RoundedCornerShape(12.576.dp))
             .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 12.dp),
     ) {
-        // 输入区 —— ★ 2026-09-28 第22批：死 Text → BasicTextField
-        //   （原来只有一个灰色占位文案，打不了字）。协作会话的发送链
-        //   尚未接 core（Cowork 页整体还是静态壳），先让输入能打字。
-        var coworkInput by remember { androidx.compose.runtime.mutableStateOf("") }
+        // 输入区 —— ★ 第22批死 Text → 能打字；★ 第25批（H1）补发送：
+        //   onSend 参数原来**从未被调用**，卡内也没有发送按钮 ——
+        //   文字永远发不出去。现接 ↑ 按钮 + 草稿落 UiPrefs（重启不丢）。
+        var coworkInput by remember {
+            androidx.compose.runtime.mutableStateOf(
+                com.ccm.app.ui.theme.UiPrefs.coworkDraft.value,
+            )
+        }
         Box(modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp)) {
             if (coworkInput.isEmpty()) {
                 Text(
@@ -205,7 +212,10 @@ private fun CoworkInputCard(modelName: String, onSend: (String) -> Unit) {
             }
             androidx.compose.foundation.text.BasicTextField(
                 value = coworkInput,
-                onValueChange = { coworkInput = it },
+                onValueChange = {
+                    coworkInput = it
+                    com.ccm.app.ui.theme.UiPrefs.setCoworkDraft(it)   // 草稿落盘（重启不丢）
+                },
                 textStyle = CCMText.body14.copy(
                     color = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
                 ),
@@ -216,14 +226,35 @@ private fun CoworkInputCard(modelName: String, onSend: (String) -> Unit) {
 
         Spacer(Modifier.height(12.dp))
 
-        // ── 底部行：+ 按钮（左）/ 麦克风（右）────────────────────────
+        // ── 底部行：+（左）/ 麦克风 · 发送（右）─────────────────────
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            PainterIcon(R.drawable.ic_input_plus, size = 20.dp, tint = colors.textMain)
-            PainterIcon(R.drawable.ic_voice_mode, size = 20.dp, tint = colors.textMain)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                PainterIcon(R.drawable.ic_input_plus, size = 20.dp, tint = colors.textMain)
+                PainterIcon(R.drawable.ic_voice_mode, size = 20.dp, tint = colors.textMain)
+                // ★ H1（audit-pages #1）：输入卡原来没有发送按钮、onSend 是死参数 ——
+                //   文字永远发不出去。有内容才亮，发完清空并落盘草稿。
+                Box(
+                    modifier = Modifier
+                        .size(29.44.dp)
+                        .clip(RoundedCornerShape(7.36.dp))
+                        .background(if (coworkInput.isNotBlank()) colors.claudeOrange else colors.border)
+                        .clickable(enabled = coworkInput.isNotBlank()) {
+                            onSend(coworkInput)
+                            coworkInput = ""
+                            com.ccm.app.ui.theme.UiPrefs.setCoworkDraft("")
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("↑", style = CCMText.body14.copy(fontSize = 15.sp), color = Color.White)
+                }
+            }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -239,7 +270,10 @@ private fun CoworkInputCard(modelName: String, onSend: (String) -> Unit) {
                 label = "在项\n目中\n工作",
                 value = projectChoice,
                 options = listOf("在项目中工作", "个人", "研究"),
-                onPick = { projectChoice = it },
+                onPick = {
+                    projectChoice = it
+                    com.ccm.app.ui.theme.UiPrefs.setCoworkProject(it)
+                },
             )
             // 「提问」：Web 端（CoworkPage.tsx:271）这个按钮**本身也没接
             // onClick** —— 对齐 Web 保持展示态，不假接。
@@ -431,7 +465,7 @@ val DefaultCoworkChecklist = listOf(
     CoworkChecklistItem("连接日常工具", "Claude 越了解你的工作环境，就能帮你完成越多事情。", done = true),
     CoworkChecklistItem("根据你的角色定制 Claude", "添加现成的工具和工作流。"),
     CoworkChecklistItem("让 Claude 创建内容", "试试创建表格、文档或演示文稿。"),
-    CoworkChecklistItem("安排周期性任务", "让 Claude 自动完成重复的工作。"),
+    CoworkChecklistItem("安排周期性任务", "适合设置提醒、报告或定期检查。"),
 )
 
 /** 当前配置里可选的模型（`名称 · 模型`），给协作页模型下拉用。 */

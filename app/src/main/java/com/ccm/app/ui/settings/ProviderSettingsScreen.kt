@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ccm.app.core.provider.AppConfig
@@ -174,7 +175,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                     items.forEach { item ->
                         ProviderListItem(
                             name = item.name,
-                            modelCount = if (item.keyCount > 1) item.keyCount else 1,
+                            modelCount = item.modelCount,   // ★ audit-settings #3：原用 keyCount 冒充模型数
                             webSearchOk = false,
                             enabled = item.enabled,
                             selected = item.id == selectedId,
@@ -305,7 +306,8 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                                 .padding(horizontal = 9.2.dp, vertical = 5.52.dp),
                         ) {
                             Text(
-                                text = "已开启",
+                                // ★ audit-settings 附注：原恒 "已开启"（选 none/继承也不变）
+                                text = if (effort == "继承全局" || effort == "none" || effort.isBlank()) "已关闭" else "已开启",
                                 style = CCMText.body12.copy(
                                     fontSize = 11.04.sp,
                                     fontWeight = FontWeight.Medium,
@@ -343,9 +345,23 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                 title = "能力开关",
                 hint = "联网搜索与图片识别，决定模型能做什么",
             ) {
-                var webSearch by remember { mutableStateOf(true) }
-                var vision by remember { mutableStateOf(false) }
-                var tavilyKey by remember { mutableStateOf("") }
+                // ★ 第24批（2026-09-28）：三个控件原来是纯本地 remember ——
+                //   开关拨了、key 填了，重启全丢，而且 buildSettings 根本
+                //   读不到它们（AppConfig 当时没这字段，存了等于没存）。
+                //   现在：初始化读 AppConfig，变更 fresh-load → copy → save。
+                val cfgStore = com.ccm.app.AppGraph.storage
+                fun saveCfg(block: (AppConfig) -> AppConfig) {
+                    cfgStore?.let { st ->
+                        val fresh = AppConfig.load(st.configFile).config
+                        AppConfig.save(block(fresh), st.configFile)
+                    }
+                }
+                val curCfg = remember(refreshTick) {
+                    cfgStore?.let { AppConfig.load(it.configFile).config }
+                }
+                var webSearch by remember { mutableStateOf(curCfg?.webSearch ?: true) }
+                var vision by remember { mutableStateOf(curCfg?.vision ?: false) }
+                var tavilyKey by remember { mutableStateOf(curCfg?.tavilyKey ?: "") }
 
                 // 网页搜索（带测试按钮）
                 Row(
@@ -369,14 +385,23 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         )
                     }
                     Spacer(Modifier.width(7.36.dp))
-                    SettingsSwitch(checked = webSearch, onCheckedChange = { webSearch = it })
+                    SettingsSwitch(
+                        checked = webSearch,
+                        onCheckedChange = {
+                            webSearch = it
+                            saveCfg { c -> c.copy(webSearch = it) }
+                        },
+                    )
                 }
 
                 // Tavily key
                 ProviderField(label = "Tavily 密钥（可选）") {
                     SettingsTextField(
                         value = tavilyKey,
-                        onValueChange = { tavilyKey = it },
+                        onValueChange = {
+                            tavilyKey = it
+                            saveCfg { c -> c.copy(tavilyKey = it.ifBlank { null }) }
+                        },
                         placeholder = "tvly-...",
                     )
                 }
@@ -397,13 +422,19 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                             color = colors.textMain,
                         )
                         Text(
-                            text = "该供应商的模型能看图（vision）",
+                            text = "识图路由由 visionProvider 决定；此开关已保存、暂未接入（audit-core #4）",
                             style = CCMText.body11.copy(fontSize = 9.48.sp),
                             color = colors.textSecondary.copy(alpha = 0.7f),
                         )
                     }
                     Spacer(Modifier.width(7.36.dp))
-                    SettingsSwitch(checked = vision, onCheckedChange = { vision = it })
+                    SettingsSwitch(
+                        checked = vision,
+                        onCheckedChange = {
+                            vision = it
+                            saveCfg { c -> c.copy(vision = it) }
+                        },
+                    )
                 }
             }
 
@@ -412,25 +443,92 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                 title = "模型清单",
                 hint = "下拉框里能选到哪些模型（不勾选的不出现）",
             ) {
+                // ★ 第24批：原三行是写死的假数据（deepseek flash/pro/lite
+                //   + 「日常档/主力档」装饰标签），关页即丢。改为读写
+                //   ProviderConfig.models（当前 model 是基准项不可删）。
+                val selProvider = items.firstOrNull { it.id == selectedId }
+                    ?.let { store?.get(it.id) }
+                var modelPool by remember(selectedId, refreshTick) {
+                    mutableStateOf(
+                        (selProvider?.models.orEmpty() +
+                            listOfNotNull(selProvider?.model?.takeIf { it.isNotBlank() }))
+                            .distinct(),
+                    )
+                }
+                var newModel by remember { mutableStateOf("") }
+                fun savePool(next: List<String>) {
+                    modelPool = next
+                    val sp = selProvider ?: return
+                    val base = sp.model
+                    val extra = next.filter { it != base }
+                    store?.setModels(sp.id, extra.ifEmpty { null })
+                }
                 Column(verticalArrangement = Arrangement.spacedBy(3.68.dp)) {
-                    ProviderModelRow(
-                        id = "deepseek-v4.1-flash",
-                        tierLabel = "日常档",
-                        thinking = false,
-                        checked = true,
-                    )
-                    ProviderModelRow(
-                        id = "deepseek-v4.1-pro",
-                        tierLabel = "主力档",
-                        thinking = true,
-                        checked = true,
-                    )
-                    ProviderModelRow(
-                        id = "deepseek-v4.1-lite",
-                        tierLabel = "快速档",
-                        thinking = false,
-                        checked = false,
-                    )
+                    if (modelPool.isEmpty()) {
+                        Text(
+                            text = "清单为空 —— 下拉仅显示当前模型",
+                            style = CCMText.body12,
+                            color = colors.textSecondary,
+                        )
+                    }
+                    modelPool.forEach { m ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(5.52.dp))
+                                .background(colors.input.copy(alpha = 0.5f))
+                                .padding(start = 7.36.dp, end = 4.dp, vertical = 3.68.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                text = m,
+                                style = CCMText.body12,
+                                color = if (m == selProvider?.model) colors.textMain
+                                else colors.textSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (m != selProvider?.model) {
+                                // 基准项（当前 model）不可删，其余点 ✕ 移出清单
+                                Text(
+                                    text = "✕",
+                                    style = CCMText.body12,
+                                    color = colors.textSecondary,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .clickable { savePool(modelPool - m) }
+                                        .padding(6.dp),
+                                )
+                            }
+                        }
+                    }
+                    // 添加行
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.36.dp),
+                    ) {
+                        SettingsTextField(
+                            value = newModel,
+                            onValueChange = { newModel = it },
+                            placeholder = "添加模型，如 gpt-4o-mini",
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "添加",
+                            style = CCMText.body13,
+                            color = if (newModel.isNotBlank()) colors.accent else colors.textSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable(enabled = newModel.isNotBlank() && selProvider != null) {
+                                    savePool((modelPool + newModel.trim()).distinct())
+                                    newModel = ""
+                                }
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                        )
+                    }
                 }
             }
         }

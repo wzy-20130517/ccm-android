@@ -395,6 +395,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         // ★ 接线：首页输入框真的能发消息了（第18批带图）
                         onSend = { t, imgs -> sendAndOpen(t, imgs) },
                         onModelClick = { showModelPicker = true },
+                        modelLabel = modelName,   // ★ 原来没传 → 永远显示默认「未配置模型」
                         // onPickPrompt 已删（第17批）：点胶囊不再直接发 label 文本，
                         // 改为展开建议面板，点建议填入输入框（Web 行为）。
                     )
@@ -673,19 +674,66 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
 
                     CcmRoute.CUSTOMIZE -> CustomizeScreen(onBack = { navigate(CcmRoute.HOME) })
 
-                    CcmRoute.ARTIFACTS -> ArtifactsScreen(
-                        items = emptyList(),
-                        onNewArtifact = { },
+                    CcmRoute.ARTIFACTS -> {
+                        // ★ H2（audit-pages #2）：原来 items=emptyList() —— 灵感 tab
+                        //   永远空、新建是死按钮。现接 assets 灵感库（与首页建议同源）。
+                        val artCtx = androidx.compose.ui.platform.LocalContext.current
+                        val artItems = remember(route) {
+                            com.ccm.app.core.inspiration.InspirationLibrary.ensure(artCtx)
+                                .values.map { ins ->
+                                    com.ccm.app.ui.pages.ArtifactItemUi(
+                                        id = ins.name,
+                                        title = ins.name,
+                                        description = ins.description,
+                                        previewText = ins.starting_prompt.take(160),
+                                        // UI 五分类 ← Web category 映射（M3 的「放松一下」由此可达）
+                                        category = when (ins.category) {
+                                            "learn" -> "学习"
+                                            "life-hacks" -> "生活技巧"
+                                            "games" -> "游戏"
+                                            "creative" -> "创意"
+                                            "touch-grass" -> "放松一下"
+                                            else -> "创意"
+                                        },
+                                    )
+                                }
+                        }
+                        ArtifactsScreen(
+                            items = artItems,
+                            // 「我的产物」需要服务端 artifact 存储 —— APK 无此数据源，保持空态
+                            onNewArtifact = {
+                                // Web 是开产物编辑器；APK 无编辑器 → 回首页从提示词开始（注释在案）
+                                navigate(CcmRoute.HOME)
+                            },
+                            onOpenItem = { item ->
+                                // 点灵感 → 用它的 starting_prompt 开新对话（有实际可用价值，
+                                // 比 Web 打开只读预览更进一步）
+                                com.ccm.app.core.inspiration.InspirationLibrary
+                                    .ensure(artCtx)[item.id]?.starting_prompt
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?.let { prompt -> sendAndOpen(prompt, emptyList()) }
+                            },
+                        )
+                    }
+
+                    CcmRoute.COWORK -> CoworkScreen(
+                        modelName = modelName,
+                        // H1：协作输入发进主对话（APK 无 Web 的协作任务后端 ——
+                        // Web 是 onStartTask 开独立任务流，这里是诚实降级）
+                        onSend = { t -> sendAndOpen(t, emptyList()) },
                     )
 
-                    CcmRoute.COWORK -> CoworkScreen()
-
-                    CcmRoute.SCHEDULED -> ScheduledScreen()
+                    CcmRoute.SCHEDULED -> ScheduledScreen(
+                        // KDoc 承诺「新建任务 → 跳协作页」（ScheduledScreen.kt:41），
+                        // 但调用侧一直没接 → 页面上两个「新建任务」是死按钮（H5）
+                        onNewTask = { navigate(CcmRoute.COWORK) },
+                    )
 
                     else -> LandingScreen(
                         greeting = greetingFor(profileName),
                         onSend = { t, imgs -> sendAndOpen(t, imgs) },
                         onModelClick = { showModelPicker = true },
+                        modelLabel = modelName,   // ★ 原来没传 → 永远显示默认「未配置模型」
                     )
                 }
             }
@@ -758,5 +806,10 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
 
         // 侧栏打开时刷新一次（刚在别处新建的会话要出现）
         LaunchedEffect(sidebarOpen) { if (sidebarOpen) refreshSessions() }
+
+        // ★ 设置页关闭时刷新 profileName/modelName —— 加/改 Provider 在
+        //   设置页里发生，CcmApp 的 remember(profileRefreshKey) 不知道，
+        //   不刷新的话「加了配置模型名还显示未配置」。
+        LaunchedEffect(showSettings) { if (!showSettings) profileRefreshKey++ }
     }
 }

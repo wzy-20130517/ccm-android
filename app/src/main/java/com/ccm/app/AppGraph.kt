@@ -302,6 +302,8 @@ object AppGraph {
 
             session = sess
             initError = null
+            // 待办看板恢复（audit-core #3）
+            try { sess.restoreTodos(tools.loadTodos()) } catch (_: Throwable) {}
             // 清理 7 天前的图片附件（发送完拷进 cache 的图不清理会无限涨）
             try { com.ccm.app.core.image.AttachmentCache.pruneOld(app) } catch (_: Throwable) {}
             sess
@@ -367,6 +369,7 @@ object AppGraph {
 
             sessionId = id
             session = sess
+            try { sess.restoreTodos(tools.loadTodos()) } catch (_: Throwable) {}
             initError = null
             sess
         } catch (t: Throwable) {

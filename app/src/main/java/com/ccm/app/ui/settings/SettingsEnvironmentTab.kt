@@ -154,13 +154,19 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
                     com.ccm.app.runtime.ToolchainCatalog.NODE_VERSION
                 } else "未安装",
             )
-            EnvRow(label = "CCM 内核", ok = true, value = "已安装")
+            // 「CCM 内核」行已删（audit-settings #4：无法探测状态却写死「已安装」——
+            // 不可探测的行不显示，别展示假状态）
             EnvRow(label = "Android SDK", ok = true, value = env.sdk)
         }
 
         // ── 运行时 ───────────────────────────────────────────────
         EnvSection(title = "运行时") {
-            EnvRow(label = "运行模式", ok = true, value = "native")
+            // ★ audit-settings #5：原写死 "native"（rootfs 装了也显示 native）
+            EnvRow(
+                label = "运行模式",
+                ok = true,
+                value = if (env.linux) "proot (Ubuntu rootfs)" else "native",
+            )
             EnvRow(
                 label = "Node 版本",
                 ok = env.nodePath != null,

@@ -126,6 +126,8 @@ class ToolsBootstrap(
         val outputStore: ToolOutputStore,
         val trashStore: TrashStore,
         val undoStore: UndoStore,
+        /** 读 todos.json（audit-core #3：写路径齐全、恢复没人接 → 重启待办清空）。 */
+        val loadTodos: () -> List<Triple<String, String, String>> = { emptyList() },
         val bashChannel: com.ccm.app.tools.bash.BashChannel,
     )
 
@@ -147,6 +149,14 @@ class ToolsBootstrap(
         val undoStore = UndoStore(storage.undoDir)
         val outputStore = ToolOutputStore(storage.rootDir)
         val permissions = ToolPermissions(storage.rootDir)
+        // ★ audit-core #1（2026-09-28）：loadModeFrom 原来零调用 —— mode 永远
+        //   锁死 "default"，手改 config.json 的 permissionMode（bypassPermissions/
+        //   plan）在 tools 层不生效（AppContainer 那套 AgentLoop 判定读了，但
+        //   实际执行裁决的是 ToolExecutor → permissions.resolve 读的锁死值）。
+        try {
+            val cf = java.io.File(storage.rootDir, "config.json")
+            if (cf.exists()) permissions.loadModeFrom(org.json.JSONObject(cf.readText()))
+        } catch (_: Throwable) {}
         val hooks = ToolHooks(storage.rootDir)
         hooks.loadFromConfig()
 
@@ -372,6 +382,7 @@ class ToolsBootstrap(
             outputStore = outputStore,
             trashStore = trashStore,
             undoStore = undoStore,
+            loadTodos = { miscTools.loadTodos() },
             bashChannel = primary,
         )
     }

@@ -233,6 +233,8 @@ class AppContainer private constructor(
                 temperature = provider.temperature ?: config.temperature,
                 // key 池冷却状态落盘（重启后不从头撞已耗尽的 key）
                 keyPoolStateFile = java.io.File(storage.root, "key-pool-state.json"),
+                // 深度思考（audit-core #2：config.effort 原来零消费）
+                effort = config.effort,
             )
 
             // ── 会话与压缩 ──
@@ -291,6 +293,11 @@ class AppContainer private constructor(
                 "imageGenBaseUrl" to config.imageGen?.url,
                 "imageGenApiKey" to config.imageGen?.apiKey,
                 "imageGenModel" to config.imageGen?.model,
+                // ★ 第24批：原来 map 里没有这两个键 —— 设置页填的
+                //   tavilyKey / webSearch 开关全链路无处落地，存了等于没存，
+                //   WebSearch 工具永远 `map["tavilyApiKey"] == null`。
+                "tavilyApiKey" to config.tavilyKey,
+                "webSearch" to config.webSearch?.toString(),
             )
             // 识图 Provider（vision 路由回退）
             config.visionProvider?.let { vp ->

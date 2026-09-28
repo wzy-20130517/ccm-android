@@ -80,6 +80,13 @@ class ApiClient(
     private val onKeySwitch: ((String) -> Unit)? = null,
     /** 重试回调（让「静默重试」可见）。 */
     private val onRetry: ((AttemptInfo) -> Unit)? = null,
+    /**
+     * 深度思考强度（none/minimal/low/medium/high/xhigh/max）。
+     * audit-core #2：AppConfig.effort 有两处写入、core 层零消费 ——
+     * 设置页的「扩展思考」开关是假的。这里接进 openai 协议请求体。
+     * anthropic 协议的 thinking budget 映射未做（当前主力是 openai 兼容）。
+     */
+    private val effort: String? = null,
 ) {
 
     /** 一次重试尝试的信息（给 UI 显示「第 2 次重试…」）。 */
@@ -750,6 +757,11 @@ class ApiClient(
         put("temperature", temperature)
         if (maxTok != null) put("max_tokens", maxTok)
         if (systemTopLevel && system.isNotEmpty()) put("system", system)
+        // 深度思考（audit-core #2）：none 不发（等价默认关）；
+        // xhigh/max 是 CLI 扩展档，OpenAI 官方只认到 high → 归一到 high。
+        effort?.takeIf { it.isNotBlank() && it != "none" }?.let { e ->
+            put("reasoning_effort", if (e in setOf("minimal", "low", "medium", "high")) e else "high")
+        }
         if (tools.isNotEmpty()) {
             put("tools", buildJsonArray {
                 tools.forEach { t ->

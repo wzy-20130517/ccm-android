@@ -56,7 +56,13 @@ class ProviderStore(private val storage: AppStorage) {
         val protocol: String,
         val enabled: Boolean,
         val isCurrent: Boolean,
-    )
+        /** 模型池（不含基准 model —— count 时合并去重）。 */
+        val models: List<String> = emptyList(),
+    ) {
+        /** 模型数（原 UI 用 keyCount 冒充 —— audit-settings #3）。 */
+        val modelCount: Int
+            get() = (listOf(model) + models).filter { it.isNotBlank() }.distinct().size
+    }
 
     /** 列出所有 Provider（按 id 排序，当前项移到最前） */
     fun list(): List<Item> {
@@ -72,6 +78,7 @@ class ProviderStore(private val storage: AppStorage) {
                     protocol = p.protocol,
                     enabled = p.allKeys().isNotEmpty() && p.url.isNotBlank(),
                     isCurrent = id == cfg.current,
+                    models = p.models.orEmpty(),
                 )
             }
             .sortedWith(compareByDescending<Item> { it.isCurrent }.thenBy { it.id })
@@ -106,6 +113,10 @@ class ProviderStore(private val storage: AppStorage) {
         val v = if (level.startsWith("继承")) null else level
         return AppConfig.save(cfg.copy(effort = v), file)
     }
+
+    /** 改模型池（设置页「模型清单」写回，第24批）。 */
+    fun setModels(id: String, models: List<String>?): Boolean =
+        update(id) { it.copy(models = models) }
 
     /** 改模型（对应 `/model <id> <名称>`） */
     fun setModel(id: String, model: String): Boolean =

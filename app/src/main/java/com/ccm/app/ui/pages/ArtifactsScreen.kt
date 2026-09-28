@@ -70,7 +70,11 @@ fun ArtifactsScreen(
     var activeTab by remember { mutableStateOf(0) }          // 0=灵感 1=我的产物
     var activeCategory by remember { mutableStateOf("全部") }
 
-    val shown = if (activeTab == 0) items else myItems
+    // ★ M1（2026-09-28）：activeCategory 原来只改胶囊高亮、不参与取数 ——
+    //   「点了没反应」。现在真过滤（Web ArtifactsPage.tsx:114 同款）。
+    val baseItems = if (activeTab == 0) items else myItems
+    val shown = if (activeCategory == "全部") baseItems
+    else baseItems.filter { it.category == activeCategory }
 
     Column(
         modifier = modifier
@@ -204,7 +208,7 @@ fun ArtifactsScreen(
         // ── 分组标题（如「放松一下」）──────────────────────────────────
         if (shown.isNotEmpty()) {
             Text(
-                text = "放松一下",
+                text = activeCategory,
                 style = CCMText.body13,
                 color = colors.textMain,
                 modifier = Modifier.padding(start = 47.66.dp, bottom = 13.02.dp),
@@ -272,7 +276,8 @@ private fun ArtifactCard(item: ArtifactItemUi, onClick: () -> Unit) {
 }
 
 /** 分类标签 —— 对齐 Web 的 `ArtifactsPage.tsx` */
-val ArtifactCategories = listOf("全部", "学习", "生活技巧", "游戏", "创意")
+// ★ M3：Web CATEGORY_ORDER 6 项，原来缺「放松一下」→ 该分类数据永远不可达
+val ArtifactCategories = listOf("全部", "学习", "生活技巧", "游戏", "创意", "放松一下")
 
 /** 产物条目（UI 层） */
 data class ArtifactItemUi(

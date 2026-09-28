@@ -34,6 +34,8 @@ object UiPrefs {
     private const val KEY_FONT = "chat_font"
     private const val KEY_SEND = "send_key"
     private const val KEY_NEWLINE = "newline_key"
+    private const val KEY_COWORK_PROJECT = "cowork_project"
+    private const val KEY_COWORK_DRAFT = "cowork_draft"
 
     /** light / auto / dark（ThemeMode.key 同集） */
     val themeMode: MutableState<String> = mutableStateOf("auto")
@@ -61,6 +63,12 @@ object UiPrefs {
      */
     val sendByEnter: MutableState<Boolean> = mutableStateOf(false)
 
+    /** 协作页「在哪个项目工作」选择（第24批 —— 原来本地 remember 重启丢）。 */
+    val coworkProject: MutableState<String> = mutableStateOf("在项目中工作")
+
+    /** 协作页输入草稿（H1 —— 发送前退出不丢字）。 */
+    val coworkDraft: MutableState<String> = mutableStateOf("")
+
     private var prefs: SharedPreferences? = null
 
     /** MainActivity.onCreate 调一次。重复调用安全（幂等）。 */
@@ -74,6 +82,8 @@ object UiPrefs {
         // 默认「仅按钮」对齐 Web（回车只换行，发送靠按钮）
         sendKey.value = p.getString(KEY_SEND, "仅按钮（回车只换行）") ?: "仅按钮（回车只换行）"
         sendByEnter.value = sendKey.value.contains("回车发送")
+        coworkProject.value = p.getString(KEY_COWORK_PROJECT, "在项目中工作") ?: "在项目中工作"
+        coworkDraft.value = p.getString(KEY_COWORK_DRAFT, "") ?: ""
         newlineKey.value = p.getString(KEY_NEWLINE, "Enter") ?: "Enter"
     }
 
@@ -96,5 +106,15 @@ object UiPrefs {
     fun setNewlineKey(v: String) {
         newlineKey.value = v
         prefs?.edit()?.putString(KEY_NEWLINE, v)?.apply()
+    }
+
+    fun setCoworkProject(v: String) {
+        coworkProject.value = v
+        prefs?.edit()?.putString(KEY_COWORK_PROJECT, v)?.apply()
+    }
+
+    fun setCoworkDraft(v: String) {
+        coworkDraft.value = v
+        prefs?.edit()?.putString(KEY_COWORK_DRAFT, v)?.apply()
     }
 }

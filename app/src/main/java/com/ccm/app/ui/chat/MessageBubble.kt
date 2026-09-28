@@ -1,6 +1,7 @@
 package com.ccm.app.ui.chat
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -57,6 +58,7 @@ import com.ccm.app.ui.theme.CCMTheme
  * Web 用 variable font 的 430 字重，Android 系统字体没有这个档位。
  * Compose 侧取 [FontWeight.Normal]（400）—— 差异在 1px 级，diff 时容忍。
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun AssistantBubble(
     text: String,
@@ -64,11 +66,28 @@ fun AssistantBubble(
 ) {
     val colors = CCMTheme.colors
 
+    // ★ webgap #1：长按复制（连复制 AI 回复都做不到是最低门槛的缺口）
+    val copyCtx = androidx.compose.ui.platform.LocalContext.current
+    val copyText: (String) -> Unit = { txt ->
+        if (txt.isNotBlank()) {
+            try {
+                val cm = copyCtx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                    as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("CCM", txt))
+                android.widget.Toast.makeText(copyCtx, "已复制", android.widget.Toast.LENGTH_SHORT).show()
+            } catch (_: Throwable) {}
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxWidth()
             // 实测 pad: 15.72px 16px
-            .padding(horizontal = 16.dp, vertical = 15.72.dp),
+            .padding(horizontal = 16.dp, vertical = 15.72.dp)
+            .combinedClickable(
+                onClick = {},
+                onLongClick = { copyText(text) },
+            ),   // combinedClickable = 实验 API（OptIn 见函数注解）
     ) {
         // ★ 2026-09-27：原来是死 Text —— 加粗/代码块/列表全显示成
         //   星号和井号原文。MarkdownRenderer（690 行）写好了一直没人调，
@@ -87,6 +106,7 @@ fun AssistantBubble(
  * Web 侧用户消息用 `bg-claude-hover` 背景 + 右对齐。
  * 实测（对话页截图）：用户消息靠右，宽度自适应内容（`max-w-[85%]`）。
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun UserBubble(
     text: String,
@@ -94,6 +114,18 @@ fun UserBubble(
     images: List<String> = emptyList(),
 ) {
     val colors = CCMTheme.colors
+    // 长按复制（webgap #1，与助手气泡同款）
+    val uCtx = androidx.compose.ui.platform.LocalContext.current
+    val copyUser: (String) -> Unit = { txt ->
+        if (txt.isNotBlank()) {
+            try {
+                val cm = uCtx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                    as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("CCM", txt))
+                android.widget.Toast.makeText(uCtx, "已复制", android.widget.Toast.LENGTH_SHORT).show()
+            } catch (_: Throwable) {}
+        }
+    }
 
     Row(
         modifier = modifier
@@ -106,6 +138,10 @@ fun UserBubble(
                 .widthIn(max = 314.dp)                   // max-w-[85%] ≈ 393×0.8
                 .clip(RoundedCornerShape(11.04.dp))      // rounded-xl
                 .background(colors.hover)
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = { copyUser(text) },
+                )
                 .padding(horizontal = 12.88.dp, vertical = 8.28.dp),
         ) {
             Column {

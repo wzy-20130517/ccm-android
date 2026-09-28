@@ -489,7 +489,7 @@ private fun InputCard(
  */
 @Composable
 private fun ModelChip(
-    modelName: String = "Sonnet 4.6",
+    modelName: String = "未配置模型",
     onClick: () -> Unit = {},
 ) {
     val colors = CCMTheme.colors

@@ -98,7 +98,6 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
             } ?: ChatFont.DEFAULT
         )
     }
-    var thinking by remember { mutableStateOf(false) }
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(SettingsSectionGap)) {
 

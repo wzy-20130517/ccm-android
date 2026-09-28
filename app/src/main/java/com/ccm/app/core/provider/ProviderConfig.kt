@@ -41,6 +41,15 @@ data class ProviderConfig(
 
     /** 模型名，如 `deepseek-v4.1-flash`。 */
     @SerialName("model") val model: String = "",
+    /**
+     * 模型池（第24批）—— 设置页「模型清单」的落盘位。
+     *
+     * 之前那个清单写死 deepseek-v4.1-flash/pro/lite 三行假数据，
+     * 勾选状态还是组件内 remember（关页即丢）。现在：
+     * 清单 = `models ∪ {model}`（model 是基准项），改动直接写回。
+     * null/空 = 只有当前 model（未配置过清单的向后兼容）。
+     */
+    @SerialName("models") val models: List<String>? = null,
 
     /** 协议：openai / anthropic / responses。 */
     @SerialName("protocol") val protocol: String = PROTOCOL_OPENAI,

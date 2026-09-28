@@ -80,6 +80,20 @@ data class AppConfig(
     /** 深度思考强度：none/minimal/low/medium/high/xhigh/max。 */
     val effort: String? = null,
 
+    /**
+     * WebSearch 的 Tavily key（第24批，2026-09-28）。
+     *
+     * 之前设置页有输入框但**全链路无处可存**：AppConfig 没这字段，
+     * buildSettings 的 map 也没这个键 → `map["tavilyApiKey"]` 永远 null，
+     * 用户填了等于没填（WebSearch 工具永远报没 key）。
+     */
+    @SerialName("tavilyKey")
+    val tavilyKey: String? = null,
+
+    /** WebSearch 工具总开关（设置页开关的落盘位；null = 未设置过 = 开）。 */
+    @SerialName("webSearch")
+    val webSearch: Boolean? = null,
+
     /** 其他未建模的字段原样保留（防保存时丢失用户的手工配置）。 */
     @SerialName("_extra")
     val extra: JsonObject? = null,
