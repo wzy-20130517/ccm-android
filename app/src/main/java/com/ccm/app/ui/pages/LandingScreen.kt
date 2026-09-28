@@ -45,6 +45,7 @@ import com.ccm.app.R
 import com.ccm.app.ui.common.CcmPillButton
 import com.ccm.app.ui.common.Gap2
 import com.ccm.app.ui.common.PainterIcon
+import com.ccm.app.ui.common.CcmDivider
 import com.ccm.app.ui.theme.CCMRadius
 import com.ccm.app.ui.theme.CCMText
 import com.ccm.app.ui.theme.CCMTheme

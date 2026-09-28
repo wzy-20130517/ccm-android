@@ -40,9 +40,12 @@ object InspirationLibrary {
         synchronized(this) {
             cache?.let { return it }
             val parsed = try {
-                context.assets.open("inspirations.json")
+                // 42KB 小文件，整读比流式简单（decodeFromStream 要
+                // ExperimentalSerializationApi opt-in，没必要）
+                val text = context.assets.open("inspirations.json")
                     .bufferedReader(Charsets.UTF_8)
-                    .use { json.decodeFromStream(InspirationsFile.serializer(), it) }
+                    .use { it.readText() }
+                json.decodeFromString(InspirationsFile.serializer(), text)
                     .items
                     .associateBy { it.name }
             } catch (_: Throwable) {
