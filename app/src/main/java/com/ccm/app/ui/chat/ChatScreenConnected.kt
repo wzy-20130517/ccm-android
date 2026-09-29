@@ -67,6 +67,11 @@ fun ChatScreenConnected(
     onSwitchClick: () -> Unit = {},
     onDelete: () -> Unit = {},
 ) {
+    // 语音输入（第30批）：听写结果追加到 draft（追加不覆盖 —— 说完一句还能接着说）
+    val voiceClick = com.ccm.app.ui.common.rememberVoiceInput { text ->
+        val cur = session.state.value.draft
+        session.setDraft(if (cur.isBlank()) text else cur + " " + text)
+    }
     val coreState by session.state.collectAsState()
     val uiState = remember(coreState) { ChatAdapter.toUi(coreState) }
 
@@ -292,6 +297,7 @@ fun ChatScreenConnected(
         onModelClick = onModelClick,
         onSwitchClick = onSwitchClick,
         onDelete = onDelete,
+        onVoice = voiceClick,
     )
 }
 

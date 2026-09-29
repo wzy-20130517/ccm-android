@@ -106,6 +106,7 @@ fun ChatScreen(
     onSwitchClick: () -> Unit = {},
     onAttach: () -> Unit = {},
     attachedPaths: List<String> = emptyList(),
+    onVoice: () -> Unit = {},
     onRemoveImage: (String) -> Unit = {},
 ) {
     val colors = CCMTheme.colors
@@ -292,6 +293,7 @@ fun ChatScreen(
                 onModelClick = onModelClick,
                 onAttach = onAttach,
                 attachedPaths = attachedPaths,
+                onVoice = onVoice,
                 onRemoveImage = onRemoveImage,
             )
 

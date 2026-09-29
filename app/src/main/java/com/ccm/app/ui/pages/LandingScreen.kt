@@ -43,6 +43,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
@@ -461,12 +462,16 @@ private fun InputCard(
                         modelName = modelLabel,
                         onClick = onModelClick,
                     )
-                    // ★ 2026-09-27：麦克风原来也没有 clickable
+                    // ★ L1 真接通（2026-09-29 用户要求补能力而非置灰）：
+                    //   系统 SpeechRecognizer 听写 → 整句回填输入框。
+                    val voiceClick = com.ccm.app.ui.common.rememberVoiceInput { text ->
+                        input = if (input.isBlank()) text else input + text
+                    }
                     PainterIcon(
                         R.drawable.ic_voice_mode,
                         size = 20.dp,
                         tint = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
-                        modifier = Modifier.clickable { /* TODO: 语音输入 */ },
+                        modifier = Modifier.clickable(onClick = voiceClick),
                     )
                     // 发送按钮：有内容才亮，点了发消息（对齐 Web 的 ↑ 按钮）
                     Box(

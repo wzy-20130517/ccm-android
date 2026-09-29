@@ -90,6 +90,8 @@ fun InputBar(
     onAttach: () -> Unit = {},
     /** 已选待发图片（管理条渲染，第19批）。 */
     attachedPaths: List<String> = emptyList(),
+    /** 点麦克风 → 语音听写回填（第30批）。 */
+    onVoice: () -> Unit = {},
     /** 从待发列表移除一张。 */
     onRemoveImage: (String) -> Unit = {},
 ) {
@@ -208,6 +210,7 @@ fun InputBar(
                             R.drawable.ic_voice_mode,
                             size = 20.dp,
                             tint = colors.textMain,
+                            modifier = Modifier.clickable(onClick = onVoice),
                         )
                         SendButton(
                             enabled = value.isNotBlank() || running,

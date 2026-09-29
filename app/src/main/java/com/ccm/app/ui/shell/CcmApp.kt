@@ -659,7 +659,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         onClose = { navigate(CcmRoute.HOME) },
                     )
 
-                    CcmRoute.PROJECTS -> ProjectsScreen(
+                    CcmRoute.PROJECTS -> ProjectsScreen(onCreate = { android.widget.Toast.makeText(androidx.compose.ui.platform.LocalContext.current, "项目功能需要本地目录服务，APK 暂未接入", android.widget.Toast.LENGTH_SHORT).show() }, 
                         projects = emptyList(),
                         onCreate = { },
                     )
@@ -712,7 +712,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         modelName = modelName,
                         // H1：协作输入发进主对话（APK 无 Web 的协作任务后端 ——
                         // Web 是 onStartTask 开独立任务流，这里是诚实降级）
-                        onSend = { t -> sendAndOpen(t, emptyList()) },
+                        onSend = { t, imgs -> sendAndOpen(t, imgs) },
                     )
 
                     CcmRoute.SCHEDULED -> ScheduledScreen(

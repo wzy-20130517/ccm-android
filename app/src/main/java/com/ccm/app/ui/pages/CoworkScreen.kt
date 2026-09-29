@@ -26,10 +26,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
@@ -72,12 +75,45 @@ fun CoworkScreen(
     modifier: Modifier = Modifier,
     checklist: List<CoworkChecklistItem> = DefaultCoworkChecklist,
     modelName: String = "未配置模型",
-    onSend: (String) -> Unit = {},
+    onSend: (String, List<String>) -> Unit = { _, _ -> },
 ) {
     val colors = CCMTheme.colors
     var showSafeTips by remember { mutableStateOf(false) }   // 说明弹窗（第23批）
 
     // 模型下拉：真实 Provider（点选 = setCurrent + 重建会话，与对话页同机制）
+
+    // ── 第30批：真能力（用户要求补上而非置灰）─────────────────────
+    // 待发图片（+ 按钮 → PhotoPicker，随 onSend 带进主对话）
+    var pendingImages by remember { mutableStateOf<List<String>>(emptyList()) }
+    val ioScope = rememberCoroutineScope()
+    val ctxCow = androidx.compose.ui.platform.LocalContext.current
+    val attachLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents(),
+    ) { uris ->
+        if (!uris.isNullOrEmpty()) {
+            ioScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                val paths = uris.mapNotNull {
+                    com.ccm.app.core.image.AttachmentCache.copyToCache(ctxCow, it)
+                }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    if (paths.isNotEmpty()) pendingImages = pendingImages + paths
+                }
+            }
+        }
+    }
+    val attachClick: () -> Unit = { attachLauncher.launch("image/*") }
+    // 输入文本上提到本层 —— 语音回填、草稿落盘都要从外面够得着
+    // （CoworkInputCard 内部持 local state 是第30批修过的同款结构问题）
+    var coworkInput by remember {
+        androidx.compose.runtime.mutableStateOf(
+            com.ccm.app.ui.theme.UiPrefs.coworkDraft.value,
+        )
+    }
+    // 麦克风：系统听写 → 追加到输入框
+    val voiceClick: () -> Unit = com.ccm.app.ui.common.rememberVoiceInput { text ->
+        coworkInput = if (coworkInput.isBlank()) text else coworkInput + " " + text
+        com.ccm.app.ui.theme.UiPrefs.setCoworkDraft(coworkInput)
+    }
 
 
     Column(
@@ -156,7 +192,19 @@ fun CoworkScreen(
         Spacer(Modifier.height(20.41.dp))       // 副标题底 235.44 → 卡片顶 256.41
 
         // ── 输入卡片 ──────────────────────────────────────────────────
-        CoworkInputCard(modelName = modelName, onSend = onSend)
+        CoworkInputCard(
+            modelName = modelName,
+            value = coworkInput,
+            onValueChange = {
+                coworkInput = it
+                com.ccm.app.ui.theme.UiPrefs.setCoworkDraft(it)
+            },
+            // 包装：卡片只管文本，图片在本层 pendingImages 里随发送带上
+            onSend = { t -> onSend(t, pendingImages); pendingImages = emptyList() },
+            onVoice = voiceClick,
+            onAttach = attachClick,
+            attachCount = pendingImages.size,
+        )
 
         Spacer(Modifier.height(39.6.dp))        // 卡片底 373.22 → 分组标题顶 510.73 − 清单间距
 
@@ -190,7 +238,15 @@ fun CoworkScreen(
  * 结构与首页类似，但**多了一行底部下拉**（在项目中工作 / 提问 / 模型）。
  */
 @Composable
-private fun CoworkInputCard(modelName: String, onSend: (String) -> Unit) {
+private fun CoworkInputCard(
+    modelName: String,
+    onSend: (String) -> Unit,
+    value: String = "",
+    onValueChange: (String) -> Unit = {},
+    onVoice: () -> Unit = {},
+    onAttach: () -> Unit = {},
+    attachCount: Int = 0,
+) {
     val colors = CCMTheme.colors
 
     Column(
@@ -201,14 +257,8 @@ private fun CoworkInputCard(modelName: String, onSend: (String) -> Unit) {
             .border(1.dp, Color(0xFFC7C7C7), RoundedCornerShape(12.576.dp))
             .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 12.dp),
     ) {
-        // 输入区 —— ★ 第22批死 Text → 能打字；★ 第25批（H1）补发送：
-        //   onSend 参数原来**从未被调用**，卡内也没有发送按钮 ——
-        //   文字永远发不出去。现接 ↑ 按钮 + 草稿落 UiPrefs（重启不丢）。
-        var coworkInput by remember {
-            androidx.compose.runtime.mutableStateOf(
-                com.ccm.app.ui.theme.UiPrefs.coworkDraft.value,
-            )
-        }
+        // 输入区 —— 受控（value/onValueChange 从 CoworkScreen 来，第30批上提）。
+        val coworkInput = value
         // 下拉 state 必须在本函数内 —— 下拉行是输入卡的一部分，
         // 声明放主函数会够不着（#202 unresolved reference 实锤）。
         var projectChoice by remember {
@@ -228,10 +278,7 @@ private fun CoworkInputCard(modelName: String, onSend: (String) -> Unit) {
             }
             androidx.compose.foundation.text.BasicTextField(
                 value = coworkInput,
-                onValueChange = {
-                    coworkInput = it
-                    com.ccm.app.ui.theme.UiPrefs.setCoworkDraft(it)   // 草稿落盘（重启不丢）
-                },
+                onValueChange = onValueChange,
                 textStyle = CCMText.body14.copy(
                     color = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
                 ),
@@ -252,8 +299,44 @@ private fun CoworkInputCard(modelName: String, onSend: (String) -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                PainterIcon(R.drawable.ic_input_plus, size = 20.dp, tint = colors.textMain)
-                PainterIcon(R.drawable.ic_voice_mode, size = 20.dp, tint = colors.textMain)
+                // ★ L4 真接通（第30批，用户要求补能力而非置灰）：
+                //   + = 选图（随发送带进主对话）；麦克风 = 系统听写回填。
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box {
+                        PainterIcon(
+                            R.drawable.ic_input_plus,
+                            size = 20.dp,
+                            tint = colors.textMain,
+                            modifier = Modifier.clickable(onClick = onAttach),
+                        )
+                        if (attachCount > 0) {
+                            Text(
+                                text = "$attachCount",
+                                style = CCMText.body10,
+                                color = colors.bgMain,
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(start = 8.dp, top = 6.dp),
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .size(12.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(colors.claudeOrange),
+                            )
+                        }
+                    }
+                    PainterIcon(
+                        R.drawable.ic_voice_mode,
+                        size = 20.dp,
+                        tint = colors.textMain,
+                        modifier = Modifier.clickable(onClick = onVoice),
+                    )
+                }
                 // ★ H1（audit-pages #1）：输入卡原来没有发送按钮、onSend 是死参数 ——
                 //   文字永远发不出去。有内容才亮，发完清空并落盘草稿。
                 Box(
@@ -263,8 +346,7 @@ private fun CoworkInputCard(modelName: String, onSend: (String) -> Unit) {
                         .background(if (coworkInput.isNotBlank()) colors.claudeOrange else colors.border)
                         .clickable(enabled = coworkInput.isNotBlank()) {
                             onSend(coworkInput)
-                            coworkInput = ""
-                            com.ccm.app.ui.theme.UiPrefs.setCoworkDraft("")
+                            onValueChange("")
                         },
                     contentAlignment = Alignment.Center,
                 ) {
@@ -321,6 +403,7 @@ private fun CoworkInputCard(modelName: String, onSend: (String) -> Unit) {
  * 结构：上方小 label（可多行）+ 下方值 + 右侧箭头。
  */
 @Composable
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 private fun CoworkDropdown(
     label: String,
     value: String,
@@ -340,36 +423,50 @@ private fun CoworkDropdown(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         if (options.isNotEmpty() && open) {
-            androidx.compose.material3.AlertDialog(
+            // ★ 面板化尾巴（2026-09-29）：项目/模型下拉原来是 AlertDialog 弹窗，
+            //   与其他选择器（已改底部面板）不一致 —— 统一成底部滑出面板。
+            androidx.compose.material3.ModalBottomSheet(
                 onDismissRequest = { open = false },
-                title = { androidx.compose.material3.Text("选择", style = CCMText.body14) },
-                text = {
-                    Column {
-                        options.forEach { opt ->
-                            androidx.compose.material3.Text(
-                                text = opt + if (opt == value) "  ✓" else "",
+                containerColor = CCMTheme.colors.bgMain,
+            ) {
+                androidx.compose.foundation.layout.Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 24.dp),
+                ) {
+                    if (label.isNotBlank()) {
+                        Text(
+                            text = label.replace("\n", ""),
+                            style = CCMText.body13,
+                            color = CCMTheme.colors.textMain,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                        )
+                    }
+                    options.forEach { opt ->
+                        val selected = opt == value
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onPick(opt)
+                                    open = false
+                                }
+                                .padding(horizontal = 20.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                text = opt,
                                 style = CCMText.body13,
-                                color = if (opt == value) CCMTheme.colors.accent
+                                color = if (selected) CCMTheme.colors.accent
                                 else CCMTheme.colors.textMain,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        onPick(opt)
-                                        open = false
-                                    }
-                                    .padding(vertical = 10.dp, horizontal = 4.dp),
+                                modifier = Modifier.weight(1f),
                             )
+                            if (selected) Text("✓", style = CCMText.body13, color = CCMTheme.colors.accent)
                         }
                     }
-                },
-                confirmButton = {},
-                dismissButton = {
-                    androidx.compose.material3.TextButton(onClick = { open = false }) {
-                        androidx.compose.material3.Text("取消", style = CCMText.body13)
-                    }
-                },
-            )
+                }
+            }
         }
         if (label.isNotEmpty()) {
             Text(
