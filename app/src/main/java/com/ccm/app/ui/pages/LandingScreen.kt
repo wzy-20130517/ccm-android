@@ -21,6 +21,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -151,8 +154,8 @@ fun LandingScreen(
             //   键盘弹出会盖住输入卡。imePadding 缩小滚动区域；
             //   已聚焦的 BasicTextField 由 Compose 自动 bring-into-view。
             .windowInsetsPadding(
-                androidx.compose.foundation.layout.WindowInsets.ime.union(
-                    androidx.compose.foundation.layout.WindowInsets.navigationBars,
+                WindowInsets.ime.union(
+                    WindowInsets.navigationBars,
                 ),
             )
             .verticalScroll(rememberScrollState())

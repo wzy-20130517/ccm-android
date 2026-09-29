@@ -844,7 +844,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
  * 数据由调用方给（ProviderStore.Item 列表），本组件纯展示。
  */
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-@androidx.compose.material3.Composable
+@Composable
 private fun ModelPickerSheet(
     items: List<com.ccm.app.core.provider.ProviderStore.Item>,
     onPickModel: (id: String, model: String) -> Unit,

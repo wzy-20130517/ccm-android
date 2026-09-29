@@ -14,8 +14,10 @@ import java.io.File
  *   —— 与会话重建同生命周期（改风格后切会话/重启生效）
  *
  * ## 自定义风格的读取
- * 与 CLI `core/output-styles.mjs` 同约定：扫 `<cwd>/.claude/output-styles/*.md`
- * 与 `~/.claude/output-styles/*.md`。APK 的 cwd 用工作区目录（AppGraph 传）。
+ * 与 CLI `core/output-styles.mjs` 同约定：扫 `<cwd>/.claude/output-styles/`
+ * 与 `~/.claude/output-styles/` 下的 .md 文件（同名时项目级覆盖用户级）。
+ * ⚠️ 注释里不能写 `星号点md` 序列 —— Kotlin 注释不嵌套，那个序列会被
+ *    当成新注释的开始，报 "Unclosed comment"（本文件踩过）。
  * frontmatter（--- name/description ---）只取 name 供展示，正文即提示词。
  */
 object OutputStyles {
