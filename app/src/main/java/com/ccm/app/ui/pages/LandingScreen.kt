@@ -464,9 +464,13 @@ private fun InputCard(
                     )
                     // ★ L1 真接通（2026-09-29 用户要求补能力而非置灰）：
                     //   系统 SpeechRecognizer 听写 → 整句回填输入框。
-                    val voiceClick = com.ccm.app.ui.common.rememberVoiceInput { text ->
-                        input = if (input.isBlank()) text else input + text
-                    }
+                    val voiceClick = com.ccm.app.ui.common.rememberVoiceInput(
+                        onText = { text ->
+                            // 本函数在 InputCard 内（input 是受控别名 val）——
+                            // 走 onValueChange 转发给上层的 var input
+                            onValueChange(if (value.isBlank()) text else "$value $text")
+                        },
+                    )
                     PainterIcon(
                         R.drawable.ic_voice_mode,
                         size = 20.dp,

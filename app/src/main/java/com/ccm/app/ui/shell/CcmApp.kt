@@ -659,10 +659,21 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         onClose = { navigate(CcmRoute.HOME) },
                     )
 
-                    CcmRoute.PROJECTS -> ProjectsScreen(onCreate = { android.widget.Toast.makeText(androidx.compose.ui.platform.LocalContext.current, "项目功能需要本地目录服务，APK 暂未接入", android.widget.Toast.LENGTH_SHORT).show() }, 
-                        projects = emptyList(),
-                        onCreate = { },
-                    )
+                    CcmRoute.PROJECTS -> {
+                        // LocalContext 必须在 composable 上下文取 ——
+                        // 塞进 onClick lambda 里调用会编译错（@Composable 语境）
+                        val projCtx = androidx.compose.ui.platform.LocalContext.current
+                        ProjectsScreen(
+                            projects = emptyList(),
+                            onCreate = {
+                                android.widget.Toast.makeText(
+                                    projCtx,
+                                    "项目功能需要本地目录服务，APK 暂未接入",
+                                    android.widget.Toast.LENGTH_SHORT,
+                                ).show()
+                            },
+                        )
+                    }
 
                     CcmRoute.CUSTOMIZE -> CustomizeScreen(onBack = { navigate(CcmRoute.HOME) })
 

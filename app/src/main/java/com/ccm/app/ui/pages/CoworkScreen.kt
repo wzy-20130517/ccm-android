@@ -110,10 +110,12 @@ fun CoworkScreen(
         )
     }
     // 麦克风：系统听写 → 追加到输入框
-    val voiceClick: () -> Unit = com.ccm.app.ui.common.rememberVoiceInput { text ->
-        coworkInput = if (coworkInput.isBlank()) text else coworkInput + " " + text
-        com.ccm.app.ui.theme.UiPrefs.setCoworkDraft(coworkInput)
-    }
+    val voiceClick: () -> Unit = com.ccm.app.ui.common.rememberVoiceInput(
+        onText = { text ->
+            coworkInput = if (coworkInput.isBlank()) text else coworkInput + " " + text
+            com.ccm.app.ui.theme.UiPrefs.setCoworkDraft(coworkInput)
+        },
+    )
 
 
     Column(
