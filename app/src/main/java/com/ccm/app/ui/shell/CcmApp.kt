@@ -212,6 +212,7 @@ enum class CcmRoute(val path: String) {
  * 界面入口 —— 见 `ChatSession.clear()`，目前还没有 UI 接它。
  */
 @Composable
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 private fun AppScaffold(session: ChatSession?, initError: String?) {
 
     val colors = CCMTheme.colors
@@ -330,6 +331,58 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
      * 首页顶部同时会显示 [initError] 提示条（见下方 notice）。
      */
     fun sendAndOpen(text: String, images: List<String> = emptyList()) {
+        // ★ 2026-09-29 slash 全局拦截：原来拦截只在 ChatScreenConnected 的
+        //   onSend 里，**首页输入斜杠命令直接 session.send 发给模型**
+        //   （模型回一句「我不是这样用的」）。提到唯一入口，两端一致。
+        val t = text.trim()
+        if (t.startsWith("/") && images.isEmpty()) {
+            when (t) {
+                "/clear" -> {
+                    activeSession?.clear()
+                    navigate(CcmRoute.CHAT)
+                    return
+                }
+                "/model" -> { showModelPicker = true; return }
+                "/help" -> {
+                    activeSession?.injectNotice(
+                        "**可用命令**\n\n" +
+                        "- `/clear` — 清空当前对话\n" +
+                        "- `/model` — 选择模型\n" +
+                        "- `/compact` — 压缩历史\n" +
+                        "- `/permissions` — 查看权限规则\n" +
+                        "- `/export` — 导出对话\n" +
+                        "- `/help` — 本帮助\n\n" +
+                        "其余输入会直接发给模型。"
+                    )
+                    navigate(CcmRoute.CHAT)
+                    return
+                }
+                "/compact" -> {
+                    activeSession?.injectNotice("**/compact**\n\n" + (activeSession?.compactNow() ?: "无会话"))
+                    navigate(CcmRoute.CHAT)
+                    return
+                }
+                // /export /permissions 依赖对话页上下文，仍然进对话页处理
+                else -> {
+                    // 未支持的 slash（/config /style /undo…）**不发模型**，
+                    // 进对话页给提示（ChatScreenConnected 的同款兜底会再拦一次，
+                    // 这里提前拦省一次界面跳转的歧义）。
+                    if (!setOf("/export", "/permissions").contains(t)) {
+                        activeSession?.injectNotice(
+                            "**${t.substringBefore(" ")} 在 APK 暂不可用**\n\n" +
+                            "当前支持：/clear /model /help /compact /export /permissions\n" +
+                            when (t.substringBefore(" ")) {
+                                "/style" -> "风格选择在 设置 → 通用 → 输出风格。"
+                                "/config" -> "Provider 配置在 设置 → 模型。"
+                                else -> "其他 CLI 命令请到设置页操作。"
+                            }
+                        )
+                        navigate(CcmRoute.CHAT)
+                        return
+                    }
+                }
+            }
+        }
         activeSession?.send(text, images)
         // ★ 不管有没有 session 都切到对话页 —— 用户按了发送/点了胶囊，
         //   就该看到「消息已发出」的界面。没配 Provider 时对话页会显示
@@ -511,56 +564,57 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
 
                         // ── 对话切换（2026-09-28：caret 原是死图标）──────
                         if (showSwitcher) {
-                            AlertDialog(
+                            // ★ 2026-09-29：AlertDialog → 底部滑出面板（选择类不该是弹窗）
+                            androidx.compose.material3.ModalBottomSheet(
                                 onDismissRequest = { showSwitcher = false },
-                                title = { Text("切换对话", style = CCMText.body14) },
-                                text = {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .heightIn(max = 420.dp)
-                                            .verticalScroll(rememberScrollState()),
-                                    ) {
-                                        if (sessions.isEmpty()) {
+                                containerColor = colors.bgMain,
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(bottom = 24.dp),
+                                ) {
+                                    Text(
+                                        text = "切换对话",
+                                        style = CCMText.body14.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+                                        color = colors.textMain,
+                                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                                    )
+                                    if (sessions.isEmpty()) {
+                                        Text(
+                                            text = "还没有其他对话",
+                                            style = CCMText.body13,
+                                            color = colors.textSecondary,
+                                            modifier = Modifier.padding(horizontal = 20.dp),
+                                        )
+                                    }
+                                    sessions.forEach { it2 ->
+                                        val cur = it2.sessionId == AppGraph.sessionId
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    openChat(it2.sessionId)
+                                                    showSwitcher = false
+                                                }
+                                                .padding(horizontal = 20.dp, vertical = 14.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                        ) {
                                             Text(
-                                                text = "还没有其他对话",
+                                                text = it2.displayName,
                                                 style = CCMText.body13,
-                                                color = CCMTheme.colors.textSecondary,
+                                                color = if (cur) colors.accent
+                                                else colors.textMain,
+                                                modifier = Modifier.weight(1f),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
                                             )
-                                        }
-                                        sessions.forEach { it2 ->
-                                            val cur = it2.sessionId == AppGraph.sessionId
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-                                                    .clickable {
-                                                        openChat(it2.sessionId)
-                                                        showSwitcher = false
-                                                    }
-                                                    .padding(horizontal = 8.dp, vertical = 10.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                            ) {
-                                                Text(
-                                                    text = it2.displayName,
-                                                    style = CCMText.body13,
-                                                    color = if (cur) CCMTheme.colors.accent
-                                                    else CCMTheme.colors.textMain,
-                                                    modifier = Modifier.weight(1f),
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                )
-                                                if (cur) Text("✓", style = CCMText.body13, color = CCMTheme.colors.accent)
-                                            }
+                                            if (cur) Text("✓", style = CCMText.body13, color = colors.accent)
                                         }
                                     }
-                                },
-                                confirmButton = {},
-                                dismissButton = {
-                                    TextButton(onClick = { showSwitcher = false }) { Text("关闭", style = CCMText.body13) }
-                                },
-                            )
+                                }
+                            }
                         }
 
                         // ── 模型选择器（2026-09-27，原来是 TODO 空转）────
@@ -571,73 +625,6 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         // 不重建的话切了不生效（CLI 那边是热读，这边是快照）。
                         // 重建走 AppGraph.openSession(同 id)：dispose 会先 flush
                         // 自动保存，历史不丢。
-                        if (showModelPicker) {
-                            val pstore = AppGraph.storage
-                                ?.let { com.ccm.app.core.provider.ProviderStore(it) }
-                            val items = pstore?.list() ?: emptyList()
-                            AlertDialog(
-                                onDismissRequest = { showModelPicker = false },
-                                title = { Text("选择模型") },
-                                text = {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .verticalScroll(rememberScrollState()),
-                                    ) {
-                                        if (items.isEmpty()) {
-                                            Text(
-                                                text = "还没有 Provider —— 到「设置 → 模型」里先加一个",
-                                                style = CCMText.body13,
-                                                color = CCMTheme.colors.textSecondary,
-                                            )
-                                        }
-                                        items.forEach { it2 ->
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-                                                    .clickable(enabled = it2.enabled) {
-                                                        val ok = pstore?.setCurrent(it2.id) == true
-                                                        if (ok) {
-                                                            profileRefreshKey++   // 刷新顶栏/首页模型名
-                                                            // 重建会话让 ApiClient 吃到新配置（历史由 dispose flush 保住）
-                                                            AppGraph.openSession(AppGraph.sessionId)
-                                                                ?.let { activeSession = it }
-                                                        }
-                                                        showModelPicker = false
-                                                    }
-                                                    .padding(horizontal = 8.dp, vertical = 10.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                            ) {
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Text(
-                                                        text = it2.name,
-                                                        style = CCMText.body14,
-                                                        color = if (it2.enabled) CCMTheme.colors.textMain
-                                                        else CCMTheme.colors.textSecondary,
-                                                    )
-                                                    Text(
-                                                        text = it2.model,
-                                                        style = CCMText.body12,
-                                                        color = CCMTheme.colors.textSecondary,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis,
-                                                    )
-                                                }
-                                                if (it2.isCurrent) {
-                                                    Text("✓", color = CCMTheme.colors.accent, style = CCMText.body14)
-                                                }
-                                            }
-                                        }
-                                    }
-                                },
-                                confirmButton = {},
-                                dismissButton = {
-                                    TextButton(onClick = { showModelPicker = false }) { Text("关闭") }
-                                },
-                            )
-                        }
                     } else {
                         // 没配 Provider —— 渲染空态而不是崩。
                         // 用户此时应该去设置页，这里给个能点的入口。
@@ -744,6 +731,37 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
             }
         }
 
+    if (showModelPicker) {
+        // ★ 2026-09-29：弹窗 → **底部滑出面板**（用户反馈
+        //   「面板类的东西都被简化成弹窗」）。逻辑不变：
+        //   ProviderStore.list + setCurrent + openSession 重建。
+        val pstore = AppGraph.storage
+            ?.let { com.ccm.app.core.provider.ProviderStore(it) }
+        val items = remember(showModelPicker) { pstore?.list() ?: emptyList() }
+        // ★ 2026-09-29 /model 补功能：从「provider 平铺」升级为
+        //   「provider → 模型池展开」—— 池里的模型点一下即 setModel + setCurrent
+        //   （对齐 CLI 的 /model <id> <名>）。
+        ModelPickerSheet(
+            items = items,
+            onPickModel = { id, model ->
+                pstore?.setModel(id, model)
+                pstore?.setCurrent(id)
+                profileRefreshKey++
+                AppGraph.openSession(AppGraph.sessionId)
+                    ?.let { activeSession = it }
+                showModelPicker = false
+            },
+            onPickProvider = { id ->
+                pstore?.setCurrent(id)
+                profileRefreshKey++
+                AppGraph.openSession(AppGraph.sessionId)
+                    ?.let { activeSession = it }
+                showModelPicker = false
+            },
+            onDismiss = { showModelPicker = false },
+        )
+    }
+
         // ── 设置覆盖层（全屏，在抽屉之下）─────────────────────────────
         if (showSettings) {
             Box(
@@ -816,5 +834,98 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         //   设置页里发生，CcmApp 的 remember(profileRefreshKey) 不知道，
         //   不刷新的话「加了配置模型名还显示未配置」。
         LaunchedEffect(showSettings) { if (!showSettings) profileRefreshKey++ }
+    }
+}
+
+/**
+ * 模型选择底部面板（2026-09-29 —— 用户反馈「面板被简化成弹窗」）。
+ *
+ * 交互对齐主流移动端：底部滑出 + 顶部小把手 + 整宽列表 + 点外部关闭。
+ * 数据由调用方给（ProviderStore.Item 列表），本组件纯展示。
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@androidx.compose.material3.Composable
+private fun ModelPickerSheet(
+    items: List<com.ccm.app.core.provider.ProviderStore.Item>,
+    onPickModel: (id: String, model: String) -> Unit,
+    onPickProvider: (id: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = CCMTheme.colors
+    androidx.compose.material3.ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = colors.bgMain,
+    ) {
+        androidx.compose.foundation.layout.Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 24.dp),
+        ) {
+            Text(
+                text = "选择模型",
+                style = CCMText.body14.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+                color = colors.textMain,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+            )
+            if (items.isEmpty()) {
+                Text(
+                    text = "还没有 Provider —— 到「设置 → 模型」里先加一个",
+                    style = CCMText.body13,
+                    color = colors.textSecondary,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                )
+            }
+            androidx.compose.foundation.lazy.LazyColumn(
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                items.forEach { it2 ->
+                    item(key = "p-" + it2.id) {
+                        androidx.compose.foundation.layout.Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = it2.enabled) { onPickProvider(it2.id) }
+                                .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 4.dp),
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                text = it2.name,
+                                style = CCMText.body13.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Medium),
+                                color = if (it2.enabled) colors.textMain else colors.textSecondary,
+                            )
+                            if (it2.isCurrent) {
+                                Text("当前 · ${it2.model}", style = CCMText.body12, color = colors.accent)
+                            }
+                        }
+                    }
+                    val pool = (listOf(it2.model) + it2.models)
+                        .filter { it.isNotBlank() }.distinct()
+                    pool.forEach { m ->
+                        item(key = it2.id + "-" + m) {
+                            androidx.compose.foundation.layout.Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = it2.enabled) { onPickModel(it2.id, m) }
+                                    .padding(start = 32.dp, end = 20.dp, top = 10.dp, bottom = 10.dp),
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
+                            ) {
+                                Text(
+                                    text = m,
+                                    style = CCMText.body13,
+                                    color = if (m == it2.model) colors.accent else colors.textMain,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (m == it2.model && it2.isCurrent) {
+                                    Text("✓", color = colors.accent, style = CCMText.body13)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

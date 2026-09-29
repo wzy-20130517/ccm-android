@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -171,7 +172,18 @@ fun ChatScreen(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                // ★ 2026-09-29 键盘遮挡修复：targetSdk 35 强制 edge-to-edge，
+                //   AndroidManifest 的 adjustResize 被系统忽略 → 键盘弹出时
+                //   输入框被键盘盖住，看不见自己打的字。
+                //   ime.union(navigationBars)：键盘弹出用 ime 高度上推；
+                //   无键盘时用导航栏高度（手势条避让）。union 取两者较高者，
+                //   不会出现「键盘高 + 导航栏高」的叠加空隙。
+                .windowInsetsPadding(
+                    androidx.compose.foundation.layout.WindowInsets.ime.union(
+                        androidx.compose.foundation.layout.WindowInsets.navigationBars,
+                    ),
+                ),
         ) {
             if (errorMessage != null) {
                 ErrorBanner(message = errorMessage)

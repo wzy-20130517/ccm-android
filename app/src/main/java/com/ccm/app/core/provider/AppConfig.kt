@@ -94,6 +94,17 @@ data class AppConfig(
     @SerialName("webSearch")
     val webSearch: Boolean? = null,
 
+    /**
+     * 输出风格（2026-09-29 互通）。
+     *
+     * 字段名与 CLI `/style`（core/cmd-style.mjs 存 config.outputStyle）和
+     * Web `server.mjs:2411` 一致 —— 三端字段通用，用户手动拷 config 即互通。
+     * 内置 default / explanatory / learning；自定义风格文件路径
+     * `.claude/output-styles/<名字>.md` 的读取 APK 暂未做（后续）。
+     */
+    @SerialName("outputStyle")
+    val outputStyle: String? = null,
+
     /** 其他未建模的字段原样保留（防保存时丢失用户的手工配置）。 */
     @SerialName("_extra")
     val extra: JsonObject? = null,
@@ -121,6 +132,7 @@ data class AppConfig(
             "providers", "current", "greeting", "stream", "temperature",
             "maxContextTokens", "permissionMode", "vision", "visionProviderId",
             "keyRotateEvery", "imageGen", "effort", "tavilyKey", "webSearch",
+            "outputStyle",
             "_extra",
         )
 

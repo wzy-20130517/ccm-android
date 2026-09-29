@@ -77,6 +77,22 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
     var callName by remember { mutableStateOf(initialProfile.displayName) }
     var workFunction by remember { mutableStateOf(initialProfile.workFunction) }
     var preferences by remember { mutableStateOf(initialProfile.personalPreferences) }
+
+    // ── 输出风格（2026-09-29 互通：CLI /style ↔ Web 设置 ↔ 这里）────────
+    var styleRefresh by remember { mutableStateOf(0) }
+    val styles = remember(styleRefresh) {
+        com.ccm.app.core.output.OutputStyles.all(cwd = null)
+    }
+    val styleOptions = styles.map { it.name }
+    val currentStyleId = remember(styleRefresh) {
+        com.ccm.app.AppGraph.storage?.let { st ->
+            com.ccm.app.core.provider.AppConfig.load(st.configFile).config.outputStyle
+        }?.takeIf { it.isNotBlank() } ?: "default"
+    }
+    fun currentStyleLabel(): String =
+        styles.firstOrNull { it.id == currentStyleId }?.name ?: "默认"
+    fun styleIdByLabel(label: String): String =
+        styles.firstOrNull { it.name == label }?.id ?: "default"
     // ★ 2026-09-28：落 UiPrefs —— 原来是本地 remember，重启丢 +
     //   输入框根本不读它（设置是假的）。
     var sendKey by remember { mutableStateOf(com.ccm.app.ui.theme.UiPrefs.sendKey.value) }
@@ -162,9 +178,28 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                         style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
                         color = CCMTheme.colors.textSecondary,
                     )
+                    // ★ 2026-09-29 互通：原来这里是「请用 /style」死提示 ——
+                    //   现在真的能选了（写 config.json 的 outputStyle，与 CLI/Web 同字段）。
+                    SettingsSelectMenu(
+                        value = currentStyleLabel(),
+                        options = styleOptions,
+                        onPick = { label ->
+                            val id = styleIdByLabel(label)
+                            com.ccm.app.AppGraph.storage?.let { st ->
+                                val cfg = com.ccm.app.core.provider.AppConfig.load(st.configFile).config
+                                com.ccm.app.core.provider.AppConfig.save(
+                                    cfg.copy(outputStyle = id),
+                                    st.configFile,
+                                )
+                            }
+                            styleRefresh++
+                        },
+                        title = "输出风格",
+                    )
+                    Spacer(Modifier.height(5.52.dp))
                     Text(
-                        text = "注：调整回复方式请用 /style（内置 default / Explanatory / Learning，" +
-                            "也可自定义）。此处的偏好目前**不再注入**，填写不会改变回复。",
+                        text = "注：与 CLI 的 /style、Web 设置页互通（同一个 outputStyle 字段）。" +
+                            "自定义风格放 .claude/output-styles/。改完切会话或重启生效。",
                         style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
                         color = CCMTheme.colors.textSecondary,
                         modifier = Modifier.padding(top = 3.68.dp),

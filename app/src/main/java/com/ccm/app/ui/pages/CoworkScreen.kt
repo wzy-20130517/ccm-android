@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -78,6 +79,13 @@ fun CoworkScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            // ★ 2026-09-29 键盘遮挡（同对话页/首页修法）：edge-to-edge 下
+            //   adjustResize 失效，键盘弹出盖住输入卡。
+            .windowInsetsPadding(
+                androidx.compose.foundation.layout.WindowInsets.ime.union(
+                    androidx.compose.foundation.layout.WindowInsets.navigationBars,
+                ),
+            )
             .background(colors.bgMain)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 22.08.dp),

@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -163,10 +164,13 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
             }
 
             // 列表项
+            // ★ 2026-09-29 排版修复：原来用 horizontalScroll（横向滚）装
+            //   纵向列 —— 整体被压成一条**横排**、又受 heightIn(245) 截断，
+            //   与 Web 的竖列表完全不同。改为纵向 wrap + 高度上限内滚动。
             Column(
                 modifier = Modifier
                     .heightIn(max = 245.dp)
-                    .horizontalScroll(rememberScrollState()),
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(1.84.dp),   // space-y-0.5
             ) {
                 // ★ 真实数据（2026-09-27）：原来这里是硬编码的
@@ -212,6 +216,9 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         selected?.let { store?.get(it.id)?.let { p -> p.apiKey ?: p.apiKeys?.firstOrNull() ?: "" } } ?: ""
                     )
                 }
+                var dispName by remember(selectedId, refreshTick) {
+                    mutableStateOf(selected?.name ?: "")
+                }
                 var baseUrl by remember(selectedId, refreshTick) {
                     mutableStateOf(selected?.let { store?.get(it.id)?.url } ?: "")
                 }
@@ -231,10 +238,16 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         //   落盘并刷新列表。
                         val keyPoolMode = (selected?.keyCount ?: 0) > 1
                         SettingsTextField(
-                            value = apiKey,
+                            // ★ 2026-09-29 眼睛修复：showKey 原来**只切图标**、
+                            //   从没参与值渲染 → 永远明文，「点了没变化」。
+                            //   现在显示层掩码：闭眼 = 只留头尾（sk-ab…3fgh），
+                            //   开眼 = 明文。输入始终改真实 apiKey，掩码不写盘。
+                            value = if (showKey || keyPoolMode) apiKey
+                            else maskKey(apiKey),
                             onValueChange = { v ->
-                                // 池模式完全忽略敲键（保护 apiKeys 不被 setKey 清空）
-                                if (!keyPoolMode) {
+                                // 池模式 + 掩码态都忽略敲键
+                                // （掩码态编辑会把「sk-ab…3fgh」的省略号后内容写进配置）
+                                if (!keyPoolMode && showKey) {
                                     apiKey = v
                                     // 立刻落盘（对齐 CLI 的 /key 命令「立即生效」）
                                     selected?.let { sel -> store?.setKey(sel.id, v) }
@@ -272,6 +285,19 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                     }
                 }
 
+                // ★ 显示名（2026-09-29 补：CLI /name 有、APK 没有 ——
+                //   用户点名「model 页功能缺失」。改完列表立刻刷新显示）。
+                ProviderField(label = "显示名") {
+                    SettingsTextField(
+                        value = dispName,
+                        onValueChange = {
+                            dispName = it
+                            selected?.let { sel -> store?.setDisplayName(sel.id, it) }
+                            refreshTick++
+                        },
+                        placeholder = "WorkBuddy",
+                    )
+                }
                 ProviderField(label = "API 地址") {
                     SettingsTextField(
                         value = baseUrl,
@@ -423,14 +449,36 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
 
                 // Tavily key
                 ProviderField(label = "Tavily 密钥（可选）") {
-                    SettingsTextField(
-                        value = tavilyKey,
-                        onValueChange = {
-                            tavilyKey = it
-                            saveCfg { c -> c.copy(tavilyKey = it.ifBlank { null }) }
-                        },
-                        placeholder = "tvly-...",
-                    )
+                    // ★ 2026-09-29：这里以前**没有小眼睛**（用户点名）。
+                    var showTavily by remember { mutableStateOf(false) }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.36.dp),
+                    ) {
+                        SettingsTextField(
+                            value = if (showTavily) tavilyKey else maskKey(tavilyKey),
+                            onValueChange = {
+                                if (showTavily) {
+                                    tavilyKey = it
+                                    saveCfg { c -> c.copy(tavilyKey = it.ifBlank { null }) }
+                                }
+                            },
+                            placeholder = "tvly-...",
+                            modifier = Modifier.weight(1f),
+                        )
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(7.36.dp))
+                                .clickable { showTavily = !showTavily }
+                                .padding(7.36.dp),
+                        ) {
+                            EyeIcon(
+                                open = showTavily,
+                                color = colors.textSecondary,
+                                size = 12.88.dp,
+                            )
+                        }
+                    }
                 }
 
                 // 图片识别
@@ -554,6 +602,34 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                                     newModel = ""
                                 }
                                 .padding(horizontal = 10.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+            }
+
+            // ── SettingGroup 5：危险区（2026-09-29 补 —— CLI 有 `rm` 这里没有）──
+            if (selected != null) {
+                ProviderSettingGroup(
+                    title = "危险区",
+                    hint = "删除后不可撤销（当前在用的 Provider 不能删）",
+                ) {
+                    val isCurrent = items.firstOrNull { it.id == selectedId }?.isCurrent == true
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(7.36.dp))
+                            .clickable(enabled = !isCurrent) {
+                                store?.removeProvider(selectedId)
+                                selectedId = items.firstOrNull { it.id != selectedId }?.id ?: ""
+                                refresh()
+                            }
+                            .padding(horizontal = 10.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = if (isCurrent) "删除供应商（当前在用，不可删）" else "删除这个供应商",
+                            style = CCMText.body13,
+                            color = if (isCurrent) colors.textSecondary else Color(0xFFDC2626),
                         )
                     }
                 }
@@ -1101,4 +1177,15 @@ private fun GlobeIcon(color: Color, size: androidx.compose.ui.unit.Dp) {
             stroke,
         )
     }
+}
+
+/**
+ * 密钥掩码（2026-09-29）：只留头 5 尾 4，中间省略号。
+ * 短 key（≤12 字符）直接整体星号化防反推。
+ * 空串原样返回（placeholder 才会显示）。
+ */
+private fun maskKey(k: String): String {
+    if (k.isBlank()) return k
+    if (k.length <= 12) return "•".repeat(k.length)
+    return k.take(5) + "…" + k.takeLast(4)
 }

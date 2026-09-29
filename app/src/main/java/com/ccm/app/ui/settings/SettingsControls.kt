@@ -235,6 +235,7 @@ fun SettingsSelect(
  * 锚定菜单在小屏上容易被截断，全屏列表最稳。
  */
 @Composable
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 fun SettingsSelectMenu(
     value: String,
     options: List<String>,
@@ -253,46 +254,51 @@ fun SettingsSelectMenu(
     )
 
     if (open) {
-        AlertDialog(
+        // ★ 2026-09-29：AlertDialog → **底部滑出面板**（用户反馈「选择类的
+        //   面板被简化成弹窗」）。这里是**全部下拉**（工作职能/发送键/换行/
+        //   思考强度/风格…）的共用组件，改这一处全站生效。
+        androidx.compose.material3.ModalBottomSheet(
             onDismissRequest = { open = false },
-            title = title.takeIf { it.isNotBlank() }?.let { { Text(it, style = CCMText.body14) } },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState()),
-                ) {
-                    options.forEach { opt ->
-                        val selected = opt == value
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable {
-                                    onPick(opt)
-                                    open = false
-                                }
-                                .padding(horizontal = 8.dp, vertical = 11.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Text(
-                                text = opt,
-                                style = CCMText.body13,
-                                color = if (selected) CCMTheme.colors.accent
-                                else CCMTheme.colors.textMain,
-                                modifier = Modifier.weight(1f),
-                            )
-                            if (selected) Text("✓", style = CCMText.body13, color = CCMTheme.colors.accent)
-                        }
+            containerColor = CCMTheme.colors.bgMain,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 24.dp),
+            ) {
+                if (title.isNotBlank()) {
+                    Text(
+                        text = title,
+                        style = CCMText.body14,
+                        color = CCMTheme.colors.textMain,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                    )
+                }
+                options.forEach { opt ->
+                    val selected = opt == value
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onPick(opt)
+                                open = false
+                            }
+                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = opt,
+                            style = CCMText.body13,
+                            color = if (selected) CCMTheme.colors.accent
+                            else CCMTheme.colors.textMain,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (selected) Text("✓", style = CCMText.body13, color = CCMTheme.colors.accent)
                     }
                 }
-            },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(onClick = { open = false }) { Text("取消", style = CCMText.body13) }
-            },
-        )
+            }
+        }
     }
 }
 

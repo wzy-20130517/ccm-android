@@ -92,6 +92,16 @@ class AgentLoop(
     /** 派生子 Agent 的能力（由上层注入）。 */
     private val spawnSubAgent: (suspend (SubAgentSpec) -> SubAgentResult)? = null,
     /**
+     * 识图专用客户端（2026-09-29 图片识别接线）。
+     *
+     * 语义：config.vision=true 且配置了 visionProviderId 且**不是当前
+     * 主 provider** 时由 AppContainer 构造传入 —— 用户发图时先让识图模型
+     * 生成文字描述，再把描述（而非原图）交给主模型。主模型不支持视觉时
+     * 就不会 400；识图失败回退直接带图（保持原行为）。
+     * null = 不路由（开关关 / 没配 / vision 就是当前 provider）。
+     */
+    private val visionClient: ApiClient? = null,
+    /**
      * trace 目录（`null` = 不记录）。
      *
      * **强烈建议传** —— Node 版那些最难查的 bug（「只有 WebSearch 被掐死」
@@ -268,19 +278,37 @@ class AgentLoop(
         if (imagePaths.isEmpty()) {
             messages += Message.user(userMessage)
         } else {
-            val blocks = mutableListOf<ContentBlock>(ContentBlock.Text(userMessage))
-            for (path in imagePaths) {
-                val loaded = imageScaler?.let { ImageProcessor.loadOrNull(path, it) }
-                if (loaded != null) {
-                    blocks += ContentBlock.Image(loaded.base64, loaded.mimeType)
-                } else {
-                    val b64 = readImageAsBase64(path)
-                    if (b64 != null) {
-                        // 读原始字节猜 MIME（readImageAsBase64 只给 b64）
-                        val mime = guessImageMime(path)
-                        blocks += ContentBlock.Image(b64, mime)
+            // ★ 图片识别路由（2026-09-29）：配置了独立识图 provider 时，
+            //   先让识图模型把图翻译成文字描述，主模型只收文本 ——
+            //   主模型不支持视觉也不 400。任何失败（超时/拒答/无 client）
+            //   都回退到「直接带图」的原行为，绝不中断对话。
+            val visionDesc: String? = visionClient?.let { vc ->
+                try {
+                    describeImagesViaVision(vc, imagePaths)
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+
+            val blocks = mutableListOf<ContentBlock>()
+            if (visionDesc != null) {
+                blocks += ContentBlock.Text(
+                    userMessage + "\n\n[图片内容 —— 由识图模型转述]\n" + visionDesc,
+                )
+            } else {
+                blocks += ContentBlock.Text(userMessage)
+                for (path in imagePaths) {
+                    val loaded = imageScaler?.let { ImageProcessor.loadOrNull(path, it) }
+                    if (loaded != null) {
+                        blocks += ContentBlock.Image(loaded.base64, loaded.mimeType)
                     } else {
-                        blocks += ContentBlock.Text("[图片读取失败: $path]")
+                        val b64 = readImageAsBase64(path)
+                        if (b64 != null) {
+                            val mime = guessImageMime(path)
+                            blocks += ContentBlock.Image(b64, mime)
+                        } else {
+                            blocks += ContentBlock.Text("[图片读取失败: $path]")
+                        }
                     }
                 }
             }
@@ -908,6 +936,57 @@ class AgentLoop(
     }
 
     /** 读图片文件并编码成 base64。失败返回 null（不抛）。 */
+    /**
+     * 把本地图片交给识图 provider 转成文字描述（vision 路由，2026-09-29）。
+     *
+     * 一轮非流式请求（`chat()` 内部按该 client 的 protocol 自动组包，
+     * openai/anthropic 都走）。返回 null = 该走原路带图发。
+     * 用 imageScaler 缩过的图（省 token、防网关拒收大图）。
+     */
+    private suspend fun describeImagesViaVision(
+        client: ApiClient,
+        paths: List<String>,
+    ): String? {
+        if (paths.isEmpty()) return null
+        val imgJson = kotlinx.serialization.json.buildJsonArray {
+            for (p in paths) {
+                val loaded = imageScaler?.let { ImageProcessor.loadOrNull(p, it) }
+                val b64 = loaded?.base64 ?: readImageAsBase64(p) ?: continue
+                val mime = loaded?.mimeType ?: guessImageMime(p)
+                add(kotlinx.serialization.json.buildJsonObject {
+                    put("type", kotlinx.serialization.json.JsonPrimitive("image_url"))
+                    put("image_url", kotlinx.serialization.json.buildJsonObject {
+                        put(
+                            "url",
+                            kotlinx.serialization.json.JsonPrimitive("data:$mime;base64,$b64"),
+                        )
+                    })
+                })
+            }
+        }
+        if (imgJson.size == 0) return null
+        val userMsg = kotlinx.serialization.json.buildJsonObject {
+            put("role", kotlinx.serialization.json.JsonPrimitive("user"))
+            put("content", kotlinx.serialization.json.buildJsonArray {
+                add(kotlinx.serialization.json.buildJsonObject {
+                    put("type", kotlinx.serialization.json.JsonPrimitive("text"))
+                    put(
+                        "text",
+                        kotlinx.serialization.json.JsonPrimitive(
+                            "请描述这张图片的内容；如果图里有文字，逐字转述。只输出描述本身，不要开场白。",
+                        ),
+                    )
+                })
+                imgJson.forEach { add(it) }
+            })
+        }
+        val resp = client.chat(
+            system = "你是图片描述器，输出简洁准确的中文描述。",
+            messages = listOf(userMsg),
+        )
+        return resp.text.trim().takeIf { it.isNotBlank() }
+    }
+
     /** 按扩展名猜图片 MIME（readImageAsBase64 只返回 base64，这里补 mime）。 */
     private fun guessImageMime(path: String): String = when (path.substringAfterLast('.').lowercase()) {
         "png" -> "image/png"

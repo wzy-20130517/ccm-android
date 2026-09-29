@@ -62,6 +62,8 @@ class AppContainer private constructor(
     val config: AppConfig,
     /** API 客户端（唯一出网点）。 */
     val apiClient: ApiClient,
+    /** 识图客户端（vision 路由；null = 不路由）。 */
+    val visionClient: ApiClient? = null,
     /** Agent 主循环。 */
     val agentLoop: AgentLoop,
     /** 工具注册表。 */
@@ -142,6 +144,10 @@ class AppContainer private constructor(
         } catch (_: Throwable) {
         }
         try {
+            visionClient?.shutdown()
+        } catch (_: Throwable) {
+        }
+        try {
             apiClient.shutdown()
         } catch (_: Throwable) {
             // 关闭失败不影响退出
@@ -202,6 +208,13 @@ class AppContainer private constructor(
                 sb.append("\n\n## 关于用户\n")
                 lines.forEach { sb.append("- ").append(it).append('\n') }
             }
+            // 输出风格（与 CLI/Web 的 outputStyle 同字段互通）
+            try {
+                val styleId = com.ccm.app.core.provider.AppConfig
+                    .load(storage.configFile).config.outputStyle
+                com.ccm.app.core.output.OutputStyles
+                    .promptFor(styleId)?.let { sb.append("\n\n").append(it) }
+            } catch (_: Throwable) {}
             sb.toString()
         } catch (_: Throwable) {
             DEFAULT_SYSTEM_PROMPT
@@ -274,8 +287,28 @@ class AppContainer private constructor(
             )
 
             // ── Agent 主循环 ──
+            // ★ 识图路由客户端（2026-09-29）：开关开 + 配了独立 vision provider
+            //   且**不是当前主 provider** 才建（是同一个就没必要路由）。
+            val vp = config.visionProvider
+            val visionClient: ApiClient? =
+                if (config.vision == true && vp != null &&
+                    config.visionProviderId != null &&
+                    config.visionProviderId != config.current &&
+                    vp.url.isNotBlank() && vp.allKeys().isNotEmpty()
+                ) {
+                    ApiClient(
+                        baseUrl = vp.url,
+                        apiKeys = vp.allKeys(),
+                        model = vp.model,
+                        protocol = vp.protocolType,
+                        maxOutputTokens = vp.maxOutputTokens,
+                        temperature = vp.temperature ?: 1.0,
+                    )
+                } else null
+
             val agentLoop = AgentLoop(
                 api = apiClient,
+                visionClient = visionClient,
                 systemPrompt = systemPrompt,
                 // 惰性取（不是快照）—— 后注册的工具（如 Agent 自己）也要能看见
                 toolsProvider = { registry.list },
@@ -296,6 +329,7 @@ class AppContainer private constructor(
             return AppContainer(
                 config = config,
                 apiClient = apiClient,
+                visionClient = visionClient,
                 agentLoop = agentLoop,
                 toolRegistry = registry,
                 sessionStore = sessionStore,

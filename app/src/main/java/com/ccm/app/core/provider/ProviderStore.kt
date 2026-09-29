@@ -118,6 +118,10 @@ class ProviderStore(private val storage: AppStorage) {
     fun setModels(id: String, models: List<String>?): Boolean =
         update(id) { it.copy(models = models) }
 
+    /** 改显示名（对应 CLI `/name` / `/config provider rename` 的显示名语义）。 */
+    fun setDisplayName(id: String, name: String): Boolean =
+        update(id) { it.copy(name = name.trim().ifBlank { id }) }
+
     /** 改模型（对应 `/model <id> <名称>`） */
     fun setModel(id: String, model: String): Boolean =
         update(id) { it.copy(model = model.trim()) }

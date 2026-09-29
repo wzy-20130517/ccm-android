@@ -254,6 +254,17 @@ fun ChatScreenConnected(
                         // microCompact 免 API；摘要式后续再接。
                         session.injectNotice("**/compact**\n\n" + session.compactNow())
                     }
+                    // ★ 2026-09-29 未支持命令兜底：/config /style /undo 这类
+                    //   CLI 命令原来从 else 溜过去**发给模型**（模型回
+                    //   「我不是这样用的」，白烧一轮）。
+                    text.startsWith("/") && !SUPPORTED_SLASH.contains(text.substringBefore(" ").trim()) -> {
+                        val cmd = text.substringBefore(" ").trim()
+                        session.injectNotice(
+                            "**${cmd} 在 APK 暂不可用**\n\n" +
+                            "当前支持：${SUPPORTED_SLASH.joinToString(" ")}\n" +
+                            "${SLASH_HINTS[cmd] ?: "其他命令（如 /config、/style、/undo）请到设置页操作。"}"
+                        )
+                    }
                     else -> {
                         // 带附件发送：图走多模态通道；文件以路径文本随消息
                         //（模型拿 Read 读 —— core 用户消息通道只支持图片）
@@ -283,3 +294,18 @@ fun ChatScreenConnected(
         onDelete = onDelete,
     )
 }
+
+
+/** APK 支持的 slash 命令（与 ChatScreen.SLASH_COMMANDS 候选表同步）。 */
+private val SUPPORTED_SLASH = setOf(
+    "/clear", "/model", "/help", "/export", "/compact", "/permissions",
+)
+
+/** 常见 CLI 命令的去处提示（别让用户以为坏了）。 */
+private val SLASH_HINTS = mapOf(
+    "/style" to "风格选择在 设置 → 通用 → 输出风格（与 CLI /style 同字段互通）。",
+    "/config" to "Provider 配置在 设置 → 模型。",
+    "/model" to "",   // 已支持，不会走到这
+    "/undo" to "回退在 CLI 侧；APK 暂未接入撤销栈。",
+    "/memory" to "记忆管理在 CLI 侧；APK 暂未接入。",
+)
