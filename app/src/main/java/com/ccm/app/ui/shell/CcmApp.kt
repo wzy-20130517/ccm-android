@@ -425,6 +425,11 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                             title = chatTitle,
                             modelName = modelName,
                             onModelClick = { showModelPicker = true },
+                            onDelete = {
+                                // webgap #9：header 删除（走公用 deleteChat lambda）
+                                deleteChat(AppGraph.sessionId)
+                                navigate(CcmRoute.HOME)
+                            },
                             onSwitchClick = {
                                 refreshSessions()   // 打开时拉最新
                                 showSwitcher = true

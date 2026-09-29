@@ -94,6 +94,8 @@ fun ChatScreen(
     onStop: () -> Unit = {},
     onExport: () -> Unit = {},
     onRename: () -> Unit = {},
+    /** 删除当前对话（webgap #9 —— Web 有 header 删除，APK 缺）。 */
+    onDelete: () -> Unit = {},
     onModelClick: () -> Unit = {},
     /** 点标题旁的下拉箭头 → 切换对话（Web 是会话下拉；2026-09-28 接通）。 */
     onSwitchClick: () -> Unit = {},
@@ -115,6 +117,7 @@ fun ChatScreen(
                 onRename = onRename,
                 onExport = onExport,
                 onSwitchClick = onSwitchClick,
+                onDelete = onDelete,
             )
 
             // ── 消息区（可滚动 + 自动跟底，底部留出输入栏高度）────────
@@ -303,6 +306,7 @@ private fun ChatHeaderBar(
     onRename: () -> Unit,
     onExport: () -> Unit,
     onSwitchClick: () -> Unit = {},
+    onDelete: () -> Unit = {},
 ) {
     val colors = CCMTheme.colors
 
@@ -348,22 +352,37 @@ private fun ChatHeaderBar(
             }
         }
 
-        // 右：Export 按钮（实测 77.92×40 / 圆角 8 / 1px 描边 / px-4 / fs 14 / fw 500）
-        Box(
-            modifier = Modifier
-                .height(40.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .clickable(onClick = onExport)
-                .padding(horizontal = 16.dp),
-            contentAlignment = Alignment.Center,
+        // 右：删除 + Export（webgap #9：Web 有删除按钮，APK 缺）
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = "Export",
-                style = CCMText.body14.copy(
-                    fontSize = 14.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium,
-                ),
-                color = colors.textSecondary,
-            )
+            Box(
+                modifier = Modifier
+                    .height(40.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onDelete)
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("✕", style = CCMText.body14, color = Color(0xFFDC2626))
+            }
+            Box(
+                modifier = Modifier
+                    .height(40.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onExport)
+                    .padding(horizontal = 16.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "Export",
+                    style = CCMText.body14.copy(
+                        fontSize = 14.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium,
+                    ),
+                    color = colors.textSecondary,
+                )
+            }
         }
     }
 }
@@ -401,4 +420,5 @@ private val SLASH_COMMANDS = listOf(
     "/export" to "导出对话（系统分享）",
     "/help" to "显示可用命令",
     "/compact" to "压缩历史（截断旧工具输出，免流量）",
+    "/permissions" to "查看权限规则",
 )

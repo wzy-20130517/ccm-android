@@ -65,6 +65,7 @@ fun ChatScreenConnected(
     onRename: () -> Unit = {},
     onModelClick: () -> Unit = {},
     onSwitchClick: () -> Unit = {},
+    onDelete: () -> Unit = {},
 ) {
     val coreState by session.state.collectAsState()
     val uiState = remember(coreState) { ChatAdapter.toUi(coreState) }
@@ -217,12 +218,37 @@ fun ChatScreenConnected(
                             "- `/model` — 打开模型选择器\n" +
                             "- `/export` — 导出对话（系统分享）\n" +
                             "- `/help` — 显示本帮助\n" +
-                            "- `/compact` — 压缩历史（截断旧工具输出）\n\n" +
+                            "- `/compact` — 压缩历史（截断旧工具输出）\n" +
+                            "- `/permissions` — 查看权限规则\n\n" +
                             "其余输入会直接发给模型。"
                         )
                     }
                     text == "/model" -> onModelClick()
                     text == "/export" -> onExport()
+                    text == "/permissions" -> {
+                        // core#9/#10：dumpRules/rulesFilePath 原零调用 ——
+                        // 规则实际生效但无处查看（工具被拦不知道为什么）
+                        session.injectNotice("**权限规则**\n\n" + try {
+                            val perms = com.ccm.app.AppGraph.toolsResult?.permissions
+                            if (perms != null) {
+                                val r = perms.dumpRules()
+                                val allow = r.optJSONArray("allow")?.let { a ->
+                                    (0 until a.length()).map { a.getString(it) }
+                                } ?: emptyList()
+                                val deny = r.optJSONArray("deny")?.let { a ->
+                                    (0 until a.length()).map { a.getString(it) }
+                                } ?: emptyList()
+                                val ask = r.optJSONArray("ask")?.let { a ->
+                                    (0 until a.length()).map { a.getString(it) }
+                                } ?: emptyList()
+                                "模式：${perms.mode}\n" +
+                                    "允许：${allow.joinToString(", ").ifBlank { "(空)" }}\n" +
+                                    "拒绝：${deny.joinToString(", ").ifBlank { "(空)" }}\n" +
+                                    "询问：${ask.joinToString(", ").ifBlank { "(空)" }}\n\n" +
+                                    "规则文件：${perms.rulesFilePath()}"
+                            } else "权限系统未初始化"
+                        } catch (e: Throwable) { "读取失败：${e.message}" })
+                    }
                     text == "/compact" -> {
                         // audit-core #7：原来无任何压缩入口，长会话必撞 400。
                         // microCompact 免 API；摘要式后续再接。
@@ -254,5 +280,6 @@ fun ChatScreenConnected(
         onRename = onRename,
         onModelClick = onModelClick,
         onSwitchClick = onSwitchClick,
+        onDelete = onDelete,
     )
 }
