@@ -72,6 +72,7 @@ import com.ccm.app.ui.theme.CCMTheme
  * @param onNewChat   点「新对话」
  * @param onToggleSelect 点「选择」进入多选模式
  */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)  // PullToRefreshBox（第42批）
 @Composable
 fun ChatsScreen(
     chats: List<ChatSummaryUi>,
