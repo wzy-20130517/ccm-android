@@ -375,7 +375,7 @@ private fun InputCard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 50.42.dp)
+                    .heightIn(min = 50.42.dp, max = 200.dp)
                     // textarea 自身 padding-left 6px × 0.92
                     .padding(start = 5.52.dp),
             ) {

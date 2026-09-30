@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -137,10 +138,13 @@ fun InputBar(
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 // ── 输入区（px-4 pt-4，min-h 48.6）──────────────────────
+                // ★ 第41批：原来只有 min —— 粘贴长文本会把输入卡撑爆
+                //   （页面被顶走、发送按钮消失）。加 max=200dp + 内部可滚。
+                val inputScroll = remember { androidx.compose.foundation.ScrollState(0) }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 48.6.dp)
+                        .heightIn(min = 48.6.dp, max = 200.dp)
                         .padding(start = 14.72.dp, end = 14.72.dp, top = 14.72.dp),
                 ) {
                     // ★ 2026-09-27：原来是两层死 Text（只显示不接受输入，
@@ -160,7 +164,8 @@ fun InputBar(
                         onValueChange = onValueChange,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .focusRequester(focusRequester),
+                            .focusRequester(focusRequester)
+                            .verticalScroll(inputScroll),
                         textStyle = CCMText.body16.copy(
                             fontSize = 16.sp,
                             lineHeight = 24.sp,
