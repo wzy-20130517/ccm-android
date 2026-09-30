@@ -128,6 +128,8 @@ fun UserBubble(
     modifier: Modifier = Modifier,
     images: List<String> = emptyList(),
     onResend: (() -> Unit)? = null,
+    /** 消息时间戳（ms；0 = 不显示）。 */
+    timestampMs: Long = 0L,
 ) {
     val colors = CCMTheme.colors
     // 长按菜单（webgap #1 扩展）：有 onResend 弹「复制 / 重发」，
@@ -145,10 +147,14 @@ fun UserBubble(
         }
     }
 
-    Row(
+    Column(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 7.36.dp),
+        horizontalAlignment = Alignment.End,
+    ) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.End,
     ) {
         // 超长折叠（webgap #1：Web 有 Show more/less，APK 缺）——
@@ -220,6 +226,19 @@ fun UserBubble(
                     }
                 }
             }
+        }
+    }
+
+        // 时间戳（webgap #1 最后一件）——气泡右下，格式 HH:mm；
+        //   messageId 解析不出时间（历史恢复）时不显示
+        if (timestampMs > 0) {
+            Text(
+                text = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+                    .format(java.util.Date(timestampMs)),
+                style = CCMText.body10,
+                color = colors.textSecondary.copy(alpha = 0.7f),
+                modifier = Modifier.padding(top = 2.dp, end = 4.dp),
+            )
         }
     }
 
@@ -301,6 +320,7 @@ fun MessageList(
                     text = bubble.text,
                     images = bubble.images,
                     onResend = onResend?.let { fn -> { fn(bubble.messageId) } },
+                    timestampMs = bubble.timestamp,
                 )
             } else {
                 // 定型消息：思考已结束（isThinking=false，组件自己合成 done 事件）
@@ -356,6 +376,14 @@ data class ChatBubble(
     val images: List<String> = emptyList(),
 ) {
     val isUser: Boolean get() = role == "user"
+
+    /**
+     * 消息时间（webgap #1 时间戳）—— 从 messageId 解析（格式见 ChatSession：
+     * `user-{millis}` / `history-{timestamp}` / `notice-{millis}`）。
+     * 解析不出（旧格式）返回 0 → UI 不显示。
+     */
+    val timestamp: Long get() =
+        messageId.substringAfterLast('-').toLongOrNull() ?: 0L
 
     /** 列表 key —— 加 role 前缀防极端情况撞号（dev-core 建议） */
     val key: String get() = "$role-$messageId"
