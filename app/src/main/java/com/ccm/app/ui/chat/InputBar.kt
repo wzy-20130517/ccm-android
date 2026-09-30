@@ -20,6 +20,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -192,10 +193,25 @@ fun InputBar(
                             )
                         }
                         if (tokenCount > 0) {
+                            // ★ webgap #7（2026-09-29）：原来只有裸 tokens 数 ——
+                            //   看不出离上限多远。显示 `N / 上限 (xx%)` 并分档变色：
+                            //   ≥90% 红（该 /compact 了）、≥70% 橙、其余灰。
+                            val maxCtx = remember(Unit) {
+                                com.ccm.app.AppGraph.storage?.let {
+                                    com.ccm.app.core.provider.AppConfig
+                                        .load(it.configFile).config.maxContextTokens
+                                } ?: 1_000_000
+                            }
+                            val pct = if (maxCtx > 0) tokenCount * 100 / maxCtx else 0
+                            val tint = when {
+                                pct >= 90 -> Color(0xFFDC2626)
+                                pct >= 70 -> Color(0xFFF59E0B)
+                                else -> colors.textSecondary
+                            }
                             Text(
-                                text = "$tokenCount tokens",
+                                text = "${fmtTokens(tokenCount)} / ${fmtTokens(maxCtx)} · $pct%",
                                 style = CCMText.body12,
-                                color = colors.textSecondary,
+                                color = tint,
                             )
                         }
                     }
@@ -317,4 +333,13 @@ private fun UpArrowGlyph(tint: Color, size: androidx.compose.ui.unit.Dp, strokeW
             cap = androidx.compose.ui.graphics.StrokeCap.Round,
         )
     }
+}
+
+
+/** token 数缩写：1234 → "1.2K"，1_000_000 → "1M"（徽章显示用）。 */
+private fun fmtTokens(n: Int): String = when {
+    n >= 1_000_000 -> "%.1fM".format(n / 1_000_000.0)
+    n >= 10_000 -> "%.0fK".format(n / 1_000.0)
+    n >= 1_000 -> "%.1fK".format(n / 1_000.0)
+    else -> n.toString()
 }
