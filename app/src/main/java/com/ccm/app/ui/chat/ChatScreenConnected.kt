@@ -300,6 +300,7 @@ fun ChatScreenConnected(
         onSwitchClick = onSwitchClick,
         onDelete = onDelete,
         onVoice = voiceClick,
+        onResend = { messageId -> session.resendFrom(messageId) },
     )
 }
 

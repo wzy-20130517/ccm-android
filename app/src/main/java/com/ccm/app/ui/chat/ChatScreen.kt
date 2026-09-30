@@ -108,6 +108,8 @@ fun ChatScreen(
     attachedPaths: List<String> = emptyList(),
     onVoice: () -> Unit = {},
     onRemoveImage: (String) -> Unit = {},
+    /** 重发某条用户消息（webgap #1）。 */
+    onResend: ((String) -> Unit)? = null,
 ) {
     val colors = CCMTheme.colors
 
@@ -160,6 +162,7 @@ fun ChatScreen(
                 ) {
                     MessageList(
                         bubbles = bubbles,
+                        onResend = onResend,
                         streaming = streaming,
                         toolCards = toolCards,
                         streamingThinking = streamingThinking,
