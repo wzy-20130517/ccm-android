@@ -101,6 +101,13 @@ fun ChatScreenConnected(
         }
     }
 
+    // 拍照（webgap #2：Web 的 + 菜单有相机 —— TakePicture 输出到 cache 文件）
+    val cameraFile = remember { java.io.File(ctx.cacheDir, "attachments/cam_${System.currentTimeMillis()}.jpg") }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.TakePicture(),
+    ) { ok ->
+        if (ok) pendingImages = pendingImages + cameraFile.absolutePath
+    }
     val fileLauncher = rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents(),
     ) { uris ->
@@ -167,6 +174,19 @@ fun ChatScreenConnected(
             text = {
                 androidx.compose.foundation.layout.Column {
                     listOf(
+                        "拍照" to {
+                            try {
+                                cameraFile.parentFile?.mkdirs()
+                                cameraLauncher.launch(
+                                    androidx.core.content.FileProvider.getUriForFile(
+                                        ctx,
+                                        ctx.packageName + ".fileprovider",
+                                        cameraFile,
+                                    ),
+                                )
+                            } catch (_: Throwable) {}
+                            showAttachMenu = false
+                        },
                         "图片（可多选，随消息发给模型看）" to { attachLauncher.launch("image/*"); showAttachMenu = false },
                         "文件（以路径附带，模型用 Read 读）" to { fileLauncher.launch("*/*"); showAttachMenu = false },
                     ).forEach { (label, act) ->

@@ -20,6 +20,11 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -98,6 +103,19 @@ fun InputBar(
 ) {
     val colors = CCMTheme.colors
 
+    // ★ 第38批：发送后自动聚焦回输入框（连发消息不用每次手动点）。
+    //   监听 running 从 true→false（一轮结束）+ value 清空（发送成功）时请求焦点。
+    val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val wasRunning = remember { mutableStateOf(false) }
+    LaunchedEffect(running, value) {
+        if (wasRunning.value && !running && value.isEmpty()) {
+            try {
+                focusRequester.requestFocus()
+            } catch (_: Throwable) {}
+        }
+        wasRunning.value = running
+    }
+
     Column(modifier = modifier.fillMaxWidth()) {
         // ── 输入卡片 ──────────────────────────────────────────────────
         Box(
@@ -140,7 +158,9 @@ fun InputBar(
                     BasicTextField(
                         value = value,
                         onValueChange = onValueChange,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(focusRequester),
                         textStyle = CCMText.body16.copy(
                             fontSize = 16.sp,
                             lineHeight = 24.sp,

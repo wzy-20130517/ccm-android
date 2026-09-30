@@ -157,6 +157,20 @@ fun ChatScreen(
                     }
                 }
 
+                // ★ 第38批：打开历史会话时**强制滚到底**（不看 followBottom）。
+                //   场景：从侧栏点开一个 50 条历史的会话 —— 首帧时
+                //   maxValue 还是 0，上面那个 effect 滚了个寂寞，用户
+                //   看到的是**会话最开头**（很反直觉：聊天应用都停最新）。
+                //   这里等两帧（布局稳定）再滚，只在 bubbles 首次填充时触发。
+                LaunchedEffect(bubbles.size > 0) {
+                    if (bubbles.isNotEmpty()) {
+                        withFrameNanos {}
+                        withFrameNanos {}
+                        scrollState.scrollTo(scrollState.maxValue)
+                        followBottom = true
+                    }
+                }
+
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
