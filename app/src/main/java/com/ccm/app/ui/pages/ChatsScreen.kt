@@ -91,6 +91,11 @@ fun ChatsScreen(
 
     // ── 行菜单状态（2026-09-28：重命名/删除原来全缺）──────────────
     var menuFor by remember { mutableStateOf<ChatSummaryUi?>(null) }
+    // ★ M4 多选（2026-09-29）：原来「选择」按钮 onToggleSelect 是外部死回调、
+    //   页内没有任何多选 state —— Web 有完整 selectedChatIds 多选+批量删除。
+    //   改为页内自治（同第8批行菜单的模式）。
+    var selectMode by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf(setOf<String>()) }
     var renaming by remember { mutableStateOf<ChatSummaryUi?>(null) }
     var deleting by remember { mutableStateOf<ChatSummaryUi?>(null) }
     var renameInput by remember { mutableStateOf("") }
@@ -167,11 +172,14 @@ fun ChatsScreen(
             )
             Spacer(Modifier.width(7.36.dp))
             Text(
-                text = "选择",
+                text = if (selectMode) "取消" else "选择",
                 style = CCMText.body13,
                 // 截图确认是蓝色（不是 textSecondary）
                 color = colors.blueAccent,
-                modifier = Modifier.clickable(onClick = onToggleSelect),
+                modifier = Modifier.clickable {
+                    selectMode = !selectMode
+                    selectedIds = emptySet()
+                },
             )
         }
 
@@ -183,11 +191,50 @@ fun ChatsScreen(
         val shown = if (searchQuery.isBlank()) chats
         else chats.filter { it.title.contains(searchQuery, ignoreCase = true) }
         shown.forEach { chat ->
+            val isSel = selectedIds.contains(chat.id)
             ChatRow(
                 chat = chat,
-                onClick = { onOpenChat(chat) },
-                onMore = { menuFor = chat },
+                onClick = {
+                    if (selectMode) {
+                        selectedIds = if (isSel) selectedIds - chat.id else selectedIds + chat.id
+                    } else {
+                        onOpenChat(chat)
+                    }
+                },
+                onMore = { if (!selectMode) menuFor = chat },
+                selectMode = selectMode,
+                selected = isSel,
             )
+        }
+
+        // 多选操作栏（选中后可批量删）
+        if (selectMode) {
+            Spacer(Modifier.height(16.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "已选 ${selectedIds.size}",
+                    style = CCMText.body13,
+                    color = colors.textSecondary,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = "删除",
+                    style = CCMText.body13,
+                    color = if (selectedIds.isEmpty()) colors.textSecondary else Color(0xFFDC2626),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable(enabled = selectedIds.isNotEmpty()) {
+                            selectedIds.forEach { id -> onDeleteChat(id) }
+                            selectMode = false
+                            selectedIds = emptySet()
+                        }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
         }
         if (shown.isEmpty() && chats.isNotEmpty()) {
             Spacer(Modifier.height(32.dp))
@@ -362,7 +409,13 @@ private fun SearchField(query: String, onQueryChange: (String) -> Unit) {
  * 右侧「…」菜单在 Web 里是 `opacity-0 group-hover:opacity-100`，手机侧常显。
  */
 @Composable
-private fun ChatRow(chat: ChatSummaryUi, onClick: () -> Unit, onMore: () -> Unit = {}) {
+private fun ChatRow(
+    chat: ChatSummaryUi,
+    onClick: () -> Unit,
+    onMore: () -> Unit = {},
+    selectMode: Boolean = false,
+    selected: Boolean = false,
+) {
     val colors = CCMTheme.colors
 
     Column(
@@ -375,6 +428,22 @@ private fun ChatRow(chat: ChatSummaryUi, onClick: () -> Unit, onMore: () -> Unit
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // 多选模式：头部勾选圈（Web 是行前 checkbox，移动端放行首最直观）
+            if (selectMode) {
+                Box(
+                    modifier = Modifier
+                        .size(18.4.dp)
+                        .padding(end = 10.dp)
+                        .clip(RoundedCornerShape(9.2.dp))
+                        .border(
+                            1.5.dp,
+                            if (selected) colors.blueAccent else colors.border,
+                            RoundedCornerShape(9.2.dp),
+                        )
+                        .background(if (selected) colors.blueAccent else Color.Transparent),
+                )
+                Spacer(Modifier.width(8.dp))
+            }
             Text(
                 text = chat.title.ifBlank { "未命名" },
                 // 实测 13.362 / fw500
@@ -387,7 +456,8 @@ private fun ChatRow(chat: ChatSummaryUi, onClick: () -> Unit, onMore: () -> Unit
 
             // 「…」更多（Web 是 hover 显示，手机常显）
             // ★ 2026-09-28：原来没接点击 —— 图标是个死装饰。
-            Box(
+            // 多选模式隐藏（那时行点击=勾选，行内菜单没意义）
+            if (!selectMode) Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
                     .clickable(onClick = onMore)
