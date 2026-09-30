@@ -301,6 +301,7 @@ fun ChatScreenConnected(
         onDelete = onDelete,
         onVoice = voiceClick,
         onResend = { messageId -> session.resendFrom(messageId) },
+        onRetry = { session.retryLast() },
     )
 }
 

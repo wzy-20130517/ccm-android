@@ -110,6 +110,8 @@ fun ChatScreen(
     onRemoveImage: (String) -> Unit = {},
     /** 重发某条用户消息（webgap #1）。 */
     onResend: ((String) -> Unit)? = null,
+    /** 错误横幅的「重试」（null = 不显示按钮）。 */
+    onRetry: (() -> Unit)? = null,
 ) {
     val colors = CCMTheme.colors
 
@@ -194,7 +196,12 @@ fun ChatScreen(
                 ),
         ) {
             if (errorMessage != null) {
-                ErrorBanner(message = errorMessage)
+                ErrorBanner(
+                    message = errorMessage,
+                    // 重试（第36批）：错误横幅原来只有显示 —— 用户只能手动
+                    // 重打一遍。现在一键重跑最后一条用户消息。
+                    onRetry = onRetry,
+                )
                 Spacer(Modifier.height(7.36.dp))
             }
 
@@ -414,20 +421,33 @@ private fun ChatHeaderBar(
  * Web 用红色系（`bg-red-50 dark:bg-red-900/20` + `border-red-200`）。
  */
 @Composable
-private fun ErrorBanner(message: String) {
-    Box(
+private fun ErrorBanner(message: String, onRetry: (() -> Unit)? = null) {
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 14.72.dp)
             .clip(RoundedCornerShape(7.36.dp))
             .background(Color(0x14DC2626))
             .padding(horizontal = 12.88.dp, vertical = 8.28.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = message,
             style = CCMText.body12,
             color = Color(0xFFB91C1C),
+            modifier = Modifier.weight(1f),
         )
+        if (onRetry != null) {
+            Text(
+                text = "重试",
+                style = CCMText.body12.copy(fontWeight = FontWeight.Medium),
+                color = Color(0xFFB91C1C),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(5.dp))
+                    .clickable(onClick = onRetry)
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+            )
+        }
     }
 }
 

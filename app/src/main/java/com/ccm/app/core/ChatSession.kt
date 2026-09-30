@@ -164,6 +164,23 @@ class ChatSession(
         send(target.text)
     }
 
+    /**
+     * 重试：重跑最后一条用户消息（错误横幅的「重试」按钮用）。
+     *
+     * 与 resendFrom 的区别：不截断——错误轮次的用户消息**已经进了历史**
+     * （send 先 append 再跑），直接把最后一条 user 消息再跑一遍。
+     * 找不到可重试的消息（空会话）时静默返回。
+     */
+    fun retryLast() {
+        if (isRunning) return
+        val history = container.agentLoop.getHistory()
+        val lastUser = history.lastOrNull { it.role == Message.ROLE_USER } ?: return
+        // 错误态清掉，重跑（send 会追加新 user 气泡 —— 这是预期：
+        // 重试表现为「再问一次」，旧的那条和它的错误回复都留在记录里）
+        _state.value = _state.value.copy(error = null)
+        send(lastUser.text)
+    }
+
     /** 更新输入框草稿（InputBar 的 onValueChange 直连这里）。 */
     fun setDraft(text: String) {
         _state.value = _state.value.copy(draft = text)

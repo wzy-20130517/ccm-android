@@ -89,14 +89,29 @@ fun AssistantBubble(
                 onLongClick = { copyText(text) },
             ),   // combinedClickable = 实验 API（OptIn 见函数注解）
     ) {
-        // ★ 2026-09-27：原来是死 Text —— 加粗/代码块/列表全显示成
-        //   星号和井号原文。MarkdownRenderer（690 行）写好了一直没人调，
-        //   这里是它第一处上场。流式时的未闭合 fence 由
-        //   parseMarkdown 的缓存路径处理（每帧重算，见 remember(content)）。
-        MarkdownRenderer(
-            content = text,
-            modifier = Modifier.fillMaxWidth(),
-        )
+        // ★ 2026-09-27：死 Text → MarkdownRenderer（690 行组件首秀）。
+        // ★ 第37批：超长折叠（助手长回复同理，Web 有 Show more/less）。
+        var expanded by remember(text) { mutableStateOf(false) }
+        val longText = text.length > 2000   // 助手阈值放宽（正文本来就长）
+        val shownText = if (longText && !expanded) text.take(2000) + "\n\n…" else text
+        Column {
+            MarkdownRenderer(
+                content = shownText,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (longText) {
+                Text(
+                    text = if (expanded) "收起" else "展开全文（共 ${text.length} 字）",
+                    style = CCMText.body12.copy(fontWeight = FontWeight.Medium),
+                    color = colors.textSecondary,
+                    modifier = Modifier
+                        .padding(top = 4.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .clickable { expanded = !expanded }
+                        .padding(vertical = 2.dp, horizontal = 2.dp),
+                )
+            }
+        }
     }
 }
 
@@ -136,6 +151,12 @@ fun UserBubble(
             .padding(horizontal = 16.dp, vertical = 7.36.dp),
         horizontalArrangement = Arrangement.End,
     ) {
+        // 超长折叠（webgap #1：Web 有 Show more/less，APK 缺）——
+        // 用户长文本（粘贴的日志等）会把页面撑爆，默认收起前 800 字。
+        var expanded by remember(text) { mutableStateOf(false) }
+        val longText = text.length > 800
+        val shownText = if (longText && !expanded) text.take(800) + "…" else text
+
         Box(
             modifier = Modifier
                 .widthIn(max = 314.dp)                   // max-w-[85%] ≈ 393×0.8
@@ -181,10 +202,22 @@ fun UserBubble(
                 }
                 if (text.isNotBlank()) {
                     Text(
-                        text = text,
+                        text = shownText,
                         style = CCMText.body14,
                         color = colors.textMain,
                     )
+                    if (longText) {
+                        Text(
+                            text = if (expanded) "收起" else "展开（共 ${text.length} 字）",
+                            style = CCMText.body12.copy(fontWeight = FontWeight.Medium),
+                            color = colors.textSecondary,
+                            modifier = Modifier
+                                .padding(top = 4.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable { expanded = !expanded }
+                                .padding(vertical = 2.dp, horizontal = 2.dp),
+                        )
+                    }
                 }
             }
         }
