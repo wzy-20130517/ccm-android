@@ -746,11 +746,29 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         onSend = { t, imgs -> sendAndOpen(t, imgs) },
                     )
 
-                    CcmRoute.SCHEDULED -> ScheduledScreen(
-                        // KDoc 承诺「新建任务 → 跳协作页」（ScheduledScreen.kt:41），
-                        // 但调用侧一直没接 → 页面上两个「新建任务」是死按钮（H5）
-                        onNewTask = { navigate(CcmRoute.COWORK) },
-                    )
+                    CcmRoute.SCHEDULED -> {
+                        // ★ 第34批：接 cron 真数据（CronStore.list —— durable 任务
+                        //   在构造时已从盘加载）。原来 tasks 不传 = 永远空态。
+                        //   remember(route)：每次进页重读（新建后回来能看到）。
+                        val cronTasks = remember(route) {
+                            com.ccm.app.AppGraph.toolsResult?.cron?.list()
+                                ?.map { t ->
+                                    com.ccm.app.ui.pages.ScheduledTaskUi(
+                                        id = t.id,
+                                        // 标题：prompt 前 30 字（与 CLI /todos 的紧凑展示一致）
+                                        title = t.prompt.take(30).replace("\n", " ")
+                                            .ifBlank { "(空任务)" },
+                                        schedule = t.cron + if (t.recurring) " · 循环" else " · 一次性",
+                                    )
+                                } ?: emptyList()
+                        }
+                        ScheduledScreen(
+                            tasks = cronTasks,
+                            // KDoc 承诺「新建任务 → 跳协作页」（ScheduledScreen.kt:41），
+                            // 但调用侧一直没接 → 页面上两个「新建任务」是死按钮（H5）
+                            onNewTask = { navigate(CcmRoute.COWORK) },
+                        )
+                    }
 
                     else -> LandingScreen(
                         greeting = greetingFor(profileName),

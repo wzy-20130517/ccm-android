@@ -411,6 +411,9 @@ class CronTools(private val store: CronStore) {
     fun schedulerTick(now: Long = System.currentTimeMillis(), onFire: (CronStore.Task) -> Boolean): Unit =
         store.schedulerTick(now, onFire)
 
+    /** 列全部任务（durable + session）—— ScheduledScreen 展示用（第34批）。 */
+    fun list(): List<CronStore.Task> = store.list()
+
     inner class CronCreateTool : Tool() {
         override val name = "CronCreate"
         override val description =

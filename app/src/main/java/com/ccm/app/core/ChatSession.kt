@@ -122,6 +122,48 @@ class ChatSession(
         return "已压缩：回收约 ${r.reclaimedTokens} tokens（截断了旧工具输出）。"
     }
 
+    /**
+     * 从某条用户消息**重发**（webgap #1：Web 的 RotateCcw 重发按钮，APK 缺）。
+     *
+     * 语义：截断该消息之后的所有内容（含它的旧回复），用同样的文本重跑。
+     * 与 Web 一致 —— 重发是「回到那一刻再来一次」，不是追加。
+     *
+     * 实现上直接改 AgentLoop 历史 + 重建 UI 气泡（旧回复从两端一起消失，
+     * 不会出现「界面留着旧回复、模型已经忘掉」的不一致）。
+     */
+    fun resendFrom(messageId: String) {
+        if (isRunning) return
+        val history = container.agentLoop.getHistory()
+        // 找到该 messageId 对应的历史索引（Bubble.messageId 与历史条目的
+        // timestamp 前缀对应 —— 见 loadHistory/collectEvents 的命名约定）
+        val idx = history.indexOfLast { m ->
+            m.role == Message.ROLE_USER && messageId.endsWith("${m.timestamp}")
+        }
+        // 兜底：按文本匹配（messageId 格式历史版本可能不同）
+        val target = if (idx >= 0) history[idx] else {
+            val b = _state.value.bubbles.firstOrNull { it.messageId == messageId }
+            if (b == null) return
+            val i2 = history.indexOfLast { m -> m.role == Message.ROLE_USER && m.text == b.text }
+            if (i2 < 0) return
+            history[i2]
+        }
+        val cut = history.indexOf(target).takeIf { it >= 0 } ?: return
+
+        // ① 截断历史（含目标本身 —— send 会重新 append）
+        container.agentLoop.setHistory(history.subList(0, cut).toList())
+        // ② UI 气泡同步截断（保留目标之前的）
+        val keep = _state.value.bubbles.indexOfLast { it.messageId == messageId }
+            .takeIf { it >= 0 } ?: _state.value.bubbles.size
+        _state.value = _state.value.copy(
+            bubbles = _state.value.bubbles.take(keep),
+            streaming = "",
+            toolCards = emptyList(),
+            error = null,
+        )
+        // ③ 重新发送
+        send(target.text)
+    }
+
     /** 更新输入框草稿（InputBar 的 onValueChange 直连这里）。 */
     fun setDraft(text: String) {
         _state.value = _state.value.copy(draft = text)

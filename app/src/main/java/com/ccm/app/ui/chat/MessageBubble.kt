@@ -112,9 +112,12 @@ fun UserBubble(
     text: String,
     modifier: Modifier = Modifier,
     images: List<String> = emptyList(),
+    onResend: (() -> Unit)? = null,
 ) {
     val colors = CCMTheme.colors
-    // 长按复制（webgap #1，与助手气泡同款）
+    // 长按菜单（webgap #1 扩展）：有 onResend 弹「复制 / 重发」，
+    // 没有则退回直接复制（向后兼容）。
+    var showMenu by remember { mutableStateOf(false) }
     val uCtx = androidx.compose.ui.platform.LocalContext.current
     val copyUser: (String) -> Unit = { txt ->
         if (txt.isNotBlank()) {
@@ -140,7 +143,9 @@ fun UserBubble(
                 .background(colors.hover)
                 .combinedClickable(
                     onClick = {},
-                    onLongClick = { copyUser(text) },
+                    onLongClick = {
+                        if (onResend != null) showMenu = true else copyUser(text)
+                    },
                 )
                 .padding(horizontal = 12.88.dp, vertical = 8.28.dp),
         ) {
@@ -184,6 +189,47 @@ fun UserBubble(
             }
         }
     }
+
+    // 长按菜单（复制 / 重发）—— 仅当提供 onResend 时可达
+    if (showMenu && onResend != null) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showMenu = false },
+            text = {
+                Column {
+                    Text(
+                        text = "复制",
+                        style = CCMText.body13,
+                        color = colors.textMain,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                copyUser(text)
+                                showMenu = false
+                            }
+                            .padding(vertical = 11.dp),
+                    )
+                    Text(
+                        text = "重发（截断此后的内容重新跑）",
+                        style = CCMText.body13,
+                        color = colors.textMain,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onResend()
+                                showMenu = false
+                            }
+                            .padding(vertical = 11.dp),
+                    )
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { showMenu = false }) {
+                    Text("取消", style = CCMText.body13)
+                }
+            },
+        )
+    }
 }
 
 /**
@@ -195,6 +241,8 @@ fun UserBubble(
 fun MessageList(
     bubbles: List<ChatBubble>,
     modifier: Modifier = Modifier,
+    /** 重发某条用户消息（webgap #1；null = 不显示重发入口）。 */
+    onResend: ((String) -> Unit)? = null,
     streaming: String = "",
     toolCards: List<ChatToolCard> = emptyList(),
     /** 正在流式生成的思考（State.thinking）。 */
@@ -216,7 +264,11 @@ fun MessageList(
 
         bubbles.forEach { bubble ->
             if (bubble.isUser) {
-                UserBubble(text = bubble.text, images = bubble.images)
+                UserBubble(
+                    text = bubble.text,
+                    images = bubble.images,
+                    onResend = onResend?.let { fn -> { fn(bubble.messageId) } },
+                )
             } else {
                 // 定型消息：思考已结束（isThinking=false，组件自己合成 done 事件）
                 if (bubble.thinking.isNotBlank()) {
