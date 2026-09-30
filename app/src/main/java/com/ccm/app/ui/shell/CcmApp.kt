@@ -652,6 +652,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                             // 行菜单：重命名 / 删除（公用 lambda）
                             onRenameChat = renameChat,
                             onDeleteChat = deleteChat,
+                            onRefresh = { refreshSessions() },   // 第42批下拉刷新
                         )
                     }
 

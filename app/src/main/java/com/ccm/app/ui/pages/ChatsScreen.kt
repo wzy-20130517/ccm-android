@@ -86,6 +86,8 @@ fun ChatsScreen(
     onRenameChat: (id: String, newTitle: String) -> Unit = { _, _ -> },
     /** 删除会话（SessionStore.delete 先备份到回收站）。 */
     onDeleteChat: (id: String) -> Unit = {},
+    /** 下拉刷新（第42批；null = 不启用）。 */
+    onRefresh: (() -> Unit)? = null,
 ) {
     val colors = CCMTheme.colors
 
@@ -100,10 +102,21 @@ fun ChatsScreen(
     var deleting by remember { mutableStateOf<ChatSummaryUi?>(null) }
     var renameInput by remember { mutableStateOf("") }
 
+    // ★ 第42批：下拉刷新（Web 列表有，APK 缺）。用 M3 PullToRefreshBox
+    //   包裹 —— 里面仍是 verticalScroll 的 Column（非 Lazy，兼容现有结构）。
+    var refreshing by remember { mutableStateOf(false) }
+    val doRefresh: () -> Unit = {
+        onRefresh?.invoke()
+        refreshing = false   // 刷新是同步读盘，瞬时完成
+    }
+    androidx.compose.material3.pulltorefresh.PullToRefreshBox(
+        isRefreshing = refreshing,
+        onRefresh = { refreshing = true; doRefresh() },
+        modifier = modifier.fillMaxSize().background(colors.bgMain),
+    ) {
     Column(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxSize()
-            .background(colors.bgMain)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp),      // 移动端 px-4
     ) {
@@ -344,6 +357,7 @@ fun ChatsScreen(
                 TextButton(onClick = { deleting = null }) { Text("取消", style = CCMText.body13) }
             },
         )
+    }
     }
 }
 
