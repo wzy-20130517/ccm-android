@@ -675,7 +675,27 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         )
                     }
 
-                    CcmRoute.CUSTOMIZE -> CustomizeScreen(onBack = { navigate(CcmRoute.HOME) })
+                    CcmRoute.CUSTOMIZE -> {
+                        // H4：技能列表来自两个来源 ——
+                        // 1) assets 内置技能清单（播种/展示用）
+                        // 2) workspace/.claude/skills/*/SKILL.md（用户放的）
+                        // 这里先接 1（内置清单随 APK 走，无需文件系统权限）；
+                        // 自定义技能目录扫描待 workspace 目录初始化后接入。
+                        val skills = remember(route) {
+                            com.ccm.app.core.skill.BuiltinSkills.all().map { sk ->
+                                com.ccm.app.ui.pages.CustomizeItem(
+                                    id = sk.id,
+                                    name = sk.name,
+                                    description = sk.description,
+                                    kind = "skills",
+                                )
+                            }
+                        }
+                        CustomizeScreen(
+                            sections = skills,
+                            onBack = { navigate(CcmRoute.HOME) },
+                        )
+                    }
 
                     CcmRoute.ARTIFACTS -> {
                         // ★ H2（audit-pages #2）：原来 items=emptyList() —— 灵感 tab

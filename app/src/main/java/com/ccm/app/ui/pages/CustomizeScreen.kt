@@ -155,10 +155,13 @@ fun CustomizeScreen(
                     .padding(horizontal = 10.218.dp, vertical = 11.04.dp),
                 verticalArrangement = Arrangement.spacedBy(7.36.dp),
             ) {
-                if (sections.isEmpty()) {
+                // ★ H4（2026-09-29）：sections 原来是调用方不传的死空态。
+                //   现在按 tab 过滤 kind（skills / connectors 两组）。
+                val shownItems = sections.filter { it.kind == activeTab.key }
+                if (shownItems.isEmpty()) {
                     EmptyCustomize()
                 } else {
-                    sections.forEach { item ->
+                    shownItems.forEach { item ->
                         CustomizeListItem(item = item, onClick = { detailItem = item })
                     }
                 }
