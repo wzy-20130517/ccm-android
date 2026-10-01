@@ -432,14 +432,18 @@ private fun ToolCallItem(
 
         // ── 展开区（px-2 py-2 + border-t）────────────────────────
         if (expandable && expanded) {
+            // ★ CI #239：`CCMTheme.isDark` 是 @Composable（读 CompositionLocal），
+            //   不能进 drawBehind{} 的 DrawScope lambda —— 必须在外面先取好值。
+            //   （同类坑见 CLAUDE.md「@Composable 不能进 Canvas{}/remember{}」）
+            val topBorderColor = if (CCMTheme.isDark) Color.White.copy(alpha = 0.05f)
+            else Color.Black.copy(alpha = 0.05f)
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .drawBehind {
                         // border-t（1px × 0.92）
                         drawRect(
-                            color = if (CCMTheme.isDark) Color.White.copy(alpha = 0.05f)
-                            else Color.Black.copy(alpha = 0.05f),
+                            color = topBorderColor,
                             topLeft = Offset.Zero,
                             size = Size(size.width, 0.92.dp.toPx()),
                         )
