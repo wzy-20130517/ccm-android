@@ -636,6 +636,39 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
         //   首页跳转后无人执行。它不依赖任何对话页状态（dumpRules + injectNotice），
         //   搬进 handler 后首页/对话页统一路径。
         "/permissions" -> {
+            // ★ 2026-10-01 用户报「打 /permissions mode bypassPermissions，
+            //   实际执行的还是 /permissions」—— 原来整条命令只显示规则，
+            //   参数被静默忽略。现在支持子命令（对齐 CLI /permissions mode）：
+            //   /permissions            看规则
+            //   /permissions mode <m>   改模式（default|acceptEdits|plan|bypassPermissions）
+            val sub = arg.trim()
+            if (sub.startsWith("mode")) {
+                val newMode = sub.removePrefix("mode").trim()
+                val perms = com.ccm.app.AppGraph.toolsResult?.permissions
+                    ?: return SlashResult.Notice("权限系统未初始化。")
+                if (newMode.isBlank()) {
+                    return SlashResult.Notice(
+                        "**权限模式**\n\n当前：`${perms.mode}`\n\n" +
+                            "用法：`/permissions mode <模式>`\n可选：default | acceptEdits | plan | bypassPermissions",
+                    )
+                }
+                val r = perms.setMode(newMode)
+                // 落盘（不落盘重启就丢；损坏时拒绝写，同 B4 逻辑）
+                try {
+                    val st = com.ccm.app.AppGraph.storage
+                    if (st != null && newMode in listOf("default", "acceptEdits", "plan", "bypassPermissions")) {
+                        val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                        if (loadR.error == null) {
+                            com.ccm.app.core.provider.AppConfig.save(
+                                loadR.config.copy(permissionMode = newMode), st.configFile,
+                            )
+                        } else {
+                            return SlashResult.Notice("$r\n\n⚠ 配置损坏（${loadR.error}），未落盘 —— 重启后会恢复旧模式。")
+                        }
+                    }
+                } catch (_: Throwable) {}
+                return SlashResult.Notice("$r\n\n（已落盘，重启保留）")
+            }
             SlashResult.Notice("**权限规则**\n\n" + try {
                 val perms = com.ccm.app.AppGraph.toolsResult?.permissions
                 if (perms != null) {
