@@ -278,6 +278,18 @@ class AppContainer private constructor(
              * 空串 = 由本方法生成一个（单测/无会话场景）。
              */
             sessionId: String = "",
+            /**
+             * 自动记忆提取器 —— **必须传进程级单例**（AppGraph.autoMemory）。
+             *
+             * ⚠️ 与 [modes] 同一个坑：Memory 工具（ToolsBootstrap 持有）要通知
+             * 「本轮别重复提取」，而提取动作由 ChatSession 调 —— 两边必须是
+             * **同一个对象**。若这里每次新建，工具的 `markMainWroteMemory()`
+             * 置位的是 A 实例，提取读的是 B 实例的 flag（恒 false）→
+             * **互斥静默失效**：主 Agent 刚写完记忆，automem 又提取一条重复的。
+             *
+             * `null` = 自己建一个（单测/无 AppGraph 场景），生产环境由 AppGraph 传。
+             */
+            autoMemory: com.ccm.app.core.memory.AutoMemory? = null,
         ): AppContainer? {
             val provider = config.currentProvider ?: return null
             val keys = provider.allKeys()
@@ -354,7 +366,11 @@ class AppContainer private constructor(
             // ── 自动记忆（automem）──
             // 状态文件与记忆文件都放 storage.root（= files/），与 MiscTools 的
             // memoryFile 同一个 —— 两个模块必须指向同一份 CLAUDE.md。
-            val autoMemory = try {
+            //
+            // ⚠️ **优先用注入的实例**（AppGraph.autoMemory）：Memory 工具持有
+            // 的是那一个，这里新建就会让「主 Agent 写了记忆 → 本轮跳过提取」
+            // 的互斥失效（工具置位 A、提取读 B）。详见参数注释。
+            val effectiveAutoMemory = autoMemory ?: try {
                 com.ccm.app.core.memory.AutoMemory(
                     stateFile = java.io.File(storage.root, "automem.json"),
                     memoryFile = java.io.File(storage.root, "CLAUDE.md"),
@@ -374,7 +390,7 @@ class AppContainer private constructor(
                 // 阈值从配置读（AppConfig 目前没有这两个字段 → 用默认 0 = 关闭）
                 autoCompact = AutoCompact(maxContext = config.maxContextTokens),
                 modes = modes,
-                autoMemory = autoMemory,
+                autoMemory = effectiveAutoMemory,
             )
         }
 

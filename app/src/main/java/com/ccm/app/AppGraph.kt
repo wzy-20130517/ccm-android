@@ -380,6 +380,7 @@ object AppGraph {
                 cwd = cwd,
                 sessionId = sid,
                 modes = modes,
+                autoMemory = autoMemory,
             )
 
             if (sess == null) {
@@ -465,6 +466,7 @@ object AppGraph {
                 cwd = cwd,
                 sessionId = id,
                 modes = modes,
+                autoMemory = autoMemory,
             ) ?: run {
                 // 没配 Provider —— 与 init 同样的降级
                 initError = "尚未配置 API —— 请到「设置 → 模型」里添加一个 Provider"
@@ -620,6 +622,7 @@ object AppGraph {
                 cwd = cwd,
                 sessionId = sessionId.ifBlank { SessionStore(st).newSessionId() },
                 modes = modes,
+                autoMemory = autoMemory,
             )
             session = sess
             initError = if (sess == null) "尚未配置 API —— 请到「设置 → 模型」里添加一个 Provider" else null

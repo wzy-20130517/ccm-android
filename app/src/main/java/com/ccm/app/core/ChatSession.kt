@@ -764,6 +764,13 @@ class ChatSession(
              * 「工具写 A、主循环读 B」静默失效。详见 AppGraph.modes 注释。
              */
             modes: com.ccm.app.core.agent.ModeState = com.ccm.app.core.agent.ModeState(),
+            /**
+             * 自动记忆提取器（**必须传进程级单例** AppGraph.autoMemory）。
+             *
+             * 理由同 [modes]：Memory 工具持有的是 ToolsBootstrap 那一刻的实例，
+             * 这里传新的就会让「主 Agent 写记忆 → 本轮跳过提取」的互斥失效。
+             */
+            autoMemory: com.ccm.app.core.memory.AutoMemory? = null,
         ): ChatSession? {
             val cfg = AppConfig.load(storage.configFile).config
             // 先把 id 定下来 —— Agent 侧（工具/hooks/子 Agent 归属）和存盘侧
@@ -779,6 +786,7 @@ class ChatSession(
                 cwd = cwd,
                 sessionId = sid,
                 modes = modes,
+                autoMemory = autoMemory,
             ) ?: return null
 
             // ★ B3 联动：恢复已有会话时把文件里的 title 带给 SessionAuto ——
