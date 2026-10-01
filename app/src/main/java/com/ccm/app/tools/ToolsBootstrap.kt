@@ -40,6 +40,7 @@ import com.ccm.app.tools.task.AgentWorkflowTools
 import com.ccm.app.tools.task.GoalStore
 import com.ccm.app.tools.task.GoalTools
 import com.ccm.app.tools.task.MiscTools
+import com.ccm.app.tools.task.ModeTools
 import com.ccm.app.tools.task.SkillTools
 import com.ccm.app.tools.task.SubAgentRegistry
 import com.ccm.app.tools.task.TaskStore
