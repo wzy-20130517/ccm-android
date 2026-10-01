@@ -337,6 +337,19 @@ fun MessageList(
             }
         }
 
+        // ★ 2026-10-01：等待态指示器 —— 发送后到首字之间的空窗期。
+        //   原来这段什么都没显示（用户以为卡死）；Web 有 Claude 星芒 sprite。
+        //   条件：在跑 && 还没有任何流式内容（正文/思考都空）。
+        if (streamingRunning && streaming.isBlank() && streamingThinking.isBlank()) {
+            androidx.compose.foundation.layout.Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            ) {
+                AssistantActivityIndicator(size = 32.dp)
+            }
+        }
+
         // 流式内容（未定型）
         if (streaming.isNotBlank() || streamingThinking.isNotBlank()) {
             // 流式中：思考在前（先想后说），running 驱动 isThinking 动效
