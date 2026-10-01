@@ -349,25 +349,48 @@ fun MessageList(
         }
 
         // 流式内容（未定型）
+        // ★ 顺序对齐 Web（`MainContent.tsx:1073 → 1125 → 1330`）：
+        //   思考链 → 工具调用组 → 正文。
+        //   原来是「思考 → 正文 → 工具」，工具组被甩到正文下面，
+        //   与 Web 的「先看思考、再看它调了什么、最后读结论」叙事顺序相反。
         if (streaming.isNotBlank() || streamingThinking.isNotBlank()) {
             // 流式中：思考在前（先想后说），running 驱动 isThinking 动效
             if (streamingThinking.isNotBlank()) {
                 AssistantThinkingChain(
                     thinking = streamingThinking,
                     isThinking = streamingRunning,
+                    // 工具卡传进去合成时间线事件（Web 同款：
+                    // `buildReasoningTimelineEvents(thinking, { toolCalls })`）
+                    toolCards = toolCards,
                     modifier = Modifier.fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                 )
             }
+
+            // 本轮工具调用 —— 对齐 Web：**聚合成一个折叠组**（不是单卡平铺）。
+            // Web `MainContent.tsx:1186` 把一条消息的所有 toolCalls 包进一个
+            // `<div className="mb-4">`，组头显示去重后的工具名摘要，展开后左竖线内列。
+            if (toolCards.isNotEmpty()) {
+                ToolCallGroup(
+                    cards = toolCards,
+                    isStreaming = streamingRunning,
+                    // Web `isStale`：整轮已结束但工具仍标 running → 视为 canceled。
+                    isStale = !streamingRunning,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            }
+
             if (streaming.isNotBlank()) {
                 AssistantBubble(text = streaming)
             }
-        }
-
-        // 本轮工具卡片
-        toolCards.forEach { card ->
-            Spacer(Modifier.height(3.68.dp))
-            ToolCard(card = card)
+        } else if (toolCards.isNotEmpty()) {
+            // 没有流式文本但工具在跑（例如纯工具轮次）
+            ToolCallGroup(
+                cards = toolCards,
+                isStreaming = streamingRunning,
+                isStale = !streamingRunning,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
         }
     }
 }

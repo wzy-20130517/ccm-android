@@ -3,6 +3,7 @@ package com.ccm.app.ui.chat
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -13,13 +14,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -32,11 +29,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ccm.app.R
@@ -45,87 +49,306 @@ import com.ccm.app.ui.theme.CCMText
 import com.ccm.app.ui.theme.CCMTheme
 
 /**
- * 工具调用卡片 —— 对齐 Web `MainContent.tsx:1240-1300`。
+ * 工具调用聚合折叠组 —— 对齐 Web `MainContent.tsx:1186-1300`。
  *
- * ## 实测结构（源码 + 截图）
+ * ## ★ 为什么是「组」而不是「一堆卡」
+ * Web 侧一条助手消息里的**所有工具调用聚合成一个折叠组**，不是单卡平铺：
  * ```
- * ┌─ 外层：bg-black/5 dark:bg-black/20 · rounded-lg · border-black/5 ─┐
- * │ 头部（可点折叠）px-3 py-2                                        │
- * │   ├─ 图标：Bash 用 `>_` 等宽字，其他用 FileText（14）             │
- * │   ├─ 预览：font-mono text-[12px] truncate                        │
- * │   │        格式：`Read a.mjs` / `Bash npm test`                  │
- * │   └─ 右侧：+N/-N 统计 · Running... · Failed · ChevronDown         │
- * └──────────────────────────────────────────────────────────────────┘
- * 展开态：mt-2 ml-1 pl-4 border-l-2（左边框竖线）+ 结果区
+ * ▸ 组头（可点折叠）：[状态图标] Run command, Read file  [⌄]
+ *   展开后：左侧 2px 竖线（border-l-2 border-claude-border）
+ *     ├─ 工具卡 1：`>_` npm test                    [⌄]
+ *     ├─ 工具卡 2：▤ Read a.mjs                     [⌄]
+ *     └─ ✓ Done
  * ```
+ * 单卡平铺会让「一轮调了 8 个工具」变成 8 个独立方块，看不出它们属于同一次思考 ——
+ * 这是与 Web 最大的**结构差异**（不是数值差异）。
  *
- * ## 状态映射（源码 `realStatus`）
- * | 状态 | 图标 | 文字 |
+ * ## 逐项对照（源码 → 本实现）
+ * | 项 | Web | 本实现 |
  * |---|---|---|
- * | running | FileText + `animate-pulse` | `Running...`（shimmer） |
- * | 完成 | Check | 无 |
- * | 错误 | 红色 `✗` | `Failed` |
- * | canceled（stale） | 同完成 | 无 |
+ * | 组容器 | `rounded-lg overflow-hidden` + `!allDone` 时 `bg-black/[0.04] dark:bg-white/[0.04]` | 同（完成即透明） |
+ * | 组头内距 | `px-2 py-1.5` | 7.36 / 5.52 dp |
+ * | 组头图标 | 运行 `FileText 16 + animate-pulse` · 完成 `Check 16` · 出错红 `✗` | 同 |
+ * | 组头文字 | `text-[14px]`，运行中 `animate-shimmer-text` | 11.39sp + ToolHeaderShimmer |
+ * | 组头 chevron | `ChevronDown 14`，展开 `rotate-180`（200ms） | 12.88dp + 200ms 动画 |
+ * | 展开列 | `mt-2 ml-1 pl-4 border-l-2 border-claude-border space-y-2` | 7.36 / 3.68 / 14.72 / 1.84dp 竖线 / 7.36 间距 |
+ * | 组尾 | `allDone && !streaming` → `Check 14 + Done text-[13px]` | 同 |
  *
- * ## 折叠逻辑（源码）
+ * ## 折叠状态记忆（源码）
  * ```js
  * 展开 = msg.isToolCallsExpanded ?? (isCurrentlyStreaming || !allDone)
  * ```
- * 即：**流式中或未跑完时默认展开**，跑完后默认收起。
+ * 即：**用户没点过**时跟着流式状态走（跑完自动收起），**点过之后**就固定 ——
+ * 用 `mutableStateOf<Boolean?>(null)` 表达「未点过」最贴切。
  *
- * ## 预览格式（源码 `inputPreview` 的拼法）
- * ```js
- * actionLabel = { Read:'Read', Write:'Write', Edit:'Edit', Bash:'', Grep:'Search', Glob:'Find' }
- * prefix = actionLabel[name] ?? name
- * fileOrCmd = shortPath || command || inputStr.slice(0,80)
- * preview = prefix + ' ' + fileOrCmd
- * ```
- * > ⚠️ dev-core 的 `ToolCard.preview` 是**另一种格式**（`path="a.mjs", limit=50`）。
- * > 两者都可用，这里**优先用 Web 格式**（截图对齐），
- * > 若 `preview` 非空且想用 dev-core 的格式，传 `useAgentPreview = true`。
- *
- * @param card           工具卡片数据
- * @param defaultExpanded 默认是否展开（`null` = 用「流式中或未完成时展开」规则）
+ * @param cards       本轮的工具体（顺序即调用顺序）
+ * @param isStreaming 对应 Web `isCurrentlyStreaming`：本轮是否仍在流式生成
+ * @param isStale     对应 Web `isStale`：整轮已结束但工具仍标 running → 视为 canceled。
+ *                    默认 `!isStreaming`（本轮不跑了，还标 running 的就是停在那儿的）
  */
 @Composable
-fun ToolCard(
-    card: ChatToolCard,
+fun ToolCallGroup(
+    cards: List<ChatToolCard>,
     modifier: Modifier = Modifier,
-    defaultExpanded: Boolean? = null,
-    useAgentPreview: Boolean = false,
+    isStreaming: Boolean = false,
+    isStale: Boolean = !isStreaming,
 ) {
+    // 隐藏工具（Web `HIDDEN_TOOL_NAMES`）不进组、不计入 summary
+    val visible = remember(cards) { cards.filter { it.name !in HiddenToolNames } }
+    if (visible.isEmpty()) return
+
     val colors = CCMTheme.colors
 
-    // 展开态：默认按 Web 规则（跑完收起，未跑完展开）
-    var expanded by remember(card.id) {
-        mutableStateOf(defaultExpanded ?: (card.running || card.result.isBlank()))
+    // realStatus：running 且整轮已停 → canceled（不再显示 Running 动效）
+    val allDone = visible.all { !it.running || isStale }
+    val hasError = visible.any { it.isError }
+    val summary = remember(visible) {
+        visible.map { toolDisplayName(it.name) }.distinct().joinToString(", ")
     }
 
-    val isRunning = card.running
+    // 折叠状态记忆：用户点过就固定，否则默认「流式中或未跑完时展开」
+    var userToggled by remember(visible.first().id) { mutableStateOf<Boolean?>(null) }
+    val expanded = userToggled ?: (isStreaming || !allDone)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(bottom = 14.72.dp),                 // mb-4
+    ) {
+        // ── 组头（可点折叠）──────────────────────────────────────
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(7.36.dp))       // rounded-lg
+                .background(
+                    // 只有未跑完时才有底色（跑完透明）
+                    if (!allDone) {
+                        if (CCMTheme.isDark) Color.White.copy(alpha = 0.04f)
+                        else Color.Black.copy(alpha = 0.04f)
+                    } else {
+                        Color.Transparent
+                    },
+                )
+                .clickable { userToggled = !expanded }
+                .padding(horizontal = 7.36.dp, vertical = 5.52.dp),   // px-2 py-1.5
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.36.dp),    // gap-2
+        ) {
+            when {
+                // 运行中：FileText + animate-pulse
+                !allDone -> PulsingFileTextIcon(size = 14.72.dp, tint = colors.textSecondary)
+                // 完成但有错：红 ✗（text-[14px]）
+                hasError -> Text(
+                    text = "✗",
+                    style = CCMText.body14.copy(fontSize = 11.39.sp),
+                    color = Color(0xFFF87171),
+                )
+                // 全部成功：Check
+                else -> PainterIcon(R.drawable.ic_check, size = 14.72.dp, tint = colors.textSecondary)
+            }
+
+            // summary：工具名去重逗号拼接（`Run command, Read file`）
+            if (!allDone) {
+                // ★ 用 animate-shimmer-text（4s 窄亮带扫过），**不是**思维链的 1.6s 流光 ——
+                //   两者在 Web 里是不同动画，见 [ToolHeaderShimmer] 注释里的对照表。
+                ToolHeaderShimmer(
+                    text = summary,
+                    style = CCMText.body14,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+            } else {
+                Text(
+                    text = summary,
+                    style = CCMText.body14,
+                    color = colors.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+            }
+
+            ChevronGlyph(rotation = if (expanded) 180f else 0f, size = 12.88.dp, tint = colors.textSecondary)
+        }
+
+        // ── 展开列：左竖线内列各工具卡 ───────────────────────────
+        if (expanded) {
+            val railColor = colors.border                    // border-claude-border
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 7.36.dp)                  // mt-2
+                    // 竖线画在 `ml-1` 处（距左边缘 3.68dp），**不是**内容区起点 ——
+                    // Web 的 `border-l-2` 属于展开列自身，`pl-4` 是线内侧的内距。
+                    // 所以 drawBehind 必须放在 start padding **之前**。
+                    .drawBehind {
+                        drawRect(
+                            color = railColor,
+                            topLeft = Offset(3.68.dp.toPx(), 0f),
+                            size = Size(1.84.dp.toPx(), size.height),
+                        )
+                    }
+                    .padding(start = 3.68.dp + 14.72.dp),    // ml-1 + pl-4
+                verticalArrangement = Arrangement.spacedBy(7.36.dp),   // space-y-2
+            ) {
+                visible.forEach { card ->
+                    ToolCallItem(card = card, isStale = isStale)
+                }
+
+                // 组尾：全跑完且不在流式中 → Check + Done
+                if (allDone && !isStreaming) {
+                    Row(
+                        modifier = Modifier.padding(vertical = 3.68.dp),   // pt-1 pb-1
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.36.dp),   // gap-2
+                    ) {
+                        PainterIcon(R.drawable.ic_check, size = 12.88.dp, tint = colors.textSecondary)
+                        Text(
+                            text = "Done",
+                            style = CCMText.body13,
+                            color = colors.textSecondary,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 组头摘要的扫光文字 —— 对应 Web `animate-shimmer-text`（`MainContent.tsx:849-858`）。
+ *
+ * ## ★ 为什么不用 AssistantThinkingChain 里的 [TextShimmer]
+ * 两者在 Web 里是**两套不同的动画**，混用会明显看出节奏不对：
+ * | | `animate-shimmer-text`（工具组头） | `thought-chain-text-shimmer`（思维链） |
+ * |---|---|---|
+ * | 周期 | **4s** linear | 1.6s linear |
+ * | 渐变 | `secondary 45% → main 50% → secondary 55%`（**窄亮带，仅 10%**） | `0% → 48% → 100%`（宽渐变） |
+ * | background-size | 200% | 220% |
+ * | keyframes | `200% 0` → `-200% 0` | `200% center` → `0% center` |
+ *
+ * 观感差异：工具组头是「**快速扫过 + 长停顿**」（亮带只在 25%~50% 行程内掠过文字），
+ * 思维链是「持续流动」。用 1.6s 那套会让组头一直在闪，比 Web 躁。
+ *
+ * ## background-position 换算
+ * `position% × (容器宽 − 背景宽)`：
+ * - 背景宽 = 2W → 可移动距离 = W − 2W = **−W**
+ * - position `200%` → x = −W × 2.0 = **−2W**
+ * - position `−200%` → x = −W × (−2.0) = **+2W**
+ *
+ * 亮带中心 = x + W（50% 在窗口正中）：
+ * - t=0.25 → x = −W → 中心 = 0（贴着文字左缘）
+ * - t=0.5  → x = 0  → 中心 = W（贴着文字右缘）
+ * 即亮带在 **t ∈ [0.25, 0.5]** 掠过文字，其余 3/4 时间是静止灰字。
+ */
+@Composable
+private fun ToolHeaderShimmer(text: String, style: TextStyle, modifier: Modifier = Modifier) {
+    var width by remember { mutableStateOf(0f) }
+
+    // ★ 颜色在 remember 之外求值：@Composable 不能进 remember 的 calculation
+    val edge = CCMTheme.colors.textSecondary
+    val body = CCMTheme.colors.textMain
+
+    val transition = rememberInfiniteTransition(label = "tool-shimmer")
+    val t by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 4000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "tool-shimmer-pos",
+    )
+
+    val brush = remember(width, t, edge, body) {
+        if (width <= 0f) {
+            SolidColor(edge)
+        } else {
+            // 窗口宽 2W，起点 x 从 −2W 线性走到 +2W
+            val start = -2f * width + 4f * width * t
+            androidx.compose.ui.graphics.Brush.linearGradient(
+                colorStops = arrayOf(
+                    0.45f to edge,
+                    0.50f to body,
+                    0.55f to edge,
+                ),
+                start = Offset(start, 0f),
+                end = Offset(start + 2f * width, 0f),
+            )
+        }
+    }
+
+    Text(
+        text = text,
+        style = style.copy(brush = brush),
+        modifier = modifier.onSizeChanged { width = it.width.toFloat() },
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+/**
+ * 组内单个工具卡 —— 对齐 Web `MainContent.tsx:1243-1295`。
+ *
+ * ```
+ * ┌ bg-black/5 dark:bg-black/20 · rounded-lg · border-black/5 · mx-1 ┐
+ * │ [>_ 或 ▤14] 预览(font-mono 12)         [+N -N] [Running...] [⌄] │
+ * ├──────────────────────────────────────────────────────────────────┤
+ * │ 展开：border-t + px-2 py-2                                       │
+ * │   ├ Edit/MultiEdit/Write/Bash/Read → ToolDiffView                │
+ * │   └ 其他 → 结果框（font-mono 12 · max-h-400 · bg-black/5）        │
+ * └──────────────────────────────────────────────────────────────────┘
+ * ```
+ *
+ * ## 与旧实现的差异（重点）
+ * 1. **左侧图标不再随状态变**：Web 组内卡固定 `FileText 14`（或 Bash 的 `>_`），
+ *    **没有** pulse / Check / ✗ —— 状态只体现在右侧 `Running...` / `Failed`。
+ *    旧实现把「状态图标」放在左边，与 Web 不符。
+ * 2. **多了 +N/-N 统计**（Edit/Write 的行数增减，`getToolStats`）。
+ * 3. **展开区是 `border-t` 顶边**，不是左边竖线（竖线属于组，不属于卡）。
+ */
+@Composable
+private fun ToolCallItem(
+    card: ChatToolCard,
+    isStale: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val colors = CCMTheme.colors
+    // realStatus：running 且整轮已停 → canceled（不再显示 Running 动效）
+    val isRunning = card.running && !isStale
     val isError = card.isError
 
-    // 卡片底色 —— Web: bg-black/5 dark:bg-black/20
+    // 单卡展开态（Web `tc.isExpanded ?? false`）
+    var expanded by remember(card.id) { mutableStateOf(false) }
+
+    val filePath = inputField(card.input, "file_path").ifBlank { inputField(card.input, "path") }
+    val command = inputField(card.input, "command")
+    val preview = buildWebStylePreview(card.name, filePath, command, card.input)
+        .ifBlank { card.displayName.ifBlank { card.name } }
+
+    val useDiff = shouldUseDiffView(card.name, card.input)
+    val expandable = card.result.isNotBlank() || useDiff
+    val stats = toolStats(card.name, card.input)
+
     val cardBg = if (CCMTheme.isDark) Color.Black.copy(alpha = 0.20f) else Color.Black.copy(alpha = 0.05f)
     val cardBorder = if (CCMTheme.isDark) Color.White.copy(alpha = 0.05f) else Color.Black.copy(alpha = 0.05f)
 
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 4.dp)                 // mx-1
-            .clip(RoundedCornerShape(7.36.dp))          // rounded-lg
+            .padding(horizontal = 3.68.dp)               // mx-1
+            .clip(RoundedCornerShape(7.36.dp))           // rounded-lg
             .background(cardBg)
-            .border(1.dp, cardBorder, RoundedCornerShape(7.36.dp)),
+            .border(0.92.dp, cardBorder, RoundedCornerShape(7.36.dp)),
     ) {
-        // ── 头部（可点折叠）px-3 py-2 ────────────────────────────────
+        // ── 头部（可点折叠）px-3 py-2 ────────────────────────────
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { expanded = !expanded }
+                .clickable(enabled = expandable) { expanded = !expanded }
                 .padding(horizontal = 11.04.dp, vertical = 7.36.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            // 左：图标 + 预览
+            // 左：图标 + 预览（flex items-center gap-2 overflow-hidden）
             Row(
                 modifier = Modifier.weight(1f),
                 verticalAlignment = Alignment.CenterVertically,
@@ -135,132 +358,126 @@ fun ToolCard(
                     // Bash 用 `>_` 等宽符号（Web: font-mono font-bold）
                     Text(
                         text = ">_",
-                        style = CCMText.body13.copy(
+                        style = CCMText.body12.copy(
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
                         ),
                         color = colors.textSecondary,
                     )
                 } else {
-                    // 其他工具用 FileText 图标
-                    ToolStatusIcon(isRunning = isRunning, isError = isError)
+                    // 其他工具固定 FileText 14px（**不随状态变**）
+                    PainterIcon(R.drawable.ic_file_text, size = 12.88.dp, tint = colors.textSecondary)
                 }
 
                 Text(
-                    text = toolPreview(card, useAgentPreview),
-                    // font-mono text-[12px]
-                    style = CCMText.body12.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.04.sp,
-                    ),
+                    text = preview,
+                    // text-claude-text font-mono text-[12px] truncate
+                    style = CCMText.body12.copy(fontFamily = FontFamily.Monospace),
                     color = colors.textMain,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
 
-            // 右：状态
+            // 右：统计 / Running / Failed / Chevron（ml-4 gap-2 flex-shrink-0）
             Row(
                 modifier = Modifier.padding(start = 14.72.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(7.36.dp),
             ) {
-                when {
-                    // ★ 2026-10-01：Running... 静态文字 → shimmer 扫光
-                    //   （对齐 Web `animate-shimmer-text`；TextShimmer 已在
-                    //    AssistantThinkingChain.kt 里实现，复用而不是重写）
-                    isRunning -> TextShimmer(
-                        text = "Running...",
-                        style = CCMText.body12,
-                    )
-                    isError -> Text(
+                // +N/-N（Edit/Write 的行数增减；运行中不显示）
+                if (stats != null && !isRunning) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.52.dp),
+                    ) {
+                        if (stats.first > 0) {
+                            Text(
+                                text = "+${stats.first}",
+                                style = CCMText.body11.copy(fontFamily = FontFamily.Monospace),
+                                color = if (CCMTheme.isDark) Color(0xFF4ADE80) else Color(0xFF22C55E),
+                            )
+                        }
+                        if (stats.second > 0) {
+                            Text(
+                                text = "-${stats.second}",
+                                style = CCMText.body11.copy(fontFamily = FontFamily.Monospace),
+                                color = if (CCMTheme.isDark) Color(0xFFF87171) else Color(0xFFEF4444),
+                            )
+                        }
+                    }
+                }
+
+                // Running... 走 shimmer 扫光（Web 单卡里同样是 `animate-shimmer-text`）
+                if (isRunning) {
+                    ToolHeaderShimmer(text = "Running...", style = CCMText.body12)
+                }
+                if (isError) {
+                    Text(
                         text = "Failed",
                         style = CCMText.body12,
                         color = Color(0xFFF87171),      // text-red-400/80
                     )
                 }
 
-                // ChevronDown（展开时转 180°）
-                PainterIcon(
-                    R.drawable.ic_chevron_down,
-                    size = 12.88.dp,
-                    tint = colors.textSecondary,
-                    modifier = Modifier.rotate(if (expanded) 180f else 0f),
-                )
+                if (expandable) {
+                    ChevronGlyph(
+                        rotation = if (expanded) 180f else 0f,
+                        size = 12.88.dp,
+                        tint = colors.textSecondary,
+                    )
+                }
             }
         }
 
-        // ── 展开态：左边框竖线 + 结果 ────────────────────────────────
-        if (expanded) {
-            Row(
+        // ── 展开区（px-2 py-2 + border-t）────────────────────────
+        if (expandable && expanded) {
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 4.dp, end = 4.dp, bottom = 7.36.dp),
+                    .drawBehind {
+                        // border-t（1px × 0.92）
+                        drawRect(
+                            color = if (CCMTheme.isDark) Color.White.copy(alpha = 0.05f)
+                            else Color.Black.copy(alpha = 0.05f),
+                            topLeft = Offset.Zero,
+                            size = Size(size.width, 0.92.dp.toPx()),
+                        )
+                    }
+                    .padding(horizontal = 7.36.dp, vertical = 7.36.dp),
             ) {
-                // 左侧竖线 —— Web: border-l-2 border-claude-border
-                Box(
-                    modifier = Modifier
-                        .width(2.dp)
-                        .heightIn(min = 20.dp)
-                        .background(colors.border),
-                )
-                Spacer(Modifier.width(14.72.dp))        // pl-4
-
-                Column(modifier = Modifier.weight(1f)) {
-                    // ★ 工具入参可视化（2026-09-27）：Edit 显示 diff、
-                    //   Bash 显示命令、Read/Write 显示文件内容。
-                    //   之前 467 行的 ToolDiffView 写好了零调用。
-                    //   input 空（老事件/非标准工具）→ 组件内部 return，退化为原样。
-                    if (card.input.isNotBlank()) {
-                        ToolDiffView(
-                            toolName = card.name,
-                            oldString = inputField(card.input, "old_string"),
-                            newString = inputField(card.input, "new_string"),
-                            filePath = inputField(card.input, "file_path"),
-                            command = inputField(card.input, "command"),
-                            // Bash/Read 的内容来自执行结果，不是入参
-                            output = if (card.name == "Bash" || card.name == "Read") card.result else "",
-                        )
-                        Spacer(Modifier.height(5.52.dp))
-                    }
-
-                    // 进度（覆盖式 —— 只显示最新一行）
-                    if (isRunning && card.progress.isNotBlank()) {
-                        Text(
-                            text = card.progress,
-                            style = CCMText.body12.copy(fontFamily = FontFamily.Monospace),
-                            color = colors.textSecondary,
-                        )
-                        Spacer(Modifier.height(5.52.dp))
-                    }
-
-                    // 结果区 —— Web: font-mono text-[12px] max-h-[400px] 可滚动
-                    if (card.result.isNotBlank()) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 368.dp)         // max-h-[400px] × 0.92
-                                .clip(RoundedCornerShape(5.52.dp))
-                                .background(
-                                    if (CCMTheme.isDark) Color.Black.copy(alpha = 0.4f)
-                                    else Color.Black.copy(alpha = 0.05f),
-                                )
-                                .padding(7.36.dp)
-                                .verticalScroll(rememberScrollState()),
-                        ) {
-                            Text(
-                                text = card.result,
-                                style = CCMText.body12.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.04.sp,
-                                    lineHeight = 16.56.sp,
-                                ),
-                                color = colors.textSecondary,
+                when {
+                    // Edit/Write/Bash/Read → diff 视图（对应 `shouldUseDiffView` 分支）
+                    useDiff -> ToolDiffView(
+                        toolName = card.name,
+                        oldString = inputField(card.input, "old_string"),
+                        newString = inputField(card.input, "new_string"),
+                        filePath = filePath,
+                        command = command,
+                        // Bash/Read 的内容来自执行结果，不是入参
+                        output = if (card.name == "Bash" || card.name == "Read") card.result else "",
+                    )
+                    // 其他 → 纯结果框
+                    card.result.isNotBlank() -> Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 3.68.dp)          // px-1
+                            .heightIn(max = 368.dp)                 // max-h-[400px] × 0.92
+                            .clip(RoundedCornerShape(5.52.dp))      // rounded-md
+                            .background(
+                                if (CCMTheme.isDark) Color.Black.copy(alpha = 0.4f)
+                                else Color.Black.copy(alpha = 0.05f),
                             )
-                        }
-                    } else if (!isRunning) {
+                            .padding(7.36.dp)                       // p-2
+                            .verticalScroll(rememberScrollState()),
+                    ) {
                         Text(
-                            text = "(Empty output)",
+                            // 源码：result.length > 2000 → 截断加 ...
+                            text = if (card.result.length > 2000) {
+                                card.result.take(2000) + "..."
+                            } else {
+                                card.result
+                            },
                             style = CCMText.body12.copy(fontFamily = FontFamily.Monospace),
                             color = colors.textSecondary,
                         )
@@ -272,65 +489,136 @@ fun ToolCard(
 }
 
 /**
- * 工具状态图标 —— running 时用脉冲效果，完成用勾，错误用 ✗。
+ * 折叠箭头 —— 对应 lucide `ChevronDown` + `transition-transform duration-200`。
  *
- * Web 用 lucide 的 FileText / Check + `animate-pulse`。
- * Compose 侧：running 用 alpha 呼吸动画近似 pulse。
+ * Web 用 CSS transition 做 200ms 旋转；Compose 用 [animateFloatAsState] 等价。
  */
 @Composable
-private fun ToolStatusIcon(isRunning: Boolean, isError: Boolean) {
-    val colors = CCMTheme.colors
+private fun ChevronGlyph(rotation: Float, size: Dp, tint: Color) {
+    val angle by animateFloatAsState(
+        targetValue = rotation,
+        animationSpec = tween(durationMillis = 200),
+        label = "chevron-rotate",
+    )
+    PainterIcon(
+        R.drawable.ic_chevron_down,
+        size = size,
+        tint = tint,
+        modifier = Modifier.rotate(angle),
+    )
+}
 
-    when {
-        isError -> Text(
-            text = "✗",
-            style = CCMText.body13,
-            color = Color(0xFFF87171),
-        )
-        isRunning -> {
-            // animate-pulse 近似：alpha 在 0.4~1.0 之间循环
-            val transition = rememberInfiniteTransition(label = "pulse")
-            val alpha by transition.animateFloat(
-                initialValue = 1f,
-                targetValue = 0.4f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 900, easing = LinearEasing),
-                    repeatMode = RepeatMode.Reverse,
-                ),
-                label = "pulseAlpha",
-            )
-            // ★ 2026-10-01：▤ 文字符号 → 真 FileText 矢量图标
-            //   （lucide FileText，Web 同款；文字符号在 14px 下辨识度差）
-            PainterIcon(
-                R.drawable.ic_file_text,
-                size = 16.dp,
-                tint = colors.textSecondary.copy(alpha = alpha),
-            )
-        }
-        else -> PainterIcon(
-            R.drawable.ic_check,
-            size = 14.72.dp,
-            tint = colors.textSecondary,
-        )
+/**
+ * 运行中的 FileText 图标 —— 对应 Web `FileText size={16} className="animate-pulse"`。
+ *
+ * Web 的 `animate-pulse` 是 opacity 1 → 0.5 → 1（2s cubic-bezier）。
+ * Compose 用 alpha 呼吸近似（900ms 往返，与既有实现一致）。
+ */
+@Composable
+private fun PulsingFileTextIcon(size: Dp, tint: Color) {
+    val transition = rememberInfiniteTransition(label = "pulse")
+    val alpha by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.4f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "pulseAlpha",
+    )
+    PainterIcon(R.drawable.ic_file_text, size = size, tint = tint.copy(alpha = alpha))
+}
+
+/**
+ * 隐藏工具名 —— 对应 Web `HIDDEN_TOOL_NAMES`。
+ *
+ * Web 把 WebSearch/WebFetch 从**工具组**里过滤掉（它们走搜索过程条
+ * `SearchProcess` 单独渲染）。APK 目前没有搜索过程条，但保持一致：
+ * 混在工具组里会让「搜索」既出现在组内又出现在别处。
+ */
+private val HiddenToolNames = setOf("WebSearch", "WebFetch")
+
+/**
+ * 工具显示名 —— 对应 Web `getToolDisplayName`（`toolThinkingFallback.js:3-26`）。
+ *
+ * 用于**组头 summary**（去重逗号拼接）与思考链事件标签，不是单卡预览。
+ */
+private val ToolLabels = mapOf(
+    "Read" to "Read file",
+    "Write" to "Write file",
+    "Edit" to "Edit file",
+    "MultiEdit" to "Edit files",
+    "Bash" to "Run command",
+    "ListDir" to "List directory",
+    "Search" to "Search",
+    "Grep" to "Search",
+    "Glob" to "Find files",
+    // 持久化 Task（多 Agent 共享待办）
+    "TaskCreate" to "建任务",
+    "TaskList" to "看任务清单",
+    "TaskGet" to "读任务详情",
+    "TaskUpdate" to "更新任务",
+    "TaskClaim" to "领取任务",
+    "TaskDelete" to "删除任务",
+    // Team 协作与通信
+    "TeamCreate" to "建协作团队",
+    "TeamJoin" to "加入团队",
+    "SendMessage" to "发消息给队友",
+    "CheckMessages" to "收队友消息",
+    "TeamStatus" to "看团队状态",
+    "TeamLeave" to "退出团队",
+    "TeamDisband" to "解散团队",
+)
+
+/** 工具显示名（未知工具回退到原名，空名回退 `Tool`） */
+internal fun toolDisplayName(name: String): String =
+    ToolLabels[name] ?: name.ifBlank { "Tool" }
+
+/**
+ * 是否有 diff 视图 —— 对应 Web `shouldUseDiffView`（`ToolDiffView.tsx:380-393`）。
+ *
+ * Web 判断的是 `input` 对象字段；APK 的 input 是 JSON 字符串，故用 [inputField] 取值。
+ */
+private fun shouldUseDiffView(name: String, input: String): Boolean {
+    if (input.isBlank()) return false
+    return when (name) {
+        "Edit", "MultiEdit" ->
+            inputField(input, "old_string").isNotEmpty() || inputField(input, "new_string").isNotEmpty()
+        "Write" -> inputField(input, "content").isNotEmpty()
+        "Bash" -> inputField(input, "command").isNotEmpty()
+        "Read" -> inputField(input, "file_path").isNotEmpty()
+        else -> false
     }
 }
 
 /**
- * 生成预览文字 —— 对齐 Web 的 `inputPreview` 拼法。
+ * 行数增减统计 —— 对应 Web `getToolStats`（`ToolDiffView.tsx:402-419`）。
  *
- * ```
- * prefix = actionLabel[name] ?? name
- * fileOrCmd = shortPath || command || inputStr.slice(0,80)
- * preview = "$prefix $fileOrCmd"
- * ```
+ * - `Edit` / `MultiEdit` → (新增行数, 删除行数)
+ * - `Write` → (内容行数, 0)
+ * - 其他 → null（不显示）
  *
- * @param useAgentPreview `true` 时直接用 dev-core 给的 `card.preview`
- *                        （格式为 `path="a.mjs", limit=50`）
+ * 注意 Web 的 `removed` 用的是 **old_string 的行数**（不是真正的 diff 删除行数），
+ * 这里保持一致 —— 否则同一份改动在两端显示的数字会不同。
  */
-private fun toolPreview(card: ChatToolCard, useAgentPreview: Boolean): String {
-    if (useAgentPreview && card.preview.isNotBlank()) return card.preview
-    if (card.preview.isNotBlank() && card.displayName.isBlank()) return card.preview
-    return card.displayName.ifBlank { card.name }
+private fun toolStats(name: String, input: String): Pair<Int, Int>? {
+    if (input.isBlank()) return null
+    when (name) {
+        "Edit", "MultiEdit" -> {
+            val oldStr = inputField(input, "old_string")
+            val newStr = inputField(input, "new_string")
+            if (oldStr.isEmpty() && newStr.isEmpty()) return null
+            val added = if (newStr.isEmpty()) 0 else newStr.split('\n').size
+            val removed = if (oldStr.isEmpty()) 0 else oldStr.split('\n').size
+            return added to removed
+        }
+        "Write" -> {
+            val content = inputField(input, "content")
+            if (content.isEmpty()) return null
+            return content.split('\n').size to 0
+        }
+    }
+    return null
 }
 
 /** 工具动作标签 —— 对应 Web 的 `actionLabel` 映射表 */
@@ -349,19 +637,24 @@ private val ToolActionLabel = mapOf(
 /**
  * 生成 Web 风格的预览 —— `Read a.mjs` / `Bash npm test`。
  *
- * 与 [toolPreview] 的区别：这个需要原始 input（JSON），
- * 而 [ChatToolCard] 只有 dev-core 格式化好的 `preview`。
- * 保留此函数供将来接上原始 input 时使用。
+ * 对应源码（`MainContent.tsx:1222-1229`）：
+ * ```js
+ * const shortPath = rawPath ? rawPath.split(/[/\\]/).pop() || rawPath : '';
+ * const prefix = actionLabel[tc.name] ?? tc.name;
+ * const fileOrCmd = shortPath || tc.input?.command || (inputStr.length > 80 ? inputStr.slice(0, 80) + '...' : inputStr);
+ * const inputPreview = (prefix && fileOrCmd) ? `${prefix} ${fileOrCmd}` : (fileOrCmd || prefix || tc.name);
+ * ```
  */
 fun buildWebStylePreview(toolName: String, filePath: String?, command: String?, rawInput: String?): String {
     val prefix = ToolActionLabel[toolName] ?: toolName
     val shortPath = filePath?.substringAfterLast('/')?.substringAfterLast('\\') ?: ""
     val fileOrCmd = shortPath.ifBlank {
-        command ?: rawInput?.take(80)?.let { if (rawInput.length > 80) "$it..." else it } ?: ""
+        command?.takeIf { it.isNotBlank() } ?: rawInput?.take(80)?.let {
+            if ((rawInput?.length ?: 0) > 80) "$it..." else it
+        } ?: ""
     }
     return listOf(prefix, fileOrCmd).filter { it.isNotBlank() }.joinToString(" ")
 }
-
 
 /**
  * 从工具入参 JSON 里取一个字符串字段（ToolDiffView 用）。
@@ -376,3 +669,10 @@ private fun inputField(json: String, key: String): String = try {
 } catch (_: Throwable) {
     ""
 }
+
+/**
+ * 公开版的 [inputField] —— 思考链事件合成（AssistantThinkingChain.kt）也要解析工具入参。
+ *
+ * 保持同一个实现，避免两处 JSON 解析行为漂移（例如对畸形入参的处理）。
+ */
+internal fun toolInputField(json: String, key: String): String = inputField(json, key)

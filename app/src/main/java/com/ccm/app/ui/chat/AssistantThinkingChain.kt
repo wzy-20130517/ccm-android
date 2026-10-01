@@ -37,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
@@ -124,18 +125,44 @@ fun AssistantThinkingChain(
     modifier: Modifier = Modifier,
     thinkingSummary: String? = null,
     isThinking: Boolean = false,
-    isExpanded: Boolean = false,
+    /**
+     * 展开态。`null` = 组件内部管理。
+     *
+     * 内部默认规则对齐 Web `defaultExpandedState`（`MainContent.tsx:1043-1056`）：
+     * **有事件就默认展开**，没有事件时看有没有 detail 判定。
+     * 原实现是写死 `false` 且调用方从不传 —— 结果展开区**永远不渲染**，
+     * 用户只看得到一行摘要（这是「思维链跟 Web 扯不上关系」的直接原因）。
+     */
+    isExpanded: Boolean? = null,
     events: List<AssistantThinkingEvent> = emptyList(),
-    onToggleExpanded: () -> Unit = {},
+    /**
+     * 本轮的工具体 —— 事件合成用（对应 Web `buildReasoningTimelineEvents` 的
+     * `options.toolCalls`）。
+     *
+     * 不传也能工作（只合成思考段事件，没有工具事件）—— 历史消息在 core 层
+     * 没有按条保存 toolCalls，只能这样退化，与 Web 的差异见类注释。
+     */
+    toolCards: List<ChatToolCard> = emptyList(),
+    /** 折叠开关回调；`null` = 用组件内部状态（点击自己翻转）。 */
+    onToggleExpanded: (() -> Unit)? = null,
 ) {
     val colors = CCMTheme.colors
 
+    // ★ 事件合成（对齐 Web `buildReasoningTimelineEvents`）：
+    //   调用方没给 events 时，用 thinking 文本 + 本轮工具卡**现场合成**时间线。
+    //   Web 的思维链时间线就是这么来的 —— 没有它，UI 只剩「摘要 + 一大段裸文本」，
+    //   这正是「思维链跟 Web 扯不上关系」的主因。
+    val resolvedEvents = remember(events, thinking, toolCards, isThinking) {
+        if (events.isNotEmpty()) events
+        else buildReasoningTimelineEvents(thinking, toolCards, isThinking)
+    }
+
     // 合成 done 事件（见类注释第 3 条）
-    val syntheticEvents = remember(events, isThinking) {
-        if (events.isEmpty()) {
+    val syntheticEvents = remember(resolvedEvents, isThinking) {
+        if (resolvedEvents.isEmpty()) {
             null
         } else {
-            val list = events.toMutableList()
+            val list = resolvedEvents.toMutableList()
             if (!isThinking && list.lastOrNull()?.kind != ThinkingEventKind.DONE) {
                 list.add(AssistantThinkingEvent(ThinkingEventKind.DONE, "Done"))
             }
@@ -153,16 +180,24 @@ fun AssistantThinkingChain(
     val canToggle = !syntheticEvents.isNullOrEmpty()
     val activeEventIndex = activeEventIndex(syntheticEvents, isThinking)
 
-    // 展开区正文的溢出检测（源码 `scrollHeight > 200`）
-    var isOverflowing by remember { mutableStateOf(false) }
-    var isBodyExpanded by remember { mutableStateOf(false) }
+    // ── 展开态 ────────────────────────────────────────────────
+    // 优先级：外部传入 > 用户点过 > 默认规则。
+    // 默认规则对齐 Web `defaultExpandedState`（MainContent.tsx:1043-1052）：
+    // **有事件就默认展开** —— 原来写死 false 且调用方从不传，
+    // 导致展开区永远不渲染，用户只看得到一行摘要。
+    var userExpanded by remember { mutableStateOf<Boolean?>(null) }
+    val defaultExpanded = !syntheticEvents.isNullOrEmpty()
+    val expanded = isExpanded ?: userExpanded ?: defaultExpanded
 
     Column(modifier = modifier.fillMaxWidth()) {
-        // ── 摘要行 ────────────────────────────────────────────
+        // ── 摘要行（对应 `renderSummaryButton`）────────────────
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(enabled = canToggle, onClick = onToggleExpanded)
+                .clickable(enabled = canToggle) {
+                    val cb = onToggleExpanded
+                    if (cb != null) cb() else userExpanded = !expanded
+                }
                 .padding(vertical = 3.68.dp),      // py-[4px] × 0.92
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(3.68.dp),   // gap-[4px] × 0.92
@@ -193,90 +228,166 @@ fun AssistantThinkingChain(
                 ChevronDownGlyph(
                     color = thinkingMuted(),
                     size = 11.04.dp,               // lucide size={12} × 0.92
-                    rotation = if (isExpanded) 180f else 0f,
+                    rotation = if (expanded) 180f else 0f,
                 )
             }
         }
 
-        if (!isExpanded) return@Column
+        if (!expanded) return@Column
 
-        // ── 正文块 ────────────────────────────────────────────
-        val bodyScroll = rememberScrollState()
-        // 思考中自动滚到底（源码 `el.scrollTop = el.scrollHeight`）
-        LaunchedEffect(thinking, isThinking, isExpanded, isBodyExpanded) {
-            if (isThinking) bodyScroll.animateScrollTo(bodyScroll.maxValue)
+        // ── 事件时间线（对应 Web `AssistantThinkingChain.tsx:738-763`）──
+        //   逐事件渲染，**带 detail 的事件用详细版**（显示该段原文 + Show more）。
+        //   注意：不是「整段正文铺一遍再列事件」—— Web 从来不整段渲染 thinking，
+        //   正文是以「每段一个事件」的形式呈现的（`renderDetailedThoughtEvent`）。
+        syntheticEvents?.forEachIndexed { index, event ->
+            if (!event.detail.isNullOrBlank()) {
+                ThinkingDetailedEvent(
+                    event = event,
+                    index = index,
+                    total = syntheticEvents.size,
+                )
+            } else {
+                ThinkingTimelineEvent(
+                    event = event,
+                    index = index,
+                    total = syntheticEvents.size,
+                    isActive = isThinking &&
+                        event.kind != ThinkingEventKind.DONE &&
+                        index == activeEventIndex,
+                )
+            }
         }
-        // 溢出判定：估算行数（每行 = 18.03dp，见正文行高），超过 184dp 即溢出。
-        // ⚠ 阈值必须与下面 `.heightIn(max = 184.dp)` 保持一致：
-        //   原来高度改成 184 但阈值还留 200，会出现「已被截断却判定为不溢出」→
-        //   底部渐隐和「展开」按钮都不出现，用户看到一段莫名其妙断掉的文字。
-        // Compose 里没有 scrollHeight，用「行数 × 行高」近似 —— 与源码阈值等价。
-        val estimatedHeight = thinking.split('\n').size * 18.03f
-        LaunchedEffect(thinking, isExpanded, isBodyExpanded) {
-            isOverflowing = estimatedHeight > 184f
-        }
+    }
+}
 
-        Box(modifier = Modifier.fillMaxWidth()) {
+/**
+ * 详细版事件 —— 对应 Web `renderDetailedThoughtEvent`（`AssistantThinkingChain.tsx:482-547`）。
+ *
+ * ## 什么时候用
+ * 事件带 `detail`（一段完整思考原文）时。Web 的分支判定是：
+ * ```js
+ * if (event.detail) return renderDetailedThoughtEvent(event, index, total);
+ * ```
+ * 即**逐事件**判断，不是整条链一个开关。
+ *
+ * ## 结构（与 `ThinkingTimelineEvent` 的差异）
+ * | 项 | 普通版 | 详细版（本函数） |
+ * |---|---|---|
+ * | 图标 | `getEventIcon(kind)`（按 kind 变） | 固定 `extended_start`（"展开了一段思考"专用图形） |
+ * | 图标列 | `items-start` + `pt-[4px]` | `flex-col items-center gap-[4px]` |
+ * | 内容 | `event.label`（一行摘要） | **`event.detail` 原文**（多行，可折叠） |
+ * | 折叠 | 无 | `detail.length > 280 或 行数 > 8` → maxHeight 200 + 渐隐 + Show more |
+ * | label | 显示 | **不显示**（原文本身就是内容，再显示摘要是重复） |
+ *
+ * ## 为什么 label 不显示
+ * 一开始容易觉得"摘要 + 原文"更清楚，但 Web 的判定是：
+ * detail 是这段思考的**完整原文**，label 只是它的第一句 ——
+ * 两个都显示会让同一句话出现两遍（label 是 detail 的子串）。
+ */
+@Composable
+private fun ThinkingDetailedEvent(
+    event: AssistantThinkingEvent,
+    index: Int,
+    total: Int,
+) {
+    val detail = (event.detail ?: "").trim()
+    var expanded by remember { mutableStateOf(false) }
+
+    // 溢出判定（源码 `isExpandableDetail`：长度 > 280 或非空行数 > 8）
+    val lineCount = detail.split('\n').count { it.trim().isNotEmpty() }
+    val expandable = detail.length > 280 || lineCount > 8
+
+    // 行进入动画（延迟 index × 45ms，与普通版一致）
+    val enter = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        delay(index * 45L)
+        enter.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(220, easing = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)),
+        )
+    }
+    val slideDistancePx = with(LocalDensity.current) { 3.68.dp.toPx() }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                alpha = enter.value
+                translationY = (1f - enter.value) * slideDistancePx
+            },
+    ) {
+        RailSpacer(visible = index > 0, height = 7.36.dp)
+
+        Row(modifier = Modifier.fillMaxWidth()) {
+            // 图标列：w-20，`flex-col items-center gap-[4px] px-[2px] pt-[4px]`
+            Box(
+                modifier = Modifier.width(18.40.dp).padding(top = 1.84.dp),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                ThinkingEventIcon(
+                    kind = ThinkingEventKind.FOCUS,
+                    size = 13.80.dp,
+                    forceResName = "icon_think_extended_start",
+                )
+            }
+
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    // Web 是 maxHeight:200px，但它在 #root 的 zoom:0.92 内 → 屏幕 184dp
-                    .heightIn(max = if (isBodyExpanded) Dp.Unspecified else 184.dp)
-                    .verticalScroll(bodyScroll),
+                    .weight(1f)
+                    .padding(start = 9.20.dp, top = 1.84.dp),
             ) {
-                Text(
-                    text = thinking,
-                    style = CCMText.body14.copy(
-                        fontSize = 11.39.sp,   // text-[14px] → 11.39（与正文同规格）
-                        lineHeight = 18.03.sp, // leading-[19.6px] × 0.92
-                        letterSpacing = (-0.1504).sp,
-                    ),
-                    color = thinkingBody(),
-                )
-            }
-            // 底部渐隐 h-12（仅未展开且溢出时）
-            if (isOverflowing && !isBodyExpanded) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        // h-12 在 767px 媒体查询里被 clamp(34px,10vw,46px) 命中
-                        // → 39.30px，再 × zoom 0.92 = **36.16dp**（不是 48×0.92）
-                        .height(36.16.dp)
-                        .background(
-                            androidx.compose.ui.graphics.Brush.verticalGradient(
-                                colors = listOf(Color.Transparent, colors.bgMain),
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            // maxHeight 200px × 0.92 = 184dp（展开时取消限制）
+                            .heightIn(max = if (expanded || !expandable) Dp.Unspecified else 184.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        Text(
+                            text = detail,
+                            style = CCMText.body14.copy(
+                                fontSize = 11.39.sp,
+                                lineHeight = 18.03.sp,   // leading-[19.6px] × 0.92
+                                letterSpacing = (-0.1504).sp,
                             ),
+                            color = thinkingBody(),
+                        )
+                    }
+                    // 底部渐隐（仅可折叠且未展开时）
+                    if (expandable && !expanded) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                // h-12 命中 clamp(34px,10vw,46px) → 39.30 × 0.92 = 36.16dp
+                                .height(36.16.dp)
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(Color.Transparent, CCMTheme.colors.bgMain),
+                                    ),
+                                ),
+                        )
+                    }
+                }
+
+                if (expandable) {
+                    Text(
+                        text = if (expanded) "收起" else "展开",
+                        style = CCMText.body12.copy(
+                            fontSize = 10.49.sp,
+                            lineHeight = 14.72.sp,   // leading-[16px] × 0.92
                         ),
-                )
+                        color = thinkingMuted().copy(alpha = 0.8f),
+                        modifier = Modifier
+                            .padding(top = 7.36.dp)      // mt-[8px] × 0.92
+                            .clickable { expanded = !expanded },
+                    )
+                }
             }
         }
 
-        if (isOverflowing) {
-            Text(
-                text = if (isBodyExpanded) "收起" else "展开",
-                style = CCMText.body12.copy(
-                    fontSize = 10.49.sp,
-                    lineHeight = 14.72.sp,  // leading-[16px] × 0.92
-                ),
-                color = thinkingMuted().copy(alpha = 0.8f),
-                modifier = Modifier
-                    .padding(top = 7.36.dp)        // mt-[8px] × 0.92
-                    .clickable { isBodyExpanded = !isBodyExpanded },
-            )
-        }
-
-        // ── 时间线事件列表 ────────────────────────────────────
-        syntheticEvents?.forEachIndexed { index, event ->
-            ThinkingTimelineEvent(
-                event = event,
-                index = index,
-                total = syntheticEvents.size,
-                isActive = isThinking &&
-                    event.kind != ThinkingEventKind.DONE &&
-                    index == activeEventIndex,
-            )
-        }
+        RailSpacer(visible = index < total - 1, height = 7.36.dp)
     }
 }
 
@@ -689,11 +800,23 @@ data class ThinkingFilePreview(val title: String, val format: String, val conten
  *   （`direct` 用 `#131313`，其余用 `#7B7974`）—— 对齐 Web 的 `var(--fill-0, …)`。
  */
 @Composable
-private fun ThinkingEventIcon(kind: ThinkingEventKind, size: Dp, color: Color = Color.Unspecified) {
+private fun ThinkingEventIcon(
+    kind: ThinkingEventKind,
+    size: Dp,
+    color: Color = Color.Unspecified,
+    /**
+     * 强制指定图标资源名（不含 `icon_think_` 前缀的 raw 名）。
+     *
+     * 用途：Web 的 `renderDetailedThoughtEvent` 用的是 `extended_start` 图标，
+     * 而它**不属于任何一种 kind** —— 是「这一段思考展开了」的专用图形。
+     * 传 null 时按 [kind] 常规映射。
+     */
+    forceResName: String? = null,
+) {
     val context = LocalContext.current
 
-    val paths: List<Path> = remember(kind) {
-        val resName = when (kind) {
+    val paths: List<Path> = remember(kind, forceResName) {
+        val resName = forceResName ?: when (kind) {
             ThinkingEventKind.DIRECT -> "icon_think_direct"
             ThinkingEventKind.FOCUS, ThinkingEventKind.SKILL, ThinkingEventKind.TOOL -> "icon_think_step"
             ThinkingEventKind.WEB_SEARCH -> "icon_think_web_search"
@@ -928,3 +1051,283 @@ private fun shimmerEdge(): Color =
 private fun shimmerBody(): Color =
     if (CCMTheme.isDark) CCMTheme.colors.textMain.copy(alpha = 0.92f)
     else ShimmerBodyLight
+
+// ═══════════════════════════════════════════════════════════════════════
+//  事件合成 —— 对应 Web `toolThinkingFallback.js`
+// ═══════════════════════════════════════════════════════════════════════
+//
+//  Web 的思维链时间线**不是**后端推来的，而是前端从 `msg.thinking`（一段纯文本）
+//  加 `msg.toolCalls` 现场合成的 —— 见 `MainContent.tsx:1008`：
+//
+//  ```js
+//  const reasoningTimeline = msg.thinking
+//    ? buildReasoningTimelineEvents(msg.thinking, { toolCalls: msg.toolCalls, isThinking, ... })
+//    : null;
+//  ```
+//
+//  APK 侧原来只把 thinking 当一大段文本贴出来（`AssistantThinkingChain` 的正文块），
+//  从不合成事件 → 时间线永远空 → 只剩「摘要行 + 裸文本」，与 Web 的
+//  「一段一段带图标、逐行淡入、工具步骤穿插其中」完全两个东西。
+//  这就是用户说的「思维链跟 Web 扯不上关系」。
+//
+//  ## 与 Web 的已知差异（如实列出，不是遗漏）
+//  1. **工具事件来源**：Web 有 `searchLogs` / `searchStatus`（联网搜索过程流），
+//     APK 的 core 层没有对应字段 → 不合成 `web_search` 事件。
+//  2. **文件预览事件**：Web 的 `write_preview` 需要解析 Write 的 `content` 并挑选
+//     「主文件」（`pickPrimaryWrittenFile`，按 html > md > txt 优先级）。
+//     APK 侧简化：有 Write 工具卡时合成一个 `write_preview` 事件，
+//     预览内容取该卡的 `content` 字段（不跨卡挑选）。
+//  3. **Skill 事件**：Web 有 `buildSkillEvent`（从 Skill 工具入参取 slug）。
+//     APK 侧工具卡没有 slug 解析，统一落到普通 `tool` 事件。
+
+/**
+ * 合成思考时间线事件 —— 对应 Web `buildReasoningTimelineEvents`。
+ *
+ * ## 算法（逐行对照源码 `toolThinkingFallback.js:569-625`）
+ * 1. 把 thinking 按**空行**切成若干「思考段」（`splitReasoningBlocks`）
+ * 2. 把工具卡转成工具事件（`buildToolFallbackThinking`）
+ * 3. 逐段走：
+ *    - 该段是「工具交接句」（`isToolHandoffBlock`）**且**还有工具事件没用完
+ *      → 用工具事件占这一格（交接句本身不显示，因为它说的是"我要去调工具"，
+ *      紧接着的工具事件已经表达了同一件事）
+ *    - 否则 → 合成一个 `focus` 事件（label 取该段摘要，detail 是整段原文）
+ *    - 若全文**没有**交接句，则在每段后追加一个工具事件（交替排列）
+ * 4. 工具事件有剩 → 全部追加到末尾
+ * 5. `!isThinking` → 末尾补 `done`
+ *
+ * @param thinking  思考原文
+ * @param toolCards 本轮工具体（可为空 —— 只合成思考段事件）
+ * @param isThinking 是否仍在思考（决定要不要补 done 事件）
+ */
+internal fun buildReasoningTimelineEvents(
+    thinking: String,
+    toolCards: List<ChatToolCard> = emptyList(),
+    isThinking: Boolean = false,
+): List<AssistantThinkingEvent> {
+    val normalized = thinking.replace("\r\n", "\n").trim()
+    if (normalized.isEmpty()) return emptyList()
+
+    val blocks = splitReasoningBlocks(normalized)
+    if (blocks.isEmpty()) return emptyList()
+
+    val toolEvents = buildToolEvents(toolCards)
+
+    val out = mutableListOf<AssistantThinkingEvent>()
+    val handoffBlocks = blocks.filter { isToolHandoffBlock(it) }
+    var toolIndex = 0
+
+    for (block in blocks) {
+        if (toolIndex < toolEvents.size && isToolHandoffBlock(block)) {
+            out.add(toolEvents[toolIndex])
+            toolIndex++
+            continue
+        }
+
+        out.add(
+            AssistantThinkingEvent(
+                kind = ThinkingEventKind.FOCUS,
+                label = summarizeThinkingBlock(block, 140).ifBlank { "Thinking" },
+                detail = block,
+            ),
+        )
+
+        // 没有交接句时，工具事件与思考段交替出现
+        // （源码 `handoffBlocks.length === 0` 分支）
+        if (handoffBlocks.isEmpty() && toolIndex < toolEvents.size) {
+            out.add(toolEvents[toolIndex])
+            toolIndex++
+        }
+    }
+
+    while (toolIndex < toolEvents.size) {
+        out.add(toolEvents[toolIndex])
+        toolIndex++
+    }
+
+    if (!isThinking) {
+        out.add(AssistantThinkingEvent(ThinkingEventKind.DONE, "Done"))
+    }
+
+    return out
+}
+
+/**
+ * 切分思考段 —— 对应 Web `splitReasoningBlocks`（`toolThinkingFallback.js:76-108`）。
+ *
+ * 规则：
+ * 1. 先按**连续空行**切
+ * 2. 列表续行（`- xxx` / `1. xxx`）或上一段以冒号结尾 → 并入上一段
+ *    （否则「以下是几点：」和它下面的列表会被切成两段，读起来像两件事）
+ * 3. 切出来只有一段时，退化为按「英文思考起始词」再切一次
+ *    （`Let me` / `I should` / `First,` …）—— 这是给**没写空行**的思考兜底
+ */
+internal fun splitReasoningBlocks(thinking: String): List<String> {
+    val normalized = thinking.replace("\r\n", "\n").trim()
+    if (normalized.isEmpty()) return emptyList()
+
+    val rawBlocks = normalized
+        .split(Regex("\n{2,}"))
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+
+    val merged = mutableListOf<String>()
+    for (block in rawBlocks) {
+        val previous = merged.lastOrNull()
+        // 列表续行：`- ` / `* ` / `• ` / `1. ` / `1) `
+        val isListContinuation = Regex("^([-*•]|\\d+[.)]\\s)").containsMatchIn(block)
+        // 上一段以冒号结尾（去 markdown 后）→ 它在邀请细节
+        val previousInvitesDetails =
+            previous != null && stripMarkdown(previous).trimEnd().endsWith(":")
+
+        if ((isListContinuation || previousInvitesDetails) && previous != null) {
+            merged[merged.size - 1] = "$previous\n\n$block"
+            continue
+        }
+        merged.add(block)
+    }
+
+    if (merged.size > 1) return merged
+
+    // 兜底：按英文思考起始词切（对应源码的 lookahead 正则）
+    val fallback = Regex(
+        "\n(?=(?:Let me|I should|I need to|First,|Next,|Then,|Perfect[.!]?|Now ))",
+    ).split(normalized).map { it.trim() }.filter { it.isNotEmpty() }
+
+    return if (fallback.size > 1) fallback else rawBlocks
+}
+
+/**
+ * 判断是不是「工具交接句」—— 对应 Web `isToolHandoffBlock`（`toolThinkingFallback.js:135-139`）。
+ *
+ * 这类句子说的是「我要去调工具了」，紧接着的工具事件已经表达了同一件事，
+ * 所以**用工具事件占它的格子**，而不是再显示一遍文字。
+ */
+internal fun isToolHandoffBlock(block: String): Boolean {
+    val cleaned = stripMarkdown(block)
+    if (cleaned.isEmpty()) return false
+    return Regex(
+        "^(let me|i should|first,\\s*i should|next,\\s*i should|next,\\s*i'll|i'll|now i'?ll)",
+        RegexOption.IGNORE_CASE,
+    ).containsMatchIn(cleaned)
+}
+
+/**
+ * 段摘要 —— 对应 Web `summarizeThinkingBlock`（`toolThinkingFallback.js:117-133`）。
+ *
+ * 取该段**第一条非列表行**的第一句；若首句很短（≤12 字）且还有下一句，拼上前两句
+ * （避免摘要短到没有信息量，比如只有 "Okay."）。
+ */
+internal fun summarizeThinkingBlock(block: String, maxLength: Int = 120): String {
+    val lines = block.split('\n')
+        .map { stripMarkdown(it).trim() }
+        .filter { it.isNotEmpty() }
+
+    val firstNarrative = lines.firstOrNull { !it.startsWith("-") && !it.startsWith("*") && !it.startsWith("•") }
+        ?: lines.firstOrNull() ?: ""
+
+    val sentences = Regex("[^.!?。！？]+[.!?。！？]?")
+        .findAll(firstNarrative)
+        .map { it.value.trim() }
+        .filter { it.isNotEmpty() }
+        .toList()
+
+    var source = sentences.firstOrNull() ?: firstNarrative
+    if (sentences.size > 1 && source.length <= 12) {
+        source = "${sentences[0]} ${sentences[1]}".trim()
+    }
+    return normalizePreviewText(source, maxLength)
+}
+
+/**
+ * 去 markdown 记号 —— 对应 Web `stripMarkdown`（`toolThinkingFallback.js:57-66`）。
+ *
+ * 只处理**行内**记号（反引号、粗体、斜体、链接），不动代码块 ——
+ * 这是摘要文字用的，不是渲染用。
+ */
+internal fun stripMarkdown(text: String): String = text
+    .replace(Regex("`([^`]+)`"), "$1")
+    .replace(Regex("\\*\\*([^*]+)\\*\\*"), "$1")
+    .replace(Regex("\\*([^*]+)\\*"), "$1")
+    .replace(Regex("\\[([^\\]]+)\\]\\([^)]+\\)"), "$1")
+    .replace(Regex("(?m)^[-*•]\\s+"), "")
+    .replace(Regex("\\s+"), " ")
+    .trim()
+
+/**
+ * 压缩预览文字 —— 对应 Web `normalizePreview`（`toolThinkingFallback.js:40-47`）。
+ *
+ * 折叠所有空白 + 超长截断加省略号（注意：截断后总长 = maxLength，不是 maxLength+1）。
+ */
+internal fun normalizePreviewText(value: String, maxLength: Int = 64): String {
+    val cleaned = value.trim().replace(Regex("\\s+"), " ")
+    if (cleaned.isEmpty()) return ""
+    return if (cleaned.length > maxLength) cleaned.take(maxLength - 1) + "…" else cleaned
+}
+
+/**
+ * 工具卡 → 工具事件 —— 对应 Web `buildToolFallbackThinking`（`toolThinkingFallback.js:524-567`）。
+ *
+ * ## 步骤标签（源码 `buildToolStepLabel:465-497`）
+ * | 工具 | 标签 |
+ * |---|---|
+ * | Bash | `Run command: <command>` |
+ * | Read/Write/Edit/MultiEdit | `Read file: a.mjs`（**带工具显示名前缀**） |
+ * | ListDir | `List directory: <basename>` |
+ * | Search/Grep | `Search: <pattern>` |
+ * | Glob | `Find files: <pattern>` |
+ * | 其他 | 工具显示名 |
+ *
+ * ## `summaryLabel` 与 `label` 的区别（容易搞混）
+ * - `label` 是**这一行的显示文字**（带具体参数）
+ * - `summaryLabel` 是**组头摘要用的短名**（`getToolDisplayName`，不带参数）
+ */
+private fun buildToolEvents(toolCards: List<ChatToolCard>): List<AssistantThinkingEvent> =
+    toolCards
+        // Web：WebFetch 直接丢弃；WebSearch 走 web_search 分支（APK 无搜索过程流，
+        // 这里也丢弃，与 Web 的「不进工具组」保持一致）
+        .filter { it.name != "WebFetch" && it.name != "WebSearch" }
+        .map { card ->
+            AssistantThinkingEvent(
+                kind = ThinkingEventKind.TOOL,
+                label = buildToolStepLabel(card),
+                meta = card.progress.takeIf { it.isNotBlank() },
+            )
+        }
+
+/** 工具步骤标签 —— 对应 Web `buildToolStepLabel` */
+private fun buildToolStepLabel(card: ChatToolCard): String {
+    val input = card.input
+    val filePath = toolInputField(input, "file_path").ifBlank { toolInputField(input, "path") }
+    val fileName = filePath.substringAfterLast('/').substringAfterLast('\\')
+
+    return when (card.name) {
+        "Bash" -> {
+            val cmd = normalizePreviewText(toolInputField(input, "command"))
+            if (cmd.isNotEmpty()) "Run command: $cmd" else "Run command"
+        }
+        "Write", "Read", "Edit", "MultiEdit" -> {
+            val prefix = toolDisplayName(card.name)
+            if (fileName.isNotEmpty()) "$prefix: $fileName" else prefix
+        }
+        "ListDir" -> {
+            val target = filePath.substringAfterLast('/').substringAfterLast('\\')
+            if (target.isNotEmpty()) "List directory: $target" else "List directory"
+        }
+        "Search", "Grep" -> {
+            val query = normalizePreviewText(
+                toolInputField(input, "pattern")
+                    .ifBlank { toolInputField(input, "query") }
+                    .ifBlank { toolInputField(input, "search") },
+            )
+            if (query.isNotEmpty()) "${toolDisplayName(card.name)}: $query" else toolDisplayName(card.name)
+        }
+        "Glob" -> {
+            val pattern = normalizePreviewText(toolInputField(input, "pattern"))
+            if (pattern.isNotEmpty()) "Find files: $pattern" else "Find files"
+        }
+        else -> {
+            // 兜底：用卡上已有的预览（dev-core 格式化的），再退到工具名
+            card.preview.takeIf { it.isNotBlank() } ?: toolDisplayName(card.name)
+        }
+    }
+}
