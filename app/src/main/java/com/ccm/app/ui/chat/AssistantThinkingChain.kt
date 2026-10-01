@@ -687,7 +687,7 @@ private fun colors0(): Color = CCMTheme.colors.bgMain.copy(alpha = 0.6f)
  * 用固定值会让长标签的流光卡在半路。
  */
 @Composable
-private fun TextShimmer(
+internal fun TextShimmer(
     text: String,
     style: TextStyle,
     modifier: Modifier = Modifier,

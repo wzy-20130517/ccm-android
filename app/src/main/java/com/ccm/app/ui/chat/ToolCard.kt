@@ -166,10 +166,12 @@ fun ToolCard(
                 horizontalArrangement = Arrangement.spacedBy(7.36.dp),
             ) {
                 when {
-                    isRunning -> Text(
+                    // ★ 2026-10-01：Running... 静态文字 → shimmer 扫光
+                    //   （对齐 Web `animate-shimmer-text`；TextShimmer 已在
+                    //    AssistantThinkingChain.kt 里实现，复用而不是重写）
+                    isRunning -> TextShimmer(
                         text = "Running...",
                         style = CCMText.body12,
-                        color = colors.textSecondary,
                     )
                     isError -> Text(
                         text = "Failed",
@@ -297,13 +299,13 @@ private fun ToolStatusIcon(isRunning: Boolean, isError: Boolean) {
                 ),
                 label = "pulseAlpha",
             )
-            Box(modifier = Modifier.size(14.72.dp), contentAlignment = Alignment.Center) {
-                Text(
-                    text = "▤",     // FileText 的极简替代（14px 下辨识度足够）
-                    style = CCMText.body13.copy(fontSize = 12.sp),
-                    color = colors.textSecondary.copy(alpha = alpha),
-                )
-            }
+            // ★ 2026-10-01：▤ 文字符号 → 真 FileText 矢量图标
+            //   （lucide FileText，Web 同款；文字符号在 14px 下辨识度差）
+            PainterIcon(
+                R.drawable.ic_file_text,
+                size = 16.dp,
+                tint = colors.textSecondary.copy(alpha = alpha),
+            )
         }
         else -> PainterIcon(
             R.drawable.ic_check,
