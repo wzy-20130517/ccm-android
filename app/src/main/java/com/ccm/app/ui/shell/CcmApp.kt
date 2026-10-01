@@ -37,6 +37,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -1109,114 +1110,72 @@ private fun ModelPickerSheet(
     onDismiss: () -> Unit,
 ) {
     val colors = CCMTheme.colors
+    // ★ 2026-10-01 三次重写（用户「模型选择器是最让我恼火的」）：
+    //   前两版都在调「全宽底部 Sheet」的细节 —— 方向就错了。
+    //   Web 根本不是全宽面板，是**桌面下拉浮层**（ModelSelector.tsx:266）：
+    //     w-[260px] rounded-xl shadow-xl border py-1
+    //     每项 px-4 py-2 + hover 背景 + 右侧蓝勾（#3b82f6 size18）
+    //   这次**照抄结构**：紧凑浮层，不再是全宽 Sheet。
     androidx.compose.material3.ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = colors.bgMain,
+        containerColor = Color.Transparent,          // 浮层自带背景，不要 Sheet 底色
+        dragHandle = null,                            // Web 无把手
     ) {
-        androidx.compose.foundation.layout.Column(
+        androidx.compose.foundation.layout.Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 24.dp),
+                .padding(horizontal = 24.dp, vertical = 8.dp),
+            contentAlignment = androidx.compose.ui.Alignment.Center,
         ) {
-            // ★ 2026-10-01 二次重写（用户「又是这里」）：
-            //   上一版只微调了字号间距，没解决根本 —— Web 是紧凑浮层卡片
-            //   （w-[260px] rounded-xl shadow-xl border py-1），
-            //   而 APK 是全宽平铺，两行内容铺满整屏当然空。
-            //   移动端保留底部 Sheet 形态（手指好点），但**内容区做成卡片**：
-            //   左右 16dp 留白 + 圆角 16 + 细边框 —— 视觉聚焦，不再散开。
-            Text(
-                text = "选择模型",
-                style = CCMText.body12.copy(
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
-                ),
-                color = colors.textSecondary,
-                modifier = Modifier.padding(start = 24.dp, top = 4.dp, bottom = 10.dp),
-            )
-            if (items.isEmpty()) {
-                Text(
-                    text = "还没有 Provider —— 到「设置 → 模型」里先加一个",
-                    style = CCMText.body13,
-                    color = colors.textSecondary,
-                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
-                )
-            }
-            // ★ 2026-09-30 重写：对齐 Web ModelSelector.tsx 的扁平模型列表。
-            //   旧版是「Provider 当分组标题一行、模型缩进一行」的两列平铺，
-            //   视觉像后台调试面板（用户反馈「样式和 Web 不一样、很粗糙」）。
-            //   Web 的做法：模型是主体，每项一张行卡片（px-4 py-2.5），
-            //   Provider 名做右侧灰色副标识（modelLabelWithProvider），
-            //   选中项显示蓝色 Check。这里照此还原：
-            //   - 每个「模型」= 一个可点行（圆角 + 选中高亮背景 + 勾）
-            //   - Provider 名右侧小灰字（同名模型靠它区分）
-            //   - 不再有「点 Provider 标题切换」那层（Web 没有，点模型即切）
-            // ★ 2026-10-01 修闪退（我自己引入的）：原来用 Box 包 LazyColumn ——
-            //   Box 在 Column（ModalBottomSheet 内容）里拿不到高度约束，
-            //   LazyColumn 被以「无限最大高度」测量 → IllegalStateException。
-            //   改为：样式直接加在 LazyColumn 上（不套 Box），高度由 Sheet 决定。
-            androidx.compose.foundation.lazy.LazyColumn(
+            androidx.compose.foundation.layout.Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)          // 卡片左右留白
-                    .clip(RoundedCornerShape(16.dp))      // Web rounded-xl
-                    .background(colors.input)             // Web bg-claude-input
-                    .border(1.dp, colors.border, RoundedCornerShape(16.dp))  // Web border
-                    .padding(vertical = 4.dp),            // Web py-1
+                    .widthIn(max = 280.dp)                        // Web w-[260px]（留点余量）
+                    .clip(RoundedCornerShape(12.dp))              // Web rounded-xl
+                    .background(colors.input)                     // Web bg-claude-input
+                    .border(1.dp, colors.border, RoundedCornerShape(12.dp))  // Web border
+                    .padding(vertical = 4.dp),                    // Web py-1
             ) {
+                if (items.isEmpty()) {
+                    Text(
+                        text = "还没有 Provider —— 到「设置 → 模型」里先加一个",
+                        style = CCMText.body13,
+                        color = colors.textSecondary,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    )
+                }
                 items.forEach { it2 ->
                     val pool = (listOf(it2.model) + it2.models)
                         .filter { it.isNotBlank() }.distinct()
                     pool.forEach { m ->
-                        item(key = it2.id + "-" + m) {
-                            // ★ 2026-09-30：主 model 字段可能为空串（模型只配在
-                            //   models 数组里）——与 CcmApp 的 modelName 同一套
-                            //   fallback，否则选中高亮永远不亮。
-                            val effModel = it2.model.takeIf { it.isNotBlank() }
-                                ?: it2.models.firstOrNull { it.isNotBlank() }
-                            val selected = it2.isCurrent && m == effModel
-                            androidx.compose.foundation.layout.Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 1.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    // ★ Web 选中项**无背景色**（只有蓝色 Check 图标，
-                                    //   218 行 className 里没有 selected 分支的 bg）——
-                                    //   原来涂了层橙底，是自创的。
-                                    .background(Color.Transparent)
-                                    // ★ Web 行样式：px-4 py-2.5（14/11dp 已是该值 ×0.92）
-                                    .clickable(enabled = it2.enabled) { onPickModel(it2.id, m) }
-                                    .padding(horizontal = 16.dp, vertical = 11.dp),
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                            ) {
-                                // ★ 2026-10-01 对齐 Web ModelSelector.tsx:221：
-                                //   主行是 **`模型名(ProviderID)` 单行拼接**（不是两行副标题）
-                                //   —— Web 用 `modelLabelWithProvider`：`${base}(${src})`。
-                                //   原来把 Provider 名当副标题单独一行，视觉上像调试列表。
-                                androidx.compose.foundation.layout.Column(
-                                    modifier = Modifier.weight(1f),
-                                ) {
-                                    Text(
-                                        text = "$m(${it2.id})",
-                                        style = CCMText.body14.copy(
-                                            fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
-                                        ),
-                                        color = if (it2.enabled) colors.textMain else colors.textSecondary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                                if (selected) {
-                                    androidx.compose.foundation.layout.Spacer(Modifier.width(8.dp))
-                                    // ★ Web: `<Check size={18} className="text-[#3b82f6]" />`
-                                    //   —— 蓝色勾（不是主题橙），size 18
-                                    Text(
-                                        "✓",
-                                        color = Color(0xFF3B82F6),
-                                        style = CCMText.body14.copy(
-                                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                                            fontSize = 16.sp,
-                                        ),
-                                    )
-                                }
+                        val effModel = it2.model.takeIf { it.isNotBlank() }
+                            ?: it2.models.firstOrNull { it.isNotBlank() }
+                        val selected = it2.isCurrent && m == effModel
+                        androidx.compose.foundation.layout.Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = it2.enabled) { onPickModel(it2.id, m) }
+                                .padding(horizontal = 16.dp, vertical = 9.dp),   // Web px-4 py-2
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                // Web modelLabelWithProvider：`模型名(ProviderID)`
+                                text = "$m(${it2.id})",
+                                style = CCMText.body14.copy(
+                                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                                    fontSize = 13.34.sp,       // Web text-[14.5px] × 0.92
+                                ),
+                                color = if (it2.enabled) colors.textMain else colors.textSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (selected) {
+                                // Web: <Check size={18} className="text-[#3b82f6]" />
+                                Text(
+                                    "✓",
+                                    color = Color(0xFF3B82F6),
+                                    style = CCMText.body14.copy(fontSize = 15.sp),
+                                )
                             }
                         }
                     }
