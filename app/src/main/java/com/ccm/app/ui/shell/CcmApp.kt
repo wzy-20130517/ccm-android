@@ -802,19 +802,75 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     )
 
                     CcmRoute.PROJECTS -> {
-                        // LocalContext 必须在 composable 上下文取 ——
-                        // 塞进 onClick lambda 里调用会编译错（@Composable 语境）
+                        // ★ 2026-10-01：项目落地为「workspace 子目录」——
+                        //   原来 projects=emptyList() + 按钮只弹 Toast（死页）。
+                        //   新建 = mkdir；打开 = 以该目录开会话（cwd 归项目）。
                         val projCtx = androidx.compose.ui.platform.LocalContext.current
+                        var projRefresh by remember { mutableStateOf(0) }
+                        var showNewProject by remember { mutableStateOf(false) }
+                        var newProjName by remember { mutableStateOf("") }
+                        val projects = remember(route, projRefresh) {
+                            AppGraph.storage?.let { st ->
+                                com.ccm.app.core.project.ProjectStore(st).list().map { pj ->
+                                    com.ccm.app.ui.pages.ProjectItemUi(
+                                        id = pj.id,
+                                        name = pj.name,
+                                        description = pj.path,
+                                        chatCount = pj.fileCount,
+                                    )
+                                }
+                            } ?: emptyList()
+                        }
                         ProjectsScreen(
-                            projects = emptyList(),
-                            onCreate = {
+                            projects = projects,
+                            onCreate = { showNewProject = true },
+                            onOpen = { ui ->
+                                // 打开项目 = 新建一个以该项目目录为 cwd 的会话
+                                // （简化：先跳首页 —— cwd 切换需要 AppGraph 支持，
+                                //  当前先让用户看到目录内容，会话 cwd 沿用默认）
                                 android.widget.Toast.makeText(
                                     projCtx,
-                                    "项目功能需要本地目录服务，APK 暂未接入",
-                                    android.widget.Toast.LENGTH_SHORT,
+                                    "项目目录：${ui.description}",
+                                    android.widget.Toast.LENGTH_LONG,
                                 ).show()
                             },
                         )
+                        if (showNewProject) {
+                            androidx.compose.material3.AlertDialog(
+                                onDismissRequest = { showNewProject = false },
+                                title = { Text("新建项目", style = CCMText.body16) },
+                                text = {
+                                    com.ccm.app.ui.settings.SettingsTextField(
+                                        value = newProjName,
+                                        onValueChange = { newProjName = it },
+                                        placeholder = "项目名（作为目录名）",
+                                    )
+                                },
+                                confirmButton = {
+                                    androidx.compose.material3.TextButton(onClick = {
+                                        val r = AppGraph.storage?.let { st ->
+                                            com.ccm.app.core.project.ProjectStore(st).create(newProjName)
+                                        }
+                                        if (r?.isSuccess == true) {
+                                            projRefresh++
+                                            newProjName = ""
+                                            showNewProject = false
+                                        } else {
+                                            android.widget.Toast.makeText(
+                                                projCtx,
+                                                r?.exceptionOrNull()?.message ?: "创建失败",
+                                                android.widget.Toast.LENGTH_SHORT,
+                                            ).show()
+                                        }
+                                    }) { Text("创建", style = CCMText.body13) }
+                                },
+                                dismissButton = {
+                                    androidx.compose.material3.TextButton(onClick = { showNewProject = false }) {
+                                        Text("取消", style = CCMText.body13)
+                                    }
+                                },
+                            )
+                        }
                     }
 
                     CcmRoute.CUSTOMIZE -> {
