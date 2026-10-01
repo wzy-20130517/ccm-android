@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- lucide Copy（14px，复制按钮）— ISC License -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="14dp" android:height="14dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <rect x="8" y="8" width="14" height="14" rx="2" ry="2"
+        android:strokeWidth="2" android:strokeColor="#000000"
+        android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" />
+    <path android:pathData="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"
+        android:strokeWidth="2" android:strokeColor="#000000"
+        android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" />
+</vector>

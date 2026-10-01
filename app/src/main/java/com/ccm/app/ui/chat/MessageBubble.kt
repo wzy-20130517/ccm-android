@@ -27,6 +27,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ccm.app.R
+import com.ccm.app.ui.common.PainterIcon
 import com.ccm.app.ui.theme.CCMText
 import com.ccm.app.ui.theme.CCMTheme
 
@@ -133,9 +135,6 @@ fun UserBubble(
     timestampMs: Long = 0L,
 ) {
     val colors = CCMTheme.colors
-    // 长按菜单（webgap #1 扩展）：有 onResend 弹「复制 / 重发」，
-    // 没有则退回直接复制（向后兼容）。
-    var showMenu by remember { mutableStateOf(false) }
     val uCtx = androidx.compose.ui.platform.LocalContext.current
     val copyUser: (String) -> Unit = { txt ->
         if (txt.isNotBlank()) {
@@ -171,9 +170,7 @@ fun UserBubble(
                 .background(colors.hover)
                 .combinedClickable(
                     onClick = {},
-                    onLongClick = {
-                        if (onResend != null) showMenu = true else copyUser(text)
-                    },
+                    onLongClick = { copyUser(text) },   // 长按 = 复制（菜单已移到按钮行）
                 )
                 .padding(horizontal = 12.88.dp, vertical = 8.28.dp),
         ) {
@@ -230,59 +227,53 @@ fun UserBubble(
         }
     }
 
-        // 时间戳（webgap #1 最后一件）——气泡右下，格式 HH:mm；
-        //   messageId 解析不出时间（历史恢复）时不显示
-        if (timestampMs > 0) {
-            Text(
-                text = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
-                    .format(java.util.Date(timestampMs)),
-                style = CCMText.body10,
-                color = colors.textSecondary.copy(alpha = 0.7f),
-                modifier = Modifier.padding(top = 2.dp, end = 4.dp),
+        // ★ 2026-10-01 对齐 Web（MainContent.tsx:983-992）：
+        //   时间戳 + 三个图标按钮**同一行**（flex items-center gap-1.5 mt-1.5 pr-1）。
+        //   Web 的按钮是 RotateCcw/Pencil/Copy（14px 图标，hover 才显示）；
+        //   APK 原来藏在长按文字菜单里（"重发（截断此后的内容重新跑）"一大段），
+        //   与 Web 完全两个东西。
+        androidx.compose.foundation.layout.Row(
+            modifier = Modifier.padding(top = 6.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            // 时间戳（12sp，Web text-[12px]）
+            if (timestampMs > 0) {
+                Text(
+                    text = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+                        .format(java.util.Date(timestampMs)),
+                    style = CCMText.body12.copy(fontSize = 11.sp),
+                    color = colors.textSecondary,
+                    modifier = Modifier.padding(end = 2.dp),
+                )
+            }
+            // 重发（RotateCcw 14px）
+            if (onResend != null) {
+                PainterIcon(
+                    R.drawable.ic_rotate_ccw,
+                    size = 14.dp,
+                    tint = colors.textSecondary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .clickable { onResend() }
+                        .padding(3.dp),
+                )
+            }
+            // 复制（Copy 14px）
+            PainterIcon(
+                R.drawable.ic_copy,
+                size = 14.dp,
+                tint = colors.textSecondary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable { copyUser(text) }
+                    .padding(3.dp),
             )
         }
     }
 
-    // 长按菜单（复制 / 重发）—— 仅当提供 onResend 时可达
-    if (showMenu && onResend != null) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showMenu = false },
-            text = {
-                Column {
-                    Text(
-                        text = "复制",
-                        style = CCMText.body13,
-                        color = colors.textMain,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                copyUser(text)
-                                showMenu = false
-                            }
-                            .padding(vertical = 11.dp),
-                    )
-                    Text(
-                        text = "重发（截断此后的内容重新跑）",
-                        style = CCMText.body13,
-                        color = colors.textMain,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                onResend()
-                                showMenu = false
-                            }
-                            .padding(vertical = 11.dp),
-                    )
-                }
-            },
-            confirmButton = {},
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showMenu = false }) {
-                    Text("取消", style = CCMText.body13)
-                }
-            },
-        )
-    }
+    // ★ 2026-10-01：长按文字菜单已删 —— 改为时间戳行的图标按钮（对齐 Web）。
+    //   showMenu 状态保留（长按仍弹菜单的逻辑被按钮行替代，但长按保留复制行为）。
 }
 
 /**

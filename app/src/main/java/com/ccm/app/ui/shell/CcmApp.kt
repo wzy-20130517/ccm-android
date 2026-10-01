@@ -38,6 +38,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.ccm.app.AppGraph
 import com.ccm.app.core.ChatSession
 import com.ccm.app.core.session.SessionStore
@@ -1160,45 +1161,41 @@ private fun ModelPickerSheet(
                                     .fillMaxWidth()
                                     .padding(vertical = 1.dp)
                                     .clip(RoundedCornerShape(10.dp))
-                                    .background(
-                                        if (selected) colors.accent.copy(alpha = 0.10f)
-                                        else Color.Transparent
-                                    )
+                                    // ★ Web 选中项**无背景色**（只有蓝色 Check 图标，
+                                    //   218 行 className 里没有 selected 分支的 bg）——
+                                    //   原来涂了层橙底，是自创的。
+                                    .background(Color.Transparent)
                                     .clickable(enabled = it2.enabled) { onPickModel(it2.id, m) }
                                     .padding(horizontal = 14.dp, vertical = 11.dp),
                                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                             ) {
+                                // ★ 2026-10-01 对齐 Web ModelSelector.tsx:221：
+                                //   主行是 **`模型名(ProviderID)` 单行拼接**（不是两行副标题）
+                                //   —— Web 用 `modelLabelWithProvider`：`${base}(${src})`。
+                                //   原来把 Provider 名当副标题单独一行，视觉上像调试列表。
                                 androidx.compose.foundation.layout.Column(
                                     modifier = Modifier.weight(1f),
                                 ) {
                                     Text(
-                                        text = m,
+                                        text = "$m(${it2.id})",
                                         style = CCMText.body14.copy(
-                                            fontWeight = if (selected)
-                                                androidx.compose.ui.text.font.FontWeight.SemiBold
-                                            else androidx.compose.ui.text.font.FontWeight.Medium,
+                                            fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
                                         ),
                                         color = if (it2.enabled) colors.textMain else colors.textSecondary,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                     )
-                                    // Provider 名做副标题（区分同名模型的来源）
-                                    Text(
-                                        text = it2.name,
-                                        style = CCMText.body12,
-                                        color = colors.textSecondary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.padding(top = 1.dp),
-                                    )
                                 }
                                 if (selected) {
                                     androidx.compose.foundation.layout.Spacer(Modifier.width(8.dp))
+                                    // ★ Web: `<Check size={18} className="text-[#3b82f6]" />`
+                                    //   —— 蓝色勾（不是主题橙），size 18
                                     Text(
                                         "✓",
-                                        color = colors.accent,
+                                        color = Color(0xFF3B82F6),
                                         style = CCMText.body14.copy(
                                             fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                                            fontSize = 16.sp,
                                         ),
                                     )
                                 }
