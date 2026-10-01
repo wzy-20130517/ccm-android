@@ -63,17 +63,36 @@ val SettingsBodyPaddingTop: Dp = 13.02.dp
 /** `.settings-body` 下内距：clamp(56,18vw,90) → 实测 70.74 → 屏幕 65.08 */
 val SettingsBodyPaddingBottom: Dp = 65.08.dp
 
-/** section 之间的 `space-y-10`：实测 40 → 屏幕 36.8 */
-val SettingsSectionGap: Dp = 36.8.dp
+/**
+ * section 之间的 `space-y-10`。
+ *
+ * ⚠️ **不是**桌面值 40×0.92=36.8 —— 移动端 CSS 有一条
+ * `@media(max-width:767px) { .space-y-10 > * + * { margin-top: clamp(14px,5vw,26px) } }`
+ * （index.css:1213）。393px 视口下 5vw = 19.65 → 屏幕 **18.08**。
+ * 2026-10-01 用 Playwright 实测 `sy10Gap: 18.08` 确认（原先误用 36.8，是两倍）。
+ */
+val SettingsSectionGap: Dp = 18.08.dp
 
-/** `<h3 text-[16px]>` 的 `mb-5`：实测 20 → 屏幕 18.4 */
+/** `<h3 text-[16px]>` 的 `mb-5`：实测 20 → 屏幕 18.4（个人资料/发送消息/外观三节） */
 val SettingsTitleGap: Dp = 18.4.dp
+
+/**
+ * 「关于」节的 `<h3>` 用的是 `mb-3`（不是 `mb-5`）。
+ * 实测 marginBottom: 12 → 屏幕 **11.04**。
+ */
+val SettingsTitleGapTight: Dp = 11.04.dp
 
 /** 表单行之间的 `space-y-6`：实测 24 → 屏幕 22.08 */
 val SettingsFormGap: Dp = 22.08.dp
 
-/** `<hr className="border-claude-border" />` 上下留白（`space-y-10` 拆分） */
-val SettingsHrGap: Dp = 18.4.dp
+/**
+ * `<hr className="border-claude-border" />` 上下留白。
+ *
+ * hr 本身没有 margin，两侧留白全部来自父容器的 `space-y-10` ——
+ * 移动端被覆盖成 `clamp(14px,5vw,26px)`，393px 下 = 19.65 → 屏幕 **18.08**。
+ * 与 [SettingsSectionGap] 同源同值（实测 hr 的 marginTop = 19.65px）。
+ */
+val SettingsHrGap: Dp = 18.08.dp
 
 /** 输入框高度：实测 38.8（含 1px 边框） */
 val SettingsInputHeight: Dp = 38.8.dp
@@ -119,8 +138,14 @@ val SettingsLabelSizeSp = 11.21.sp
 /** `<label>` 行高：实测 18.2745 → 屏幕 16.81 */
 val SettingsLabelLine = 16.81.sp
 
-/** `text-[14px]` 移动端实测 12.999 → 屏幕 11.96（用于「关于」行） */
-val SettingsBody14Sp = 11.96.sp
+/**
+ * `text-[14px]` 移动端被覆盖成 `clamp(11.5px, 3.15vw, 14px)`，
+ * 393px 视口下 3.15vw = 12.3795 → 屏幕 **11.39**（用于「关于」行）。
+ *
+ * 2026-10-01 实测「当前版本」两行 span 的 fontSize 均为 12.3795 确认。
+ * 原先写 11.96 是照搬了错误的中间值。
+ */
+val SettingsBody14Sp = 11.39.sp
 
 /** `<select>` 移动端实测 12.3795 → 屏幕 11.39 */
 val SettingsSelectTextSp = 11.39.sp
@@ -396,11 +421,15 @@ fun SettingsSwitch(
  * ⚠️ `text-[16px]` 在移动端被覆盖成 `clamp(12.5px, 3.4vw, 15.5px)` →
  * 实测 13.362 → 屏幕 **12.29**。所以标题**不比正文大**，这是移动端特有意象，
  * 不要"顺手"改回 16。
+ *
+ * @param titleGap 标题与内容的间距。默认 [SettingsTitleGap]（`mb-5`）；
+ *   「关于」节源码用 `mb-3`，传 [SettingsTitleGapTight]。
  */
 @Composable
 fun SettingsSection(
     title: String,
     modifier: Modifier = Modifier,
+    titleGap: Dp = SettingsTitleGap,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val colors = CCMTheme.colors
@@ -414,7 +443,7 @@ fun SettingsSection(
             ),
             color = colors.textMain,
         )
-        Spacer(Modifier.height(SettingsTitleGap))
+        Spacer(Modifier.height(titleGap))
         content()
     }
 }
@@ -458,9 +487,8 @@ fun SettingsField(
 /**
  * 设置页的水平分隔线 —— 对应 `<hr className="border-claude-border" />`。
  *
- * 桌面是 1px 实线；移动端没改它，实测 h=1。两侧留白由父容器的
- * `space-y-10`（36.8）提供 —— 但实测 section→hr 间距只有 18.4，
- * 因为 `space-y-*` 在 `hr` 两侧各分一半。这里直接给定值。
+ * 桌面是 1px 实线；移动端没改它，实测 h=1、颜色 `#E8E7E3`。
+ * 两侧留白由父容器的 `space-y-10` 提供（移动端 = 18.08，见 [SettingsHrGap]）。
  */
 @Composable
 fun SettingsDivider(modifier: Modifier = Modifier) {
@@ -482,6 +510,9 @@ fun SettingsDivider(modifier: Modifier = Modifier) {
  * ⚠️ 移动端 CSS 把 `.settings-body .flex.items-center.justify-between` 改成
  * `flex-direction: column`（纵向堆叠），**除非**它只有一个 button 或含 checkbox 子元素。
  * 「当前版本」这行两个 span，所以**是纵向的**。
+ *
+ * 实测（2026-10-01，393×852）：整行 h=56.09 · `padding: 7.36px 0` ·
+ * `gap: 7.23px`（`.gap-*` 被 clamp 成 `clamp(5px,2vw,10px)`=7.86 → ×0.92）。
  */
 @Composable
 fun SettingsInfoRow(
@@ -489,10 +520,10 @@ fun SettingsInfoRow(
     value: String,
     modifier: Modifier = Modifier,
     valueMono: Boolean = true,
-    gap: Dp = 5.52.dp,
+    gap: Dp = 7.23.dp,
 ) {
     val colors = CCMTheme.colors
-    Column(modifier = modifier.padding(vertical = 1.84.dp)) {
+    Column(modifier = modifier.padding(vertical = 7.36.dp)) {
         Text(
             text = label,
             style = CCMText.body14.copy(fontSize = SettingsBody14Sp),

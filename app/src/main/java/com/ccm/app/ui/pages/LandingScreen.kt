@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
@@ -298,22 +299,26 @@ fun LandingScreen(
             )
 
             // 卡片底 256.37 → 胶囊顶 271.09
-            Spacer(Modifier.height(14.72.dp))
+            // ⚠️ 展开面板时这 14.72 不生效 —— 面板自己有 `mt-[12px]`
+            //    （clamp(4,1.6vw,10) = 6.288 → 屏幕 **5.78**），实测面板顶 262.16
+            //    = 卡片底 256.37 + 5.79 ✓。所以面板展开时用 5.78、收起时用 14.72。
+            Spacer(Modifier.height(if (activeSection != null) 5.78.dp else 14.72.dp))
 
             // ── 建议面板（点胶囊展开，对齐 Web activePromptSection）──
-            //   位置：input 卡与胶囊行之间（Web 同序：mt-12 面板在 tabs 上方）。
+            //   位置：input 卡与胶囊行之间（Web 同序：面板在 tabs 上方）
             activeSection?.let { sec ->
                 PromptSuggestionPanel(
                     section = sec,
                     library = library,
                     onDismiss = { activeSection = null },
                     onPick = { item ->
-                        // Web 行为（MainContent.tsx:4867）：收起面板 +
+                        // Web 行为（MainContent.tsx:4906）：收起面板 +
                         // setInputText(starting_prompt)，**不直接发送**
                         input = item.starting_prompt
                         activeSection = null
                     },
                 )
+                // 面板底 → 胶囊顶：实测 14.72（522.67 − 507.95）
                 Spacer(Modifier.height(14.72.dp))
             }
 
@@ -476,24 +481,30 @@ private fun InputCard(
             ) {
                 // 左：+ 按钮（上传文件）
                 // ★ 2026-09-27：原来只有图标没有 clickable —— 点了什么都不发生。
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                // ★ 2026-10-01：对齐 Web 的 `flex h-[32px] w-[34px] rounded-[8px]`
+                //   → 点击区 **31.27 × 29.44**、圆角 **7.36**（原先只有一个裸图标，
+                //   点击热区只有 20dp，且没有 Web 的悬停底色块）。
+                Box(
+                    modifier = Modifier
+                        .size(width = 31.27.dp, height = 29.44.dp)
+                        .clip(RoundedCornerShape(7.36.dp))
+                        .clickable(onClick = onAttach),
+                    contentAlignment = Alignment.Center,
                 ) {
                     PainterIcon(
                         R.drawable.ic_input_plus,
                         size = 20.dp,
                         tint = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
-                        modifier = Modifier.clickable(onClick = onAttach),
                     )
-                    // 已选图片数（有才显示 —— 发送后清零消失）
-                    if (attachedCount > 0) {
-                        Text(
-                            text = "图×$attachedCount",
-                            style = CCMText.body12,
-                            color = colors.claudeOrange,
-                        )
-                    }
+                }
+                // 已选图片数（有才显示 —— 发送后清零消失）
+                if (attachedCount > 0) {
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = "图×$attachedCount",
+                        style = CCMText.body12,
+                        color = colors.claudeOrange,
+                    )
                 }
 
                 // 右：模型选择器 + 麦克风 + 发送（★ 2026-09-27 加发送按钮）
@@ -513,6 +524,11 @@ private fun InputCard(
                     )
                     // ★ L1 真接通（2026-09-29 用户要求补能力而非置灰）：
                     //   系统 SpeechRecognizer 听写 → 整句回填输入框。
+                    //
+                    // ★ 2026-10-01 对齐 Web：发送按钮与语音按钮是**互斥**的
+                    //   （MainContent.tsx:4855 `canSend ? <发送/> : <语音/>`）——
+                    //   有内容时显示发送、无内容时显示语音。原来是两个都画，
+                    //   底部行比 Web 多一个控件，这是「首页底部比 Web 挤」的来源。
                     val voiceClick = com.ccm.app.ui.common.rememberVoiceInput(
                         onText = { text ->
                             // 本函数在 InputCard 内（input 是受控别名 val）——
@@ -520,31 +536,42 @@ private fun InputCard(
                             onValueChange(if (value.isBlank()) text else "$value $text")
                         },
                     )
-                    PainterIcon(
-                        R.drawable.ic_voice_mode,
-                        size = 20.dp,
-                        tint = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
-                        modifier = Modifier.clickable(onClick = voiceClick),
-                    )
-                    // 发送按钮：有内容才亮，点了发消息（对齐 Web 的 ↑ 按钮）
-                    Box(
-                        modifier = Modifier
-                            .size(29.44.dp)
-                            .clip(RoundedCornerShape(CCMRadius.md))
-                            .background(
-                                if (input.isNotBlank()) colors.claudeOrange
-                                else Color.Transparent
+                    val canSend = input.isNotBlank()
+                    if (canSend) {
+                        // 发送按钮 —— 对应 `landingSendButtonClass`：
+                        // `flex h-[32px] w-[40px] rounded-[8px] bg-[#efcbc0] text-white`
+                        // → 屏幕 **36.8 × 29.44**、圆角 **7.36**、底色 `#EFCBC0`。
+                        // （原来是 29.44 见方的橙色方块 + 文字箭头，比 Web 小一圈、
+                        //   颜色也不是 Web 的浅陶土色。）
+                        Box(
+                            modifier = Modifier
+                                .size(width = 36.8.dp, height = 29.44.dp)
+                                .clip(RoundedCornerShape(7.36.dp))
+                                .background(Color(0xFFEFCBC0))
+                                .clickable { onSend(input) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            // ArrowUp size=18 strokeWidth=2.3 → 16.56
+                            ArrowUpIcon(
+                                tint = Color.White,
+                                size = 16.56.dp,
+                                strokeWidth = 2.3f,
                             )
-                            .clickable(enabled = input.isNotBlank()) {
-                                onSend(input)   // 外层带图包装负责清空 input/pending
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = "↑",
-                            style = CCMText.body14.copy(fontSize = 15.sp),
-                            color = if (input.isNotBlank()) Color.White else colors.textSecondary,
-                        )
+                        }
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(width = 33.12.dp, height = 29.44.dp)
+                                .clip(RoundedCornerShape(7.36.dp))
+                                .clickable(onClick = voiceClick),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            PainterIcon(
+                                R.drawable.ic_voice_mode,
+                                size = 18.4.dp,
+                                tint = if (CCMTheme.isDark) colors.textMain else Color(0xFF121212),
+                            )
+                        }
                     }
                 }
             }
@@ -696,51 +723,58 @@ private fun PromptSuggestionPanel(
             //   最外层）；② 深色主题阴影本就几乎不可见、只会露黑边，深色时不加。
             .then(
                 if (CCMTheme.isDark) Modifier
-                else Modifier.shadow(elevation = 1.dp, shape = RoundedCornerShape(16.dp))
+                else Modifier.shadow(elevation = 1.dp, shape = RoundedCornerShape(14.72.dp))
             )
-            .clip(RoundedCornerShape(16.dp))
-            .border(1.dp, Color(0x261F1F1E), RoundedCornerShape(16.dp))   // rgba(31,31,30,0.15)
+            // `rounded-[16px]` 无移动端覆盖 → 16 × 0.92 = **14.72**（实测 borderRadius 14.72）
+            .clip(RoundedCornerShape(14.72.dp))
+            .border(1.dp, Color(0x261F1F1E), RoundedCornerShape(14.72.dp))   // rgba(31,31,30,0.15)
             .background(if (CCMTheme.isDark) colors.input else Color.White),
     ) {
-        // ── 头部（px-16 py-12）────────────────────────────────────
+        // ── 头部（px-[16px] py-[12px]）─────────────────────────────
+        //   实测 h=40.45 · padding 11.04/14.72（clamp 后）
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 14.72.dp, vertical = 11.04.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(7.36.dp),
             ) {
-                PainterIcon(section.iconRes, size = 18.dp, tint = colors.textMain)
+                // `h-[20px] w-[18px]` → 实测 16.55 × 18.39
+                PainterIcon(section.iconRes, size = 16.55.dp, tint = colors.textMain)
                 Text(
                     text = section.label,
-                    style = CCMText.body14,
-                    color = colors.textSecondary,
+                    // `text-[14px] leading-[19.6px]` → 11.39 / 18.03，色 #605E5A
+                    style = CCMText.body14.copy(fontSize = 11.39.sp, lineHeight = 18.03.sp),
+                    color = Color(0xFF605E5A),
                 )
             }
-            // 关闭 X（Web Close suggestions 按钮）
+            // 关闭 X —— Web 是 `h-[20px] w-[20px] rounded-full` + `<X size={14}/>`
+            //   实测按钮 13.73×13.73（被内容撑开）、圆角 full、色 #7B7974
             Box(
                 modifier = Modifier
-                    .size(24.dp)
-                    .clip(RoundedCornerShape(6.dp))
+                    .size(20.dp)
+                    .clip(CircleShape)
                     .clickable(onClick = onDismiss),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("✕", style = CCMText.body12, color = colors.textSecondary)
+                Text("✕", style = CCMText.body12.copy(fontSize = 10.49.sp), color = Color(0xFF7B7974))
             }
         }
 
         CcmDivider(color = Color(0x1F1F1F1E))   // rgba(31,31,30,0.12)
 
         // ── 建议列表 ───────────────────────────────────────────────
+        //   ⚠️ Web 每项只渲染**一行**：`localizeInspiration(item).description || name`
+        //      （MainContent.tsx:4916）。不是「标题 + 副标题」两行，也没有行尾 "→"。
+        //      原来是 name+description 两行 + 箭头，比 Web 高一半、信息也更挤。
+        //   项高：`min-h-[44px] py-[10px] px-[16px]` → 实测 40.47 高、pad 9.2/14.72。
         section.items.forEachIndexed { index, name ->
             val item = library[name] ?: return@forEachIndexed
-            // 项间分隔线（Web: border-b rgba(31,31,30,0.12)，最后一项无）
-            // ⚠️ 不能用 Modifier.border(bottom=...) —— Compose 的 border()
-            //    只有整体边框 (width,color,shape)，没有方向参数。
+            // 项间分隔线（Web: border-b，最后一项无）
             if (index > 0) {
                 CcmDivider(color = Color(0x1F1F1F1E))
             }
@@ -748,29 +782,70 @@ private fun PromptSuggestionPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { onPick(item) }
-                    .heightIn(min = 44.dp)
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                    .heightIn(min = 40.47.dp)
+                    .padding(horizontal = 14.72.dp, vertical = 9.2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = item.name,
-                        style = CCMText.body14,
-                        color = colors.textMain,
-                    )
-                    if (item.description.isNotBlank()) {
-                        Text(
-                            text = item.description,
-                            style = CCMText.body12,
-                            color = colors.textSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                Text("→", style = CCMText.body14, color = colors.textSecondary)
+                Text(
+                    // 与 Web 同优先级：description 为空才退回 name
+                    text = item.description.ifBlank { item.name },
+                    // `text-[14px] leading-[19.6px]` → 11.39 / 18.03，色 #373734
+                    style = CCMText.body14.copy(fontSize = 11.39.sp, lineHeight = 18.03.sp),
+                    color = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
+    }
+}
+
+/**
+ * 向上箭头（lucide `ArrowUp`）—— 首页发送按钮的图标。
+ *
+ * Web：`<ArrowUp size={18} strokeWidth={2.3} />` → 屏幕 16.56dp。
+ * lucide 的 ArrowUp 是「竖线 + 上方人字形箭头」：
+ * ```
+ *   M12 19 V5          （竖线，从下往上）
+ *   M5 12 l7-7 7 7     （人字）
+ * ```
+ * viewBox 24×24，笔画圆头。
+ */
+@Composable
+private fun ArrowUpIcon(
+    tint: Color,
+    size: androidx.compose.ui.unit.Dp,
+    strokeWidth: Float,
+) {
+    androidx.compose.foundation.Canvas(modifier = Modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+        val stroke = strokeWidth / 24f * w        // 24 是 lucide 的 viewBox
+        val cap = androidx.compose.ui.graphics.StrokeCap.Round
+        val join = androidx.compose.ui.graphics.StrokeJoin.Round
+        // 竖线：M12 19 V5
+        drawLine(
+            color = tint,
+            start = androidx.compose.ui.geometry.Offset(w / 2f, h * 19f / 24f),
+            end = androidx.compose.ui.geometry.Offset(w / 2f, h * 5f / 24f),
+            strokeWidth = stroke,
+            cap = cap,
+        )
+        // 人字：M5 12 L12 5 L19 12
+        val path = androidx.compose.ui.graphics.Path().apply {
+            moveTo(w * 5f / 24f, h * 12f / 24f)
+            lineTo(w * 12f / 24f, h * 5f / 24f)
+            lineTo(w * 19f / 24f, h * 12f / 24f)
+        }
+        drawPath(
+            path = path,
+            color = tint,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(
+                width = stroke,
+                cap = cap,
+                join = join,
+            ),
+        )
     }
 }
 

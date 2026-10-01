@@ -123,7 +123,10 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
         SettingsSection(title = "个人资料") {
             Column(verticalArrangement = Arrangement.spacedBy(SettingsFormGap)) {
                 // 全名 + 称呼并排（grid-cols-2 gap-6）
-                Row(horizontalArrangement = Arrangement.spacedBy(22.08.dp)) {
+                // ⚠️ gap-6 在移动端被 `.gap-6 { gap: clamp(8px,3vw,15px) }` 覆盖
+                //    （index.css:1210）→ 393px 下 3vw = 11.79 → 屏幕 **10.85**。
+                //    2026-10-01 实测 grid gap = 10.85 确认（原先误用桌面值 22.08）。
+                Row(horizontalArrangement = Arrangement.spacedBy(10.85.dp)) {
                     Column(modifier = Modifier.weight(1f)) {
                         SettingsLabel("全名")
                         Spacer(Modifier.height(SettingsLabelGap))
@@ -371,7 +374,8 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
 
         // ── 2. 发送消息 ──────────────────────────────────────────
         SettingsSection(title = "发送消息") {
-            Row(horizontalArrangement = Arrangement.spacedBy(22.08.dp)) {
+            // 同上：`grid grid-cols-2 gap-6` → 移动端 gap 10.85
+            Row(horizontalArrangement = Arrangement.spacedBy(10.85.dp)) {
                 Column(modifier = Modifier.weight(1f)) {
                     SettingsField(label = "发送消息") {
                         SettingsSelectMenu(
@@ -435,6 +439,8 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                             ChatFontCard(
                                 font = f,
                                 selected = chatFont == f,
+                                // weight(1f) 复刻 Web 的 flex-shrink —— 4 张卡平分宽度
+                                modifier = Modifier.weight(1f),
                                 onClick = {
                                     chatFont = f
                                     com.ccm.app.ui.theme.UiPrefs.setChatFont(f.key)
@@ -460,7 +466,8 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
         Spacer(Modifier.height(SettingsHrGap))
 
         // ── 4. 关于 ──────────────────────────────────────────────
-        SettingsSection(title = "关于") {
+        //   ⚠️ 这节的 `<h3>` 用 `mb-3`（不是 mb-5）—— 实测 marginBottom 12 → 屏幕 11.04。
+        SettingsSection(title = "关于", titleGap = SettingsTitleGapTight) {
             // ★ 版本号走 PackageManager 真值 —— 原来写死 "v0.8.100"，
             //   那是 CLI（claude-code-mobile）的版本，APK 自己是 0.1.x。
             //   记得 CI 每次构建会 bump versionName（workflow 里 0.1.run_number）。
@@ -470,7 +477,9 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
 }
 
 /** 全名左侧的小头像 —— `w-10 h-10 rounded-full bg-claude-avatar text-[16px]`。
- *  实测 38.8×38.8（40 × 0.92 = 36.8，加字距后渲染为 38.8）。
+ *  实测（2026-10-01）：36.8×36.8 · bg `rgb(51,51,51)` · 文字 12.29 / fw500 / lh18.44。
+ *  字号按 `text-[16px]` → clamp(12.5,3.4vw,15.5)=13.362 → 屏幕 **12.29**
+ *  （原先写 14.72 是照搬 input 的 16px 下限规则，头像不是 input，不适用）。
  */
 @Composable
 private fun CcmAvatarSmall(initial: String) {
@@ -484,7 +493,11 @@ private fun CcmAvatarSmall(initial: String) {
     ) {
         Text(
             text = initial,
-            style = CCMText.body16.copy(fontSize = 14.72.sp, fontWeight = FontWeight.Medium),
+            style = CCMText.body16.copy(
+                fontSize = 12.29.sp,
+                lineHeight = 18.44.sp,
+                fontWeight = FontWeight.Medium,
+            ),
             color = colors.avatarText,
         )
     }
@@ -542,8 +555,11 @@ private fun ThemePreviewCard(
                     },
                 )
                 .border(
-                    width = if (selected) 1.38.dp else 1.dp,
-                    color = if (selected) Color(0xFF3B82F6) else colors.border,
+                    // Web 选中态只改**颜色**（`border-[#3b82f6]/80`）+ `scale-[1.02]`，
+                    // 边框宽度恒为 1px（实测三张卡 borderWidth 全是 1.08696 → 屏幕 1.0）。
+                    // 原来写 1.38 是错的：会让选中卡比邻居胖一圈。
+                    width = 1.dp,
+                    color = if (selected) Color(0xCC3B82F6) else colors.border,
                     shape = RoundedCornerShape(7.36.dp),
                 )
                 .clickable(onClick = onClick),
@@ -566,7 +582,13 @@ private fun ThemePreviewCard(
         }
         Text(
             text = mode.label,
-            style = CCMText.body13.copy(fontSize = 11.96.sp),
+            // `text-[15px]` → 移动端 clamp(12px,3.25vw,15px) → 12.7725 → 屏幕 **11.75**。
+            // 2026-10-01 实测主题卡 label fontSize 12.7725 确认（原先写 11.96 偏小）。
+            style = CCMText.body15.copy(
+                fontSize = 11.75.sp,
+                lineHeight = 17.63.sp,
+                fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+            ),
             color = if (selected) colors.textMain else colors.textSecondary,
         )
     }
@@ -689,27 +711,36 @@ private fun AutoThemePreviewContent() {
 /**
  * 字体卡 —— 对应源码
  * `<button className="w-32 flex flex-col items-center gap-2 py-3 px-2 rounded-lg border">
- *    <span text-[20px]>Aa</span><span text-[13px]>label</span>
+ *    <span text-[20px] leading-none mb-1>Aa</span><span text-[13px]>label</span>
  *  </button>`
  *
- * 实测（Tailwind × 0.92）：宽 117.76 · `py-3` = 11.04 · `gap-2` = 7.36 ·
- * 样例字 `text-[20px]` 移动端覆盖为 clamp(12.5,3.4vw,15.5) → 13.362 → 屏幕 12.29。
+ * ⚠️ **宽度不是固定的 117.76**：`w-32`(=128) 是 flex item 的 width，
+ * 4 张卡 + 3×gap(11.04) 在 358.44 的内容区里放不下，浏览器按 `flex-shrink:1`
+ * 压到 **81.33**（实测 2026-10-01：fontCards w = 82.97 / 81.33 / 81.34 / 81.33）。
+ * 所以这里**不能**写死宽度，必须交给父 Row 的 `weight(1f)` 分配
+ * —— 否则 4×117.76 会溢出 145dp，第 4 张卡被挤出屏幕（这是「设置页比 Web 乱」的来源之一）。
+ *
+ * 内部实测：`py-3`=11.04 · `gap-2`=7.36 ·
+ * 样例字 `text-[20px]` → clamp(14,3.7vw,19)=14.541 → **13.38**，行高 20.07，`mb-1`=3.68 ·
+ * 标签 `text-[13px]` → **11.21**（选中态 fw500）。
  */
 @Composable
 private fun ChatFontCard(
     font: ChatFont,
     selected: Boolean,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val colors = CCMTheme.colors
     Column(
-        modifier = Modifier
-            .width(117.76.dp)
+        modifier = modifier
+            .scale(if (selected) 1.02f else 1f)             // 源码选中态 `scale-[1.02]`
             .clip(RoundedCornerShape(7.36.dp))
             .background(colors.input)
             .border(
-                width = if (selected) 1.38.dp else 1.dp,
-                color = if (selected) Color(0xFF3B82F6) else colors.border,
+                // 同上：宽度恒 1px，选中只换色（rgba(59,130,246,0.8)）
+                width = 1.dp,
+                color = if (selected) Color(0xCC3B82F6) else colors.border,
                 shape = RoundedCornerShape(7.36.dp),
             )
             .clickable(onClick = onClick)
@@ -720,8 +751,8 @@ private fun ChatFontCard(
         Text(
             text = "Aa",
             style = CCMText.body20.copy(
-                fontSize = 12.29.sp,
-                lineHeight = 12.29.sp,
+                fontSize = 13.38.sp,
+                lineHeight = 20.07.sp,
                 fontFamily = when (font) {
                     ChatFont.DEFAULT -> com.ccm.app.ui.theme.CcmSerif
                     ChatFont.SANS -> com.ccm.app.ui.theme.CcmSans
@@ -734,7 +765,8 @@ private fun ChatFontCard(
         Text(
             text = font.label,
             style = CCMText.body13.copy(
-                fontSize = 11.96.sp,
+                fontSize = 11.21.sp,
+                lineHeight = 18.27.sp,
                 fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
             ),
             color = if (selected) colors.textMain else colors.textSecondary,

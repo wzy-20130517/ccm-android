@@ -131,11 +131,15 @@ fun ChatsScreen(
         ) {
             Text(
                 text = "对话",
-                // 实测 21.222 / 27.5886 / fw500 / Spectral
-                // Web 用 WebkitTextStroke: 0.5px 加粗描边 —— Compose 无等价物，忽略
-                style = CCMText.body20.copy(
-                    fontSize = 21.222.sp,
-                    lineHeight = 27.5886.sp,
+                // Web：`font-[Spectral] text-[32px] font-weight:500`。
+                // `text-[32px]` 移动端被覆盖成 `clamp(19px, 5.4vw, 29px)` →
+                // 393px 下 5.4vw = 21.222 → 屏幕 **19.52**，行高 25.38。
+                // ⚠️ 字号要写**屏幕值 19.52**（实测），不是 CSS 的 21.222 ——
+                //   21.222 是"CSS 像素"，乘 zoom 之后才是屏幕上的大小。
+                // Web 另用 WebkitTextStroke: 0.5px 加描边 —— Compose 无等价物，忽略。
+                style = CCMText.body32.copy(
+                    fontSize = 19.52.sp,
+                    lineHeight = 25.38.sp,
                     fontWeight = FontWeight.Medium,
                 ),
                 color = colors.textMain,
@@ -152,16 +156,27 @@ fun ChatsScreen(
                 horizontalArrangement = Arrangement.spacedBy(7.36.dp),
             ) {
                 // Plus 图标（lucide，strokeWidth 2.5）
+                // 实测 14.72×14.72，stroke-width 2.5
                 PlusIcon(tint = colors.bgMain, size = 14.72.dp, strokeWidth = 2.5f)
                 Text(
                     text = "新对话",
-                    style = CCMText.body14.copy(fontWeight = FontWeight.Medium),
+                    // 源码是 inline `style={{ fontSize: '14px' }}` —— inline style
+                    // **不匹配** `[class*="text-[14px]"]` 那条 clamp 规则，所以是原值
+                    // 14px → 屏幕 **12.88**（实测 newBtn.fs = 12.88 ✓）。
+                    // 行高 19.3（= 按钮总高 30.34 − py 11.04）
+                    style = CCMText.body14.copy(
+                        fontSize = 12.88.sp,
+                        lineHeight = 19.3.sp,
+                        fontWeight = FontWeight.Medium,
+                    ),
                     color = colors.bgMain,
                 )
             }
         }
 
-        Spacer(Modifier.height(17.33.dp))       // h1 底 82.78 → 搜索框顶 99.72
+        // 标题行 → 搜索框：`mb-8` 被 clamp(11,4vw,20)=15.72 覆盖 → 屏幕 **14.46**
+        // （实测 head.marginBottom = 14.46；原来是 17.33，按 h1 底算的旧值）
+        Spacer(Modifier.height(14.46.dp))
 
         // ── 搜索框 ────────────────────────────────────────────────────
         SearchField(
@@ -169,11 +184,18 @@ fun ChatsScreen(
             onQueryChange = onSearchChange,
         )
 
-        Spacer(Modifier.height(11.04.dp))       // mb-6
+        // 搜索框 → 计数行：外层 `mb-6` clamp(9,3.1vw,16)=12.183 → 屏幕 **13.02**
+        // （实测 gapSearchToCount = 13.02；原来 11.04 偏小）
+        Spacer(Modifier.height(13.02.dp))
 
         // ── 计数行 ────────────────────────────────────────────────────
+        // Web: `flex items-center gap-2 mb-4 text-[13px] h-8`
+        //   h-8 → clamp(22,6vw,30)=23.58 → 屏幕 **21.69**（实测整行 h=29.44，
+        //   因为里面还有 h-8 的操作按钮；这里取实测容器高）
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(29.44.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // 搜索时显示匹配数（totalCount 是全量，搜索中直接用会误导）
@@ -197,7 +219,9 @@ fun ChatsScreen(
             )
         }
 
-        Spacer(Modifier.height(16.dp))
+        // 计数行 → 第一行：`mb-4` clamp(7,2.4vw,13)=9.432 → 屏幕 **14.72**
+        // （实测 gapCountToRow = 14.72；原来 16 偏大）
+        Spacer(Modifier.height(14.72.dp))
 
         // ── 列表（按搜索词过滤，2026-09-27）─────────────────────────
         //   原来直接 chats.forEach —— searchQuery 传了也白传，
@@ -374,10 +398,12 @@ private fun SearchField(query: String, onQueryChange: (String) -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            // `py-3` clamp(11,4vw,20)=15.72 → 输入框高 46.14（实测）
             .height(46.14.dp)
-            .clip(RoundedCornerShape(12.dp))
+            // `rounded-xl` = 12px → 无移动端覆盖 → 屏幕 **11.04**（实测 borderRadius 11.04）
+            .clip(RoundedCornerShape(11.04.dp))
             .background(colors.input)
-            .border(1.dp, colors.border, RoundedCornerShape(12.dp)),
+            .border(1.dp, colors.border, RoundedCornerShape(11.04.dp)),
         contentAlignment = Alignment.CenterStart,
     ) {
         // 左侧图标（left-3 = 11.04dp）
@@ -392,10 +418,15 @@ private fun SearchField(query: String, onQueryChange: (String) -> Unit) {
         //   第3批做的过滤逻辑（searchQuery 受控 + contains 匹配）一直
         //   没有输入入口 —— 搜索框本身打不了字，过滤等于白做。
         // placeholder 与原死 Text 同款叠加（value 空时画灰字）。
+        //
+        // ⚠️ 字号：源码类名写 `text-[15px]`，但移动端 CSS 有一条
+        //   `input[class][type="text"] { font-size: 16px !important }`
+        //   （index.css:1191，防 iOS 聚焦缩放），**比 text-[15px] 更具体**。
+        //   实测 fontSize 16px → 屏幕 **14.72**（不是 15 也不是 12.88）。
         if (query.isEmpty()) {
             Text(
                 text = "搜索对话…",
-                style = CCMText.body16.copy(fontSize = 16.sp, lineHeight = 24.sp),
+                style = CCMText.body16.copy(fontSize = 14.72.sp, lineHeight = 22.08.sp),
                 color = colors.textSecondary,
                 modifier = Modifier.padding(start = 36.8.dp, end = 14.72.dp),
             )
@@ -404,8 +435,8 @@ private fun SearchField(query: String, onQueryChange: (String) -> Unit) {
             value = query,
             onValueChange = onQueryChange,
             textStyle = CCMText.body16.copy(
-                fontSize = 16.sp,
-                lineHeight = 24.sp,
+                fontSize = 14.72.sp,
+                lineHeight = 22.08.sp,
                 color = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
             ),
             cursorBrush = androidx.compose.ui.graphics.SolidColor(colors.claudeOrange),
@@ -418,10 +449,18 @@ private fun SearchField(query: String, onQueryChange: (String) -> Unit) {
 }
 
 /**
- * 对话列表项 —— 实测 w=343.16 / h=69.34 / pad 16 / 底部分隔线 1.08696px #DAD9D4。
+ * 对话列表项 —— 对齐 Web ChatsPage 的行：
+ * `<div class="group relative py-4 border-b border-[#DAD9D4] px-4 -mx-4 flex items-center">`
  *
- * 结构：标题（13.362 / fw500）+ 时间（12.183 / textSecondary）。
- * 右侧「…」菜单在 Web 里是 `opacity-0 group-hover:opacity-100`，手机侧常显。
+ * 实测（2026-10-01，393×852）：
+ * - 整行 **h=69.34** = pad 14.72×2 + 标题 18.44 + 间距 3.67 + 副标题 16.8
+ *   （`py-4`=16 被 clamp(11,4vw,20)=15.72 覆盖 → 屏幕 14.46，实测 14.72）
+ * - 标题 `text-[16px] font-medium` → clamp(12.5,3.4vw,15.5)=13.362 → 屏幕 **12.29** / lh 18.44 / fw500
+ * - 副标题 `text-[13px]` → 12.183 → 屏幕 **11.21** / lh 16.81
+ * - 底部分隔线 1px `rgb(218,217,212)` = #DAD9D4
+ *
+ * ⚠️ 原来是 pad 16（大了 1.28）、标题用 body13（11.21，小了 1.08）、
+ *    副标题没设行高 —— 三项叠加让每行比 Web 矮/紧，整列表越长越明显。
  */
 @Composable
 private fun ChatRow(
@@ -437,7 +476,9 @@ private fun ChatRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(16.dp),
+            // Web 的 `px-4 -mx-4` 互相抵消，净效果是横向铺满容器（0 内距），
+            // 只有纵向 `py-4` 生效。这里直接不写横向 padding。
+            .padding(vertical = 14.72.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -461,8 +502,12 @@ private fun ChatRow(
             }
             Text(
                 text = chat.title.ifBlank { "未命名" },
-                // 实测 13.362 / fw500
-                style = CCMText.body13.copy(fontWeight = FontWeight.Medium),
+                // `text-[16px] font-medium` → 屏幕 12.29 / lh 18.44 / fw500
+                style = CCMText.body16.copy(
+                    fontSize = 12.29.sp,
+                    lineHeight = 18.44.sp,
+                    fontWeight = FontWeight.Medium,
+                ),
                 color = colors.textMain,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -486,12 +531,13 @@ private fun ChatRow(
             }
         }
 
-        Spacer(Modifier.height(3.68.dp))
+        // 标题底 → 副标题顶：实测 3.67
+        Spacer(Modifier.height(3.67.dp))
 
         Text(
             text = "最近消息：${formatTimeAgo(chat.updatedAt)}",
-            // 实测 12.183
-            style = CCMText.body12,
+            // `text-[13px]` → 屏幕 11.21 / lh 16.81
+            style = CCMText.body13.copy(fontSize = 11.21.sp, lineHeight = 16.81.sp),
             color = colors.textSecondary,
             maxLines = 1,
         )
