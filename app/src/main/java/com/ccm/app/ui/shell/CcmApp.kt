@@ -1117,18 +1117,26 @@ private fun ModelPickerSheet(
                 .fillMaxWidth()
                 .padding(bottom = 24.dp),
         ) {
+            // ★ 2026-10-01 二次重写（用户「又是这里」）：
+            //   上一版只微调了字号间距，没解决根本 —— Web 是紧凑浮层卡片
+            //   （w-[260px] rounded-xl shadow-xl border py-1），
+            //   而 APK 是全宽平铺，两行内容铺满整屏当然空。
+            //   移动端保留底部 Sheet 形态（手指好点），但**内容区做成卡片**：
+            //   左右 16dp 留白 + 圆角 16 + 细边框 —— 视觉聚焦，不再散开。
             Text(
                 text = "选择模型",
-                style = CCMText.body14.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
-                color = colors.textMain,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                style = CCMText.body12.copy(
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                ),
+                color = colors.textSecondary,
+                modifier = Modifier.padding(start = 24.dp, top = 4.dp, bottom = 10.dp),
             )
             if (items.isEmpty()) {
                 Text(
                     text = "还没有 Provider —— 到「设置 → 模型」里先加一个",
                     style = CCMText.body13,
                     color = colors.textSecondary,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
                 )
             }
             // ★ 2026-09-30 重写：对齐 Web ModelSelector.tsx 的扁平模型列表。
@@ -1140,10 +1148,18 @@ private fun ModelPickerSheet(
             //   - 每个「模型」= 一个可点行（圆角 + 选中高亮背景 + 勾）
             //   - Provider 名右侧小灰字（同名模型靠它区分）
             //   - 不再有「点 Provider 标题切换」那层（Web 没有，点模型即切）
+            androidx.compose.foundation.layout.Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)          // 卡片左右留白
+                    .clip(RoundedCornerShape(16.dp))      // Web rounded-xl
+                    .background(colors.input)             // Web bg-claude-input
+                    .border(1.dp, colors.border, RoundedCornerShape(16.dp)),  // Web border
+            ) {
             androidx.compose.foundation.lazy.LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 10.dp),
+                    .padding(vertical = 4.dp),            // Web py-1
             ) {
                 items.forEach { it2 ->
                     val pool = (listOf(it2.model) + it2.models)
@@ -1165,8 +1181,9 @@ private fun ModelPickerSheet(
                                     //   218 行 className 里没有 selected 分支的 bg）——
                                     //   原来涂了层橙底，是自创的。
                                     .background(Color.Transparent)
+                                    // ★ Web 行样式：px-4 py-2.5（14/11dp 已是该值 ×0.92）
                                     .clickable(enabled = it2.enabled) { onPickModel(it2.id, m) }
-                                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                                    .padding(horizontal = 16.dp, vertical = 11.dp),
                                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                             ) {
                                 // ★ 2026-10-01 对齐 Web ModelSelector.tsx:221：
@@ -1204,6 +1221,7 @@ private fun ModelPickerSheet(
                     }
                 }
             }
+            }   // Box（卡片容器）闭合
         }
     }
 }
