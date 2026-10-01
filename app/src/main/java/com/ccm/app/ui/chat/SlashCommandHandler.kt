@@ -529,7 +529,7 @@ private fun handleQueryCommands(cmd: String, arg: String, ctx: SlashContext): Sl
             } else {
                 val storage = com.ccm.app.AppGraph.storage
                     ?: return SlashResult.Notice("无法读取配置：应用尚未就绪。")
-                val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                val loadR = com.ccm.app.core.provider.AppConfig.load(storage.configFile)
                 if (loadR.error != null) {
                     return SlashResult.Notice(
                         "**配置文件损坏，命令已拒绝执行**\n\n解析错误：`${loadR.error}`",
@@ -538,7 +538,7 @@ private fun handleQueryCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                 val cfg = loadR.config
                 if (a == "reset") {
                     val ok = com.ccm.app.core.provider.AppConfig.save(
-                        cfg.copy(maxContextTokens = 1_000_000), st.configFile,
+                        cfg.copy(maxContextTokens = 1_000_000), storage.configFile,
                     )
                     if (ok) {
                         SlashResult.Notice("上下文上限已恢复默认：**1000K**")
@@ -566,7 +566,7 @@ private fun handleQueryCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                             SlashResult.Notice("设置失败：上限必须大于 10000（收到 $iv）。")
                         } else {
                             val ok = com.ccm.app.core.provider.AppConfig.save(
-                                cfg.copy(maxContextTokens = iv), st.configFile,
+                                cfg.copy(maxContextTokens = iv), storage.configFile,
                             )
                             if (ok) {
                                 SlashResult.Notice(

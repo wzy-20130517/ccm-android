@@ -68,12 +68,96 @@ def old_when_commands() -> set:
     return out
 
 
+# 常见的短局部变量名（各分支独立定义，跨分支用就是 bug）
+_WATCHED_LOCALS = ("st", "cfg", "loadR", "storage", "session", "a", "sub", "subCmd", "subArg")
+
+
+def check_branch_locals(src: str):
+    """
+    检查每个 when 分支里用到的局部变量是否有本分支定义。
+
+    ## 为什么需要（CI #237 的教训）
+    `/context` 分支里写了 `AppConfig.load(st.configFile)`，但那个分支的变量
+    叫 `storage`，`st` 是隔壁 `/effort` 分支的 —— 本地两个自检脚本都过了
+    （它们只查括号和 import），CI 编译才报 Unresolved reference 'st'。
+
+    做法：把源码按 `        "xxx" ->` 切成分支，逐分支检查。
+    只查白名单里的短变量名，避免把 lambda 参数、for 变量误判。
+
+    @return [(行号, 分支名, 变量名, 示例行), ...]
+    """
+    lines = src.split("\n")
+    starts = []
+    for i, l in enumerate(lines):
+        m = re.match(r'^        ("[^"]+"(?:, "[^"]+")*) ->', l)
+        if m:
+            starts.append((i, m.group(1)))
+
+    problems = []
+    for bi, (start, name) in enumerate(starts):
+        end = starts[bi + 1][0] if bi + 1 < len(starts) else len(lines)
+        # ⚠️ 必须先剥注释再检查 —— 注释里提到 `session.state.value` 这类
+        #    说明性文字不是真实引用（第一版没剥，5 处全是误报）。
+        body = strip_comments(lines[start:end])
+        body_text = "\n".join(body)
+        for var in _WATCHED_LOCALS:
+            # 该变量在本分支被使用？（排除 "xxx.st." 这种成员访问）
+            if not re.search(rf'(?<![\w.]){var}\.', body_text):
+                continue
+            # 本分支有定义？（val/var 声明，或 lambda 参数、for 变量）
+            defined = (
+                re.search(rf'\b(?:val|var)\s+{var}\s*[:=]', body_text)
+                or re.search(rf'\bfor\s*\(\s*{var}\s+in\b', body_text)
+                or re.search(rf'\b{var}\s*->', body_text)          # lambda 参数
+                or re.search(rf'\(\s*{var}\s*[,)]', body_text)      # 多参 lambda
+            )
+            if not defined:
+                sample = next(
+                    (l.strip() for l in body if re.search(rf'(?<![\w.]){var}\.', l)),
+                    "",
+                )
+                problems.append((start + 1, name, var, sample[:70]))
+    return problems
+
+
+def strip_comments(lines):
+    """
+    去掉行注释与块注释（保留行数，便于定位）。
+
+    只处理 `//` 与块注释；Kotlin 的三引号原始字符串在本文件里没用到，
+    真用到时要补（否则字符串里的双斜杠会被误剥）。
+    """
+    out = []
+    in_block = False
+    for l in lines:
+        if in_block:
+            if "*/" in l:
+                l = l.split("*/", 1)[1]
+                in_block = False
+            else:
+                out.append("")
+                continue
+        if "/*" in l:
+            before, _, after = l.partition("/*")
+            if "*/" in after:
+                l = before + after.split("*/", 1)[1]
+            else:
+                l = before
+                in_block = True
+        # 行注释：简单处理（字符串里的 // 极少见，本文件无 URL 字面量）
+        if "//" in l:
+            l = l.split("//", 1)[0]
+        out.append(l)
+    return out
+
+
 def main() -> int:
     if not HANDLER.exists() or not TABLE.exists():
         print(f"找不到源文件：\n  {HANDLER}\n  {TABLE}")
         return 1
 
-    h = handler_commands(HANDLER.read_text(encoding="utf-8"))
+    handler_src = HANDLER.read_text(encoding="utf-8")
+    h = handler_commands(handler_src)
     t = table_commands(TABLE.read_text(encoding="utf-8"))
     o = old_when_commands()
 
@@ -110,8 +194,25 @@ def main() -> int:
             print(f"    {c}")
         print()
 
+    # 方向 4：分支内变量未定义（CI #237 踩过的坑）
+    #
+    # 本地 check_kotlin.py 只查括号/注释，check_imports.py 只查 import ——
+    # **都抓不到「分支里用了别的分支的局部变量」**。这类错误要等 CI 编译
+    # 才暴露（#237：/context 分支里写了 `st.configFile`，但那个分支里
+    # 变量叫 `storage`，`st` 是隔壁分支的）。
+    #
+    # 做法：每个 when 分支是独立作用域，检查分支内用到的短变量名
+    # （st / cfg / loadR / storage 这类）是否有本分支的 val/var 定义。
+    undef = check_branch_locals(handler_src)
+    if undef:
+        problems += len(undef)
+        print("✗ 分支内用了未定义的局部变量（CI 会编译失败）：")
+        for line_no, branch, var, sample in undef:
+            print(f"    行 {line_no} [{branch}] 用了 `{var}` —— {sample}")
+        print()
+
     if problems:
-        print(f"共 {problems} 处漂移。修法：补分支，或补命令表，或加进白名单。")
+        print(f"共 {problems} 处问题。修法：补分支，或补命令表，或加进白名单。")
         return 1
 
     print("✓ 命令表与实现一致")
