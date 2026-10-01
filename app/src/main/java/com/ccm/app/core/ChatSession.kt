@@ -389,6 +389,69 @@ class ChatSession(
     /** 当前会话 id（`/status` 展示用）。 */
     val sessionId: String get() = container.sessionAuto?.currentSessionId.orEmpty()
 
+    // ═════════════════════════ Goal 模式（完成契约）═════════════════════════
+
+    /**
+     * 跑一条 goal 循环（跨轮自动推进，**挂起直到目标终止**）。
+     *
+     * ## 与 [send] 的区别
+     * [send] 跑一轮就返回；本方法跑**一整条目标** —— 内部反复调 [send]，
+     * 每轮之间由 [GoalRuntime] 做终止判定、算预算、可能改状态。
+     * 这就是 CLI 的 `runGoalLoop`（`core/goal-runtime.mjs`）。
+     *
+     * ## 为什么放在 ChatSession 而不是 ui/
+     * 驱动逻辑（预算判定、契约注入、收尾轮）是**core 语义**，不是界面逻辑。
+     * 放在这里：可单测、可被 cron/自动化调用、UI 只需调一次。
+     *
+     * ## 调用方要注意
+     * - **必须给 goalStore**（构造容器时没传 → 抛 IllegalStateException，
+     *   而不是静默什么都不做）
+     * - 本方法是**挂起**的：一条 15 轮的目标可能跑几十分钟。
+     *   调用方要在自己的协程里 launch，不要阻塞主线程
+     * - 用户中途 [stop] → 转 paused，可 `/goal resume` 续
+     *
+     * @param goalStore 目标存储（由 App 层注入，见 [AppContainer.goalStore]）
+     * @param firstMessage 第一个 goal turn 的用户输入（通常是用户原话）
+     * @return 结束原因与轮数
+     */
+    suspend fun runGoal(
+        goalStore: com.ccm.app.tools.task.GoalStore,
+        firstMessage: String,
+    ): com.ccm.app.tools.task.GoalRuntime.Outcome {
+        val sid = sessionId
+        val runtime = com.ccm.app.tools.task.GoalRuntime(
+            store = goalStore,
+            sessionId = sid,
+            // 一个 goal turn = 一次完整 send + 等它跑完
+            runTurn = { msg -> sendAndAwait(msg) },
+            getTokens = {
+                val (i, o) = container.agentLoop.getTotalUsage()
+                (i + o).toLong()
+            },
+            shouldStop = { isRunning },
+        )
+        return runtime.run(firstMessage)
+    }
+
+    /**
+     * 发一条消息并**等它跑完**（[runGoal] 的每一轮用）。
+     *
+     * [send] 是「点火就走」（返回时协程刚起），这里等 runningJob join。
+     * 复用 [send] 而不是另起一套：UI 气泡、状态更新、automem 触发
+     * 全都走同一条路径，不会出现「goal 跑的消息在界面上看不见」。
+     */
+    private suspend fun sendAndAwait(text: String) {
+        send(text)
+        // send 内部若因 isRunning 忽略（理论上不会：goal 循环是串行的），
+        // 这里就等不到东西 —— 加个超时兜底，避免整条 goal 卡死。
+        try {
+            kotlinx.coroutines.withTimeoutOrNull(GOAL_TURN_TIMEOUT_MS) {
+                runningJob?.join()
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
     // ═════════════════════════ 事件 → 状态 ═════════════════════════
 
     /**
@@ -661,6 +724,15 @@ class ChatSession(
     )
 
     companion object {
+        /**
+         * 一个 goal turn 的最长等待（30 分钟）。
+         *
+         * 只是**兜底**：正常一轮几分钟内结束。设这么长是因为手机上跑
+         * 多文件任务确实可能很久，而误杀一轮的代价（目标中途断掉）
+         * 比多等一会儿大。真正该用超时保护的是 Agent 自己的 stream watchdog。
+         */
+        private const val GOAL_TURN_TIMEOUT_MS = 30L * 60 * 1000
+
         /**
          * 装配 + 建会话（UI 一行接入）。
          *
