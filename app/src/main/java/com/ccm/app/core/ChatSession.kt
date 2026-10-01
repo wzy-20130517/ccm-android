@@ -251,6 +251,7 @@ class ChatSession(
     fun clear() {
         stop()
         container.agentLoop.setHistory(emptyList())
+        resetAutoMemoryCursor()   // automem：游标也要归零，否则增量永远为负
         markDirty()   // B3：清空也是改动 —— 不标脏则删除不落盘，重启后旧对话复活
         _state.value = State()
     }
@@ -275,11 +276,52 @@ class ChatSession(
     }
 
     /**
+     * 无痕会话开关（`/incognito`）。
+     *
+     * 开启后 [markDirty] 直接跳过 —— 本会话的任何改动都不再落盘，退出即丢。
+     * **已落盘的历史不会因此被删除**（要删用 `/delete`）；关掉开关后从当前
+     * 状态继续正常落盘。
+     *
+     * 说明：CLI 的无痕还有「不加载 CLAUDE.md」「禁止访问项目目录」两条语义，
+     * APK 侧只实现「不落盘」这一条（另两条要动系统提示词与路径白名单，
+     * 后续按需接）。开启时给出明确提示，避免用户误以为历史被删。
+     */
+    @Volatile
+    var incognito: Boolean = false
+
+    /**
+     * 切换无痕状态。
+     *
+     * 开启时额外做一件事：把 [container] 里 SessionAuto 的 dirty 位清掉
+     * （`switchTo` 同 id 会把 dirty 置 false，且它内部的 flush 会把**开启前**
+     * 的内容先落盘一次 —— 这正是想要的语义）。
+     *
+     * 【为什么必须清】dirty 是 SessionAuto 的私有位，定时器（每 30s）只要看到
+     * dirty=true 就 saveNow。若开无痕前刚改过东西（dirty=true），不清的话
+     * 定时器仍会落盘一次 —— 无痕就漏了。只在 markDirty 里拦是不够的。
+     */
+    fun setIncognito(on: Boolean) {
+        incognito = on
+        if (on) {
+            try {
+                val auto = container.sessionAuto
+                val sid = auto?.currentSessionId
+                if (auto != null && !sid.isNullOrBlank()) auto.switchTo(sid, auto.title)
+            } catch (_: Throwable) { /* 清 dirty 失败不阻塞开关 */ }
+        }
+    }
+
+    /**
      * ★ B3（findbugs 2026-10-01）：标脏 —— SessionAuto.markDirty 原来**全项目
      * 零调用**，dirty 永远 false → flush()/定时保存/退出保存全是 no-op
      * （/save 假成功、切会话/杀进程丢对话）。所有消息变化点调这里。
+     *
+     * ⚠️ 无痕会话（[incognito]）下本方法是 no-op —— 这是无痕的**唯一实现点**，
+     *   不要改成在 saveForced/flush 里判断：那些路径都经过 markDirty，
+     *   在这里拦一处即可覆盖全部（漏一处就等于无痕失效）。
      */
     private fun markDirty() {
+        if (incognito) return
         container.sessionAuto?.markDirty()
     }
 
@@ -301,7 +343,71 @@ class ChatSession(
         saveForced()
     }
 
+    /**
+     * 当前对话历史的快照（`/branch` 分叉用）。
+     *
+     * 直接用 AgentLoop 的内存历史 —— 比读会话文件新（文件是 30 秒防抖落盘的，
+     * 最近几轮可能还没写进去）。返回的是不可变副本，调用方可安全持有。
+     */
+    fun historySnapshot(): List<Message> = container.agentLoop.getHistory()
+
+    /**
+     * 最近一轮的 token 用量（`/cost` 用）。
+     *
+     * 返回 (输入, 输出) —— 这是 AgentLoop 累计的**总量**，不是最近一次请求。
+     */
+    fun totalUsage(): Pair<Int, Int> = container.agentLoop.getTotalUsage()
+
+    /**
+     * 运行模式状态（`/plan` `/deep` `/watch` 命令读写用）。
+     *
+     * **必须是同一个实例**：AgentLoop 每轮 run 开始读 [ModeState.deepMode] 决定
+     * maxTurns（见 `AgentLoop.kt:348`）、读 [ModeState.planMode] 拼系统提示词。
+     * 本 getter 返回的正是构造 AgentLoop 时传进去的那一个（`AppContainer.modes`），
+     * 所以命令改了它就**真的生效**，不是改了个孤立对象。
+     */
+    val modes: com.ccm.app.core.agent.ModeState get() = container.modes
+
+    /** 当前会话 id（`/status` 展示用）。 */
+    val sessionId: String get() = container.sessionAuto?.currentSessionId.orEmpty()
+
     // ═════════════════════════ 事件 → 状态 ═════════════════════════
+
+    /**
+     * 触发一次自动记忆提取（automem）。
+     *
+     * **独立协程、不 await** —— 理由见调用点注释。scope 是 ChatSession 构造时
+     * 拿到的 App 级作用域（不是 runningJob），所以不会被本轮取消连带杀掉。
+     *
+     * 对齐 CLI `index.mjs` 的 run 结束钩子：
+     * `maybeExtractMemory(agent, api, {...}).catch(() => {})`（fire-and-forget）。
+     */
+    private fun maybeRunAutoMemory() {
+        val am = container.autoMemory ?: return
+        scope.launch {
+            try {
+                val note = am.maybeExtract(container.agentLoop.getHistory(), container.apiClient)
+                // 提取到内容时给用户一条提示（CLI 是往终端打日志，APK 用 notice 气泡）
+                if (note != null) injectNotice(note)
+            } catch (_: Throwable) {
+                // 失败静默 —— 自动记忆绝不能影响对话
+            }
+        }
+    }
+
+    /**
+     * 清空对话时重置 automem 游标。
+     *
+     * 不重置的话：cursor 停在旧历史的长度上，而新历史从 0 开始 →
+     * `history.size - cursor` 长期是负数 → 永远不提取（静默失效）。
+     * 对齐 CLI 注释里的「compact 后 cursor 重置」。
+     */
+    private fun resetAutoMemoryCursor() {
+        try {
+            container.autoMemory?.resetCursor()
+        } catch (_: Throwable) {
+        }
+    }
 
     private suspend fun collectEvents(events: Flow<AgentEvent>) {
         val toolCards = mutableListOf<ToolCard>()
@@ -424,6 +530,18 @@ class ChatSession(
                         }
                         markDirty()   // B3：兜底（残留在流里的内容定型也落盘）
                         _state.value = _state.value.copy(running = false, toolCards = toolCards.toList())
+
+                        // ★ automem（2026-10-01）：每轮正常结束后触发一次记忆提取。
+                        //
+                        // **fire-and-forget**（不 await）：
+                        // - 提取要发一次 API 请求（几秒），await 会拖住 UI 收尾
+                        // - 这里已经在 collectEvents 的 finally 前，用独立 launch 才不会
+                        //   被 runningJob 的取消连带取消
+                        // - 失败静默（AutoMemory 内部 catch），绝不冒泡到对话
+                        //
+                        // 放在 Done 而不是 try 之外：只有正常跑完的轮次才提取，
+                        // 中断/报错的轮次不提取（半截对话提炼不出什么，还浪费一发）。
+                        maybeRunAutoMemory()
                     }
                 }
             }
@@ -548,6 +666,14 @@ class ChatSession(
             cwd: String = "/",
             /** 会话 id（恢复旧会话时传，空 = 新建）。**Agent 与存盘共用这一个**。 */
             sessionId: String = "",
+            /**
+             * 运行模式状态（deep / plan / watch）。
+             *
+             * **必须传进程级单例**（AppGraph.modes）—— 模式工具持有的是
+             * ToolsBootstrap 那一刻传入的引用，这里再传一个新建的就会
+             * 「工具写 A、主循环读 B」静默失效。详见 AppGraph.modes 注释。
+             */
+            modes: com.ccm.app.core.agent.ModeState = com.ccm.app.core.agent.ModeState(),
         ): ChatSession? {
             val cfg = AppConfig.load(storage.configFile).config
             // 先把 id 定下来 —— Agent 侧（工具/hooks/子 Agent 归属）和存盘侧
@@ -562,6 +688,7 @@ class ChatSession(
                 imageScaler = imageScaler,
                 cwd = cwd,
                 sessionId = sid,
+                modes = modes,
             ) ?: return null
 
             // ★ B3 联动：恢复已有会话时把文件里的 title 带给 SessionAuto ——

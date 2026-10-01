@@ -114,6 +114,20 @@ class ToolsBootstrap(
     private val githubToken: String? = null,
     /** 默认 GitHub 仓库（owner/name）—— /github repo 设置 */
     private val githubRepo: String? = null,
+    /**
+     * 运行模式状态（deep / plan / watch）—— **必须与 AgentLoop 用同一个实例**。
+     *
+     * 不传时模式工具改的是一个孤立对象，主循环读不到 ——
+     * 表现为「EnterDeepMode 说成功了但轮数没变」。生产环境由 AppGraph 注入。
+     */
+    private val modes: com.ccm.app.core.agent.ModeState = com.ccm.app.core.agent.ModeState(),
+    /**
+     * 自动记忆提取器（automem）。
+     *
+     * 传入时 [Memory] 工具写记忆后会通知它「本轮别重复提取」；
+     * `null` = 未启用 automem（工具行为不变，只是少了那个互斥通知）。
+     */
+    private val autoMemory: com.ccm.app.core.memory.AutoMemory? = null,
 ) {
 
     /** 装配结果（供诊断与 UI 展示） */
@@ -208,7 +222,12 @@ class ToolsBootstrap(
             storageRoot = storage.rootDir,
             memoryFile = File(storage.rootDir, "CLAUDE.md"),
             todoFile = File(storage.rootDir, "todos.json"),
+            onMemoryWritten = { autoMemory?.markMainWroteMemory() },
         )
+
+        // 模式工具（EnterPlanMode/ExitPlanMode/EnterDeepMode/ExitDeepMode/EnterWatch/ExitWatch）
+        // —— 与 AgentLoop 共享同一个 modes 实例（见构造参数注释）
+        val modeTools = ModeTools(modes)
 
         // 批 3 补全 + P1
         val devTools = DevTools(primary, trashStore, commandExec)
@@ -327,6 +346,9 @@ class ToolsBootstrap(
             add(miscTools.UserInputHistoryTool(File(storage.rootDir, "input-history.jsonl")))
             add(miscTools.AskUserQuestionTool(askUser))
 
+            // 批 6：模式（deep / plan / watch）—— 对齐 CLI core/plan.mjs
+            modeTools.all().forEach { add(it) }
+
             // P1：视觉
             add(visionTools.ViewImageTool())
             add(visionTools.ViewVideoTool())
@@ -437,6 +459,9 @@ class ToolsBootstrap(
             "Agent", "AgentStatus", "AgentOutput", "AgentStop", "AgentMemory", "ExtendTurns",
             // 杂项
             "TodoWrite", "Sleep", "Memory", "UserInputHistory", "AskUserQuestion",
+            // 模式（deep / plan / watch）—— 对齐 CLI core/plan.mjs
+            "EnterPlanMode", "ExitPlanMode", "EnterDeepMode", "ExitDeepMode",
+            "EnterWatch", "ExitWatch",
             // 视觉
             "ViewImage", "ViewVideo", "Screencap",
             // 开发辅助

@@ -97,6 +97,21 @@ object AppGraph {
         return File(st.root, WORKSPACE_DIR).apply { mkdirs() }.absolutePath
     }
 
+    /**
+     * 当前工作区路径（`/diff` `/files` 等命令用）。
+     *
+     * 与装配时传给 AgentLoop 的 cwd **同一套解析规则**（[resolveWorkspaceDir]）——
+     * 之前 `/files` 直接拼 `storage.root/workspace`，配置了 workspacePath 时
+     * 会指错目录。本 getter 统一出口，新命令都用它。
+     *
+     * 存储未初始化时返回空串（调用方自行提示）。
+     */
+    fun workspacePath(): String {
+        val st = storage ?: return ""
+        val cfg = AppConfig.load(st.configFile).config
+        return resolveWorkspaceDir(st, cfg)
+    }
+
     // ══════════════════════════════════════════════════════════════
     //  装配结果（UI 读这些决定渲染什么）
     // ══════════════════════════════════════════════════════════════
@@ -144,6 +159,40 @@ object AppGraph {
     /** 核心容器（含 AgentLoop / ApiClient / SessionStore）。 */
     @Volatile
     var container: AppContainer? = null
+        private set
+
+    /**
+     * 运行模式状态（deep / plan / watch）—— **进程级单例**。
+     *
+     * ══════════════════════════════════════════════════════════════
+     *  ⚠️ 必须是单例，不能每次建会话新建一个
+     * ══════════════════════════════════════════════════════════════
+     *
+     * `ToolsBootstrap.install()` **只在 [init] 里跑一次**，模式工具
+     * （EnterDeepMode 等）持有的是那一刻传入的 `modes` 引用。
+     * 而 [openSession] / [rebuild] 会重建 AgentLoop —— 如果那时传一个新的
+     * ModeState，就是「工具写 A、主循环读 B」：
+     *
+     * ```
+     * EnterDeepMode → modes_A.deepMode = true
+     * AgentLoop     → 读 modes_B.deepMode == false → 轮数没变
+     * ```
+     * 表现为「工具说进入成功了，但一点效果都没有」——**静默失效**，
+     * 不报错、不崩，最难查。所以这里按进程级持有，所有路径共用。
+     */
+    val modes: com.ccm.app.core.agent.ModeState = com.ccm.app.core.agent.ModeState()
+
+    /**
+     * 自动记忆提取器（automem）—— 同样**进程级单例**。
+     *
+     * 理由与 [modes] 相同：Memory 工具（ToolsBootstrap 持有）要通知它
+     * 「本轮别重复提取」，而提取动作在 ChatSession 里调 —— 两边必须是同一个。
+     *
+     * `null` = 创建失败（存储不可写等极端情形），此时 automem 整体不生效，
+     * 但对话功能不受影响。
+     */
+    @Volatile
+    var autoMemory: com.ccm.app.core.memory.AutoMemory? = null
         private set
 
     /** 对话门面 —— **UI 接入 Agent 的唯一入口**。 */
@@ -273,6 +322,19 @@ object AppGraph {
             appScope = scope
             imageScaler = AndroidImageScaler(app.cacheDir)
 
+            // ── 2.5 automem 提取器（★ 必须在 ToolsBootstrap 之前建）──
+            //
+            // Memory 工具（ToolsBootstrap 里构造）要拿到它做互斥通知，
+            // 所以顺序不能反。状态文件与记忆文件都放 files/ 根。
+            autoMemory = try {
+                com.ccm.app.core.memory.AutoMemory(
+                    stateFile = File(st.root, "automem.json"),
+                    memoryFile = File(st.root, "CLAUDE.md"),
+                )
+            } catch (_: Throwable) {
+                null
+            }
+
             // ── 3. 配置 ──────────────────────────────────────────────
             val cfg = AppConfig.load(st.configFile).config
             val provider = cfg.currentProvider
@@ -294,6 +356,11 @@ object AppGraph {
                 // ★ 必须传 getter（不是字符串快照）—— GoalTools 在
                 //   每次调用时现取，这样 [rebuild] 换了会话 id 它也能跟上。
                 getSessionId = { sessionId },
+                // ★ 模式状态与 automem 必须传进程级单例（见字段注释）：
+                //   工具持有的是这一份引用，之后 rebuild 重建 AgentLoop
+                //   也要读同一份，否则模式工具静默失效。
+                modes = modes,
+                autoMemory = autoMemory,
             ).install(reg)
 
             toolsResult = tools
@@ -312,6 +379,7 @@ object AppGraph {
                 imageScaler = imageScaler,
                 cwd = cwd,
                 sessionId = sid,
+                modes = modes,
             )
 
             if (sess == null) {
@@ -396,6 +464,7 @@ object AppGraph {
                 imageScaler = imageScaler,
                 cwd = cwd,
                 sessionId = id,
+                modes = modes,
             ) ?: run {
                 // 没配 Provider —— 与 init 同样的降级
                 initError = "尚未配置 API —— 请到「设置 → 模型」里添加一个 Provider"
@@ -550,6 +619,7 @@ object AppGraph {
                 imageScaler = AndroidImageScaler(app.cacheDir),
                 cwd = cwd,
                 sessionId = sessionId.ifBlank { SessionStore(st).newSessionId() },
+                modes = modes,
             )
             session = sess
             initError = if (sess == null) "尚未配置 API —— 请到「设置 → 模型」里添加一个 Provider" else null

@@ -70,6 +70,16 @@ class MiscTools(
     private val storageRoot: File,
     private val memoryFile: File,
     private val todoFile: File,
+    /**
+     * 写记忆后的通知（automem 互斥用）。
+     *
+     * 主 Agent 本轮自己写了 CLAUDE.md → automem 跳过本轮提取，免得
+     * 刚写完又生成一条重复的。对齐 CLI `core/auto-memory.mjs` 的
+     * `markMainWroteMemory()`（那边在 MemoryTool 调用处 `set` 标志）。
+     *
+     * `null` = 未接 automem（工具行为不变，只是少了那个互斥通知）。
+     */
+    private val onMemoryWritten: (() -> Unit)? = null,
 ) {
 
     // ══════════════════════════════════════════════════════════════
@@ -301,6 +311,9 @@ class MiscTools(
                             memoryFile.parentFile?.mkdirs()
                             val existing = if (memoryFile.exists()) memoryFile.readText() else ""
                             AtomicFile.writeText(memoryFile, existing + "\n" + text + "\n", createParent = true)
+                            // ★ automem 互斥：本轮主 Agent 自己写了记忆 →
+                            //   本轮结束后的自动提取跳过（对齐 CLI markMainWroteMemory）
+                            onMemoryWritten?.invoke()
                             ToolResult.ok("已追加到记忆文件（现 ${memoryFile.length()} 字节）")
                         } catch (e: Throwable) {
                             ToolResult.Error("写入失败：${e.message}", ToolResult.INTERNAL)

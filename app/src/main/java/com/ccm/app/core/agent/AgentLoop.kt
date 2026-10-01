@@ -61,6 +61,16 @@ import kotlinx.serialization.json.put
  * Node 版坑：api 层重试 3 次 × agent 层 4 轮 = 12 次请求 / 687 秒静默卡死。
  * 这里：收到 `retriesExhausted = true` 就**不再重试**。
  *
+ * ## 运行模式（deep / plan / watch）
+ * 三个模式的状态在 [ModeState] 里（与模式工具共享同一实例），本类只**读**：
+ * - `deepMode` → 每轮 run 开始把 maxTurns 提到 [ModeState.DEEP_MAX_TURNS]
+ * - `planMode` → 每轮拼系统提示词时追加 [ModeState.PLAN_PROMPT]
+ * - `watchMode` → 循环条件不再看 maxTurns，纯文本回复后注入「继续」保持循环
+ *
+ * **为什么状态不在本类**：模式工具（EnterDeepMode 等）在本类**之前**构造
+ * （`core` 不能依赖 `tools`，工具只能拿到回调/共享对象）。所以状态的持有者
+ * 是第三个对象，两边都引用它 —— 与 CLI 的 `new DeepMode()` + 闭包同构。
+ *
  * ## 零 Android 依赖
  * 本类（及整个 `core/`）**不引用任何 `android.*`**，这样业务逻辑能在纯 JVM 单测里跑。
  * base64 用 `java.util.Base64`（API 26+ 可用，与 minSdk 一致），不用 `android.util.Base64`。
@@ -76,13 +86,21 @@ class AgentLoop(
      */
     private val toolsProvider: () -> List<Tool>,
     /** 最大轮次（构造值；运行期改请用 [extendMaxTurns] / [setMaxTurns]）。 */
-    maxTurnsInit: Int = 200,
+    private val maxTurnsInit: Int = ModeState.NORMAL_MAX_TURNS,
     /** 工作目录。 */
     private val cwd: String = "/",
     /** 额外可访问目录（`/add-dir`）。 */
     private val extraDirs: List<String> = emptyList(),
     /** 权限模式。 */
     permissionModeInit: String = "default",
+    /**
+     * 运行模式状态（deep / plan / watch）—— **必须与模式工具用同一个实例**。
+     *
+     * 默认值 `ModeState()` 只保证不 NPE（单测/子 Agent 场景）。
+     * **生产环境必须由 AppContainer 传入共享实例** —— 否则工具改的是另一个对象，
+     * 表现为「EnterDeepMode 说进入成功了，但轮数一点没变」。
+     */
+    private val modes: ModeState = ModeState(),
     /** 应用存储（工具用）。 */
     private val storage: ToolStorage? = null,
     /** 只读配置快照（工具用）。 */
@@ -317,6 +335,19 @@ class AgentLoop(
         turnCount = 0
         aborted = false
 
+        // ── 模式 → 轮次上限（对齐 CLI `index.mjs`：每轮 run 前 setMaxTurns(deepMode.getMaxTurns())）──
+        //
+        // 【为什么每轮重算而不是在工具里改】幂等：不管状态是被工具、slash 命令
+        // 还是别处改的，下一轮 run 一定拿到正确的上限。工具里改的做法要求
+        // 「每个改动点都记得同步 maxTurns」，漏一处就是静默失效。
+        //
+        // ⚠️ **续过轮的实例不覆盖**：`ExtendTurns` 是子 Agent 的自救机制
+        // （单次 +60、最多 4 次），它加的轮数不该被下一轮 run 打回原形。
+        // 主 Agent 从不续轮（extensionCount 恒为 0），所以不受影响。
+        if (extensionCount == 0) {
+            maxTurns = if (modes.deepMode) maxOf(maxTurnsInit, ModeState.DEEP_MAX_TURNS) else maxTurnsInit
+        }
+
         // 每轮 run 一个 trace 文件（jsonl），结束后 end()
         val tr = traceDir?.let { TraceStore(dir = it) }
         trace = tr
@@ -328,6 +359,10 @@ class AgentLoop(
                 "max_turns" to maxTurns,
                 "message_count_before" to (messages.size - 1),
                 "tool_count" to toolsProvider().size,
+                // 模式快照（排查「为什么这轮跑了 300 次」时先看这个）
+                "deep_mode" to modes.deepMode,
+                "plan_mode" to modes.planMode,
+                "watch_mode" to modes.watchMode,
             ),
         )
 
@@ -335,7 +370,11 @@ class AgentLoop(
             // 空响应重试计数（连续几轮都吐空 → 放弃并如实报告）
             var emptyRetries = 0
 
-            while (turnCount < maxTurns) {
+            // 循环条件实时读 watchMode：
+            // - 关着 → 正常的「轮次上限」语义
+            // - 开着 → 不受 maxTurns 限制，直到 ExitWatch 或用户打断
+            //   （对齐 CLI `while (this.watchMode || this.turnCount < this.maxTurns)`）
+            while (modes.watchMode || turnCount < maxTurns) {
                 if (aborted) throw CancellationException("用户中断")
                 turnCount++
 
@@ -388,6 +427,20 @@ class AgentLoop(
                     // 于是**纯文本回复永远不进历史** —— 用户问「你好」，模型答「你好」，
                     // 下一轮模型看不到自己说过什么，表现为「多轮对话失忆、反复自我介绍」。
                     appendAssistantText(assistant)
+
+                    // ── 持续模式（watch）：不结束，注入「继续」让循环保持 ──
+                    //
+                    // 用于盯队列/持续任务。对齐 CLI `agent.mjs`：
+                    // assistant 正文**已经写进历史**，这里只追加下一轮 user 指令 ——
+                    // 避免每轮重复保存同一份正文导致上下文/费用膨胀。
+                    //
+                    // 发 TurnEnd 让 UI 把这一轮的流式内容定型成气泡：
+                    // 不切的话十轮的正文会攒成一个巨型气泡。
+                    if (modes.watchMode) {
+                        messages += Message.user(ModeState.WATCH_CONTINUE_PROMPT)
+                        emit(AgentEvent.TurnEnd(turnCount))
+                        continue
+                    }
                     break
                 }
                 emptyRetries = 0
@@ -464,7 +517,7 @@ class AgentLoop(
 
         if (!useStream) {
             // 非流式（compact 摘要等短请求）
-            val resp = api.chat(systemPrompt, apiMessages, toolDefs)
+            val resp = api.chat(effectiveSystemPrompt(), apiMessages, toolDefs)
             trace?.emit(
                 TraceEvents.API_RESPONSE,
                 mapOf(
@@ -488,7 +541,7 @@ class AgentLoop(
         }
 
         // 流式
-        api.stream(systemPrompt, apiMessages, toolDefs).collect { ev ->
+        api.stream(effectiveSystemPrompt(), apiMessages, toolDefs).collect { ev ->
             when (ev) {
                 is ApiTypes.StreamEvent.Text -> {
                     textSb.append(ev.text)
@@ -800,6 +853,21 @@ class AgentLoop(
         "plan" -> tool.isReadOnly
         "acceptEdits" -> !tool.isDestructive
         else -> tool.isReadOnly || !tool.isDestructive
+    }
+
+    /**
+     * 本轮实际用的系统提示词 = 基础提示词 + 计划模式追加段。
+     *
+     * **每轮重算**（不是构造时缓存）—— 用户/AI 可能在任何时刻切模式，
+     * 缓存会让切换延迟一轮生效。
+     *
+     * 对齐 CLI `index.mjs`：`base + planMode.getSystemPromptAddition() + ...`。
+     * APK 只接了 plan 一段；CLI 的 deepMode / coordinatorMode 没有提示词追加段
+     * （它们的 `getSystemPromptAddition()` 恒返回空串）。
+     */
+    private fun effectiveSystemPrompt(): String {
+        val add = modes.planPromptAddition()
+        return if (add.isEmpty()) systemPrompt else systemPrompt + add
     }
 
     // ═════════════════════════ 历史维护 ═════════════════════════

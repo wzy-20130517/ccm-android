@@ -15,7 +15,6 @@ import com.ccm.app.core.tool.MapToolSettings
 import com.ccm.app.core.tool.ToolRegistry
 import com.ccm.app.core.tool.ToolRunner
 import com.ccm.app.core.tool.ToolSettings
-import com.ccm.app.core.tool.ToolStorage
 
 /**
  * 应用装配容器 —— **把各零件接成一条能跑的链路**。
@@ -78,6 +77,21 @@ class AppContainer private constructor(
      * 用户被自动压缩搞丢过记忆，明确反感 —— 只有他显式设阈值才会启用。
      */
     val autoCompact: AutoCompact,
+    /**
+     * 运行模式状态（deep / plan / watch）—— 与工具层**共享同一个实例**。
+     *
+     * 工具改它、AgentLoop 读它。两个对象必须拿到同一份，否则
+     * 「EnterDeepMode 说成功但轮数没变」。由 [build] 的 modes 参数传入。
+     */
+    val modes: com.ccm.app.core.agent.ModeState,
+    /**
+     * 自动记忆提取器（automem）。
+     *
+     * `null` = 未启用（构造时 storage 不可写等异常情形）。
+     * 由 [ChatSession.collectEvents] 在每轮 Done 后 fire-and-forget 触发 ——
+     * **不要 await 在 run 里**（会拖住 UI 收尾，且用户 Ctrl+C 会取消提取）。
+     */
+    val autoMemory: com.ccm.app.core.memory.AutoMemory? = null,
 ) {
 
     /**
@@ -245,6 +259,13 @@ class AppContainer private constructor(
             cwd: String = "/",
             imageScaler: ImageScaler? = null,
             /**
+             * 运行模式状态（deep / plan / watch）。
+             *
+             * **必须与 ToolsBootstrap 用同一个实例** —— 工具写、主循环读。
+             * 不传时每次 build 都新建一个（单测场景），生产环境由 AppGraph 传入。
+             */
+            modes: com.ccm.app.core.agent.ModeState = com.ccm.app.core.agent.ModeState(),
+            /**
              * 会话 id。
              *
              * **必须由调用方给**（与 [attachSessionAuto] 用同一个）——
@@ -324,10 +345,23 @@ class AppContainer private constructor(
                 spawnSubAgent = null,   // 由上层在装配后注入（需要 Agent 工具支持）
                 toolRunner = toolRunner,
                 imageScaler = imageScaler,
+                modes = modes,
                 // trace 目录 —— 排查问题的关键设施（Node 版最难查的 bug 全靠它）
                 traceDir = storage.tracesDir,
             )
             agentLoop.setHistory(initialHistory)
+
+            // ── 自动记忆（automem）──
+            // 状态文件与记忆文件都放 storage.root（= files/），与 MiscTools 的
+            // memoryFile 同一个 —— 两个模块必须指向同一份 CLAUDE.md。
+            val autoMemory = try {
+                com.ccm.app.core.memory.AutoMemory(
+                    stateFile = java.io.File(storage.root, "automem.json"),
+                    memoryFile = java.io.File(storage.root, "CLAUDE.md"),
+                )
+            } catch (_: Throwable) {
+                null
+            }
 
             return AppContainer(
                 config = config,
@@ -339,6 +373,8 @@ class AppContainer private constructor(
                 compactor = compactor,
                 // 阈值从配置读（AppConfig 目前没有这两个字段 → 用默认 0 = 关闭）
                 autoCompact = AutoCompact(maxContext = config.maxContextTokens),
+                modes = modes,
+                autoMemory = autoMemory,
             )
         }
 
