@@ -276,7 +276,22 @@ class ChatSession(
     }
 
     /**
-     * 无痕会话开关（`/incognito`）。
+     * 无痕会话开关（`/incognito`）。**只读** —— 改写请用 [setIncognito]。
+     *
+     * ⚠️ **必须是 `val` + 私有 backing field，不能写成 `var incognito`**：
+     * `var` 会让 Kotlin 生成一个 public 的 `setIncognito(Z)V`，而本类另有
+     * 手写的 `fun setIncognito(on: Boolean)` —— 两者 JVM 签名完全相同，
+     * 编译直接报：
+     * ```
+     * Platform declaration clash: The following declarations have the same
+     * JVM signature (setIncognito(Z)V)
+     * ```
+     * （CI #236 的真实报错。注意 `private set` 也救不了 —— 私有 setter 的
+     *  JVM 方法名同样是 `setIncognito`，依然撞。）
+     *
+     * 改成只读属性后：读走 `getIncognito()`、写走手写的 `setIncognito(Z)V`，
+     * 各占一个签名，且**调用方零改动**（`session.incognito` / `session.setIncognito(x)`
+     * 两个用法在 Kotlin 层面完全不变）。
      *
      * 开启后 [markDirty] 直接跳过 —— 本会话的任何改动都不再落盘，退出即丢。
      * **已落盘的历史不会因此被删除**（要删用 `/delete`）；关掉开关后从当前
@@ -286,8 +301,11 @@ class ChatSession(
      * APK 侧只实现「不落盘」这一条（另两条要动系统提示词与路径白名单，
      * 后续按需接）。开启时给出明确提示，避免用户误以为历史被删。
      */
+    val incognito: Boolean get() = incognitoFlag
+
+    /** [incognito] 的实际存储（只允许经 [setIncognito] 改）。 */
     @Volatile
-    var incognito: Boolean = false
+    private var incognitoFlag: Boolean = false
 
     /**
      * 切换无痕状态。
@@ -305,7 +323,7 @@ class ChatSession(
      * 定时器从此无事可做。
      */
     fun setIncognito(on: Boolean) {
-        incognito = on
+        incognitoFlag = on
         if (on) {
             try { container.sessionAuto?.flush() } catch (_: Throwable) { /* 落盘失败不阻塞开关 */ }
         }
