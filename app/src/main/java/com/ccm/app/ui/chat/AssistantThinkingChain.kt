@@ -716,9 +716,12 @@ private fun ThinkingEventIcon(kind: ThinkingEventKind, size: Dp, color: Color = 
 
     // 资源缺失时回退到「空心圆」—— 不崩、不空白
     if (paths.isEmpty()) {
+        // ★ CI #230 修：thinkingMuted() 是 @Composable，不能进 Canvas{}（DrawScope）
+        //   —— 在 Canvas 外先取值。
+        val fallbackColor = if (color == Color.Unspecified) thinkingMuted() else color
         Canvas(modifier = Modifier.size(size)) {
             drawCircle(
-                color = if (color == Color.Unspecified) thinkingMuted() else color,
+                color = fallbackColor,
                 radius = this.size.width * 0.3f,
                 style = Stroke(width = 1.2.dp.toPx()),
             )
