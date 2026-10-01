@@ -136,16 +136,14 @@ private fun handleSessionCommands(cmd: String, arg: String, ctx: SlashContext): 
 
         // /delete —— 删除当前会话，回首页并刷新列表。
         "/delete" -> {
-            val store = com.ccm.app.AppGraph.storage?.let {
-                com.ccm.app.core.session.SessionStore(it)
-            }
-            val sid = com.ccm.app.AppGraph.sessionId
-            if (store == null || sid.isBlank()) {
+            // ★ reviewer 应修#2：不在 handler 里直接 SessionStore.delete ——
+            //   那样会绕过 CcmApp deleteChat 的「删当前会话→开新会话」重置，
+            //   activeSession 悬空指向已删 id（死会话/文件死而复生）。
+            //   这里只发导航请求，删除由 UI 层 deleteChat 全权处理。
+            if (com.ccm.app.AppGraph.sessionId.isBlank()) {
                 SlashResult.Notice("无法删除：当前没有会话。")
             } else {
-                store.delete(sid)
-                ctx.refreshSessions()
-                SlashResult.Navigate("home")
+                SlashResult.Navigate("delete-current")
             }
         }
 

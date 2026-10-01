@@ -366,6 +366,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     openPanel = { p ->
                         when (p) {
                             "model" -> showModelPicker = true
+                            "switcher" -> { refreshSessions(); showSwitcher = true }
                             "style" -> navigate(CcmRoute.SETTINGS)
                         }
                     },
@@ -378,8 +379,29 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         activeSession?.injectNotice(hres.markdown)
                         navigate(CcmRoute.CHAT)   // 看到通知要进对话页
                     }
-                    is com.ccm.app.ui.chat.SlashResult.Navigate -> {}   // navigate 回调里已处理
-                    is com.ccm.app.ui.chat.SlashResult.OpenPanel -> {}   // openPanel 回调里已处理
+                    is com.ccm.app.ui.chat.SlashResult.Navigate -> {
+                        // ★ reviewer 应修#1：原来是空分支，首页 /delete /load
+                        //   点了没反应（副作用没人执行）。
+                        when (hres.route) {
+                            "home" -> navigate(CcmRoute.HOME)
+                            "settings" -> navigate(CcmRoute.SETTINGS)
+                            "delete-current" -> {
+                                // ★ 应修#2：/delete 不能只删文件 —— 走 deleteChat
+                                //   才会重置 activeSession（否则悬空指向已删 id）。
+                                deleteChat(com.ccm.app.AppGraph.sessionId)
+                                navigate(CcmRoute.HOME)
+                            }
+                            else -> navigate(CcmRoute.HOME)
+                        }
+                    }
+                    is com.ccm.app.ui.chat.SlashResult.OpenPanel -> {
+                        // ★ 应修#1：补全（原来吞掉），与 openPanel 闭包同逻辑
+                        when (hres.panel) {
+                            "model" -> showModelPicker = true
+                            "switcher" -> { refreshSessions(); showSwitcher = true }
+                            "style" -> navigate(CcmRoute.SETTINGS)
+                        }
+                    }
                     is com.ccm.app.ui.chat.SlashResult.Toast ->
                         android.widget.Toast.makeText(appCtx, hres.text, android.widget.Toast.LENGTH_SHORT).show()
                     else -> {}
@@ -394,15 +416,11 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                 }
                 "/model" -> { showModelPicker = true; return }
                 "/help" -> {
+                    // ★ 应修#3：改为动态生成（原来手写 6 条且文案与实际拦截不符）
                     activeSession?.injectNotice(
-                        "**可用命令**\n\n" +
-                        "- `/clear` — 清空当前对话\n" +
-                        "- `/model` — 选择模型\n" +
-                        "- `/compact` — 压缩历史\n" +
-                        "- `/permissions` — 查看权限规则\n" +
-                        "- `/export` — 导出对话\n" +
-                        "- `/help` — 本帮助\n\n" +
-                        "其余输入会直接发给模型。"
+                        "**可用命令（${com.ccm.app.ui.chat.COMMON_SLASH_COMMANDS.size} 个）**\n\n" +
+                            com.ccm.app.ui.chat.COMMON_SLASH_COMMANDS.joinToString("\n") { (c, d) -> "- `$c` — $d" } +
+                            "\n\n输入 `/` 可看候选面板。"
                     )
                     navigate(CcmRoute.CHAT)
                     return
@@ -455,16 +473,20 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     if (!setOf("/export", "/permissions").contains(t)) {
                         activeSession?.injectNotice(
                             "**${t.substringBefore(" ")} 在 APK 暂不可用**\n\n" +
-                            "当前支持：/clear /model /help /compact /export /permissions\n" +
+                            "APK 共支持 ${com.ccm.app.ui.chat.COMMON_SLASH_COMMANDS.size} 个命令，输入 / 看候选面板。\n" +
                             when (t.substringBefore(" ")) {
-                                "/style" -> "风格选择在 设置 → 通用 → 输出风格。"
                                 "/config" -> "Provider 配置在 设置 → 模型。"
-                                else -> "其他 CLI 命令请到设置页操作。"
+                                else -> "CLI 专属命令（/rewind /doctor 等）请到终端侧使用。"
                             }
                         )
                         navigate(CcmRoute.CHAT)
                         return
                     }
+                    // ★ 应修#4：/export /permissions 依赖对话页上下文 ——
+                    //   进对话页由 ChatScreenConnected 拦截执行，
+                    //   **不能落穿到下面的 send**（原来会把命令发给模型）。
+                    navigate(CcmRoute.CHAT)
+                    return
                 }
             }
         }
