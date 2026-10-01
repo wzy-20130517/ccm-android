@@ -341,13 +341,20 @@ fun MessageList(
         //   原来这段什么都没显示（用户以为卡死）；Web 有 Claude 星芒 sprite。
         //   条件：在跑 && 还没有任何流式内容（正文/思考都空）。
         if (streamingRunning && streaming.isBlank() && streamingThinking.isBlank()) {
-            androidx.compose.foundation.layout.Box(
+            // ★ 2026-10-01 用户报「没有思维链」：原来只放了个裸星芒 ——
+            //   Web 的对应物是 AssistantThinkingCompactStatus（星芒 28px +
+            //   斜体衬线状态文字 + 打字机逐词显现），这才是「思维链」的观感。
+            //   组件早就写好了（739 行），一直零调用 —— 又是「写好了没接线」。
+            AssistantThinkingCompactStatus(
+                event = AssistantThinkingEvent(
+                    kind = ThinkingEventKind.FOCUS,
+                    label = "正在深入思考，请稍候…",
+                ),
+                isThinking = true,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 12.dp),
-            ) {
-                AssistantActivityIndicator(size = 32.dp)
-            }
+            )
         }
 
         // 流式内容（未定型）
