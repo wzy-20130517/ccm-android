@@ -79,6 +79,24 @@ object AppGraph {
     /** 默认工作目录名（App 私有，无需运行时权限）。 */
     private const val WORKSPACE_DIR = "workspace"
 
+    /**
+     * 解析工作区目录（2026-10-01）。
+     *
+     * 优先用 config 的 workspacePath（与 CLI /workspace、Web 设置页同语义）；
+     * 为空或建不出目录（权限/路径无效）时落回默认 files/workspace —— 
+     * 配置错不该让 App 起不来。
+     */
+    private fun resolveWorkspaceDir(st: com.ccm.app.core.AppStorage, cfg: com.ccm.app.core.provider.AppConfig): String {
+        val configured = cfg.workspacePath?.trim().orEmpty()
+        if (configured.isNotEmpty()) {
+            try {
+                val d = File(configured)
+                if (d.isDirectory || d.mkdirs()) return d.absolutePath
+            } catch (_: Throwable) {}
+        }
+        return File(st.root, WORKSPACE_DIR).apply { mkdirs() }.absolutePath
+    }
+
     // ══════════════════════════════════════════════════════════════
     //  装配结果（UI 读这些决定渲染什么）
     // ══════════════════════════════════════════════════════════════
@@ -283,7 +301,9 @@ object AppGraph {
             toolNames = tools.registered
 
             // ── 5. 会话（内部装配 ApiClient + AgentLoop）─────────────
-            val cwd = File(st.root, WORKSPACE_DIR).apply { mkdirs() }.absolutePath
+            // ★ 2026-10-01：优先用配置的 workspacePath（与 CLI /workspace 同语义），
+            //   空/不可写时落回默认 files/workspace。
+            val cwd = resolveWorkspaceDir(st, cfg)
             val sess = ChatSession.create(
                 storage = st,
                 registry = reg,
@@ -355,6 +375,8 @@ object AppGraph {
         val scope = appScope ?: return null
         val reg = registry ?: return null
         val tools = toolsResult ?: return null
+        // 工作区配置（resolveWorkspaceDir 用）
+        val cfg = AppConfig.load(st.configFile).config
         if (id.isBlank()) return null
         if (id == sessionId && session != null) return session   // 已经在这场对话里
 
@@ -363,7 +385,9 @@ object AppGraph {
             session?.dispose()
 
             // ② 重建
-            val cwd = File(st.root, WORKSPACE_DIR).apply { mkdirs() }.absolutePath
+            // ★ 2026-10-01：优先用配置的 workspacePath（与 CLI /workspace 同语义），
+            //   空/不可写时落回默认 files/workspace。
+            val cwd = resolveWorkspaceDir(st, cfg)
             val sess = ChatSession.create(
                 storage = st,
                 registry = reg,
@@ -508,12 +532,16 @@ object AppGraph {
         val reg = registry ?: return init(context, scope)
         val runner = toolsResult?.executor ?: return init(context, scope)
         val app = context.applicationContext
+        // 工作区配置（resolveWorkspaceDir 用）
+        val cfg = AppConfig.load(st.configFile).config
 
         return try {
             try { session?.stop() } catch (_: Throwable) {}
             try { container?.shutdown() } catch (_: Throwable) {}
 
-            val cwd = File(st.root, WORKSPACE_DIR).apply { mkdirs() }.absolutePath
+            // ★ 2026-10-01：优先用配置的 workspacePath（与 CLI /workspace 同语义），
+            //   空/不可写时落回默认 files/workspace。
+            val cwd = resolveWorkspaceDir(st, cfg)
             val sess = ChatSession.create(
                 storage = st,
                 registry = reg,

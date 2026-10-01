@@ -105,6 +105,10 @@ data class AppConfig(
     @SerialName("outputStyle")
     val outputStyle: String? = null,
 
+    /** 工作区路径（2026-10-01，与 CLI /workspace 同语义）。空 = 默认 files/workspace。 */
+    @SerialName("workspacePath")
+    val workspacePath: String? = null,
+
     /** 其他未建模的字段原样保留（防保存时丢失用户的手工配置）。 */
     @SerialName("_extra")
     val extra: JsonObject? = null,
@@ -132,7 +136,7 @@ data class AppConfig(
             "providers", "current", "greeting", "stream", "temperature",
             "maxContextTokens", "permissionMode", "vision", "visionProviderId",
             "keyRotateEvery", "imageGen", "effort", "tavilyKey", "webSearch",
-            "outputStyle",
+            "outputStyle", "workspacePath",
             "_extra",
         )
 
