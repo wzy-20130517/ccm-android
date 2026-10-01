@@ -435,7 +435,7 @@ fun SettingsUsageTab(modifier: Modifier = Modifier) {
                 // 额度说明（保留诚实告知：自部署无配额）
                 Text(
                     text = "自部署模式不走服务端额度，以上为本机真实统计。",
-                    style = CCMText.body12.copy(fontSize = SettingsLabelSizeSp - 1),
+                    style = CCMText.body12.copy(fontSize = 10.21.sp   // SettingsLabelSizeSp(11.21) - 1（TextUnit 不能直接减 Int）),
                     color = colors.textSecondary,
                 )
 
