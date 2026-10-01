@@ -469,11 +469,5 @@ private fun ErrorBanner(message: String, onRetry: (() -> Unit)? = null) {
  * slash 命令候选表 —— 与 `ChatScreenConnected.onSend` 的拦截表**必须同步**。
  * （那边新增命令忘了加这里 → 面板里看不见；反之点了没反应。）
  */
-private val SLASH_COMMANDS = listOf(
-    "/clear" to "清空当前对话",
-    "/model" to "打开模型选择器",
-    "/export" to "导出对话（系统分享）",
-    "/help" to "显示可用命令",
-    "/compact" to "压缩历史（截断旧工具输出，免流量）",
-    "/permissions" to "查看权限规则",
-)
+// 2026-09-30：抽到公共 SlashCommands.kt，首页/对话页共用（原来首页没面板）
+private val SLASH_COMMANDS = COMMON_SLASH_COMMANDS

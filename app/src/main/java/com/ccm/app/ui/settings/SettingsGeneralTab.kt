@@ -196,14 +196,6 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                         },
                         title = "输出风格",
                     )
-                    Spacer(Modifier.height(5.52.dp))
-                    Text(
-                        text = "注：与 CLI 的 /style、Web 设置页互通（同一个 outputStyle 字段）。" +
-                            "自定义风格放 .claude/output-styles/。改完切会话或重启生效。",
-                        style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
-                        color = CCMTheme.colors.textSecondary,
-                        modifier = Modifier.padding(top = 3.68.dp),
-                    )
                     Spacer(Modifier.height(7.36.dp))
                     SettingsTextField(
                         value = preferences,

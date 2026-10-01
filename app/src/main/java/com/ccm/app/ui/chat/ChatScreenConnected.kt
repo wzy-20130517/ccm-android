@@ -66,6 +66,12 @@ fun ChatScreenConnected(
     onModelClick: () -> Unit = {},
     onSwitchClick: () -> Unit = {},
     onDelete: () -> Unit = {},
+    /** /new 新建会话（第 2026-09-30 批 slash 扩充）。 */
+    onNewChat: () -> Unit = {},
+    /** /style 打开输出风格选择。 */
+    onOpenStyle: () -> Unit = {},
+    /** slash handler 的导航请求（如 /delete 后回 "home"）。 */
+    onNavigate: (String) -> Unit = {},
 ) {
     // 语音输入（第30批）：听写结果追加到 draft（追加不覆盖 —— 说完一句还能接着说）
     val voiceClick = com.ccm.app.ui.common.rememberVoiceInput(
@@ -85,6 +91,44 @@ fun ChatScreenConnected(
     var pendingFiles by remember { mutableStateOf<List<String>>(emptyList()) }
     var showAttachMenu by remember { mutableStateOf(false) }
     val ctx = androidx.compose.ui.platform.LocalContext.current
+
+    // ── slash 统一 handler 的上下文与结果执行器（2026-09-30）──────────
+    //   handler（SlashCommandHandler.kt）是纯逻辑，不碰 Compose；
+    //   这里负责把 SlashResult 翻译成真实副作用。
+    fun buildSlashCtx() = com.ccm.app.ui.chat.SlashContext(
+        session = session,
+        appContext = ctx.applicationContext,
+        navigate = onNavigate,
+        newChat = onNewChat,
+        openPanel = { p ->
+            when (p) {
+                "model" -> onModelClick()
+                "switcher" -> onSwitchClick()
+                "style" -> onOpenStyle()
+            }
+        },
+        // 对话页不直接刷新列表：删除/重命名后回列表页时
+        // CcmApp 的 CHATS 分支有 LaunchedEffect(route){refreshSessions()}
+        refreshSessions = {},
+    )
+
+    fun applySlashResult(res: com.ccm.app.ui.chat.SlashResult) {
+        when (res) {
+            is com.ccm.app.ui.chat.SlashResult.Handled -> {}
+            is com.ccm.app.ui.chat.SlashResult.Notice -> session.injectNotice(res.markdown)
+            is com.ccm.app.ui.chat.SlashResult.Navigate -> onNavigate(res.route)
+            is com.ccm.app.ui.chat.SlashResult.OpenPanel ->
+                when (res.panel) {
+                    "model" -> onModelClick()
+                    "switcher" -> onSwitchClick()
+                    "style" -> onOpenStyle()
+                }
+            is com.ccm.app.ui.chat.SlashResult.Toast ->
+                android.widget.Toast.makeText(ctx, res.text, android.widget.Toast.LENGTH_SHORT).show()
+            is com.ccm.app.ui.chat.SlashResult.NotHandled -> {}
+        }
+    }
+
     val ioScope = rememberCoroutineScope()
     val attachLauncher = rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents(),
@@ -229,6 +273,18 @@ fun ChatScreenConnected(
         onSend = {
             val text = coreState.draft.trim()
             if (text.isNotEmpty()) {
+                // ★ 2026-09-30 统一 handler（多 Agent 接入）：所有 slash 先过
+                //   SlashCommandHandler.handleSlashCommand（会话/查询/配置/工具
+                //   四大分区），认得的在这里执行副作用；不认的才落到下面的老
+                //   when（/clear /help 等基础命令 + 兜底提示）。
+                if (text.startsWith("/")) {
+                    val res = handleSlashCommand(text, buildSlashCtx())
+                    if (res != null && res !is SlashResult.NotHandled) {
+                        applySlashResult(res)
+                        session.setDraft("")
+                        return@onSend
+                    }
+                }
                 // ── slash 命令（2026-09-28 最小集）──────────────────
                 // 原来 ChatSession.send 对 "/xxx" 照样发给模型 ——
                 // 模型收到后只能回一句「我不是这样用的」。
@@ -239,15 +295,12 @@ fun ChatScreenConnected(
                         session.clear()          // 停任务 + 清历史 + 清气泡
                     }
                     text == "/help" -> {
+                        // 2026-09-30：动态生成自公共命令表（43 个），不再手写
+                        // ——手写漏一条就与候选面板/实际拦截漂移。
                         session.injectNotice(
-                            "**可用命令**\n\n" +
-                            "- `/clear` — 清空当前对话\n" +
-                            "- `/model` — 打开模型选择器\n" +
-                            "- `/export` — 导出对话（系统分享）\n" +
-                            "- `/help` — 显示本帮助\n" +
-                            "- `/compact` — 压缩历史（截断旧工具输出）\n" +
-                            "- `/permissions` — 查看权限规则\n\n" +
-                            "其余输入会直接发给模型。"
+                            "**可用命令（${COMMON_SLASH_COMMANDS.size} 个）**\n\n" +
+                            COMMON_SLASH_COMMANDS.joinToString("\n") { (c, d) -> "- `$c` — $d" } +
+                            "\n\n输入 `/` 可看候选面板，其余输入直接发给模型。"
                         )
                     }
                     text == "/model" -> onModelClick()
@@ -281,6 +334,52 @@ fun ChatScreenConnected(
                         // microCompact 免 API；摘要式后续再接。
                         session.injectNotice("**/compact**\n\n" + session.compactNow())
                     }
+                    // ── 2026-09-30 扩充：能在 APK 环境合理实现的命令 ──────
+                    text == "/stop" -> {
+                        session.stop()
+                        session.injectNotice("已停止当前任务。")
+                    }
+                    text == "/retry" -> {
+                        if (session.state.value.running) {
+                            session.injectNotice("任务进行中，先 /stop 再重试。")
+                        } else {
+                            session.retryLast()
+                        }
+                    }
+                    text == "/context" || text == "/cost" -> {
+                        val st = session.state.value
+                        val inT = st.inputTokens
+                        val outT = st.outputTokens
+                        val turns = st.bubbles.count { !it.isUser }
+                        session.injectNotice(
+                            "**上下文用量**\n\n" +
+                            "- 消息条数：${st.bubbles.size}\n" +
+                            "- 助手轮数：$turns\n" +
+                            "- 最近一次输入 token：$inT\n" +
+                            "- 最近一次输出 token：$outT\n" +
+                            "- 合计（最近一轮）：${inT + outT}\n\n" +
+                            "长会话可用 /compact 压缩。"
+                        )
+                    }
+                    text == "/copy" -> {
+                        val last = session.state.value.bubbles.lastOrNull { !it.isUser }
+                        if (last == null || last.text.isBlank()) {
+                            session.injectNotice("没有可复制的回复。")
+                        } else {
+                            try {
+                                val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                    as android.content.ClipboardManager
+                                cm.setPrimaryClip(
+                                    android.content.ClipData.newPlainText("CCM", last.text)
+                                )
+                                android.widget.Toast.makeText(ctx, "已复制最后一条回复", android.widget.Toast.LENGTH_SHORT).show()
+                            } catch (e: Throwable) {
+                                session.injectNotice("复制失败：${e.message}")
+                            }
+                        }
+                    }
+                    text == "/new" -> onNewChat()
+                    text == "/style" -> onOpenStyle()
                     // ★ 2026-09-29 未支持命令兜底：/config /style /undo 这类
                     //   CLI 命令原来从 else 溜过去**发给模型**（模型回
                     //   「我不是这样用的」，白烧一轮）。
@@ -288,8 +387,9 @@ fun ChatScreenConnected(
                         val cmd = text.substringBefore(" ").trim()
                         session.injectNotice(
                             "**${cmd} 在 APK 暂不可用**\n\n" +
-                            "当前支持：${SUPPORTED_SLASH.joinToString(" ")}\n" +
-                            "${SLASH_HINTS[cmd] ?: "其他命令（如 /config、/style、/undo）请到设置页操作。"}"
+                            "APK 共支持 ${COMMON_SLASH_COMMANDS.size} 个命令，输入 `/` 看候选面板" +
+                            "（或 /help 列全表）。\n\n" +
+                            "${SLASH_HINTS[cmd] ?: "CLI 专属命令（/rewind /doctor 等）请到终端侧使用。"}"
                         )
                     }
                     else -> {
@@ -329,6 +429,8 @@ fun ChatScreenConnected(
 /** APK 支持的 slash 命令（与 ChatScreen.SLASH_COMMANDS 候选表同步）。 */
 private val SUPPORTED_SLASH = setOf(
     "/clear", "/model", "/help", "/export", "/compact", "/permissions",
+    // 2026-09-30 扩充
+    "/stop", "/retry", "/context", "/cost", "/copy", "/new", "/style",
 )
 
 /** 常见 CLI 命令的去处提示（别让用户以为坏了）。 */

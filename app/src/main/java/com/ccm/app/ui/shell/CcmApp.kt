@@ -33,6 +33,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.width
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.ccm.app.AppGraph
@@ -127,6 +130,9 @@ fun CcmApp(
         "dark" -> true
         else -> isSystemInDarkTheme()
     }
+    // 应用级 Context（slash handler / 复制剪贴板等用）——
+    // 2026-09-30：原来写 AppGraph.appContext（该字段不存在）会编译失败。
+    val appCtx = LocalContext.current
 
     // 兜底：调用方没传 initError 时从全局装配结果读。
     // 之所以要兜底：AppGraph.initError 早就存好了，但 UI 一直没显示它，
@@ -336,6 +342,40 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         //   （模型回一句「我不是这样用的」）。提到唯一入口，两端一致。
         val t = text.trim()
         if (t.startsWith("/") && images.isEmpty()) {
+            // ★ 2026-09-30 统一 handler：四大分区（会话/查询/配置/工具）先过一遍，
+            //   认得的直接执行；不认的才落下面的老 when（基础命令 + 兜底）。
+            val hres = com.ccm.app.ui.chat.handleSlashCommand(
+                t,
+                com.ccm.app.ui.chat.SlashContext(
+                    session = activeSession,
+                    appContext = appCtx.applicationContext,
+                    navigate = { r ->
+                        navigate(if (r == "home") CcmRoute.HOME else CcmRoute.SETTINGS)
+                    },
+                    newChat = { newChat() },
+                    openPanel = { p ->
+                        when (p) {
+                            "model" -> showModelPicker = true
+                            "style" -> navigate(CcmRoute.SETTINGS)
+                        }
+                    },
+                    refreshSessions = { refreshSessions() },
+                ),
+            )
+            if (hres != null && hres !is com.ccm.app.ui.chat.SlashResult.NotHandled) {
+                when (hres) {
+                    is com.ccm.app.ui.chat.SlashResult.Notice -> {
+                        activeSession?.injectNotice(hres.markdown)
+                        navigate(CcmRoute.CHAT)   // 看到通知要进对话页
+                    }
+                    is com.ccm.app.ui.chat.SlashResult.Navigate -> {}   // navigate 回调里已处理
+                    is com.ccm.app.ui.chat.SlashResult.OpenPanel -> {}   // openPanel 回调里已处理
+                    is com.ccm.app.ui.chat.SlashResult.Toast ->
+                        android.widget.Toast.makeText(appCtx, hres.text, android.widget.Toast.LENGTH_SHORT).show()
+                    else -> {}
+                }
+                return
+            }
             when (t) {
                 "/clear" -> {
                     activeSession?.clear()
@@ -362,9 +402,44 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     navigate(CcmRoute.CHAT)
                     return
                 }
+                // ── 2026-09-30 扩充：与对话页同步 ──
+                "/new" -> { newChat(); return }
+                "/stop" -> { activeSession?.stop(); navigate(CcmRoute.CHAT); return }
+                "/retry" -> { activeSession?.retryLast(); navigate(CcmRoute.CHAT); return }
+                "/style" -> { navigate(CcmRoute.SETTINGS); return }
+                "/context", "/cost" -> {
+                    val st = activeSession?.state?.value
+                    if (st == null) {
+                        navigate(CcmRoute.CHAT)
+                    } else {
+                        val turns = st.bubbles.count { !it.isUser }
+                        activeSession?.injectNotice(
+                            "**上下文用量**\n\n" +
+                            "- 消息条数：${st.bubbles.size}\n" +
+                            "- 助手轮数：$turns\n" +
+                            "- 最近输入 token：${st.inputTokens}\n" +
+                            "- 最近输出 token：${st.outputTokens}\n\n" +
+                            "长会话可用 /compact 压缩。"
+                        )
+                        navigate(CcmRoute.CHAT)
+                    }
+                    return
+                }
+                "/copy" -> {
+                    val last = activeSession?.state?.value?.bubbles?.lastOrNull { !it.isUser }
+                    if (last != null && last.text.isNotBlank()) {
+                        try {
+                            val cm = appCtx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                as? android.content.ClipboardManager
+                            cm?.setPrimaryClip(android.content.ClipData.newPlainText("CCM", last.text))
+                        } catch (_: Throwable) {}
+                    }
+                    navigate(CcmRoute.CHAT)
+                    return
+                }
                 // /export /permissions 依赖对话页上下文，仍然进对话页处理
                 else -> {
-                    // 未支持的 slash（/config /style /undo…）**不发模型**，
+                    // 未支持的 slash（/config /undo…）**不发模型**，
                     // 进对话页给提示（ChatScreenConnected 的同款兜底会再拦一次，
                     // 这里提前拦省一次界面跳转的歧义）。
                     if (!setOf("/export", "/permissions").contains(t)) {
@@ -486,6 +561,13 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                             onSwitchClick = {
                                 refreshSessions()   // 打开时拉最新
                                 showSwitcher = true
+                            },
+                            onNewChat = newChat,          // /new（2026-09-30 slash 扩充）
+                            onOpenStyle = {               // /style → 设置页输出风格
+                                navigate(CcmRoute.SETTINGS)
+                            },
+                            onNavigate = { r ->           // slash handler 导航（/delete → home 等）
+                                navigate(if (r == "home") CcmRoute.HOME else CcmRoute.SETTINGS)
                             },
                             onExport = {
                                 // Web 的 Export 是导出 markdown（第23批升级格式）：
@@ -925,51 +1007,72 @@ private fun ModelPickerSheet(
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
                 )
             }
+            // ★ 2026-09-30 重写：对齐 Web ModelSelector.tsx 的扁平模型列表。
+            //   旧版是「Provider 当分组标题一行、模型缩进一行」的两列平铺，
+            //   视觉像后台调试面板（用户反馈「样式和 Web 不一样、很粗糙」）。
+            //   Web 的做法：模型是主体，每项一张行卡片（px-4 py-2.5），
+            //   Provider 名做右侧灰色副标识（modelLabelWithProvider），
+            //   选中项显示蓝色 Check。这里照此还原：
+            //   - 每个「模型」= 一个可点行（圆角 + 选中高亮背景 + 勾）
+            //   - Provider 名右侧小灰字（同名模型靠它区分）
+            //   - 不再有「点 Provider 标题切换」那层（Web 没有，点模型即切）
             androidx.compose.foundation.lazy.LazyColumn(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp),
             ) {
                 items.forEach { it2 ->
-                    item(key = "p-" + it2.id) {
-                        androidx.compose.foundation.layout.Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable(enabled = it2.enabled) { onPickProvider(it2.id) }
-                                .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 4.dp),
-                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
-                        ) {
-                            Text(
-                                text = it2.name,
-                                style = CCMText.body13.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Medium),
-                                color = if (it2.enabled) colors.textMain else colors.textSecondary,
-                            )
-                            if (it2.isCurrent) {
-                                Text("当前 · ${it2.model}", style = CCMText.body12, color = colors.accent)
-                            }
-                        }
-                    }
                     val pool = (listOf(it2.model) + it2.models)
                         .filter { it.isNotBlank() }.distinct()
                     pool.forEach { m ->
                         item(key = it2.id + "-" + m) {
+                            val selected = it2.isCurrent && m == it2.model
                             androidx.compose.foundation.layout.Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .padding(vertical = 1.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(
+                                        if (selected) colors.accent.copy(alpha = 0.10f)
+                                        else Color.Transparent
+                                    )
                                     .clickable(enabled = it2.enabled) { onPickModel(it2.id, m) }
-                                    .padding(start = 32.dp, end = 20.dp, top = 10.dp, bottom = 10.dp),
+                                    .padding(horizontal = 14.dp, vertical = 11.dp),
                                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
                             ) {
-                                Text(
-                                    text = m,
-                                    style = CCMText.body13,
-                                    color = if (m == it2.model) colors.accent else colors.textMain,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
+                                androidx.compose.foundation.layout.Column(
                                     modifier = Modifier.weight(1f),
-                                )
-                                if (m == it2.model && it2.isCurrent) {
-                                    Text("✓", color = colors.accent, style = CCMText.body13)
+                                ) {
+                                    Text(
+                                        text = m,
+                                        style = CCMText.body14.copy(
+                                            fontWeight = if (selected)
+                                                androidx.compose.ui.text.font.FontWeight.SemiBold
+                                            else androidx.compose.ui.text.font.FontWeight.Medium,
+                                        ),
+                                        color = if (it2.enabled) colors.textMain else colors.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    // Provider 名做副标题（区分同名模型的来源）
+                                    Text(
+                                        text = it2.name,
+                                        style = CCMText.body12,
+                                        color = colors.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.padding(top = 1.dp),
+                                    )
+                                }
+                                if (selected) {
+                                    androidx.compose.foundation.layout.Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        "✓",
+                                        color = colors.accent,
+                                        style = CCMText.body14.copy(
+                                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                                        ),
+                                    )
                                 }
                             }
                         }

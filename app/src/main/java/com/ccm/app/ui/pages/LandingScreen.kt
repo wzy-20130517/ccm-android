@@ -231,6 +231,55 @@ fun LandingScreen(
                 }
             }
 
+            // ── slash 命令候选（2026-09-30）───────────────────────────
+            //   用户反馈：「还没进对话页时，首页输入框打 / 没有面板」。
+            //   对话页有（ChatScreen.kt），首页一直缺。这里补同款：输入以 /
+            //   开头且无空格 → 浮出候选，点选填入输入框。命令表与对话页共用
+            //   COMMON_SLASH_COMMANDS（避免两份表漂移）。
+            run {
+                val slashQuery = input.trim()
+                val slashCandidates = if (slashQuery.startsWith("/") && !slashQuery.contains(" ")) {
+                    com.ccm.app.ui.chat.COMMON_SLASH_COMMANDS.filter { it.first.startsWith(slashQuery) }
+                } else emptyList()
+                if (slashCandidates.isNotEmpty()) {
+                    androidx.compose.foundation.layout.Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(11.04.dp))
+                            .background(colors.input)
+                            .border(1.dp, colors.border, RoundedCornerShape(11.04.dp))
+                            .padding(vertical = 4.dp),
+                    ) {
+                        slashCandidates.forEach { (cmd, desc) ->
+                            androidx.compose.foundation.layout.Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { input = cmd }
+                                    .padding(horizontal = 12.88.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    text = cmd,
+                                    style = CCMText.body13.copy(
+                                        fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                                    ),
+                                    color = colors.textMain,
+                                )
+                                Text(
+                                    text = desc,
+                                    style = CCMText.body12,
+                                    color = colors.textSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+
             // ── 输入卡片 ─────────────────────────────────────────────
             InputCard(
                 value = input,
@@ -640,10 +689,18 @@ private fun PromptSuggestionPanel(
     Column(
         modifier = modifier
             .fillMaxWidth()
+            // ★ 2026-09-30 修「点开胶囊后异常黑边」：
+            //   原来 .shadow() 放在 .background() 之后 + clip=false —— 修饰符顺序
+            //   让阴影画在背景外层且不裁剪，深色主题下阴影是黑的、绕着圆角矩形
+            //   渲染 = 一圈黑边。修法：① shadow 必须在 clip/background 之前（阴影是
+            //   最外层）；② 深色主题阴影本就几乎不可见、只会露黑边，深色时不加。
+            .then(
+                if (CCMTheme.isDark) Modifier
+                else Modifier.shadow(elevation = 1.dp, shape = RoundedCornerShape(16.dp))
+            )
             .clip(RoundedCornerShape(16.dp))
             .border(1.dp, Color(0x261F1F1E), RoundedCornerShape(16.dp))   // rgba(31,31,30,0.15)
-            .background(if (CCMTheme.isDark) colors.input else Color.White)
-            .shadow(elevation = 1.dp, shape = RoundedCornerShape(16.dp), clip = false),
+            .background(if (CCMTheme.isDark) colors.input else Color.White),
     ) {
         // ── 头部（px-16 py-12）────────────────────────────────────
         Row(
