@@ -292,22 +292,22 @@ class ChatSession(
     /**
      * 切换无痕状态。
      *
-     * 开启时额外做一件事：把 [container] 里 SessionAuto 的 dirty 位清掉
-     * （`switchTo` 同 id 会把 dirty 置 false，且它内部的 flush 会把**开启前**
-     * 的内容先落盘一次 —— 这正是想要的语义）。
+     * 开启时额外做一件事：**立即 flush 一次**，把「开启前」的内容落盘。
      *
-     * 【为什么必须清】dirty 是 SessionAuto 的私有位，定时器（每 30s）只要看到
+     * 【为什么必须做】dirty 是 SessionAuto 的私有位，定时器（每 30s）只要看到
      * dirty=true 就 saveNow。若开无痕前刚改过东西（dirty=true），不清的话
-     * 定时器仍会落盘一次 —— 无痕就漏了。只在 markDirty 里拦是不够的。
+     * 定时器仍会落盘一次 —— 而那次落盘会把「开启后新加的消息」一起写进去，
+     * 无痕就漏了。只在 markDirty 里拦是不够的（它管不了已经置上的旧 dirty）。
+     *
+     * 【为什么用 flush 而不是 switchTo(sid, title)】后者会把 createdAt 重置成
+     * 当前时间（会话创建时间被改写）。flush 只做「dirty 时落盘」这一件事，
+     * 语义精确且无副作用：落盘后 dirty 必为 false（saveNow 里清），
+     * 定时器从此无事可做。
      */
     fun setIncognito(on: Boolean) {
         incognito = on
         if (on) {
-            try {
-                val auto = container.sessionAuto
-                val sid = auto?.currentSessionId
-                if (auto != null && !sid.isNullOrBlank()) auto.switchTo(sid, auto.title)
-            } catch (_: Throwable) { /* 清 dirty 失败不阻塞开关 */ }
+            try { container.sessionAuto?.flush() } catch (_: Throwable) { /* 落盘失败不阻塞开关 */ }
         }
     }
 
