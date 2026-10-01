@@ -346,29 +346,22 @@ fun SettingsUsageTab(modifier: Modifier = Modifier) {
         SettingsSection(title = "用量") {
             Column(verticalArrangement = Arrangement.spacedBy(18.4.dp)) {
 
-                // token 额度
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "额度",
-                            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
-                            color = colors.textMain,
-                        )
-                        Text(
-                            text = "本机模式无配额（自部署不走服务端额度）",
-                            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
-                            color = colors.textSecondary,
-                        )
-                    }
-                    Spacer(Modifier.height(7.36.dp))        // mb-2
-                    // 原 12.34% 是假数据（webgap #10）—— 无配额不画进度条
+                // ★ 2026-10-01：从「无配额」占位改为**真数据** ——
+                //   APK 能拿到的：会话数 / 存储占用 / 最近一轮 token。
+                //   原来三行全是"请到系统设置查看"式甩锅文案，用户白点进来。
+                val usageStats = remember {
+                    try {
+                        val st = com.ccm.app.AppGraph.storage
+                        if (st == null) null else {
+                            val sessDir = java.io.File(st.root, "sessions")
+                            val files = sessDir.listFiles() ?: emptyArray()
+                            val bytes = files.sumOf { it.length() }
+                            Triple(files.size, bytes, com.ccm.app.AppGraph.session)
+                        }
+                    } catch (_: Throwable) { null }
                 }
 
-                // 存储空间
+                // 会话数
                 Column {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -376,19 +369,75 @@ fun SettingsUsageTab(modifier: Modifier = Modifier) {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            text = "存储空间",
+                            text = "会话数",
                             style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
                             color = colors.textMain,
                         )
                         Text(
-                            text = "本地用量请到系统设置查看",
+                            text = usageStats?.let { "${it.first} 个" } ?: "—",
                             style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
                             color = colors.textSecondary,
                         )
                     }
                     Spacer(Modifier.height(7.36.dp))
-                    // 原 12.8% 假数据（webgap #10）—— 不画
                 }
+
+                // 存储占用（会话文件）
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "会话存储",
+                            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
+                            color = colors.textMain,
+                        )
+                        Text(
+                            text = usageStats?.let { (_, b, _) ->
+                                if (b < 1024) "${b} B"
+                                else if (b < 1024 * 1024) "%.1f KB".format(b / 1024.0)
+                                else "%.1f MB".format(b / 1024.0 / 1024.0)
+                            } ?: "—",
+                            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
+                            color = colors.textSecondary,
+                        )
+                    }
+                    Spacer(Modifier.height(7.36.dp))
+                }
+
+                // 最近一轮 token
+                Column {
+                    val sess = usageStats?.third
+                    val st = sess?.state?.value
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "最近一轮 token",
+                            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
+                            color = colors.textMain,
+                        )
+                        Text(
+                            text = st?.let {
+                                "入 ${it.inputTokens} / 出 ${it.outputTokens}"
+                            } ?: "—（本会话还没请求）",
+                            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
+                            color = colors.textSecondary,
+                        )
+                    }
+                    Spacer(Modifier.height(7.36.dp))
+                }
+
+                // 额度说明（保留诚实告知：自部署无配额）
+                Text(
+                    text = "自部署模式不走服务端额度，以上为本机真实统计。",
+                    style = CCMText.body12.copy(fontSize = SettingsLabelSizeSp - 1),
+                    color = colors.textSecondary,
+                )
 
                 // 计划卡片
                 Column(
