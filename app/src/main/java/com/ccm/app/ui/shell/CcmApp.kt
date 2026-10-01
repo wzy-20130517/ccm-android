@@ -247,8 +247,18 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         com.ccm.app.AppGraph.userProfileStore?.load()?.callName?.ifBlank { null }
     }
     val modelName = remember(profileRefreshKey) {
+        // ★ 2026-09-30 修「明明选了模型还显示未配置模型」：
+        //   实测 config.json 里 provider 的 `model` 主字段是空串（模型名只配在
+        //   `models` 数组里），旧逻辑 `currentProvider?.model?.takeIf{非空}` 直接
+        //   落 null → 显示「未配置模型」（Sheet 里「当前 ·」后面也是空的，同一根因）。
+        //   fallback 链：主 model → models[0]。
         com.ccm.app.AppGraph.storage
-            ?.let { com.ccm.app.core.provider.AppConfig.load(it.configFile).config.currentProvider?.model }
+            ?.let { com.ccm.app.core.provider.AppConfig.load(it.configFile).config }
+            ?.let { cfg ->
+                val p = cfg.currentProvider
+                p?.model?.takeIf { it.isNotBlank() }
+                    ?: p?.models?.firstOrNull { it.isNotBlank() }
+            }
             ?.takeIf { it.isNotBlank() }
             ?: "未配置模型"
     }
@@ -1026,7 +1036,12 @@ private fun ModelPickerSheet(
                         .filter { it.isNotBlank() }.distinct()
                     pool.forEach { m ->
                         item(key = it2.id + "-" + m) {
-                            val selected = it2.isCurrent && m == it2.model
+                            // ★ 2026-09-30：主 model 字段可能为空串（模型只配在
+                            //   models 数组里）——与 CcmApp 的 modelName 同一套
+                            //   fallback，否则选中高亮永远不亮。
+                            val effModel = it2.model.takeIf { it.isNotBlank() }
+                                ?: it2.models.firstOrNull { it.isNotBlank() }
+                            val selected = it2.isCurrent && m == effModel
                             androidx.compose.foundation.layout.Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
