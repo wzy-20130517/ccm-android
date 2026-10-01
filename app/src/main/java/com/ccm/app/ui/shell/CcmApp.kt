@@ -1148,17 +1148,17 @@ private fun ModelPickerSheet(
             //   - 每个「模型」= 一个可点行（圆角 + 选中高亮背景 + 勾）
             //   - Provider 名右侧小灰字（同名模型靠它区分）
             //   - 不再有「点 Provider 标题切换」那层（Web 没有，点模型即切）
-            androidx.compose.foundation.layout.Box(
+            // ★ 2026-10-01 修闪退（我自己引入的）：原来用 Box 包 LazyColumn ——
+            //   Box 在 Column（ModalBottomSheet 内容）里拿不到高度约束，
+            //   LazyColumn 被以「无限最大高度」测量 → IllegalStateException。
+            //   改为：样式直接加在 LazyColumn 上（不套 Box），高度由 Sheet 决定。
+            androidx.compose.foundation.lazy.LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)          // 卡片左右留白
                     .clip(RoundedCornerShape(16.dp))      // Web rounded-xl
                     .background(colors.input)             // Web bg-claude-input
-                    .border(1.dp, colors.border, RoundedCornerShape(16.dp)),  // Web border
-            ) {
-            androidx.compose.foundation.lazy.LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
+                    .border(1.dp, colors.border, RoundedCornerShape(16.dp))  // Web border
                     .padding(vertical = 4.dp),            // Web py-1
             ) {
                 items.forEach { it2 ->
@@ -1221,7 +1221,6 @@ private fun ModelPickerSheet(
                     }
                 }
             }
-            }   // Box（卡片容器）闭合
         }
     }
 }

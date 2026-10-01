@@ -472,8 +472,12 @@ private fun ToolCallItem(
                                 if (CCMTheme.isDark) Color.Black.copy(alpha = 0.4f)
                                 else Color.Black.copy(alpha = 0.05f),
                             )
-                            .padding(7.36.dp)                       // p-2
-                            .verticalScroll(rememberScrollState()),
+                            .padding(7.36.dp),                       // p-2
+                        // ★ 2026-10-01 修闪退：原来这里还有 .verticalScroll()——
+                        //   外层 ChatScreen 的 Column 已经是 verticalScroll，
+                        //   嵌套的内层 scroll 会被以「无限最大高度」测量 →
+                        //   IllegalStateException（Vertically scrollable...）。
+                        //   结果本来就截断到 2000 字，不需要内部滚动。
                     ) {
                         Text(
                             // 源码：result.length > 2000 → 截断加 ...
