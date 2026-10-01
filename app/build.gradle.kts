@@ -102,6 +102,14 @@ android {
         // 不压缩 so，保证解压后可直接 exec
         jniLibs { useLegacyPackaging = true }
     }
+    // ★ 2026-10-01 修 CI #242：unit test 里 org.json.JSONObject 抛
+    //   "Method not mocked"（android.jar 是存根）—— GoalStore/AutoMemory
+    //   都用了 JSONObject，纯 JVM 测试全挂（19 个 RuntimeException）。
+    //   returnDefaultValues 让存根返回默认值而不是抛异常。
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
 }
 
 dependencies {
@@ -162,6 +170,10 @@ dependencies {
     // 导致所有工具的数值参数被丢弃，模型看到的永远是默认值）。
     // 这类 bug 只能靠单测防住，代码审查和手工测试都发现不了。
     testImplementation("junit:junit:4.13.2")
+    // ★ 2026-10-01：org.json 真实现 —— android.jar 的 JSONObject 是存根，
+    //   纯 JVM 测试调它会抛 "Method not mocked"（GoalStore/AutoMemory 全用它）。
+    //   带上真实现后测试能真正读写 JSON，比 returnDefaultValues 更接近生产行为。
+    testImplementation("org.json:json:20231013")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
 
     // 【MockWebServer】端到端链路测试的假网关。
