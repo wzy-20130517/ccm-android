@@ -75,6 +75,7 @@ class ChatSession(
      * AgentLoop 历史落盘的差异被忽略（它不在 getHistory 里）。
      */
     fun injectNotice(text: String) {
+        markDirty()   // B3：notice 也是气泡内容
         _state.value = _state.value.copy(
             bubbles = _state.value.bubbles + Bubble(
                 role = Message.ROLE_ASSISTANT,
@@ -226,6 +227,7 @@ class ChatSession(
             error = null,
             draft = "",   // 发出去就清空输入框（Web 行为）
         )
+        markDirty()   // B3：用户消息进历史 → 待落盘
 
         runningJob = scope.launch {
             // imagePaths 空 = 原路径，零行为变化（第18批向后兼容点）
@@ -249,6 +251,7 @@ class ChatSession(
     fun clear() {
         stop()
         container.agentLoop.setHistory(emptyList())
+        markDirty()   // B3：清空也是改动 —— 不标脏则删除不落盘，重启后旧对话复活
         _state.value = State()
     }
 
@@ -269,6 +272,33 @@ class ChatSession(
     /** 保存当前会话（退出前调）。 */
     fun flush() {
         container.sessionAuto?.flush()
+    }
+
+    /**
+     * ★ B3（findbugs 2026-10-01）：标脏 —— SessionAuto.markDirty 原来**全项目
+     * 零调用**，dirty 永远 false → flush()/定时保存/退出保存全是 no-op
+     * （/save 假成功、切会话/杀进程丢对话）。所有消息变化点调这里。
+     */
+    private fun markDirty() {
+        container.sessionAuto?.markDirty()
+    }
+
+    /** 手动保存（/save）：无视防抖立即全量落盘。 */
+    fun saveForced() {
+        markDirty()
+        container.sessionAuto?.flush()
+    }
+
+    /**
+     * 设置会话标题（/rename）。
+     *
+     * 必须走 SessionAuto.title 而不是手工 SessionStore.load/save ——
+     * 自动保存的 saveNow 用 title=this.title 写全量，手工改的文件
+     * 下一次防抖落盘就被覆盖回 null（B3 联动坑）。
+     */
+    fun setTitle(t: String) {
+        container.sessionAuto?.title = t
+        saveForced()
     }
 
     // ═════════════════════════ 事件 → 状态 ═════════════════════════
@@ -369,6 +399,7 @@ class ChatSession(
                                 toolCards = toolCards.toList(),
                             )
                             streaming = ""
+                            markDirty()   // B3：assistant 消息进历史 → 待落盘
                         }
                     }
 
@@ -391,6 +422,7 @@ class ChatSession(
                                 streaming = "",
                             )
                         }
+                        markDirty()   // B3：兜底（残留在流里的内容定型也落盘）
                         _state.value = _state.value.copy(running = false, toolCards = toolCards.toList())
                     }
                 }
@@ -532,7 +564,11 @@ class ChatSession(
                 sessionId = sid,
             ) ?: return null
 
-            container.attachSessionAuto(scope, sessionId = sid)
+            // ★ B3 联动：恢复已有会话时把文件里的 title 带给 SessionAuto ——
+            //   否则 sessionAuto.title=null，第一次 markDirty 落盘就把
+            //   /rename 设过的标题覆盖成 null。
+            val existingTitle = try { SessionStore(storage).loadTitle(sid) } catch (_: Throwable) { null }
+            container.attachSessionAuto(scope, sessionId = sid, existingTitle = existingTitle)
             return ChatSession(container, scope)
         }
     }

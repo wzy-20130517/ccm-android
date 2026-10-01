@@ -307,30 +307,7 @@ fun ChatScreenConnected(
                     }
                     text == "/model" -> onModelClick()
                     text == "/export" -> onExport()
-                    text == "/permissions" -> {
-                        // core#9/#10：dumpRules/rulesFilePath 原零调用 ——
-                        // 规则实际生效但无处查看（工具被拦不知道为什么）
-                        session.injectNotice("**权限规则**\n\n" + try {
-                            val perms = com.ccm.app.AppGraph.toolsResult?.permissions
-                            if (perms != null) {
-                                val r = perms.dumpRules()
-                                val allow = r.optJSONArray("allow")?.let { a ->
-                                    (0 until a.length()).map { a.getString(it) }
-                                } ?: emptyList()
-                                val deny = r.optJSONArray("deny")?.let { a ->
-                                    (0 until a.length()).map { a.getString(it) }
-                                } ?: emptyList()
-                                val ask = r.optJSONArray("ask")?.let { a ->
-                                    (0 until a.length()).map { a.getString(it) }
-                                } ?: emptyList()
-                                "模式：${perms.mode}\n" +
-                                    "允许：${allow.joinToString(", ").ifBlank { "(空)" }}\n" +
-                                    "拒绝：${deny.joinToString(", ").ifBlank { "(空)" }}\n" +
-                                    "询问：${ask.joinToString(", ").ifBlank { "(空)" }}\n\n" +
-                                    "规则文件：${perms.rulesFilePath()}"
-                            } else "权限系统未初始化"
-                        } catch (e: Throwable) { "读取失败：${e.message}" })
-                    }
+                    // /permissions 已搬进 SlashCommandHandler（B5：首页/对话页统一路径）
                     text == "/compact" -> {
                         // audit-core #7：原来无任何压缩入口，长会话必撞 400。
                         // microCompact 免 API；摘要式后续再接。
@@ -430,7 +407,7 @@ fun ChatScreenConnected(
 
 /** APK 支持的 slash 命令（与 ChatScreen.SLASH_COMMANDS 候选表同步）。 */
 private val SUPPORTED_SLASH = setOf(
-    "/clear", "/model", "/help", "/export", "/compact", "/permissions",
+    "/clear", "/model", "/help", "/export", "/compact",
     // 2026-09-30 扩充
     "/stop", "/retry", "/context", "/cost", "/copy", "/new", "/style",
 )

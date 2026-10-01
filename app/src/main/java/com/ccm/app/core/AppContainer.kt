@@ -123,6 +123,8 @@ class AppContainer private constructor(
     fun attachSessionAuto(
         scope: kotlinx.coroutines.CoroutineScope,
         sessionId: String = "",
+        /** 已有会话的标题 —— 不传则自动保存会把文件里的 title 覆盖成 null（B3 联动坑）。 */
+        existingTitle: String? = null,
     ): SessionAuto {
         val auto = SessionAuto(
             store = sessionStore,
@@ -130,6 +132,7 @@ class AppContainer private constructor(
             historyProvider = { agentLoop.getHistory() },
             scope = scope,
         )
+        auto.title = existingTitle
         auto.start()
         sessionAuto = auto
         return auto

@@ -98,39 +98,31 @@ private fun handleSessionCommands(cmd: String, arg: String, ctx: SlashContext): 
         // /save —— 手动存档。ChatSession 没暴露「气泡→Message」转换，
         // 但 flush() 走 sessionAuto 会把当前上下文落盘，等价于手动存档。
         "/save" -> {
-            ctx.session?.flush()
-            SlashResult.Notice("已保存当前会话。")
+            // ★ B3：原 flush() 因 dirty 恒 false 是 no-op（假成功）。saveForced
+            //   先 markDirty 再 flush，全量落盘，回执可信。
+            if (ctx.session == null) {
+                SlashResult.Notice("没有活动会话可保存。")
+            } else {
+                ctx.session.saveForced()
+                SlashResult.Notice("已保存当前会话（全量落盘）。")
+            }
         }
 
         // /rename —— 重命名当前会话。
-        // 做法：先 flush 把当前内容落盘，再 load 出已存档的 Session，
-        // 只改 title 再 save（不丢 messages）。会话还没落盘过（load 为 null）时，
-        // 用当前 id 建一个空 Session 先把标题定下来，下次 flush 会补上 messages。
+        // ★ B3 修法重写：改走 ChatSession.setTitle（= SessionAuto.title +
+        //   立即全量落盘）。原来手工 SessionStore.load/save 会被自动保存的
+        //   saveNow（title=null）覆盖回无标题，且 load 常为 null 时写出
+        //   只有标题的空 Session（丢 messages）。
         "/rename" -> {
             val title = arg.trim()
             if (title.isEmpty()) {
                 SlashResult.Notice("用法：`/rename <新标题>`")
+            } else if (ctx.session == null) {
+                SlashResult.Notice("没有活动会话可重命名。")
             } else {
-                val store = com.ccm.app.AppGraph.storage?.let {
-                    com.ccm.app.core.session.SessionStore(it)
-                }
-                val sid = com.ccm.app.AppGraph.sessionId
-                if (store == null || sid.isBlank()) {
-                    SlashResult.Notice("无法重命名：当前没有可保存的会话。")
-                } else {
-                    ctx.session?.flush()  // 先落盘，避免 load 到空
-                    val existing = store.load(sid)
-                    val updated = existing?.copy(
-                        title = title,
-                        updatedAt = System.currentTimeMillis(),
-                    ) ?: com.ccm.app.core.session.Session(
-                        sessionId = sid,
-                        title = title,
-                    )
-                    store.save(updated)
-                    ctx.refreshSessions()
-                    SlashResult.Notice("已重命名为「$title」。")
-                }
+                ctx.session.setTitle(title)
+                ctx.refreshSessions()
+                SlashResult.Notice("已重命名为「$title」。")
             }
         }
 
@@ -420,7 +412,19 @@ private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): S
             val levels = listOf("none", "minimal", "low", "medium", "high", "xhigh", "max")
             val st = storage
                 ?: return SlashResult.Notice("无法读取配置：应用尚未就绪。")
-            val cfg = com.ccm.app.core.provider.AppConfig.load(st.configFile).config
+            // ★ B4（findbugs 2026-10-01）：必须检查 .error —— AppConfig 解析
+            //   失败时返回空 AppConfig()（providers={}），忽略 error 直接 copy+save
+            //   会把整个 Provider/Key 表抹成空（config.json 一个语法错误 +
+            //   敲一次 /effort 就全丢）。损坏时整条命令拒绝执行。
+            val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+            if (loadR.error != null) {
+                return SlashResult.Notice(
+                    "**配置文件损坏，命令已拒绝执行**\n\n" +
+                        "解析错误：`${loadR.error}`\n\n" +
+                        "为防止把 Provider 表覆盖成空，读写都不执行。请先修复 `config.json`（设置 → 模型）。",
+                )
+            }
+            val cfg = loadR.config
             val a = arg.trim().lowercase()
             if (a.isBlank()) {
                 // 无参 → 显示当前值 + 可选值
@@ -452,7 +456,19 @@ private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): S
         "temperature", "temp" -> {
             val st = storage
                 ?: return SlashResult.Notice("无法读取配置：应用尚未就绪。")
-            val cfg = com.ccm.app.core.provider.AppConfig.load(st.configFile).config
+            // ★ B4（findbugs 2026-10-01）：必须检查 .error —— AppConfig 解析
+            //   失败时返回空 AppConfig()（providers={}），忽略 error 直接 copy+save
+            //   会把整个 Provider/Key 表抹成空（config.json 一个语法错误 +
+            //   敲一次 /effort 就全丢）。损坏时整条命令拒绝执行。
+            val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+            if (loadR.error != null) {
+                return SlashResult.Notice(
+                    "**配置文件损坏，命令已拒绝执行**\n\n" +
+                        "解析错误：`${loadR.error}`\n\n" +
+                        "为防止把 Provider 表覆盖成空，读写都不执行。请先修复 `config.json`（设置 → 模型）。",
+                )
+            }
+            val cfg = loadR.config
             val a = arg.trim()
             if (a.isBlank()) {
                 // 无参 → 显示当前值
@@ -483,7 +499,19 @@ private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): S
         "greeting" -> {
             val st = storage
                 ?: return SlashResult.Notice("无法读取配置：应用尚未就绪。")
-            val cfg = com.ccm.app.core.provider.AppConfig.load(st.configFile).config
+            // ★ B4（findbugs 2026-10-01）：必须检查 .error —— AppConfig 解析
+            //   失败时返回空 AppConfig()（providers={}），忽略 error 直接 copy+save
+            //   会把整个 Provider/Key 表抹成空（config.json 一个语法错误 +
+            //   敲一次 /effort 就全丢）。损坏时整条命令拒绝执行。
+            val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+            if (loadR.error != null) {
+                return SlashResult.Notice(
+                    "**配置文件损坏，命令已拒绝执行**\n\n" +
+                        "解析错误：`${loadR.error}`\n\n" +
+                        "为防止把 Provider 表覆盖成空，读写都不执行。请先修复 `config.json`（设置 → 模型）。",
+                )
+            }
+            val cfg = loadR.config
             val a = arg.trim().lowercase()
             if (a.isBlank()) {
                 // 无参 → 显示当前状态
@@ -604,6 +632,25 @@ private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): S
 // ═══════════════════════════════════════════════════════════════════
 private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): SlashResult? {
     return when (cmd) {
+        // ★ B5（findbugs 2026-10-01）：/permissions 原来只在对话页老 when 里 ——
+        //   首页跳转后无人执行。它不依赖任何对话页状态（dumpRules + injectNotice），
+        //   搬进 handler 后首页/对话页统一路径。
+        "/permissions" -> {
+            SlashResult.Notice("**权限规则**\n\n" + try {
+                val perms = com.ccm.app.AppGraph.toolsResult?.permissions
+                if (perms != null) {
+                    val r = perms.dumpRules()
+                    val arr: (String) -> List<String> = { k ->
+                        r.optJSONArray(k)?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
+                    }
+                    "模式：${perms.mode}\n" +
+                        "允许：${arr("allow").joinToString(", ").ifBlank { "(空)" }}\n" +
+                        "拒绝：${arr("deny").joinToString(", ").ifBlank { "(空)" }}\n" +
+                        "询问：${arr("ask").joinToString(", ").ifBlank { "(空)" }}\n\n" +
+                        "规则文件：${perms.rulesFilePath()}"
+                } else "权限系统未初始化"
+            } catch (e: Throwable) { "读取失败：${e.message}" })
+        }
 
         // ── /skills —— 列出内置技能清单（APK 真有：BuiltinSkills.all()）──────
         //

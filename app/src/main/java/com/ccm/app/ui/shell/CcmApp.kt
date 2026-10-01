@@ -367,7 +367,14 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     openPanel = { p ->
                         when (p) {
                             "model" -> showModelPicker = true
-                            "switcher" -> { refreshSessions(); showSwitcher = true }
+                            "switcher" -> {
+                                // ★ B2（findbugs）：switcher sheet 在 when(route) 的
+                                //   CHAT 分支内渲染 —— route=HOME 时只置 showSwitcher
+                                //   不切页 = 永远看不到（点 /load 没反应）。
+                                refreshSessions()
+                                navigate(CcmRoute.CHAT)
+                                showSwitcher = true
+                            }
                             "style" -> navigate(CcmRoute.SETTINGS)
                         }
                     },
@@ -399,7 +406,12 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         // ★ 应修#1：补全（原来吞掉），与 openPanel 闭包同逻辑
                         when (hres.panel) {
                             "model" -> showModelPicker = true
-                            "switcher" -> { refreshSessions(); showSwitcher = true }
+                            "switcher" -> {
+                                // ★ B2 同上：必须先切到 CHAT 才能看到 sheet
+                                refreshSessions()
+                                navigate(CcmRoute.CHAT)
+                                showSwitcher = true
+                            }
                             "style" -> navigate(CcmRoute.SETTINGS)
                         }
                     }
@@ -483,9 +495,12 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         navigate(CcmRoute.CHAT)
                         return
                     }
-                    // ★ 应修#4：/export /permissions 依赖对话页上下文 ——
-                    //   进对话页由 ChatScreenConnected 拦截执行，
-                    //   **不能落穿到下面的 send**（原来会把命令发给模型）。
+                    // ★ B5（findbugs 2026-10-01）：光 navigate 不执行 —— 拦截只在
+                    //   onSend 触发，跳转不触发，落空输入框（点了没反应）。
+                    //   · /permissions 已搬进 handler（前置分支直接执行，到不了这）
+                    //   · /export 依赖对话页 onExport 回调 → 把命令写进 draft，
+                    //     用户到对话页回车即执行（输入框有内容，不再是空框）
+                    if (t == "/export") activeSession?.setDraft(t)
                     navigate(CcmRoute.CHAT)
                     return
                 }
@@ -599,8 +614,19 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                             onOpenStyle = {               // /style → 设置页输出风格
                                 navigate(CcmRoute.SETTINGS)
                             },
-                            onNavigate = { r ->           // slash handler 导航（/delete → home 等）
-                                navigate(if (r == "home") CcmRoute.HOME else CcmRoute.SETTINGS)
+                            onNavigate = { r ->           // slash handler 导航
+                                // ★ B1（findbugs 2026-10-01）：原来二元 if ——
+                                //   "delete-current" 落 else 跳设置页、deleteChat
+                                //   一次没跑（文件没删会话没重置）。首页路径是对的，
+                                //   对话页这条漏了 when 分发。
+                                when (r) {
+                                    "delete-current" -> {
+                                        deleteChat(com.ccm.app.AppGraph.sessionId)
+                                        navigate(CcmRoute.HOME)
+                                    }
+                                    "settings" -> navigate(CcmRoute.SETTINGS)
+                                    else -> navigate(CcmRoute.HOME)
+                                }
                             },
                             onExport = {
                                 // Web 的 Export 是导出 markdown（第23批升级格式）：
