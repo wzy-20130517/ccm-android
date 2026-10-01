@@ -887,6 +887,14 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                                     description = sk.description,
                                     kind = "skills",
                                 )
+                            } + com.ccm.app.core.skill.BuiltinSkills.connectors().map { cn ->
+                                // ★ 2026-10-01：connectors tab 原来永远空（只传了 skills）
+                                com.ccm.app.ui.pages.CustomizeItem(
+                                    id = cn.id,
+                                    name = cn.name,
+                                    description = cn.description,
+                                    kind = "connectors",
+                                )
                             }
                         }
                         CustomizeScreen(

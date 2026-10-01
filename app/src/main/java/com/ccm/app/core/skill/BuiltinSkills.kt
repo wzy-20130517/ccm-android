@@ -67,4 +67,25 @@ object BuiltinSkills {
             "为前端任务挑合适的库：数字输入、OTP、图表、命令菜单、虚拟列表、拖拽、toast 等",
         ),
     )
+
+    /**
+     * 连接器清单（2026-10-01）——定制页 connectors tab 的数据源。
+     *
+     * 对齐 Web `connectorCatalog.ts`（只有 github/qq 两项）。
+     * APK 侧对应工具已注册（GitHub 8 个 + QQPush/QQRecall），
+     * 这里给「有哪些连接器、各自能干什么」的展示数据；
+     * 配置入口：/github login（CLI）或设置页。
+     */
+    fun connectors(): List<Skill> = listOf(
+        Skill(
+            "github",
+            "GitHub",
+            "连接仓库、Pull Request、Issue。配置 token 后可用 GitHubRepo / GitHubIssues / GitHubPRs / GitHubFile 等工具读写仓库。",
+        ),
+        Skill(
+            "qq",
+            "QQ",
+            "通过本地 QQ 桥收发消息。配置后可用 QQPush 主动推送、QQRecall 回溯群消息。",
+        ),
+    )
 }
