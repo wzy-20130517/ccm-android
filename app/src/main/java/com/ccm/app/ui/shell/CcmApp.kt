@@ -130,9 +130,6 @@ fun CcmApp(
         "dark" -> true
         else -> isSystemInDarkTheme()
     }
-    // 应用级 Context（slash handler / 复制剪贴板等用）——
-    // 2026-09-30：原来写 AppGraph.appContext（该字段不存在）会编译失败。
-    val appCtx = LocalContext.current
 
     // 兜底：调用方没传 initError 时从全局装配结果读。
     // 之所以要兜底：AppGraph.initError 早就存好了，但 UI 一直没显示它，
@@ -222,6 +219,10 @@ enum class CcmRoute(val path: String) {
 private fun AppScaffold(session: ChatSession?, initError: String?) {
 
     val colors = CCMTheme.colors
+    // ★ 2026-10-01 修 CI #218：slash handler 的 Context —— 原来加在 CcmApp
+    //   里，但 sendAndOpen / when(hres) / /copy 全在 AppScaffold 作用域 →
+    //   Unresolved 'appCtx'。使用点在哪就在哪取。
+    val appCtx = LocalContext.current
 
     var sidebarOpen by remember { mutableStateOf(false) }
 

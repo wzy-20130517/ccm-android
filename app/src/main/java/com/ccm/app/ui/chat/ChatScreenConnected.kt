@@ -270,7 +270,9 @@ fun ChatScreenConnected(
         tokenCount = uiState.displayTokens,
         errorMessage = uiState.error,
         onInputChange = session::setDraft,
-        onSend = {
+        // 显式标签：Kotlin lambda 隐式 label 是**函数名**（@ChatScreen），
+        // 参数名不能直接当 label —— CI #218 报 Unresolved label('onSend')。
+        onSend = onSend@{
             val text = coreState.draft.trim()
             if (text.isNotEmpty()) {
                 // ★ 2026-09-30 统一 handler（多 Agent 接入）：所有 slash 先过
