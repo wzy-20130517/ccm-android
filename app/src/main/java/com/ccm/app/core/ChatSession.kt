@@ -651,21 +651,23 @@ class ChatSession(
                     AgentEvent.Done -> {
                         // 收尾时同时定型正文和思维链；有些 Provider 只回传 reasoning，
                         // 若只检查正文，思维链会在 Done 时被清空并永久丢失。
-                        if (streaming.isNotBlank() || thinkingBuf.isNotBlank()) {
+                        if (streaming.isNotBlank() || thinkingBuf.isNotBlank() || toolCards.isNotEmpty()) {
                             val finalText = streaming
                             val finalThinking = thinkingBuf
+                            val finalTools = toolCards.toList()
                             val nextState = _state.value.copy(
-                                bubbles = if (finalText.isNotBlank() || finalThinking.isNotBlank()) {
+                                bubbles = if (finalText.isNotBlank() || finalThinking.isNotBlank() || finalTools.isNotEmpty()) {
                                     _state.value.bubbles + Bubble(
                                         role = Message.ROLE_ASSISTANT,
                                         text = finalText,
-                                        messageId = currentMessageId.ifBlank { "thinking-${System.currentTimeMillis()}" },
+                                        messageId = currentMessageId.ifBlank { "turn-${System.currentTimeMillis()}" },
                                         thinking = finalThinking,
+                                        toolCards = finalTools,
                                     )
                                 } else _state.value.bubbles,
                                 streaming = "",
                                 thinking = "",
-                                toolCards = toolCards.toList(),
+                                toolCards = emptyList(),
                             )
                             _state.value = nextState
                             streaming = ""

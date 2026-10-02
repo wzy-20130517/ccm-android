@@ -564,12 +564,12 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                                 fetchingModels = true
                                 modelFetchMessage = null
                                 settingsScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                                    val result = fetchProviderModels(sp.url, sp.allKeys().firstOrNull().orEmpty())
+                                    val result = fetchProviderModels(sp.url, sp.allKeys().firstOrNull().orEmpty(), sp.protocol)
                                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                                         fetchingModels = false
                                         if (result.isSuccess) {
                                             val ids = result.getOrThrow()
-                                            val merged = (ids + listOfNotNull(sp.model.takeIf { it.isNotBlank() })).distinct()
+                                            val merged = (ids + modelPool + listOfNotNull(sp.model.takeIf { it.isNotBlank() })).distinct()
                                             com.ccm.app.core.provider.ProviderStore(st).setModels(sp.id, merged.filter { it != sp.model }.ifEmpty { null })
                                             modelFetchMessage = "已获取 ${ids.size} 个模型"
                                             refresh()
@@ -1226,11 +1226,15 @@ private fun GlobeIcon(color: Color, size: androidx.compose.ui.unit.Dp) {
  * 短 key（≤12 字符）直接整体星号化防反推。
  * 空串原样返回（placeholder 才会显示）。
  */
-private fun fetchProviderModels(baseUrl: String, apiKey: String): Result<List<String>> = runCatching {
+private fun fetchProviderModels(baseUrl: String, apiKey: String, protocol: String): Result<List<String>> = runCatching {
     require(baseUrl.isNotBlank()) { "API 地址为空" }
     require(apiKey.isNotBlank()) { "API Key 为空" }
-    val url = baseUrl.trimEnd('/') + "/models"
-    val request = Request.Builder().url(url).header("Authorization", "Bearer $apiKey").get().build()
+    val base = baseUrl.trimEnd('/').removeSuffix("/chat/completions").removeSuffix("/responses")
+    val url = if (protocol.equals("anthropic", ignoreCase = true)) "$base/v1/models" else "$base/models"
+    val builder = Request.Builder().url(url).get()
+    if (protocol.equals("anthropic", ignoreCase = true)) builder.header("x-api-key", apiKey).header("anthropic-version", "2023-06-01")
+    else builder.header("Authorization", "Bearer $apiKey")
+    val request = builder.build()
     OkHttpClient().newCall(request).execute().use { response ->
         val body = response.body?.string().orEmpty()
         if (!response.isSuccessful) error("HTTP ${response.code}")
