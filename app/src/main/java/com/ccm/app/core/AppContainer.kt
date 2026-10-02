@@ -310,7 +310,7 @@ class AppContainer private constructor(
                 // key 池冷却状态落盘（重启后不从头撞已耗尽的 key）
                 keyPoolStateFile = java.io.File(storage.root, "key-pool-state.json"),
                 // 深度思考（audit-core #2：config.effort 原来零消费）
-                effort = config.effort,
+                effort = provider.effort ?: config.effort,
             )
 
             // ── 会话与压缩 ──

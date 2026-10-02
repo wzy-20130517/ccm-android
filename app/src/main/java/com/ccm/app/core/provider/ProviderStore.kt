@@ -114,6 +114,10 @@ class ProviderStore(private val storage: AppStorage) {
         return AppConfig.save(cfg.copy(effort = v), file)
     }
 
+    /** 改当前 Provider 的扩展思考强度。 */
+    fun setEffort(id: String, level: String?): Boolean =
+        update(id) { it.copy(effort = level?.takeIf { value -> value.isNotBlank() && value != "none" }) }
+
     /** 改模型池（设置页「模型清单」写回，第24批）。 */
     fun setModels(id: String, models: List<String>?): Boolean =
         update(id) { it.copy(models = models) }

@@ -264,8 +264,9 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
             ?.let { com.ccm.app.core.provider.AppConfig.load(it.configFile).config }
             ?.let { cfg ->
                 val p = cfg.currentProvider
-                p?.model?.takeIf { it.isNotBlank() }
+                val model = p?.model?.takeIf { it.isNotBlank() }
                     ?: p?.models?.firstOrNull { it.isNotBlank() }
+                model?.let { "$it(${p?.id ?: cfg.current})" }
             }
             ?.takeIf { it.isNotBlank() }
             ?: "未配置模型"
@@ -656,6 +657,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                                 if (showModelPicker) {
                                     ModelPickerMenu(
                                         expanded = showModelPicker,
+                                        dropUp = true,
                                         items = AppGraph.storage?.let { com.ccm.app.core.provider.ProviderStore(it).list() } ?: emptyList(),
                                         onPick = applyModelSelection,
                                         onDismiss = { showModelPicker = false },
