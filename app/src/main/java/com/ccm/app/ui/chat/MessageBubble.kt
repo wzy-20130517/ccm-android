@@ -238,7 +238,7 @@ fun UserBubble(
         androidx.compose.foundation.layout.Row(
             modifier = Modifier.fillMaxWidth().padding(top = 6.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            horizontalArrangement = Arrangement.End,
         ) {
             // 时间戳（12sp，Web text-[12px]）
             if (timestampMs > 0) {

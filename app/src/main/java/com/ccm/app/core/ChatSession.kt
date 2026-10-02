@@ -531,6 +531,7 @@ class ChatSession(
     private suspend fun collectEvents(events: Flow<AgentEvent>) {
         val toolCards = mutableListOf<ToolCard>()
         var streaming = ""
+        var accumulatedText = ""
         var currentMessageId = ""
         // 思考流（与上面的正文流独立：先想后说，两个流交错）
         var thinkingBuf = ""
@@ -540,23 +541,27 @@ class ChatSession(
             events.collect { ev ->
                 when (ev) {
                     is AgentEvent.TextDelta -> {
-                        // messageId 变了 → 上一轮的半截作废（重试场景，见 AgentEvent 注释）
+                        // 新 messageId 代表模型新一次响应（工具往返或重试）。
+                        // 工具往返是同一轮，前面的正文必须并入累计，不能丢。
                         if (ev.messageId != currentMessageId) {
                             currentMessageId = ev.messageId
+                            accumulatedText += streaming
                             streaming = ""
                         }
                         streaming += ev.text
-                        _state.value = _state.value.copy(streaming = streaming, toolCards = toolCards.toList())
+                        _state.value = _state.value.copy(
+                            streaming = accumulatedText + streaming,
+                            toolCards = toolCards.toList(),
+                        )
                     }
 
                     is AgentEvent.ReasoningDelta -> {
                         // ★ 2026-09-27：原来是 `暂不进状态` 直接丢弃 ——
                         //   AssistantThinkingChain 739 行组件因此永远空转。
                         //   现在与 TextDelta 同模式：messageId 变了重开一轮。
-                        if (ev.messageId != currentThinkingId) {
-                            currentThinkingId = ev.messageId
-                            thinkingBuf = ""
-                        }
+                        // messageId 每次模型响应都会变化，但同一轮工具循环的思维链
+                        // 应连续显示；只记录最新 id，不因工具往返清空累计内容。
+                        currentThinkingId = ev.messageId
                         thinkingBuf += ev.text
                         _state.value = _state.value.copy(thinking = thinkingBuf)
                     }
@@ -617,28 +622,15 @@ class ChatSession(
                     }
 
                     is AgentEvent.TurnEnd -> {
-                        // 工具卡和正文属于同一轮；一起保存到气泡才能保证历史顺序稳定。
-                        if (streaming.isNotBlank() || thinkingBuf.isNotBlank() || toolCards.isNotEmpty()) {
-                            val roundTools = toolCards.toList()
-                            _state.value = _state.value.copy(
-                                bubbles = if (streaming.isNotBlank() || thinkingBuf.isNotBlank() || roundTools.isNotEmpty()) {
-                                    _state.value.bubbles + Bubble(
-                                        role = Message.ROLE_ASSISTANT,
-                                        text = streaming,
-                                        messageId = currentMessageId.ifBlank { "turn-${ev.turn}-${System.currentTimeMillis()}" },
-                                        thinking = thinkingBuf,
-                                        toolCards = roundTools,
-                                    )
-                                } else _state.value.bubbles,
-                                streaming = "",
-                                thinking = "",
-                                toolCards = emptyList(),
-                            )
-                            streaming = ""
-                            thinkingBuf = ""
-                            toolCards.clear()
-                            saveForced()
-                        }
+                        // 整轮中间点：累计当前已输出正文，继续在同一 timeline 展示。
+                        // 不生成气泡、不合成 Done，等待最终无工具的 Done。
+                        accumulatedText += streaming
+                        streaming = ""
+                        _state.value = _state.value.copy(
+                            streaming = accumulatedText,
+                            thinking = thinkingBuf,
+                            toolCards = toolCards.toList(),
+                        )
                     }
 
                     is AgentEvent.Usage -> {
@@ -651,8 +643,8 @@ class ChatSession(
                     AgentEvent.Done -> {
                         // 收尾时同时定型正文和思维链；有些 Provider 只回传 reasoning，
                         // 若只检查正文，思维链会在 Done 时被清空并永久丢失。
-                        if (streaming.isNotBlank() || thinkingBuf.isNotBlank() || toolCards.isNotEmpty()) {
-                            val finalText = streaming
+                        if (accumulatedText.isNotBlank() || streaming.isNotBlank() || thinkingBuf.isNotBlank() || toolCards.isNotEmpty()) {
+                            val finalText = (accumulatedText + streaming).trim()
                             val finalThinking = thinkingBuf
                             val finalTools = toolCards.toList()
                             val nextState = _state.value.copy(
@@ -671,6 +663,7 @@ class ChatSession(
                             )
                             _state.value = nextState
                             streaming = ""
+                            accumulatedText = ""
                             thinkingBuf = ""
                         }
                         saveForced()   // 每轮完成即落盘，避免切页/进程回收丢失最近一轮

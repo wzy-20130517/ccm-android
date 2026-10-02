@@ -138,7 +138,6 @@ fun ModelPickerMenu(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { if (items.any { it.isCurrent && it.enabled }) onThinkingChange(!thinkingEnabled) }
                     .padding(horizontal = 14.72.dp, vertical = 7.36.dp), // Web px-4 py-2 × .92
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),

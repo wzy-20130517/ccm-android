@@ -585,6 +585,22 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                 )
             }
 
+            val currentEffort = remember(profileRefreshKey) {
+                val cfg = AppGraph.storage?.let { com.ccm.app.core.provider.AppConfig.load(it.configFile).config }
+                cfg?.currentProvider?.effort?.takeIf { it.isNotBlank() } ?: cfg?.effort?.takeIf { it.isNotBlank() } ?: "none"
+            }
+            val applyEffortSelection: (String) -> Unit = { level ->
+                AppGraph.storage?.let { st ->
+                    com.ccm.app.core.provider.ProviderStore(st).setEffort(
+                        AppGraph.storage?.let { com.ccm.app.core.provider.ProviderStore(it).load().current } ?: return@let,
+                        level,
+                    )
+                    profileRefreshKey++
+                    if (activeSession?.isRunning == true) modelRefreshPending = true
+                    else AppGraph.appScope?.let { scope -> AppGraph.rebuild(appCtx, scope)?.let { activeSession = it } }
+                }
+            }
+
             // 模型选择写入配置后：空闲立即重建；忙时在任务结束后应用。
             val applyModelSelection: (String, String) -> Unit = { id, model ->
                 val st = AppGraph.storage
@@ -618,7 +634,11 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                             if (showModelPicker) ModelPickerMenu(
                                 expanded = true,
                                 items = AppGraph.storage?.let { com.ccm.app.core.provider.ProviderStore(it).list() } ?: emptyList(),
+                                thinkingEnabled = currentEffort != "none",
+                                effort = currentEffort,
                                 onPick = applyModelSelection,
+                                onThinkingChange = { applyEffortSelection(if (it) "high" else "none") },
+                                onEffortChange = applyEffortSelection,
                                 onDismiss = { showModelPicker = false },
                             )
                         },
@@ -659,7 +679,11 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                                         expanded = showModelPicker,
                                         dropUp = true,
                                         items = AppGraph.storage?.let { com.ccm.app.core.provider.ProviderStore(it).list() } ?: emptyList(),
+                                        thinkingEnabled = currentEffort != "none",
+                                        effort = currentEffort,
                                         onPick = applyModelSelection,
+                                        onThinkingChange = { applyEffortSelection(if (it) "high" else "none") },
+                                        onEffortChange = applyEffortSelection,
                                         onDismiss = { showModelPicker = false },
                                     )
                                 }
@@ -1042,7 +1066,11 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                             if (showModelPicker) ModelPickerMenu(
                                 expanded = true,
                                 items = AppGraph.storage?.let { com.ccm.app.core.provider.ProviderStore(it).list() } ?: emptyList(),
+                                thinkingEnabled = currentEffort != "none",
+                                effort = currentEffort,
                                 onPick = applyModelSelection,
+                                onThinkingChange = { applyEffortSelection(if (it) "high" else "none") },
+                                onEffortChange = applyEffortSelection,
                                 onDismiss = { showModelPicker = false },
                             )
                         },

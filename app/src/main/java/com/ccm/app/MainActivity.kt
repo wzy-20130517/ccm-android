@@ -115,6 +115,14 @@ class MainActivity : ComponentActivity() {
         // 晚了首帧会先闪系统主题再跳用户主题
         com.ccm.app.ui.theme.UiPrefs.init(this)
 
+        // phone use 依赖 CcmService 主线程 Handler 做 Shizuku 服务绑定；
+        // 只靠 BootReceiver 会在正常启动时没服务，绑定失败。
+        try {
+            startForegroundService(Intent(this, com.ccm.app.service.CcmService::class.java))
+        } catch (t: Throwable) {
+            Log.w(TAG, "启动 CcmService 失败：${t.message}")
+        }
+
         // 装配新架构（幂等 —— Activity 重建时复用同一个会话）
         val graph = AppGraph.init(applicationContext, appScope)
         Log.i(TAG, "AppGraph 装配：${if (graph != null) "成功" else "失败/无配置"}；" +
