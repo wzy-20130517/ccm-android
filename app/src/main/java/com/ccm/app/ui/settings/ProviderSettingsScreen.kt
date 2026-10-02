@@ -109,6 +109,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
     var refreshTick by remember { mutableStateOf(0) }
     var fetchingModels by remember { mutableStateOf(false) }
     var modelFetchMessage by remember { mutableStateOf<String?>(null) }
+    val settingsScope = androidx.compose.runtime.rememberCoroutineScope()
     // ★ #6：联网图标真值（remember 一次，别在 map 里每行读盘 —— 主线程 IO 教训）
     val webSearchOn = remember(refreshTick) {
         com.ccm.app.AppGraph.storage?.let {
@@ -329,7 +330,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                 var effort by remember(selectedId, refreshTick) {
                     val st = com.ccm.app.AppGraph.storage
                     mutableStateOf(
-                        selected?.effort?.takeIf { it.isNotBlank() }
+                        store?.get(selectedId)?.effort?.takeIf { it.isNotBlank() }
                             ?: st?.let { AppConfig.load(it.configFile).config.effort }?.takeIf { it.isNotBlank() }
                             ?: "none"
                     )
@@ -561,7 +562,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                                 val st = com.ccm.app.AppGraph.storage ?: return@Button
                                 fetchingModels = true
                                 modelFetchMessage = null
-                                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                                settingsScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                                     val result = fetchProviderModels(sp.url, sp.allKeys().firstOrNull().orEmpty())
                                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                                         fetchingModels = false

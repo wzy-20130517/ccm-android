@@ -4,6 +4,7 @@ import com.ccm.app.core.agent.AgentEvent
 import com.ccm.app.core.agent.AgentLoop
 import com.ccm.app.core.provider.AppConfig
 import com.ccm.app.core.session.Message
+import com.ccm.app.core.session.ContentBlock
 import com.ccm.app.core.session.SessionStore
 import com.ccm.app.core.tool.ToolRegistry
 import com.ccm.app.core.tool.ToolRunner
@@ -267,12 +268,12 @@ class ChatSession(
     fun loadHistory(messages: List<Message>) {
         container.agentLoop.setHistory(messages)
         val resultsById = messages
-            .flatMap { it.content.filterIsInstance<Message.ContentBlock.ToolResult>() }
+            .flatMap { it.content.filterIsInstance<ContentBlock.ToolResult>() }
             .associateBy { it.id }
         val restored = messages.mapNotNull { message ->
             when (message.role) {
                 Message.ROLE_ASSISTANT -> {
-                    val cards = message.content.filterIsInstance<Message.ContentBlock.ToolUse>().map { use ->
+                    val cards = message.content.filterIsInstance<ContentBlock.ToolUse>().map { use ->
                         val result = resultsById[use.id]
                         ToolCard(
                             id = use.id,

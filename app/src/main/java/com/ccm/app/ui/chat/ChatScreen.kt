@@ -115,7 +115,8 @@ fun ChatScreen(
     onRetry: (() -> Unit)? = null,
 ) {
     val colors = CCMTheme.colors
-    val imeVisible = WindowInsets.isImeVisible
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val imeVisible = WindowInsets.ime.getBottom(density) > 0
 
     Box(
         modifier = modifier
