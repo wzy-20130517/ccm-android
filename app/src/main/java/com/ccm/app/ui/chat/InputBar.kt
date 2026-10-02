@@ -93,6 +93,7 @@ fun InputBar(
     tokenCount: Int = 0,
     /** 点模型选择器（2026-09-27 接通 —— 原来是写死的 TODO 空转） */
     onModelClick: () -> Unit = {},
+    modelPickerContent: (@Composable () -> Unit)? = null,
     /** 点 + → 拉起图片多选（第18批）。 */
     onAttach: () -> Unit = {},
     /** 已选待发图片（管理条渲染，第19批）。 */
@@ -246,7 +247,10 @@ fun InputBar(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(7.36.dp),
                     ) {
-                        ModelChipInline(modelName = modelName, onClick = onModelClick)
+                        Box {
+                            ModelChipInline(modelName = modelName, onClick = onModelClick)
+                            modelPickerContent?.invoke()
+                        }
                         PainterIcon(
                             R.drawable.ic_voice_mode,
                             size = 20.dp,

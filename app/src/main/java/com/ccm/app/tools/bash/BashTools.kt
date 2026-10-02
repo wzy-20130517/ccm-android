@@ -397,20 +397,28 @@ class BashTool(
 
         val lines = mutableListOf<String>()
         var lastProgressAt = 0L
-        val result = try {
+        var result = try {
             // ⚠️ timeout 是 Int（来自 input.int），execute 要 Long —— 必须显式转换。
-            // Kotlin 不做隐式数值拓宽（与 Java 不同），漏转会编译失败。
             ch.execute(command, ctx.cwd, timeout.toLong()) { line ->
                 lines += line
-                // 进度节流：每 2 秒报一次，避免高频刷 UI
                 val now = System.currentTimeMillis()
-                if (now - lastProgressAt > 2_000) {
-                    lastProgressAt = now
-                    // 注意：onLine 是同步回调，不能在这里 suspend 调 ui
-                }
+                if (now - lastProgressAt > 2_000) lastProgressAt = now
             }
         } catch (e: Throwable) {
             return ToolResult.Error("执行失败：${e.message}", ToolResult.INTERNAL)
+        }
+
+        // 仅启动级故障回退。普通非零退出码/超时绝不重跑，避免写命令执行两次。
+        val launchFailure = result.exitCode < 0 || result.stderr.startsWith("proot 执行异常：")
+        if (launchFailure && ch === channel && fallbackChannel != null && fallbackChannel.isAvailable()) {
+            ctx.ui.onProgress("内置 proot 启动失败，改用 ${fallbackChannel.label} 重试一次")
+            lines.clear()
+            ch = fallbackChannel
+            result = try {
+                ch.execute(command, ctx.cwd, timeout.toLong()) { line -> lines += line }
+            } catch (e: Throwable) {
+                return ToolResult.Error("主通道启动失败，备用通道也失败：${e.message}", ToolResult.INTERNAL)
+            }
         }
 
         if (ctx.isCancelled) return ToolResult.cancelled()

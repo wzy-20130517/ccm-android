@@ -22,10 +22,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import com.ccm.app.ui.theme.CCMText
 import androidx.compose.foundation.border
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -52,6 +51,7 @@ import com.ccm.app.ui.common.ChatSummary
 import com.ccm.app.ui.pages.ChatSummaryUi
 import com.ccm.app.ui.chat.ChatScreen
 import com.ccm.app.ui.chat.ChatScreenConnected
+import com.ccm.app.ui.chat.ModelPickerMenu
 import com.ccm.app.ui.common.CcmNoticeBar
 import com.ccm.app.ui.common.SidebarDrawer
 import com.ccm.app.ui.common.TitleBar
@@ -65,6 +65,7 @@ import com.ccm.app.ui.pages.ScheduledScreen
 import com.ccm.app.ui.pages.greetingFor
 import com.ccm.app.ui.settings.SettingsScreen
 import com.ccm.app.ui.theme.CCMTheme
+import kotlinx.coroutines.flow.collect
 
 /**
  * CCM 应用根 Composable —— **阶段 5 的 MainActivity 只调这一个**。
@@ -291,6 +292,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
     var chatSearch by remember { mutableStateOf("") }
     // 模型选择器弹窗
     var showModelPicker by remember { mutableStateOf(false) }
+    var modelRefreshPending by remember { mutableStateOf(false) }
     // 对话切换弹窗（标题栏 caret → 列表选一个会话）
     var showSwitcher by remember { mutableStateOf(false) }
 
@@ -549,6 +551,19 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                 onNavForward = null,
             )
 
+            val pendingSession = activeSession
+            LaunchedEffect(pendingSession) {
+                if (pendingSession != null) {
+                    pendingSession.state.collect { state ->
+                        if (modelRefreshPending && !state.running) {
+                            val scope = AppGraph.appScope ?: return@collect
+                            AppGraph.rebuild(appCtx, scope)?.let { activeSession = it }
+                            modelRefreshPending = false
+                        }
+                    }
+                }
+            }
+
             // ★ 未配置 API 的提示条（2026-09-27 加，同日修 z-order）
             //
             // 之前 initError 只存不显，用户看到的是「点哪都没反应」，
@@ -569,7 +584,28 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                 )
             }
 
-            // ── 页面内容 ──────────────────────────────────────────────
+            // 模型选择写入配置后：空闲立即重建；忙时在任务结束后应用。
+            val applyModelSelection: (String, String) -> Unit = { id, model ->
+                val st = AppGraph.storage
+                if (st != null) {
+                    val ps = com.ccm.app.core.provider.ProviderStore(st)
+                    ps.setModel(id, model)
+                    ps.setCurrent(id)
+                    profileRefreshKey++
+                    if (activeSession?.isRunning == true) {
+                        modelRefreshPending = true
+                        android.widget.Toast.makeText(appCtx, "当前任务结束后切换模型生效", android.widget.Toast.LENGTH_SHORT).show()
+                    } else {
+                        AppGraph.appScope?.let { scope -> AppGraph.rebuild(appCtx, scope)?.let { activeSession = it } }
+                        modelRefreshPending = false
+                    }
+                }
+                showModelPicker = false
+            }
+
+
+
+    // ── 页面内容 ──────────────────────────────────────────────
             Box(modifier = Modifier.fillMaxSize()) {
                 when (route) {
                     CcmRoute.HOME -> LandingScreen(
@@ -577,6 +613,14 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         // ★ 接线：首页输入框真的能发消息了（第18批带图）
                         onSend = { t, imgs -> sendAndOpen(t, imgs) },
                         onModelClick = { showModelPicker = true },
+                        modelPickerContent = {
+                            if (showModelPicker) ModelPickerMenu(
+                                expanded = true,
+                                items = AppGraph.storage?.let { com.ccm.app.core.provider.ProviderStore(it).list() } ?: emptyList(),
+                                onPick = applyModelSelection,
+                                onDismiss = { showModelPicker = false },
+                            )
+                        },
                         modelLabel = modelName,   // ★ 原来没传 → 永远显示默认「未配置模型」
                         // onPickPrompt 已删（第17批）：点胶囊不再直接发 label 文本，
                         // 改为展开建议面板，点建议填入输入框（Web 行为）。
@@ -605,12 +649,18 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         ChatScreenConnected(
                             session = session,
                             title = chatTitle,
+                            onAutoTitle = { generated -> chatTitle = generated },
                             modelName = modelName,
                             onModelClick = { showModelPicker = true },
-                            onDelete = {
-                                // webgap #9：header 删除（走公用 deleteChat lambda）
-                                deleteChat(AppGraph.sessionId)
-                                navigate(CcmRoute.HOME)
+                            modelPickerContent = {
+                                if (showModelPicker) {
+                                    ModelPickerMenu(
+                                        expanded = showModelPicker,
+                                        items = AppGraph.storage?.let { com.ccm.app.core.provider.ProviderStore(it).list() } ?: emptyList(),
+                                        onPick = applyModelSelection,
+                                        onDismiss = { showModelPicker = false },
+                                    )
+                                }
                             },
                             onSwitchClick = {
                                 refreshSessions()   // 打开时拉最新
@@ -986,42 +1036,19 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         greeting = greetingFor(profileName),
                         onSend = { t, imgs -> sendAndOpen(t, imgs) },
                         onModelClick = { showModelPicker = true },
+                        modelPickerContent = {
+                            if (showModelPicker) ModelPickerMenu(
+                                expanded = true,
+                                items = AppGraph.storage?.let { com.ccm.app.core.provider.ProviderStore(it).list() } ?: emptyList(),
+                                onPick = applyModelSelection,
+                                onDismiss = { showModelPicker = false },
+                            )
+                        },
                         modelLabel = modelName,   // ★ 原来没传 → 永远显示默认「未配置模型」
                     )
                 }
             }
         }
-
-    if (showModelPicker) {
-        // ★ 2026-09-29：弹窗 → **底部滑出面板**（用户反馈
-        //   「面板类的东西都被简化成弹窗」）。逻辑不变：
-        //   ProviderStore.list + setCurrent + openSession 重建。
-        val pstore = AppGraph.storage
-            ?.let { com.ccm.app.core.provider.ProviderStore(it) }
-        val items = remember(showModelPicker) { pstore?.list() ?: emptyList() }
-        // ★ 2026-09-29 /model 补功能：从「provider 平铺」升级为
-        //   「provider → 模型池展开」—— 池里的模型点一下即 setModel + setCurrent
-        //   （对齐 CLI 的 /model <id> <名>）。
-        ModelPickerSheet(
-            items = items,
-            onPickModel = { id, model ->
-                pstore?.setModel(id, model)
-                pstore?.setCurrent(id)
-                profileRefreshKey++
-                AppGraph.openSession(AppGraph.sessionId)
-                    ?.let { activeSession = it }
-                showModelPicker = false
-            },
-            onPickProvider = { id ->
-                pstore?.setCurrent(id)
-                profileRefreshKey++
-                AppGraph.openSession(AppGraph.sessionId)
-                    ?.let { activeSession = it }
-                showModelPicker = false
-            },
-            onDismiss = { showModelPicker = false },
-        )
-    }
 
         // ── 设置覆盖层（全屏，在抽屉之下）─────────────────────────────
         if (showSettings) {
@@ -1100,92 +1127,3 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
 
 /**
  * 模型选择底部面板（2026-09-29 —— 用户反馈「面板被简化成弹窗」）。
- *
- * 交互对齐主流移动端：底部滑出 + 顶部小把手 + 整宽列表 + 点外部关闭。
- * 数据由调用方给（ProviderStore.Item 列表），本组件纯展示。
- */
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-@Composable
-private fun ModelPickerSheet(
-    items: List<com.ccm.app.core.provider.ProviderStore.Item>,
-    onPickModel: (id: String, model: String) -> Unit,
-    onPickProvider: (id: String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val colors = CCMTheme.colors
-    // ★ 2026-10-01 三次重写（用户「模型选择器是最让我恼火的」）：
-    //   前两版都在调「全宽底部 Sheet」的细节 —— 方向就错了。
-    //   Web 根本不是全宽面板，是**桌面下拉浮层**（ModelSelector.tsx:266）：
-    //     w-[260px] rounded-xl shadow-xl border py-1
-    //     每项 px-4 py-2 + hover 背景 + 右侧蓝勾（#3b82f6 size18）
-    //   这次**照抄结构**：紧凑浮层，不再是全宽 Sheet。
-    // Popup 才是 Web 下拉菜单的正确形态：相对根布局右下定位，
-    // 不再用 ModalBottomSheet 让菜单占据整块屏幕。
-    Popup(
-        alignment = Alignment.BottomEnd,
-        offset = androidx.compose.ui.unit.IntOffset(-16, -76),
-        onDismissRequest = onDismiss,
-        properties = PopupProperties(focusable = true),
-    ) {
-        androidx.compose.foundation.layout.Box(
-            modifier = Modifier.padding(8.dp),
-        ) {
-            androidx.compose.foundation.layout.Column(
-                modifier = Modifier
-                    .widthIn(min = 260.dp, max = 280.dp)         // Web w-[260px]
-                    .heightIn(max = 360.dp)
-                    .shadow(20.dp, RoundedCornerShape(12.dp))     // Web shadow-xl
-                    .clip(RoundedCornerShape(12.dp))              // Web rounded-xl
-                    .background(colors.input)                     // Web bg-claude-input
-                    .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-                    .padding(vertical = 4.dp),                    // Web py-1
-            ) {
-                if (items.isEmpty()) {
-                    Text(
-                        text = "还没有 Provider —— 到「设置 → 模型」里先加一个",
-                        style = CCMText.body13,
-                        color = colors.textSecondary,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    )
-                }
-                items.forEach { it2 ->
-                    val pool = (listOf(it2.model) + it2.models)
-                        .filter { it.isNotBlank() }.distinct()
-                    pool.forEach { m ->
-                        val effModel = it2.model.takeIf { it.isNotBlank() }
-                            ?: it2.models.firstOrNull { it.isNotBlank() }
-                        val selected = it2.isCurrent && m == effModel
-                        androidx.compose.foundation.layout.Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable(enabled = it2.enabled) { onPickModel(it2.id, m) }
-                                .padding(horizontal = 16.dp, vertical = 9.dp),   // Web px-4 py-2
-                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                // Web modelLabelWithProvider：`模型名(ProviderID)`
-                                text = "$m(${it2.id})",
-                                style = CCMText.body14.copy(
-                                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
-                                    fontSize = 13.34.sp,       // Web text-[14.5px] × 0.92
-                                ),
-                                color = if (it2.enabled) colors.textMain else colors.textSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                            if (selected) {
-                                // Web: <Check size={18} className="text-[#3b82f6]" />
-                                Text(
-                                    "✓",
-                                    color = Color(0xFF3B82F6),
-                                    style = CCMText.body14.copy(fontSize = 15.sp),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}

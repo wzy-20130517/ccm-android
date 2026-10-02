@@ -153,12 +153,9 @@ class PresentTools(private val saveDir: File) {
                         )
                     }
 
-                    // 诚实说明「没渲染」—— 不说的话模型会以为用户已经看到了，
-                    // 后续对话里就可能出现「你看上面的图」这种对不上的话
+                    ctx.ui.onPresent(kind, title, caption, content, listOf(f.absolutePath))
                     return@withContext ToolResult.ok(
-                        "$header\n已保存到：${f.absolutePath}（${content.length} 字符）\n" +
-                            "⚠️ 本端无内联渲染通道，内容**没有**显示在对话里。" +
-                            "要查看效果可用 ViewImage 打开该路径（svg 需先转 png），或把路径告诉用户。",
+                        "$header\n已展示并保存到：${f.absolutePath}（${content.length} 字符）",
                     )
                 }
 
@@ -188,11 +185,10 @@ class PresentTools(private val saveDir: File) {
                 val sizeNote = okFiles.joinToString("\n") { "  · ${it.absolutePath}（${fmtSize(it.length())}）" }
                 val badNote = if (bad.isEmpty()) "" else "\n以下被跳过：\n" + bad.joinToString("\n") { "  · $it" }
 
+                ctx.ui.onPresent(kind, title, caption, "", okFiles.map { it.absolutePath })
                 ToolResult.ok(
-                    "$header\n共 ${okFiles.size} 个${if (kind == "video") "视频" else "图片"}：\n" +
-                        sizeNote + badNote + "\n" +
-                        "⚠️ 本端无内联渲染通道，文件**没有**显示在对话里。" +
-                        "要查看可用 ViewImage（图片）或把路径告诉用户。",
+                    "$header\n已提交 ${okFiles.size} 个${if (kind == "video") "视频" else "图片"}到展示区：\n" +
+                        sizeNote + badNote,
                 )
             }
 

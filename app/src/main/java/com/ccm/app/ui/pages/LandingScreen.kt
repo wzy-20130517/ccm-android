@@ -109,6 +109,7 @@ fun LandingScreen(
     modelLabel: String = "未配置模型",
     /** 点首页模型 chip → 打开模型选择器（第22批接通，原 TODO 空转）。 */
     onModelClick: () -> Unit = {},
+    modelPickerContent: (@Composable () -> Unit)? = null,
 ) {
     val colors = CCMTheme.colors
 
@@ -518,10 +519,13 @@ private fun InputCard(
                     //    而 AppConfig.load 会读磁盘 + 解析 JSON，实测导致
                     //    `Skipped 39 frames`（主线程堵死 → 所有按钮点不动）。
                     //    所以从上层传入（LandingScreen 用 remember 缓存过一次）。
-                    ModelChip(
-                        modelName = modelLabel,
-                        onClick = onModelClick,
-                    )
+                    Box {
+                        ModelChip(
+                            modelName = modelLabel,
+                            onClick = onModelClick,
+                        )
+                        modelPickerContent?.invoke()
+                    }
                     // ★ L1 真接通（2026-09-29 用户要求补能力而非置灰）：
                     //   系统 SpeechRecognizer 听写 → 整句回填输入框。
                     //

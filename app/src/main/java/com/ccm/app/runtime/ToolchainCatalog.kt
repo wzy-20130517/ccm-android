@@ -140,7 +140,7 @@ object ToolchainCatalog {
             // 存储紧张的手机会中途失败（解压到一半 no space left）。
             sizeMB = 230,
             verifyCommand = "command -v node npm",
-            defaultChecked = true,
+            defaultChecked = false,
             // 【为什么不用 apt 的 nodejs】
             // noble 源里是 18.19.1 —— 2025-04 已 EOL，安全更新停止。
             // 官方做法（NodeSource）需要 rootfs 先有 curl + gnupg，会鸡生蛋。

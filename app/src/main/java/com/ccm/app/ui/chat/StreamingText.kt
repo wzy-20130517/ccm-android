@@ -64,6 +64,9 @@ class StreamingMarkdown {
     /** 已消费到的源文本下标 —— 只在吃掉完整行时前进 */
     private var consumed = 0
 
+    /** 上一次喂入的全文；切页/重试会替换全文而非继续追加。 */
+    private var previousFullText = ""
+
     /** 是否在未闭合的代码块内 */
     private var inFence = false
 
@@ -78,11 +81,14 @@ class StreamingMarkdown {
      * @return [Result.stable] 已定型部分，[Result.pending] 仍在缓冲的尾部
      */
     fun feed(fullText: String): Result {
+        // 重试/切会话时全文可能被替换；不能沿用旧文本的 consumed 下标。
+        if (fullText.length < consumed || !fullText.startsWith(previousFullText)) reset()
+        previousFullText = fullText
         val lastNl = fullText.lastIndexOf('\n')
 
         if (lastNl < consumed) {
             // 没有新的完整行；尾部半截行更新
-            tail = fullText.substring(consumed)
+            tail = fullText.substring(consumed.coerceAtMost(fullText.length))
             return Result(stable.toString(), pending.toString() + tail)
         }
 
@@ -167,6 +173,7 @@ class StreamingMarkdown {
         pending.setLength(0)
         tail = ""
         consumed = 0
+        previousFullText = ""
         inFence = false
         fenceMarker = ""
     }

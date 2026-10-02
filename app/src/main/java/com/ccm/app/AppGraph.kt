@@ -453,6 +453,9 @@ object AppGraph {
             // ① 释放旧会话（flush + 停自动保存 + 断连接）
             session?.dispose()
 
+            // ② 先切换当前 sessionId：ToolsBootstrap 的 getter 需要在恢复 Todo 前
+            // 指向目标会话，否则会从旧会话文件读取任务清单。
+            sessionId = id
             // ② 重建
             // ★ 2026-10-01：优先用配置的 workspacePath（与 CLI /workspace 同语义），
             //   空/不可写时落回默认 files/workspace。
@@ -479,7 +482,6 @@ object AppGraph {
                 sess.loadHistory(saved.messages)
             }
 
-            sessionId = id
             session = sess
             try { sess.restoreTodos(tools.loadTodos()) } catch (_: Throwable) {}
             initError = null
@@ -607,7 +609,11 @@ object AppGraph {
         val cfg = AppConfig.load(st.configFile).config
 
         return try {
-            try { session?.stop() } catch (_: Throwable) {}
+            val previousSession = session
+            val previousHistory = previousSession?.historySnapshot().orEmpty()
+            val previousTitle = container?.sessionAuto?.title
+            try { previousSession?.flush() } catch (_: Throwable) {}
+            try { previousSession?.stop() } catch (_: Throwable) {}
             try { container?.shutdown() } catch (_: Throwable) {}
 
             // ★ 2026-10-01：优先用配置的 workspacePath（与 CLI /workspace 同语义），
@@ -624,6 +630,13 @@ object AppGraph {
                 modes = modes,
                 autoMemory = autoMemory,
             )
+            if (sess != null && previousHistory.isNotEmpty()) {
+                sess.loadHistory(previousHistory)
+                previousTitle?.let(sess::setTitle)
+            }
+            if (sess != null) {
+                try { sess.restoreTodos(toolsResult?.loadTodos?.invoke().orEmpty()) } catch (_: Throwable) {}
+            }
             session = sess
             initError = if (sess == null) "尚未配置 API —— 请到「设置 → 模型」里添加一个 Provider" else null
             sess

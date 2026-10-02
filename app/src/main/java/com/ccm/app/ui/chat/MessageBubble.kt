@@ -15,6 +15,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.clickable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -295,6 +298,7 @@ fun MessageList(
     streamingRunning: Boolean = false,
     /** 待办清单（TodoWrite 维护，渲染在消息流顶部）。 */
     todos: List<com.ccm.app.ui.common.TodoItem> = emptyList(),
+    presentItems: List<com.ccm.app.core.ChatSession.PresentItem> = emptyList(),
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
         // 待办面板 —— Web 行为：清单挂在消息流顶部，随 TodoWrite 更新
@@ -304,6 +308,66 @@ fun MessageList(
                 running = streamingRunning,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
+        }
+
+
+        presentItems.forEach { item ->
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
+                    .clip(RoundedCornerShape(10.dp)).background(CCMTheme.colors.input).padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(item.title ?: "展示 · ${item.kind}", style = CCMText.body14.copy(fontWeight = FontWeight.Medium), color = CCMTheme.colors.textMain)
+                item.caption?.let { Text(it, style = CCMText.body12, color = CCMTheme.colors.textSecondary) }
+                if (item.kind in setOf("html", "svg") && item.content.isNotBlank()) {
+                    val preview = remember(item.kind, item.content) {
+                        if (item.kind == "svg" && !item.content.contains("<svg", ignoreCase = true)) {
+                            "<svg xmlns=\"http://www.w3.org/2000/svg\">${item.content}</svg>"
+                        } else item.content
+                    }
+                    AndroidView(
+                        modifier = Modifier.fillMaxWidth().height(260.dp),
+                        factory = { context -> WebView(context).apply {
+                            settings.javaScriptEnabled = false
+                            settings.domStorageEnabled = false
+                            settings.allowFileAccess = false
+                            settings.allowContentAccess = false
+                            settings.allowFileAccessFromFileURLs = false
+                            settings.allowUniversalAccessFromFileURLs = false
+                            webViewClient = object : WebViewClient() {
+                                override fun shouldInterceptRequest(view: WebView, request: android.webkit.WebResourceRequest): android.webkit.WebResourceResponse? {
+                                    val scheme = request.url.scheme?.lowercase()
+                                    return if (scheme == "data" || scheme == "about") null
+                                    else android.webkit.WebResourceResponse("text/plain", "UTF-8", java.io.ByteArrayInputStream(ByteArray(0)))
+                                }
+                                override fun shouldOverrideUrlLoading(view: WebView, request: android.webkit.WebResourceRequest): Boolean = true
+                            }
+                            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                        } },
+                        update = { web ->
+                            if (web.tag != preview) {
+                                web.tag = preview
+                                web.loadDataWithBaseURL(null, preview, "text/html", "UTF-8", null)
+                            }
+                        },
+                    )
+                } else if (item.content.isNotBlank()) {
+                    Text(item.content.take(4000), style = CCMText.body12.copy(fontFamily = FontFamily.Monospace), color = CCMTheme.colors.textSecondary)
+                }
+                item.paths.forEach { path ->
+                    when (item.kind) {
+                        "image", "images" -> com.ccm.app.ui.common.ThumbImage(path, Modifier.fillMaxWidth().height(220.dp), 8.dp)
+                        "video" -> AndroidView(
+                            modifier = Modifier.fillMaxWidth().height(240.dp),
+                            factory = { context -> android.widget.VideoView(context).apply {
+                                setVideoPath(path)
+                                setMediaController(android.widget.MediaController(context).also { it.setAnchorView(this) })
+                            } },
+                        )
+                        else -> Text(path, style = CCMText.body11.copy(fontFamily = FontFamily.Monospace), color = CCMTheme.colors.textSecondary)
+                    }
+                }
+            }
         }
 
         bubbles.forEach { bubble ->

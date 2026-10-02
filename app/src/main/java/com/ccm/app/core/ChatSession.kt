@@ -219,6 +219,13 @@ class ChatSession(
             messageId = "user-${System.currentTimeMillis()}",
             images = imagePaths,
         )
+        // 对齐 Web 的自动命名：首条用户消息立即作为本地标题兜底，
+        // 避免发送后仍显示“新对话”，并交给 SessionAuto 随本轮保存落盘。
+        if (container.sessionAuto?.title.isNullOrBlank()) {
+            container.sessionAuto?.title = text.trim()
+                .replace(Regex("\\s+"), " ")
+                .take(48)
+        }
         _state.value = _state.value.copy(
             bubbles = _state.value.bubbles + userBubble,
             streaming = "",
@@ -259,8 +266,11 @@ class ChatSession(
     /** 从历史恢复（`/resume`）。 */
     fun loadHistory(messages: List<Message>) {
         container.agentLoop.setHistory(messages)
+        val visible = messages.filter { m ->
+            (m.role == Message.ROLE_USER || m.role == Message.ROLE_ASSISTANT) && m.text.isNotBlank()
+        }
         _state.value = State(
-            bubbles = messages.map { m ->
+            bubbles = visible.map { m ->
                 Bubble(
                     role = m.role,
                     text = m.text,
@@ -268,6 +278,13 @@ class ChatSession(
                 )
             }
         )
+        // Web 在首轮消息后异步生成标题；APK 先用首条用户消息做稳定本地兜底。
+        if (container.sessionAuto?.title.isNullOrBlank()) {
+            visible.firstOrNull { it.role == Message.ROLE_USER }
+                ?.text?.trim()?.replace(Regex("\\s+"), " ")
+                ?.take(48)?.takeIf { it.isNotBlank() }
+                ?.let { container.sessionAuto?.title = it }
+        }
     }
 
     /** 保存当前会话（退出前调）。 */
@@ -551,8 +568,15 @@ class ChatSession(
                         }
                     }
 
+                    is AgentEvent.Present -> {
+                        val item = PresentItem(ev.kind, ev.title, ev.caption, ev.content, ev.paths)
+                        _state.value = _state.value.copy(presentItems = _state.value.presentItems + item)
+                    }
+
                     is AgentEvent.ToolProgress -> {
-                        val i = toolCards.indexOfLast { it.running }
+                        val i = toolCards.indexOfFirst { it.id == ev.id }
+                            .takeIf { it >= 0 }
+                            ?: toolCards.indexOfLast { it.running }
                         if (i >= 0) {
                             toolCards[i] = toolCards[i].copy(progress = ev.text)
                             _state.value = _state.value.copy(toolCards = toolCards.toList())
@@ -586,6 +610,7 @@ class ChatSession(
                                 toolCards = toolCards.toList(),
                             )
                             streaming = ""
+                            thinkingBuf = ""
                             markDirty()   // B3：assistant 消息进历史 → 待落盘
                         }
                     }
@@ -598,18 +623,29 @@ class ChatSession(
                     }
 
                     AgentEvent.Done -> {
-                        // 收尾：把残留的流式内容定型（没收到 TurnEnd 的情况）
-                        if (streaming.isNotBlank()) {
-                            _state.value = _state.value.copy(
-                                bubbles = _state.value.bubbles + Bubble(
-                                    role = Message.ROLE_ASSISTANT,
-                                    text = streaming,
-                                    messageId = currentMessageId,
-                                ),
+                        // 收尾时同时定型正文和思维链；有些 Provider 只回传 reasoning，
+                        // 若只检查正文，思维链会在 Done 时被清空并永久丢失。
+                        if (streaming.isNotBlank() || thinkingBuf.isNotBlank()) {
+                            val finalText = streaming
+                            val finalThinking = thinkingBuf
+                            val nextState = _state.value.copy(
+                                bubbles = if (finalText.isNotBlank() || finalThinking.isNotBlank()) {
+                                    _state.value.bubbles + Bubble(
+                                        role = Message.ROLE_ASSISTANT,
+                                        text = finalText,
+                                        messageId = currentMessageId.ifBlank { "thinking-${System.currentTimeMillis()}" },
+                                        thinking = finalThinking,
+                                    )
+                                } else _state.value.bubbles,
                                 streaming = "",
+                                thinking = "",
+                                toolCards = toolCards.toList(),
                             )
+                            _state.value = nextState
+                            streaming = ""
+                            thinkingBuf = ""
                         }
-                        markDirty()   // B3：兜底（残留在流里的内容定型也落盘）
+                        markDirty()   // B3：兜底（残留正文/思维链定型也落盘）
                         _state.value = _state.value.copy(running = false, toolCards = toolCards.toList())
 
                         // ★ automem（2026-10-01）：每轮正常结束后触发一次记忆提取。
@@ -676,10 +712,20 @@ class ChatSession(
          * 存在 todos.json（TodoWriteTool 自己落盘），进程重启可从那恢复。
          */
         val todos: List<TodoEntry> = emptyList(),
+        val presentItems: List<PresentItem> = emptyList(),
     ) {
         /** 是否为空对话（UI 据此显示欢迎页）。 */
         val isEmpty: Boolean get() = bubbles.isEmpty() && streaming.isBlank()
     }
+
+    /** Present 工具提交给聊天 UI 的富内容项。 */
+    data class PresentItem(
+        val kind: String,
+        val title: String?,
+        val caption: String?,
+        val content: String,
+        val paths: List<String>,
+    )
 
     /** 一条待办（TodoWrite 的 todos 数组元素，core 侧形态）。 */
     data class TodoEntry(

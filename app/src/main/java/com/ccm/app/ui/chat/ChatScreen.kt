@@ -88,9 +88,11 @@ fun ChatScreen(
     toolCards: List<ChatToolCard> = emptyList(),
     streamingThinking: String = "",
     todos: List<com.ccm.app.ui.common.TodoItem> = emptyList(),
+    presentItems: List<com.ccm.app.core.ChatSession.PresentItem> = emptyList(),
     input: String = "",
     running: Boolean = false,
     title: String = "新对话",
+    sessionKey: String = "",
     modelName: String = "Sonnet 4.6",
     tokenCount: Int = 0,
     errorMessage: String? = null,
@@ -99,9 +101,8 @@ fun ChatScreen(
     onStop: () -> Unit = {},
     onExport: () -> Unit = {},
     onRename: () -> Unit = {},
-    /** 删除当前对话（webgap #9 —— Web 有 header 删除，APK 缺）。 */
-    onDelete: () -> Unit = {},
     onModelClick: () -> Unit = {},
+    modelPickerContent: (@Composable () -> Unit)? = null,
     /** 点标题旁的下拉箭头 → 切换对话（Web 是会话下拉；2026-09-28 接通）。 */
     onSwitchClick: () -> Unit = {},
     onAttach: () -> Unit = {},
@@ -127,7 +128,6 @@ fun ChatScreen(
                 onRename = onRename,
                 onExport = onExport,
                 onSwitchClick = onSwitchClick,
-                onDelete = onDelete,
             )
 
             // ── 消息区（可滚动 + 自动跟底，底部留出输入栏高度）────────
@@ -162,7 +162,7 @@ fun ChatScreen(
                 //   maxValue 还是 0，上面那个 effect 滚了个寂寞，用户
                 //   看到的是**会话最开头**（很反直觉：聊天应用都停最新）。
                 //   这里等两帧（布局稳定）再滚，只在 bubbles 首次填充时触发。
-                LaunchedEffect(bubbles.size > 0) {
+                LaunchedEffect(sessionKey, bubbles.size > 0) {
                     if (bubbles.isNotEmpty()) {
                         withFrameNanos {}
                         withFrameNanos {}
@@ -183,11 +183,21 @@ fun ChatScreen(
                         toolCards = toolCards,
                         streamingThinking = streamingThinking,
                         streamingRunning = running,
-                        todos = todos,
+                        todos = emptyList(),
+                        presentItems = presentItems,
                     )
                     // 底部留白 —— 实测滚动容器 pad: `0px 0px 154px`（pb-154）
                     // 给浮动输入栏 + 底部状态行让位
                     Spacer(Modifier.height(154.dp))
+                }
+
+                if (todos.isNotEmpty()) {
+                    com.ccm.app.ui.common.TodoPanel(
+                        todos = todos,
+                        running = running,
+                        modifier = Modifier.align(Alignment.BottomEnd)
+                            .padding(end = 16.dp, bottom = 154.dp),
+                    )
                 }
             }
         }
@@ -315,6 +325,7 @@ fun ChatScreen(
                 modelName = modelName,
                 tokenCount = tokenCount,
                 onModelClick = onModelClick,
+                modelPickerContent = modelPickerContent,
                 onAttach = onAttach,
                 attachedPaths = attachedPaths,
                 onVoice = onVoice,
@@ -348,7 +359,6 @@ private fun ChatHeaderBar(
     onRename: () -> Unit,
     onExport: () -> Unit,
     onSwitchClick: () -> Unit = {},
-    onDelete: () -> Unit = {},
 ) {
     val colors = CCMTheme.colors
 
@@ -394,21 +404,11 @@ private fun ChatHeaderBar(
             }
         }
 
-        // 右：删除 + Export（webgap #9：Web 有删除按钮，APK 缺）
+        // 右：Export
         Row(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                modifier = Modifier
-                    .height(40.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable(onClick = onDelete)
-                    .padding(horizontal = 12.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("✕", style = CCMText.body14, color = Color(0xFFDC2626))
-            }
             Box(
                 modifier = Modifier
                     .height(40.dp)

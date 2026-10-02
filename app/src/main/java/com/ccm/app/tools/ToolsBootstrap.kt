@@ -222,7 +222,7 @@ class ToolsBootstrap(
         val miscTools = MiscTools(
             storageRoot = storage.rootDir,
             memoryFile = File(storage.rootDir, "CLAUDE.md"),
-            todoFile = File(storage.rootDir, "todos.json"),
+            todoFile = { File(storage.rootDir, "todos/${getSessionId()}.json") },
             onMemoryWritten = { autoMemory?.markMainWroteMemory() },
         )
 

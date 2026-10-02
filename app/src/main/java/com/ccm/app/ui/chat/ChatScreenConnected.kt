@@ -60,12 +60,13 @@ fun ChatScreenConnected(
     session: ChatSession,
     modifier: Modifier = Modifier,
     title: String = "新对话",
+    onAutoTitle: (String) -> Unit = {},
     modelName: String = "Sonnet 4.6",
     onExport: () -> Unit = {},
     onRename: () -> Unit = {},
     onModelClick: () -> Unit = {},
+    modelPickerContent: (@Composable () -> Unit)? = null,
     onSwitchClick: () -> Unit = {},
-    onDelete: () -> Unit = {},
     /** /new 新建会话（第 2026-09-30 批 slash 扩充）。 */
     onNewChat: () -> Unit = {},
     /** /style 打开输出风格选择。 */
@@ -82,6 +83,14 @@ fun ChatScreenConnected(
     )
     val coreState by session.state.collectAsState()
     val uiState = remember(coreState) { ChatAdapter.toUi(coreState) }
+    LaunchedEffect(coreState.bubbles.firstOrNull { it.isUser }?.text, title) {
+        if (title == "新对话") {
+            coreState.bubbles.firstOrNull { it.isUser }?.text
+                ?.trim()?.replace(Regex("\\s+"), " ")?.take(48)
+                ?.takeIf { it.isNotBlank() }
+                ?.let(onAutoTitle)
+        }
+    }
 
     // ── 图片附件（第18批）───────────────────────────────────────
     var pendingImages by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -262,10 +271,12 @@ fun ChatScreenConnected(
         streaming = stableStreaming.ifBlank { uiState.streaming },
         streamingThinking = uiState.streamingThinking,
         todos = uiState.todos,
+        presentItems = uiState.presentItems,
         toolCards = uiState.toolCards,
         input = coreState.draft,
         running = uiState.running,
         title = title,
+        sessionKey = session.sessionId,
         modelName = modelName,
         tokenCount = uiState.displayTokens,
         errorMessage = uiState.error,
@@ -396,8 +407,8 @@ fun ChatScreenConnected(
         onExport = onExport,
         onRename = onRename,
         onModelClick = onModelClick,
+        modelPickerContent = modelPickerContent,
         onSwitchClick = onSwitchClick,
-        onDelete = onDelete,
         onVoice = voiceClick,
         onResend = { messageId -> session.resendFrom(messageId) },
         onRetry = { session.retryLast() },

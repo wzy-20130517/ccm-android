@@ -326,7 +326,9 @@ private fun ToolCallItem(
         .ifBlank { card.displayName.ifBlank { card.name } }
 
     val useDiff = shouldUseDiffView(card.name, card.input)
-    val expandable = card.result.isNotBlank() || useDiff
+    // 有入参但 JSON 字段暂时无法解析时也必须可展开；否则 Write 等工具
+    // 执行中点击无反应，进度/原始入参永远不可见。
+    val expandable = card.input.isNotBlank() || card.result.isNotBlank() || card.progress.isNotBlank() || useDiff
     val stats = toolStats(card.name, card.input)
 
     val cardBg = if (CCMTheme.isDark) Color.Black.copy(alpha = 0.20f) else Color.Black.copy(alpha = 0.05f)
@@ -462,7 +464,7 @@ private fun ToolCallItem(
                         output = if (card.name == "Bash" || card.name == "Read") card.result else "",
                     )
                     // 其他 → 纯结果框
-                    card.result.isNotBlank() -> Box(
+                    card.result.isNotBlank() || card.progress.isNotBlank() || card.input.isNotBlank() -> Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 3.68.dp)          // px-1
@@ -481,10 +483,12 @@ private fun ToolCallItem(
                     ) {
                         Text(
                             // 源码：result.length > 2000 → 截断加 ...
-                            text = if (card.result.length > 2000) {
-                                card.result.take(2000) + "..."
-                            } else {
-                                card.result
+                            text = when {
+                                card.result.isNotBlank() -> if (card.result.length > 2000) {
+                                    card.result.take(2000) + "..."
+                                } else card.result
+                                card.progress.isNotBlank() -> card.progress
+                                else -> card.input.take(2000)
                             },
                             style = CCMText.body12.copy(fontFamily = FontFamily.Monospace),
                             color = colors.textSecondary,

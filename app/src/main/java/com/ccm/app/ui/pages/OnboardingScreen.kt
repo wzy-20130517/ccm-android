@@ -2,6 +2,7 @@ package com.ccm.app.ui.pages
 
 import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
@@ -113,6 +115,10 @@ fun OnboardingScreen(
     var log by remember { mutableStateOf("") }
     /** 失败后**停住**，不自动跳走 —— 用户要看日志。 */
     var failed by remember { mutableStateOf(false) }
+    val toolchains = remember { com.ccm.app.runtime.ToolchainCatalog.ALL }
+    var selectedToolchains by remember {
+        mutableStateOf(toolchains.filter { it.defaultChecked }.map { it.id }.toSet())
+    }
 
     // Shizuku 状态（只读展示，不请求授权）
     var shizukuOk by remember { mutableStateOf(false) }
@@ -185,6 +191,23 @@ fun OnboardingScreen(
                     )
                 }
 
+                Spacer(Modifier.height(18.dp))
+                InfoCard {
+                    Text("选择要安装的工具链", style = CCMText.body14.copy(fontWeight = FontWeight.Medium), color = colors.textMain)
+                    toolchains.forEach { chain ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clickable { if (chain.id != "base") selectedToolchains = if (chain.id in selectedToolchains) selectedToolchains - chain.id else selectedToolchains + chain.id },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(checked = chain.id in selectedToolchains, onCheckedChange = { checked -> if (chain.id != "base") selectedToolchains = if (checked) selectedToolchains + chain.id else selectedToolchains - chain.id })
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(chain.name, style = CCMText.body14, color = colors.textMain)
+                                Text("${chain.description} · 约 ${chain.sizeMB}MB", style = CCMText.body12, color = colors.textSecondary)
+                            }
+                        }
+                    }
+                }
+
                 Spacer(Modifier.height(24.dp))
 
                 Button(
@@ -193,7 +216,7 @@ fun OnboardingScreen(
                         progress = 0f
                         log = ""
                         failed = false
-                        scope.launch { runInstall(rootfs, proot) { p, msg -> 
+                        scope.launch { runInstall(rootfs, proot, selectedToolchains) { p, msg ->
                             progress = p
                             if (msg.isNotEmpty()) log = if (log.isEmpty()) msg else "$log\n$msg"
                         }.also { ok ->
@@ -305,7 +328,7 @@ fun OnboardingScreen(
                             progress = 0f
                             log = ""
                             failed = false
-                            scope.launch { runInstall(rootfs, proot) { p, msg ->
+                            scope.launch { runInstall(rootfs, proot, selectedToolchains) { p, msg ->
                                 progress = p
                                 if (msg.isNotEmpty()) log = if (log.isEmpty()) msg else "$log\n$msg"
                             }.also { ok ->
@@ -372,6 +395,7 @@ private class ProgressSink {
 private suspend fun runInstall(
     rootfs: RootfsManager,
     proot: ProotRuntime,
+    selectedToolchains: Set<String>,
     emit: suspend (Float, String) -> Unit,
 ): Boolean = kotlinx.coroutines.coroutineScope {
     val sink = ProgressSink()
@@ -417,10 +441,35 @@ private suspend fun runInstall(
         }
     }
 
-    sink.finished = true
-    pump.join()   // 等推送协程收尾，避免最后一行日志被吞
+    if (!result) {
+        sink.finished = true
+        pump.join()
+        return@coroutineScope false
+    }
 
-    if (!result) return@coroutineScope false
+    if (selectedToolchains.isNotEmpty()) {
+        sink.progress = 0.92f
+        sink.log = "正在安装所选工具链…"
+        val toolchainsOk = withContext(Dispatchers.IO) {
+            rootfs.installToolchains(
+                selectedToolchains,
+                exec = { command, onLine -> proot.exec(command, onLine = onLine) },
+                onLine = { line -> sink.log = line },
+            )
+        }
+        if (!toolchainsOk) {
+            sink.log = "工具链安装失败；检查日志后点重试，当前选择会保留。"
+            sink.progress = 0.98f
+            sink.finished = true
+            pump.join()
+            return@coroutineScope false
+        }
+    }
+
+    sink.progress = 1f
+    sink.log = "正在自检…"
+    sink.finished = true
+    pump.join()   // 等推送协程收尾，避免工具链阶段日志被吞
 
     // 装完跑一次自检 —— proot 起不来的报错极具误导性
     //（"Function not implemented" 看着像 rootfs 里的二进制坏了，

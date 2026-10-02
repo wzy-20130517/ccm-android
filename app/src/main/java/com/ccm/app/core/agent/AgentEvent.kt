@@ -98,6 +98,15 @@ sealed class AgentEvent {
     /** 工具执行中的进度（覆盖式显示，不进历史）。 */
     data class ToolProgress(val id: String, val text: String) : AgentEvent()
 
+    /** Present 富内容展示事件。 */
+    data class Present(
+        val kind: String,
+        val title: String?,
+        val caption: String?,
+        val content: String,
+        val paths: List<String>,
+    ) : AgentEvent()
+
     /** 工具执行完成。[result] 是已截断的结果文本。 */
     data class ToolResult(
         val id: String,

@@ -82,11 +82,15 @@ interface ToolUiCallback {
     /** 往对话里推一条正式内容（进历史）。 */
     suspend fun onContent(text: String)
 
+    /** 请求 UI 展示富内容；后台/单测没有 UI 时允许忽略。 */
+    suspend fun onPresent(kind: String, title: String?, caption: String?, content: String, paths: List<String>)
+
     companion object {
         /** 空实现 —— 无 UI 场景（后台任务、单元测试）用。 */
         val NoOp: ToolUiCallback = object : ToolUiCallback {
             override suspend fun onProgress(text: String) = Unit
             override suspend fun onContent(text: String) = Unit
+            override suspend fun onPresent(kind: String, title: String?, caption: String?, content: String, paths: List<String>) = Unit
         }
     }
 }

@@ -746,7 +746,7 @@ class AgentLoop(
             extraDirs = extraDirs,
             permissionMode = permissionMode,
             cancelSignal = parentJob ?: Job(),
-            ui = makeUiCallback(emit, messageId),
+            ui = makeUiCallback(emit, messageId, id),
             spawnSubAgent = spawnSubAgent,
             storage = storage,
             settings = settings,
@@ -836,14 +836,19 @@ class AgentLoop(
     private fun makeUiCallback(
         emit: suspend (AgentEvent) -> Unit,
         messageId: String,
+        toolId: String,
     ): ToolUiCallback =
         object : ToolUiCallback {
             override suspend fun onProgress(text: String) {
-                emit(AgentEvent.ToolProgress(id = "", text = text))
+                emit(AgentEvent.ToolProgress(id = toolId, text = text))
             }
 
             override suspend fun onContent(text: String) {
                 emit(AgentEvent.TextDelta(text, messageId))
+            }
+
+            override suspend fun onPresent(kind: String, title: String?, caption: String?, content: String, paths: List<String>) {
+                emit(AgentEvent.Present(kind, title, caption, content, paths))
             }
         }
 

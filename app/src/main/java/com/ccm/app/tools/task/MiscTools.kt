@@ -69,7 +69,7 @@ import java.io.File
 class MiscTools(
     private val storageRoot: File,
     private val memoryFile: File,
-    private val todoFile: File,
+    private val todoFile: () -> File,
     /**
      * 写记忆后的通知（automem 互斥用）。
      *
@@ -177,7 +177,7 @@ class MiscTools(
                             .put("activeForm", (o["activeForm"] as? JsonPrimitive)?.content ?: ""),
                     )
                 }
-                AtomicFile.writeText(todoFile, out.toString(2), createParent = true)
+                AtomicFile.writeText(todoFile(), out.toString(2), createParent = true)
             } catch (_: Throwable) {
                 // 持久化失败不阻塞（当轮仍能用）
             }
@@ -454,9 +454,9 @@ class MiscTools(
     // ══════════════════════════════════════════════════════════════
 
     fun loadTodos(): List<Triple<String, String, String>> = try {
-        if (!todoFile.exists()) emptyList()
+        if (!todoFile().exists()) emptyList()
         else {
-            val arr = JSONArray(todoFile.readText())
+            val arr = JSONArray(todoFile().readText())
             (0 until arr.length()).mapNotNull { i ->
                 val o = arr.optJSONObject(i) ?: return@mapNotNull null
                 Triple(
