@@ -295,6 +295,7 @@ fun LandingScreen(
                 modifier = Modifier.fillMaxWidth(),
                 modelLabel = modelLabel,
                 onModelClick = onModelClick,
+                modelPickerContent = modelPickerContent,
                 attachedCount = pendingImages.size,
                 onAttach = { launcher.launch("image/*") },
             )
@@ -383,6 +384,7 @@ private fun InputCard(
     modifier: Modifier = Modifier,
     modelLabel: String = "未配置模型",
     onModelClick: () -> Unit = {},
+    modelPickerContent: (@Composable () -> Unit)? = null,
     // ★ 2026-09-28：受控化 —— input state 上提到 LandingScreen
     //   （建议面板要往里填 prompt），这里只转发。
     value: String = "",

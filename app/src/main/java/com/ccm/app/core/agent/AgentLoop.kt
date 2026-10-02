@@ -746,7 +746,7 @@ class AgentLoop(
             extraDirs = extraDirs,
             permissionMode = permissionMode,
             cancelSignal = parentJob ?: Job(),
-            ui = makeUiCallback(emit, messageId, id),
+            ui = makeUiCallback(emit, messageId, tc.id),
             spawnSubAgent = spawnSubAgent,
             storage = storage,
             settings = settings,

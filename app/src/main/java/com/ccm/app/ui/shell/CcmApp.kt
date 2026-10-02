@@ -1124,6 +1124,3 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         LaunchedEffect(showSettings) { if (!showSettings) profileRefreshKey++ }
     }
 }
-
-/**
- * 模型选择底部面板（2026-09-29 —— 用户反馈「面板被简化成弹窗」）。
