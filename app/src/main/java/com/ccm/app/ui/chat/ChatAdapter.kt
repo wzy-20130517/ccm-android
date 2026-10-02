@@ -33,6 +33,7 @@ object ChatAdapter {
         text = bubble.text,
         messageId = bubble.messageId,
         thinking = bubble.thinking,
+        toolCards = bubble.toolCards.map(::toUi),
         images = bubble.images,
     )
 

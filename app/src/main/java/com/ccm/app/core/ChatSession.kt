@@ -234,7 +234,7 @@ class ChatSession(
             error = null,
             draft = "",   // 发出去就清空输入框（Web 行为）
         )
-        markDirty()   // B3：用户消息进历史 → 待落盘
+        saveForced()   // 用户消息立即落盘，进程被回收时不丢首条输入
 
         runningJob = scope.launch {
             // imagePaths 空 = 原路径，零行为变化（第18批向后兼容点）
@@ -266,21 +266,41 @@ class ChatSession(
     /** 从历史恢复（`/resume`）。 */
     fun loadHistory(messages: List<Message>) {
         container.agentLoop.setHistory(messages)
-        val visible = messages.filter { m ->
-            (m.role == Message.ROLE_USER || m.role == Message.ROLE_ASSISTANT) && m.text.isNotBlank()
-        }
-        _state.value = State(
-            bubbles = visible.map { m ->
-                Bubble(
-                    role = m.role,
-                    text = m.text,
-                    messageId = "history-${m.timestamp}",
-                )
+        val resultsById = messages
+            .flatMap { it.content.filterIsInstance<Message.ContentBlock.ToolResult>() }
+            .associateBy { it.id }
+        val restored = messages.mapNotNull { message ->
+            when (message.role) {
+                Message.ROLE_ASSISTANT -> {
+                    val cards = message.content.filterIsInstance<Message.ContentBlock.ToolUse>().map { use ->
+                        val result = resultsById[use.id]
+                        ToolCard(
+                            id = use.id,
+                            name = use.name,
+                            preview = use.input.toString().take(180),
+                            input = use.input.toString(),
+                            running = result == null,
+                            result = result?.content.orEmpty(),
+                            isError = result?.isError ?: false,
+                        )
+                    }
+                    if (message.text.isBlank() && cards.isEmpty()) null else Bubble(
+                        role = Message.ROLE_ASSISTANT,
+                        text = message.text,
+                        messageId = "history-${message.timestamp}",
+                        toolCards = cards,
+                    )
+                }
+                Message.ROLE_USER -> message.text.takeIf { it.isNotBlank() }?.let {
+                    Bubble(role = Message.ROLE_USER, text = it, messageId = "history-${message.timestamp}")
+                }
+                else -> null
             }
-        )
+        }
+        _state.value = State(bubbles = restored)
         // Web 在首轮消息后异步生成标题；APK 先用首条用户消息做稳定本地兜底。
         if (container.sessionAuto?.title.isNullOrBlank()) {
-            visible.firstOrNull { it.role == Message.ROLE_USER }
+            messages.firstOrNull { it.role == Message.ROLE_USER }
                 ?.text?.trim()?.replace(Regex("\\s+"), " ")
                 ?.take(48)?.takeIf { it.isNotBlank() }
                 ?.let { container.sessionAuto?.title = it }
@@ -596,22 +616,27 @@ class ChatSession(
                     }
 
                     is AgentEvent.TurnEnd -> {
-                        // 一轮结束 → 把流式内容定型成气泡
-                        if (streaming.isNotBlank()) {
+                        // 工具卡和正文属于同一轮；一起保存到气泡才能保证历史顺序稳定。
+                        if (streaming.isNotBlank() || thinkingBuf.isNotBlank() || toolCards.isNotEmpty()) {
+                            val roundTools = toolCards.toList()
                             _state.value = _state.value.copy(
-                                bubbles = _state.value.bubbles + Bubble(
-                                    role = Message.ROLE_ASSISTANT,
-                                    text = streaming,
-                                    messageId = currentMessageId,
-                                    thinking = thinkingBuf,
-                                ),
+                                bubbles = if (streaming.isNotBlank() || thinkingBuf.isNotBlank() || roundTools.isNotEmpty()) {
+                                    _state.value.bubbles + Bubble(
+                                        role = Message.ROLE_ASSISTANT,
+                                        text = streaming,
+                                        messageId = currentMessageId.ifBlank { "turn-${ev.turn}-${System.currentTimeMillis()}" },
+                                        thinking = thinkingBuf,
+                                        toolCards = roundTools,
+                                    )
+                                } else _state.value.bubbles,
                                 streaming = "",
-                                thinking = "",   // 已定型进气泡，清流式字段
-                                toolCards = toolCards.toList(),
+                                thinking = "",
+                                toolCards = emptyList(),
                             )
                             streaming = ""
                             thinkingBuf = ""
-                            markDirty()   // B3：assistant 消息进历史 → 待落盘
+                            toolCards.clear()
+                            saveForced()
                         }
                     }
 
@@ -645,7 +670,7 @@ class ChatSession(
                             streaming = ""
                             thinkingBuf = ""
                         }
-                        markDirty()   // B3：兜底（残留正文/思维链定型也落盘）
+                        saveForced()   // 每轮完成即落盘，避免切页/进程回收丢失最近一轮
                         _state.value = _state.value.copy(running = false, toolCards = toolCards.toList())
 
                         // ★ automem（2026-10-01）：每轮正常结束后触发一次记忆提取。
@@ -741,6 +766,7 @@ class ChatSession(
         val messageId: String,
         /** 该消息的思考过程（TurnEnd 时从 State.thinking 定型过来；历史恢复无此项）。 */
         val thinking: String = "",
+        val toolCards: List<ToolCard> = emptyList(),
         /**
          * 该消息附带的图片本地路径（第20批）。
          * 只给 UI 渲染缩略图用 —— 模型侧的图走 Message.content，

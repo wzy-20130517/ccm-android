@@ -115,6 +115,7 @@ fun ChatScreen(
     onRetry: (() -> Unit)? = null,
 ) {
     val colors = CCMTheme.colors
+    val imeVisible = WindowInsets.isImeVisible
 
     Box(
         modifier = modifier
@@ -207,6 +208,7 @@ fun ChatScreen(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
+                .background(colors.bgMain)
                 // ★ 2026-09-29 键盘遮挡修复：targetSdk 35 强制 edge-to-edge，
                 //   AndroidManifest 的 adjustResize 被系统忽略 → 键盘弹出时
                 //   输入框被键盘盖住，看不见自己打的字。
@@ -332,18 +334,19 @@ fun ChatScreen(
                 onRemoveImage = onRemoveImage,
             )
 
-            Spacer(Modifier.height(7.36.dp))
-
-            // 底部状态行 —— 实测文案
-            Text(
-                text = "Claude 是 AI，可能会出错。请核对回复内容。",
-                style = CCMText.body11,
-                color = colors.textSecondary,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 11.04.dp),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
+            if (!imeVisible) {
+                Spacer(Modifier.height(7.36.dp))
+                // 底部提示不在输入期间占位。
+                Text(
+                    text = "Claude 是 AI，可能会出错。请核对回复内容。",
+                    style = CCMText.body11,
+                    color = colors.textSecondary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 11.04.dp),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+            }
         }
     }
 }

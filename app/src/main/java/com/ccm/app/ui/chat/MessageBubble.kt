@@ -236,7 +236,7 @@ fun UserBubble(
         //   APK 原来藏在长按文字菜单里（"重发（截断此后的内容重新跑）"一大段），
         //   与 Web 完全两个东西。
         androidx.compose.foundation.layout.Row(
-            modifier = Modifier.padding(top = 6.dp, end = 4.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
@@ -370,7 +370,7 @@ fun MessageList(
             }
         }
 
-        bubbles.forEach { bubble ->
+        bubbles.forEachIndexed { index, bubble ->
             if (bubble.isUser) {
                 UserBubble(
                     text = bubble.text,
@@ -386,6 +386,14 @@ fun MessageList(
                         isThinking = false,
                         modifier = Modifier.fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
+                if (bubble.toolCards.isNotEmpty()) {
+                    ToolCallGroup(
+                        cards = bubble.toolCards,
+                        isStreaming = false,
+                        isStale = true,
+                        modifier = Modifier.padding(horizontal = 16.dp),
                     )
                 }
                 AssistantBubble(text = bubble.text)
@@ -434,16 +442,6 @@ fun MessageList(
             // 本轮工具调用 —— 对齐 Web：**聚合成一个折叠组**（不是单卡平铺）。
             // Web `MainContent.tsx:1186` 把一条消息的所有 toolCalls 包进一个
             // `<div className="mb-4">`，组头显示去重后的工具名摘要，展开后左竖线内列。
-            if (toolCards.isNotEmpty()) {
-                ToolCallGroup(
-                    cards = toolCards,
-                    isStreaming = streamingRunning,
-                    // Web `isStale`：整轮已结束但工具仍标 running → 视为 canceled。
-                    isStale = !streamingRunning,
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                )
-            }
-
             if (streaming.isNotBlank()) {
                 AssistantBubble(text = streaming)
             }
@@ -471,6 +469,7 @@ data class ChatBubble(
     val messageId: String,
     /** 该消息的思考过程（空 = 没有/历史消息）。AssistantThinkingChain 渲染。 */
     val thinking: String = "",
+    val toolCards: List<ChatToolCard> = emptyList(),
     /** 附带图片路径（用户消息；渲染缩略图，第20批）。 */
     val images: List<String> = emptyList(),
 ) {

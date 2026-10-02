@@ -21,6 +21,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -99,6 +107,8 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
     var selectedId by remember { mutableStateOf(items.firstOrNull()?.id ?: "") }
     var showAddDialog by remember { mutableStateOf(false) }
     var refreshTick by remember { mutableStateOf(0) }
+    var fetchingModels by remember { mutableStateOf(false) }
+    var modelFetchMessage by remember { mutableStateOf<String?>(null) }
     // ★ #6：联网图标真值（remember 一次，别在 map 里每行读盘 —— 主线程 IO 教训）
     val webSearchOn = remember(refreshTick) {
         com.ccm.app.AppGraph.storage?.let {
@@ -319,8 +329,9 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                 var effort by remember(selectedId, refreshTick) {
                     val st = com.ccm.app.AppGraph.storage
                     mutableStateOf(
-                        st?.let { AppConfig.load(it.configFile).config.effort }
-                            ?.takeIf { it.isNotBlank() } ?: "继承全局"
+                        selected?.effort?.takeIf { it.isNotBlank() }
+                            ?: st?.let { AppConfig.load(it.configFile).config.effort }?.takeIf { it.isNotBlank() }
+                            ?: "none"
                     )
                 }
                 var format by remember(selectedId, refreshTick) {
@@ -341,7 +352,10 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                             onPick = {
                                 effort = it
                                 com.ccm.app.AppGraph.storage?.let { st ->
-                                    com.ccm.app.core.provider.ProviderStore(st).setGlobalEffort(it)
+                                    com.ccm.app.core.provider.ProviderStore(st).setEffort(
+                                        selectedId,
+                                        if (it == "继承全局") null else it,
+                                    )
                                 }
                             },
                             title = "思考强度",
@@ -539,6 +553,32 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                     store?.setModels(sp.id, extra.ifEmpty { null })
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(3.68.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(7.36.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Button(
+                            enabled = !fetchingModels && selProvider != null,
+                            onClick = {
+                                val sp = selProvider ?: return@Button
+                                val st = com.ccm.app.AppGraph.storage ?: return@Button
+                                fetchingModels = true
+                                modelFetchMessage = null
+                                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                                    val result = fetchProviderModels(sp.url, sp.allKeys().firstOrNull().orEmpty())
+                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                        fetchingModels = false
+                                        if (result.isSuccess) {
+                                            val ids = result.getOrThrow()
+                                            val merged = (ids + listOfNotNull(sp.model.takeIf { it.isNotBlank() })).distinct()
+                                            com.ccm.app.core.provider.ProviderStore(st).setModels(sp.id, merged.filter { it != sp.model }.ifEmpty { null })
+                                            modelFetchMessage = "已获取 ${ids.size} 个模型"
+                                            refresh()
+                                        } else modelFetchMessage = "获取失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.hover),
+                        ) { Text(if (fetchingModels) "获取中…" else "一键获取模型列表", style = CCMText.body12) }
+                        modelFetchMessage?.let { Text(it, style = CCMText.body11, color = colors.textSecondary) }
+                    }
                     if (modelPool.isEmpty()) {
                         Text(
                             text = "清单为空 —— 下拉仅显示当前模型",
@@ -1184,6 +1224,19 @@ private fun GlobeIcon(color: Color, size: androidx.compose.ui.unit.Dp) {
  * 短 key（≤12 字符）直接整体星号化防反推。
  * 空串原样返回（placeholder 才会显示）。
  */
+private fun fetchProviderModels(baseUrl: String, apiKey: String): Result<List<String>> = runCatching {
+    require(baseUrl.isNotBlank()) { "API 地址为空" }
+    require(apiKey.isNotBlank()) { "API Key 为空" }
+    val url = baseUrl.trimEnd('/') + "/models"
+    val request = Request.Builder().url(url).header("Authorization", "Bearer $apiKey").get().build()
+    OkHttpClient().newCall(request).execute().use { response ->
+        val body = response.body?.string().orEmpty()
+        if (!response.isSuccessful) error("HTTP ${response.code}")
+        val data = Json.parseToJsonElement(body).jsonObject["data"]?.jsonArray.orEmpty()
+        data.mapNotNull { it.jsonObject["id"]?.jsonPrimitive?.content?.takeIf(String::isNotBlank) }.distinct()
+    }
+}
+
 private fun maskKey(k: String): String {
     if (k.isBlank()) return k
     if (k.length <= 12) return "•".repeat(k.length)
