@@ -46,6 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 import com.ccm.app.core.provider.AppConfig
 import com.ccm.app.core.provider.ProviderStore
 import com.ccm.app.ui.theme.CCMText
