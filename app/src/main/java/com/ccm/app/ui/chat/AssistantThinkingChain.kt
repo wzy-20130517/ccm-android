@@ -341,8 +341,9 @@ private fun ThinkingDetailedEvent(
                         modifier = Modifier
                             .fillMaxWidth()
                             // maxHeight 200px × 0.92 = 184dp（展开时取消限制）
-                            .heightIn(max = if (expanded || !expandable) Dp.Unspecified else 184.dp)
-                            .verticalScroll(rememberScrollState()),
+                            // 外层 ChatScreen 消息列已经负责纵向滚动；这里不能再嵌套
+                            // verticalScroll，否则展开时会以无限高度测量并直接闪退。
+                            .heightIn(max = if (expanded || !expandable) Dp.Unspecified else 184.dp),
                     ) {
                         Text(
                             text = detail,

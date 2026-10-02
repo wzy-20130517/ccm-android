@@ -189,7 +189,7 @@ private fun BashView(command: String, output: String, modifier: Modifier) {
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(max = 400.dp)
-                .verticalScroll(rememberScrollState())
+                // 外层 ChatScreen 消息列负责纵向滚动；这里只保留横向滚动。
                 .padding(11.04.dp),
         ) {
             Text(
@@ -287,8 +287,7 @@ private fun DiffFrame(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = maxHeight)
-                .verticalScroll(rememberScrollState()),
+                .heightIn(max = maxHeight),
         ) {
             Column(
                 modifier = Modifier

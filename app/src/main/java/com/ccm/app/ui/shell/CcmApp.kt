@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import com.ccm.app.ui.theme.CCMText
 import androidx.compose.foundation.border
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -1116,23 +1118,25 @@ private fun ModelPickerSheet(
     //     w-[260px] rounded-xl shadow-xl border py-1
     //     每项 px-4 py-2 + hover 背景 + 右侧蓝勾（#3b82f6 size18）
     //   这次**照抄结构**：紧凑浮层，不再是全宽 Sheet。
-    androidx.compose.material3.ModalBottomSheet(
+    // Popup 才是 Web 下拉菜单的正确形态：相对根布局右下定位，
+    // 不再用 ModalBottomSheet 让菜单占据整块屏幕。
+    Popup(
+        alignment = Alignment.BottomEnd,
+        offset = androidx.compose.ui.unit.IntOffset(-16, -76),
         onDismissRequest = onDismiss,
-        containerColor = Color.Transparent,          // 浮层自带背景，不要 Sheet 底色
-        dragHandle = null,                            // Web 无把手
+        properties = PopupProperties(focusable = true),
     ) {
         androidx.compose.foundation.layout.Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 8.dp),
-            contentAlignment = androidx.compose.ui.Alignment.Center,
+            modifier = Modifier.padding(8.dp),
         ) {
             androidx.compose.foundation.layout.Column(
                 modifier = Modifier
-                    .widthIn(max = 280.dp)                        // Web w-[260px]（留点余量）
+                    .widthIn(min = 260.dp, max = 280.dp)         // Web w-[260px]
+                    .heightIn(max = 360.dp)
+                    .shadow(20.dp, RoundedCornerShape(12.dp))     // Web shadow-xl
                     .clip(RoundedCornerShape(12.dp))              // Web rounded-xl
                     .background(colors.input)                     // Web bg-claude-input
-                    .border(1.dp, colors.border, RoundedCornerShape(12.dp))  // Web border
+                    .border(1.dp, colors.border, RoundedCornerShape(12.dp))
                     .padding(vertical = 4.dp),                    // Web py-1
             ) {
                 if (items.isEmpty()) {
