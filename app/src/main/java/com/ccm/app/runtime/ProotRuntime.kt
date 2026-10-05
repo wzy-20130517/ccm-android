@@ -595,7 +595,36 @@ class ProotRuntime(private val context: Context) {
         idleMs: Long = 10 * 60_000L,
     ): Boolean {
         return try {
-            val pb = buildProcess(workDir, command)
+            // ⚠️ 必须用 env -i 显式设 PATH —— 否则 rootfs 里的命令找不到。
+            //
+            // 【为什么】（2026-10-05 装机实测）
+            // rootfs 的 /etc/profile **不设 PATH**（只有 27 行，Ubuntu base 的
+            // 默认内容），所以 `bash -lc "dpkg -s xxx"` 时 PATH 继承自
+            // **App 进程**（Android 的 PATH，没有 /usr/bin）→ 报
+            //   /bin/bash: line 1: dpkg: command not found
+            // 工具链安装全线失败，而报错看起来像「rootfs 坏了」。
+            //
+            // 【为什么不用 /etc/environment】那里 PATH 是对的，但 bash -lc
+            // 不读它（/etc/environment 由 PAM 处理，非登录会话不生效）。
+            //
+            // 【照搬 Operit 的做法】它的 login_ubuntu 用：
+            //   /usr/bin/env -i HOME=/root TERM=... LANG=... PATH=<标准值> /bin/bash -lc '...'
+            // env -i 清空继承的环境（避免 Android 的变量污染），再显式给全套。
+            //
+            // 【为什么加在这里而不是 buildProotArgs】
+            // buildProotArgs 是通用构造（selfCheck / 探针等也用），
+            // 那些路径的命令是**绝对路径**（不依赖 PATH），改了反而可能引入
+            // 意外（比如 selfCheck 依赖宿主环境的某个变量）。
+            // exec() 只被工具链安装用，影响面明确。
+            val wrapped = listOf(
+                "/usr/bin/env", "-i",
+                "HOME=/root",
+                "TERM=xterm-256color",
+                "LANG=en_US.UTF-8",
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "DEBIAN_FRONTEND=noninteractive",
+            ) + command
+            val pb = buildProcess(workDir, wrapped)
             val p = pb.start()
 
             // 用「最后输出时间」判断静默，由读线程更新、看门狗线程检查。
