@@ -468,10 +468,25 @@ private suspend fun runInstall(
         sink.progress = 0.92f
         sink.log = "正在安装所选工具链…"
         val toolchainsOk = withContext(Dispatchers.IO) {
+            // 【2026-10-06 改：日志改为「滚动窗口」而不是单行覆盖】
+            //
+            // 原来是 `onLine = { line -> sink.log = line }` —— 每行都**覆盖**，
+            // 所以 apt 装 110 个包的过程中，用户只会看到最后一行。
+            // 加上命令原来还套了 `| tail -30`（tail 会缓冲），
+            // 实际表现是「卡住不动，最后突然跳一行」—— 用户完全看不出在干活。
+            //
+            // 现在：去掉 tail（见 RootfsManager）+ 这里保留最后 8 行。
+            // 既有实时感，又不会因为刷太快看不清。
+            val logWindow = ArrayDeque<String>()
+            fun pushLog(line: String) {
+                logWindow.addLast(line)
+                while (logWindow.size > 8) logWindow.removeFirst()
+                sink.log = logWindow.joinToString("\n")
+            }
             rootfs.installToolchains(
                 selectedToolchains,
                 exec = { command, onLine -> proot.exec(command, onLine = onLine) },
-                onLine = { line -> sink.log = line },
+                onLine = { line -> pushLog(line) },
             )
         }
         if (!toolchainsOk) {

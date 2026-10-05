@@ -1102,7 +1102,12 @@ class RootfsManager(private val context: Context) {
                         listOf("/bin/bash", "-lc",
                             "export DEBIAN_FRONTEND=noninteractive; " +
                             dnsPrelude +
-                            "apt-get update -o Acquire::Retries=3 2>&1 | tail -20"),
+                            "apt-get update -o Acquire::Retries=3 " +
+                            // ⚠️ Dpkg::Progress-Fancy=0 关掉花哨进度条
+                            // （默认会用 \r 原地刷新，readLine 读不到，
+                            //   表现为「装了半天没输出」）。
+                            "-o Dpkg::Progress-Fancy=0 " +
+                            "-o APT::Color=0 2>&1"),
                         onLine
                     )
                     if (updated) break
@@ -1154,7 +1159,7 @@ class RootfsManager(private val context: Context) {
                         listOf(
                             "/bin/bash", "-lc",
                             "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; " +
-                                "dpkg --configure -a 2>&1 | tail -15"
+                                "dpkg --configure -a 2>&1"
                         ),
                         onLine
                     )
@@ -1165,7 +1170,7 @@ class RootfsManager(private val context: Context) {
                         listOf(
                             "/bin/bash", "-lc",
                             "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; " +
-                                "apt-get install -f -y 2>&1 | tail -20"
+                                "apt-get install -f -y -o Dpkg::Progress-Fancy=0 -o APT::Color=0 2>&1"
                         ),
                         onLine
                     )
@@ -1175,7 +1180,7 @@ class RootfsManager(private val context: Context) {
                         listOf(
                             "/bin/bash", "-lc",
                             "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; " +
-                                "apt-get upgrade -y 2>&1 | tail -25"
+                                "apt-get upgrade -y -o Dpkg::Progress-Fancy=0 -o APT::Color=0 2>&1"
                         ),
                         onLine
                     )
@@ -1208,11 +1213,10 @@ class RootfsManager(private val context: Context) {
                         listOf(
                             "/bin/bash", "-lc",
                             "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; " +
-                                "apt-get install -y -q " +
-                                "-o Dpkg::Options::=--force-confold " +
-                                "-o APT::Get::Allow-Downgrades=true " +
+                                "apt-get install -y " +
+                                "-o Dpkg::Progress-Fancy=0 -o APT::Color=0 " +
                                 todoPackages.joinToString(" ") +
-                                " 2>&1 | tail -30"
+                                " 2>&1"
                         ),
                         onLine
                     )
