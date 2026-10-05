@@ -264,7 +264,11 @@ class RootfsManager(private val context: Context) {
     private fun assetSize(name: String): Long = try {
         context.assets.openFd(name).use { it.length }
     } catch (_: Throwable) {
-        29_865_086L   // ubuntu-base-24.04.3-base-arm64.tar.gz 实测大小
+        // 兜底值：openFd 失败时用（asset 被压缩存储、或旧 APK 缺 noCompress）。
+        // 只影响进度显示，不影响正确性（复制后会校验实际字节数）。
+        // 【2026-10-05】换成新包的实测大小（64,133,552 = 61.2MB）；
+        // 原值是旧包的 29,865,086，留着会让进度条算错一半。
+        64_133_552L
     }
 
     /**
@@ -453,6 +457,82 @@ class RootfsManager(private val context: Context) {
     }
 
     /**
+     * 创建 busybox 命令软链（照搬 Operit 的 createBusyboxSymlinks）。
+     *
+     * 【为什么需要】busybox 是「多合一」二进制 —— 它靠 argv[0] 判断
+     * 自己该扮演哪个命令。jniLibs 里的文件名是 `libbusybox.so`，
+     * 直接执行时 argv[0] = "libbusybox.so"，busybox 不认识 → 报
+     * **"applet not found"** 并静默失败（退出码非 0，但脚本里的
+     * `| tail -5` 把退出码换成 tail 的 0，于是错误被吞掉）。
+     *
+     * 【做法】在可写的 filesDir/bin 里建一组符号链接，名字是各命令名，
+     * 目标指向 nativeLibraryDir 的 libbusybox.so。脚本里 PATH 加 binDir
+     * 后，`tar` / `ls` / `mkdir` 等就都能用了。
+     *
+     * 【为什么不用硬链接】Android 的 /data 禁止普通应用建硬链接
+     * （这也是 proot 需要 --link2symlink 的原因）。
+     *
+     * @return 至少 tar 链接可用时返回 true
+     */
+    private fun ensureBusyboxLinks(homeDir: File, binDir: String): Boolean {
+        val bin = File(homeDir, "bin")
+        if (!bin.exists()) bin.mkdirs()
+
+        val src = File(binDir, "libbusybox.so")
+        if (!src.exists()) {
+            Log.e(TAG, "libbusybox.so 不存在：${src.absolutePath}")
+            return false
+        }
+        // 有些 ROM 的 nativeLibraryDir 文件没有 x 位，补上
+        try { src.setExecutable(true, false) } catch (_: Throwable) {}
+
+        // 照搬 Operit 的命令清单（够安装脚本用即可）
+        val applets = listOf(
+            "busybox",
+            "tar", "xz", "gzip", "bzip2",
+            "sh", "ash",
+            "ls", "cp", "mv", "rm", "mkdir", "rmdir", "chmod", "chown", "ln",
+            "cat", "head", "tail", "grep", "sed", "awk", "cut", "tr", "sort", "uniq",
+            "find", "xargs", "stat", "du", "df", "touch", "basename", "dirname", "realpath",
+            "id", "uname", "sleep", "date", "echo", "printf", "test",
+            "true", "false", "env", "which", "readlink", "sync", "wc", "diff",
+        )
+
+        var okCount = 0
+        for (name in applets) {
+            val link = File(bin, name)
+            try {
+                // 先删旧的（可能是失效链接，File.exists() 对断链返回 false，
+                // 所以用 delete() 而不是「存在才删」—— delete 对不存在也返回 false，无害）
+                link.delete()
+                java.nio.file.Files.createSymbolicLink(
+                    link.toPath(),
+                    // 相对路径（同目录下用文件名）—— Operit 的做法，
+                    // 这样整个 filesDir 被整体搬走/备份时链接不失效
+                    src.parentFile?.let { java.nio.file.Paths.get(src.name) } ?: src.toPath()
+                )
+                okCount++
+            } catch (t: Throwable) {
+                Log.w(TAG, "建软链 $name 失败：${t.message}")
+            }
+        }
+        Log.i(TAG, "busybox 软链：$okCount/${applets.size} 个")
+
+        // 关键验证：tar 必须可用（安装流程靠它解压）
+        val tarOk = try {
+            val p = ProcessBuilder(File(bin, "tar").absolutePath, "--help")
+                .redirectErrorStream(true).start()
+            p.inputStream.readBytes()
+            p.waitFor() == 0
+        } catch (t: Throwable) {
+            Log.e(TAG, "tar 软链不可用", t)
+            false
+        }
+        if (!tarOk) Log.e(TAG, "busybox tar 验证失败 —— 解压会失败")
+        return tarOk
+    }
+
+    /**
      * 执行安装脚本（全量照搬 Operit AI 方案）。
      *
      * 【流程】
@@ -491,7 +571,27 @@ class RootfsManager(private val context: Context) {
             return false
         }
 
-        // ② 确保压缩包在 $HOME/$UBUNTU（脚本从这里读）
+        // ② 建 busybox 软链（照搬 Operit 的 createBusyboxSymlinks）
+        //
+        // 【为什么必须】busybox 靠 argv[0] 决定自己扮演哪个命令。
+        // 直接调 `libbusybox.so tar xf ...` 时 argv[0] 是 "libbusybox.so"，
+        // busybox 不认识这个名字，报 **"applet not found"** 后什么都不做 ——
+        // 而脚本里 `if [ $? -ne 0 ]` 判断的是管道退出码（tail 的），
+        // 所以**静默通过**，表现为「解压完成但 rootfs 不存在」。
+        //
+        // 【为什么建在 filesDir/bin 而不是 nativeLibraryDir】
+        // jniLibs 目录在 /data/app/.../lib/ 下，App 对它是**只读**的
+        // （实测 touch 报 No such file or directory —— 连创建都不允许）。
+        // Operit 的做法也是建在可写的 binDir，然后把 binDir 加进 PATH。
+        //
+        // 【软链 vs 硬链】Android 的 /data 分区禁止普通应用建硬链接，
+        // 但符号链接可以 —— 这也是 proot 要 --link2symlink 的原因。
+        if (!ensureBusyboxLinks(homeDir, binDir)) {
+            Log.e(TAG, "busybox 软链创建失败")
+            return false
+        }
+
+        // ③ 确保压缩包在 $HOME/$UBUNTU（脚本从这里读）
         val archive = File(homeDir, ARCHIVE_NAME)
         if (!archive.exists()) {
             Log.e(TAG, "压缩包不存在：${archive.absolutePath}")

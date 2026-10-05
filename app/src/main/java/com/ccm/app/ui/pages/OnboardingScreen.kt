@@ -417,20 +417,37 @@ private suspend fun runInstall(
 
     val result = withContext(Dispatchers.IO) {
         try {
+            // 【2026-10-05 改：阶段文案与进度】
+            //
+            // 问题一：解压阶段显示「0MB / 0MB」。
+            //   根因：安装改走 shell 脚本后，脚本的进度是**文本行**（照搬 Operit），
+            //   上报时 total 传 0/1，除以 1048576 就是 0。这个数字没有意义。
+            //   照搬 Operit 的做法：**不显示字节数**，只显示当前在做什么。
+            //
+            // 问题二：各阶段的百分比区间要重新分配。
+            //   新流程里「复制」占大头（64MB 本地复制），解压用 busybox（快），
+            //   所以给复制更多区间，避免进度条长时间不动。
             rootfs.install { stage, done, total ->
                 val pct = if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else 0f
-                // 进度映射：复制/下载占 0~0.6，解压占 0.6~0.9，配置占 0.9~1.0。
-                // 不按字节数直接算 —— 解压阶段 total 是压缩包大小，
-                // 解压出的文件更大，直接算会到 100% 后卡住不动。
                 sink.progress = when (stage) {
-                    "copy", "download" -> pct * 0.6f
-                    "extract" -> 0.6f + pct * 0.3f
+                    "copy", "download" -> pct * 0.5f
+                    "extract" -> 0.5f + pct * 0.4f
                     else -> 0.9f + pct * 0.1f
                 }
                 sink.log = when (stage) {
-                    "copy" -> "复制内置环境包 ${done / 1048576}MB / ${total / 1048576}MB"
-                    "download" -> "下载环境包 ${done / 1048576}MB / ${total / 1048576}MB"
-                    "extract" -> "解压中 ${done / 1048576}MB / ${total / 1048576}MB"
+                    "copy" -> if (total > 0) {
+                        "复制内置环境包 ${done / 1048576}MB / ${total / 1048576}MB"
+                    } else {
+                        "复制内置环境包…"
+                    }
+                    "download" -> if (total > 0) {
+                        "下载环境包 ${done / 1048576}MB / ${total / 1048576}MB"
+                    } else {
+                        "下载环境包…"
+                    }
+                    // 解压/配置阶段：显示脚本输出的文本行号，不显示字节数
+                    // （脚本用 progress_echo 报进度，Kotlin 侧按行计数）
+                    "extract" -> if (done > 0) "解压中（第 $done 步）" else "解压中…"
                     else -> "配置中…"
                 }
             }

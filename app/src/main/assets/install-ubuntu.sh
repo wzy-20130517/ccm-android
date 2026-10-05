@@ -37,7 +37,9 @@ set -u
 # TMPDIR      — 临时目录
 # PROOT_LOADER— proot loader 路径
 
-export PATH="$BIN:/system/bin:/system/xbin"
+# 【PATH 顺序】$HOME/bin 放最前 —— 那里有 busybox 的命令软链（tar/ls/mkdir…）。
+# 脚本里所有裸命令（tar、mkdir、mv）都靠它。
+export PATH="$HOME/bin:$BIN:/system/bin:/system/xbin"
 export L_NOT_INSTALLED="not installed"
 export L_INSTALLING="installing"
 export L_INSTALLED="installed"
@@ -79,7 +81,7 @@ can_access_bind_source(){
   if [ ! -e "$bind_source" ] && [ ! -L "$bind_source" ]; then
     return 1
   fi
-  "$BIN/libbusybox.so" ls -Ld "$bind_source" >/dev/null 2>&1
+  "$HOME/bin/busybox" ls -Ld "$bind_source" >/dev/null 2>&1
 }
 
 append_proot_bind_arg(){
@@ -168,9 +170,16 @@ install_ubuntu(){
       rm -rf "$TMP_DIR" 2>/dev/null
       mkdir -p "$TMP_DIR" 2>/dev/null
       progress_echo "解压 rootfs…"
-      "$BIN/libbusybox.so" tar xf "$HOME/$UBUNTU" -C "$TMP_DIR"/ 2>&1 | tail -5
-      if [ $? -ne 0 ]; then
-        progress_echo "解压失败"
+      # 【不能用 | tail 吞退出码】原来写 `tar ... | tail -5` 再判 $? ——
+      # 那拿到的是 tail 的退出码（永远是 0），tar 失败会被当成成功。
+      # 实测踩过：busybox 报 "applet not found" 后脚本继续跑完，
+      # 用户看到「解压完成」但 rootfs 不存在。
+      # 现在先重定向到日志文件，判完 tar 自己的退出码再决定。
+      tar xf "$HOME/$UBUNTU" -C "$TMP_DIR"/ >"$TMPDIR/tar.log" 2>&1
+      tar_rc=$?
+      if [ $tar_rc -ne 0 ]; then
+        progress_echo "解压失败（tar 退出码 $tar_rc）"
+        head -5 "$TMPDIR/tar.log" 2>/dev/null
         cleanup_install
         trap - EXIT INT TERM
         return 1
