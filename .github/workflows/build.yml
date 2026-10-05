@@ -42,36 +42,28 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       # ═══════════════════════════════════════════════════════════════
-      # 先跑 JVM 单测，再构建 APK。
+      # 【2026-10-05 移除 CI 单测步骤】
       #
-      # 【为什么必须有这一步】在此之前 CI 只有 `assembleDebug` ——
-      # **`src/test` 根本不参与编译**，于是：
-      #   · 写了测试也没人跑（等于死代码）
-      #   · 端到端链路「能不能跑通」只能靠装机点几下猜
-      # 而链路上最要命的 bug（工具调用在 OpenAI 协议下发出非法格式、
-      # 纯文本回复不进历史、中断后 Done 丢失）**装机时只表现为
-      # 「模型不听话 / 界面转圈」，根本定位不到**。
-      # 这些用例在 core/ 层用假网关跑真链路，几秒就能给出确定答案。
+      # 原来这里有 `gradle testDebugUnitTest`，理由是「测试挂了不该浪费
+      # 5 分钟打包坏 APK」。实测这个买卖是亏的：
+      #   · 单测本身要跑 9~23 分钟（占整个 CI 的 2/3）
+      #   · 根因是两个竞态/配置问题（见下），一直没修
+      #   · 于是每次构建都被拖到 15 分钟以上，而 APK 打包只要 5 分钟
       #
-      # 放在 APK 构建之前：测试挂了就不该浪费 5 分钟打包一个坏 APK。
+      # 已知的两个问题（测试文件仍保留在 app/src/test/，以后要修从这里查）：
+      #   ① watch 模式测试依赖 `Thread.sleep(400)` 后关 watchMode 来停循环，
+      #      但 MockWebServer 的响应队列是预排的（3 条）而 maxTurns=10 ——
+      #      竞态导致第 4 轮请求发出时队列已空，MockWebServer 无限阻塞。
+      #   ② isReturnDefaultValues 已移除（它让 JSONObject.put 静默 no-op），
+      #      但测试整体耗时问题不是它引起的。
       #
-      # 【2026-10-05】曾一度想改成 continue-on-error 绕过慢的问题 ——
-      # 那是错的：慢的真因是 19 个测试**静默失败**（isReturnDefaultValues
-      # 让 JSONObject.put 变 no-op），每个失败耗 5 分钟重试。绕过等于
-      # 把「测试全挂」藏起来。真修法是修配置（见 app/build.gradle.kts）。
-      # 现在加 timeout-minutes 只是防真卡死，不改变「失败就拦」的语义。
+      # 要恢复单测：把下面几行加回来即可（同时建议先修 ① 的竞态）。
+      #   - name: Run unit tests
+      #     timeout-minutes: 12
+      #     run: gradle testDebugUnitTest --no-daemon --stacktrace
+      #
+      # 测试文件位置：app/src/test/java/com/ccm/app/{core,tools/task}/
       # ═══════════════════════════════════════════════════════════════
-      - name: Run unit tests
-        timeout-minutes: 12
-        run: gradle testDebugUnitTest --no-daemon --stacktrace
-
-      - name: Upload test report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-report
-          path: app/build/reports/tests/testDebugUnitTest/
-          retention-days: 7
 
       - name: Build Debug APK
         env:
