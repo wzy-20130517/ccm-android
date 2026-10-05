@@ -483,8 +483,41 @@ class RootfsManager(private val context: Context) {
             Log.e(TAG, "libbusybox.so 不存在：${src.absolutePath}")
             return false
         }
-        // 有些 ROM 的 nativeLibraryDir 文件没有 x 位，补上
-        try { src.setExecutable(true, false) } catch (_: Throwable) {}
+
+        // ═══════════════════════════════════════════════════════════
+        // 【为什么用「复制」而不是「软链到 nativeLibraryDir」】
+        //
+        // 两条路都试过，都有坑：
+        //
+        // ① 相对软链（bin/tar → libbusybox.so）
+        //    断链。相对路径按「链接所在目录」解析 = filesDir/bin/libbusybox.so，
+        //    而那个文件在 nativeLibraryDir —— 实测 `bin/tar` 报
+        //    "inaccessible or not found"，安装照样静默失败。
+        //
+        // ② 绝对软链（bin/tar → /data/app/~~hash==/.../lib/arm64/libbusybox.so）
+        //    能跑，但 **App 升级后失效**：那个路径含构建 hash
+        //    （~~mRFKEOkAZDEsep2U9QsgWw==），每次升级/重装都会变，
+        //    旧软链全部变成断链，而用户完全不知道为什么装不上。
+        //
+        // ③ 复制（本方案）
+        //    把 libbusybox.so 拷进 bin/，软链指向同目录的相对名。
+        //    代价：多占 1.5MB（一次性）。
+        //    好处：目录自包含，升级后重跑本函数会重新复制，不会断。
+        // ═══════════════════════════════════════════════════════════
+        val localBusybox = File(bin, "libbusybox.so")
+        val needCopy = !localBusybox.exists() || localBusybox.length() != src.length()
+        if (needCopy) {
+            try {
+                src.inputStream().use { input ->
+                    localBusybox.outputStream().use { out -> input.copyTo(out) }
+                }
+                localBusybox.setExecutable(true, false)
+                Log.i(TAG, "已复制 busybox 到 ${localBusybox.absolutePath}（${localBusybox.length()} 字节）")
+            } catch (t: Throwable) {
+                Log.e(TAG, "复制 busybox 失败", t)
+                return false
+            }
+        }
 
         // 照搬 Operit 的命令清单（够安装脚本用即可）
         val applets = listOf(
@@ -502,14 +535,11 @@ class RootfsManager(private val context: Context) {
         for (name in applets) {
             val link = File(bin, name)
             try {
-                // 先删旧的（可能是失效链接，File.exists() 对断链返回 false，
-                // 所以用 delete() 而不是「存在才删」—— delete 对不存在也返回 false，无害）
-                link.delete()
+                link.delete()   // 对断链也有效（exists() 会返回 false，delete() 不会）
+                // 相对名 —— 目标在同目录（上面刚复制过去），自包含
                 java.nio.file.Files.createSymbolicLink(
                     link.toPath(),
-                    // 相对路径（同目录下用文件名）—— Operit 的做法，
-                    // 这样整个 filesDir 被整体搬走/备份时链接不失效
-                    src.parentFile?.let { java.nio.file.Paths.get(src.name) } ?: src.toPath()
+                    java.nio.file.Paths.get("libbusybox.so")
                 )
                 okCount++
             } catch (t: Throwable) {
@@ -518,18 +548,25 @@ class RootfsManager(private val context: Context) {
         }
         Log.i(TAG, "busybox 软链：$okCount/${applets.size} 个")
 
-        // 关键验证：tar 必须可用（安装流程靠它解压）
-        val tarOk = try {
-            val p = ProcessBuilder(File(bin, "tar").absolutePath, "--help")
+        // 关键验证：tar 必须真能跑（安装流程靠它解压）
+        //
+        // ⚠️ 必须验证**实际输出**，不能只看退出码 —— 断链时 sh 报
+        // "inaccessible or not found" 也可能返回非 0，但如果哪天变成
+        // 「找不到命令但继续跑」，光看码会漏。这里检查输出里有没有
+        // busybox 的版本串，那是最硬的证据。
+        return try {
+            val p = ProcessBuilder(localBusybox.absolutePath, "tar", "--help")
                 .redirectErrorStream(true).start()
-            p.inputStream.readBytes()
-            p.waitFor() == 0
+            val output = p.inputStream.readBytes().decodeToString()
+            p.waitFor()
+            val ok = output.contains("BusyBox", ignoreCase = true) ||
+                     output.contains("Usage: tar", ignoreCase = true)
+            if (!ok) Log.e(TAG, "busybox tar 自检失败，输出：${output.take(200)}")
+            ok
         } catch (t: Throwable) {
-            Log.e(TAG, "tar 软链不可用", t)
+            Log.e(TAG, "busybox tar 自检异常", t)
             false
         }
-        if (!tarOk) Log.e(TAG, "busybox tar 验证失败 —— 解压会失败")
-        return tarOk
     }
 
     /**
