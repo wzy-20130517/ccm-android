@@ -102,13 +102,27 @@ android {
         // 不压缩 so，保证解压后可直接 exec
         jniLibs { useLegacyPackaging = true }
     }
-    // ★ 2026-10-01 修 CI #242：unit test 里 org.json.JSONObject 抛
-    //   "Method not mocked"（android.jar 是存根）—— GoalStore/AutoMemory
-    //   都用了 JSONObject，纯 JVM 测试全挂（19 个 RuntimeException）。
-    //   returnDefaultValues 让存根返回默认值而不是抛异常。
-    testOptions {
-        unitTests.isReturnDefaultValues = true
-    }
+    // ══════════════════════════════════════════════════════════════
+    // 【2026-10-05 移除 isReturnDefaultValues —— 它是 19 个测试静默失败的元凶】
+    //
+    // 历史：CI #242（7e8e069）加了「双保险」：
+    //   ① testImplementation("org.json:json")  ← 真实现（对的）
+    //   ② unitTests.isReturnDefaultValues = true ← 让存根返回默认值（有害）
+    //
+    // ② 的问题：它让 android.jar 的 **存根方法返回默认值而不是抛异常** ——
+    // 于是 JSONObject.put() 静默变成 no-op（不写入任何数据），
+    // 而 get()/optLong() 永远返回默认值。
+    // 结果不是「测试跑不起来」（那还能看见），而是**测试静默失败**：
+    //   GoalStore.toJson() 写进去的 startedAt 读回来是 0
+    //   → budgetLine() 走错分支 → 断言失败
+    // CI #241 实测：19 个测试报 AssertionError（不是 RuntimeException），
+    // 每个失败耗 5 分钟（Gradle 的测试重试/超时），总共烧 23 分钟。
+    //
+    // 正确做法：**只保留 ①**。Gradle 的 mockable-android-jar 机制会让
+    // classpath 上的真实 org.json 覆盖存根 —— 测试里跑的就是真实现，
+    // 行为与生产一致。不需要 ② 兜底，② 只会把「缺真实现」这个配置错误
+    // 掩盖成「数据静默丢失」。
+    // ══════════════════════════════════════════════════════════════
 
 }
 
