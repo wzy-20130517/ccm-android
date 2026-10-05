@@ -197,10 +197,29 @@ install_ubuntu(){
   fi
 
   mkdir -p "$UBUNTU_PATH/etc" 2>/dev/null
+  # ⚠️ 权限必须是 644 —— Ubuntu 的 systemd 包会把 resolv.conf 设成 0600 root:root，
+  # 而 App 进程是非 root，读不了 → proot 里的 DNS 解析失败（实测踩过：
+  # 文件存在但 0 字节且不可读，apt 报 "Temporary failure resolving"）。
   write_default_dns "$UBUNTU_PATH/etc/resolv.conf"
+  chmod 644 "$UBUNTU_PATH/etc/resolv.conf" 2>/dev/null
 
   trap - EXIT INT TERM
   return 0
+}
+
+# ═══ DNS 保活（2026-10-05 加）═══
+#
+# 【为什么需要】apt 升级 systemd 类包时，postinst 会重置 /etc/resolv.conf
+# （设成 0 字节 + 0600 root:root）。之后 apt 自己的 DNS 就挂了，
+# 报 "Temporary failure resolving ..."，看起来像网络问题。
+#
+# 实测时间线：装好 rootfs 时 resolv.conf 有内容 → 跑 apt upgrade 后变 0 字节。
+#
+# 修法：每次 apt 操作**前后**都重写一遍。开销可忽略（几字节的文件）。
+ensure_dns(){
+  mkdir -p "$UBUNTU_PATH/etc" 2>/dev/null
+  write_default_dns "$UBUNTU_PATH/etc/resolv.conf"
+  chmod 644 "$UBUNTU_PATH/etc/resolv.conf" 2>/dev/null
 }
 
 # ═══ 源配置（照搬 Operit configure_sources，源换成 CCM 默认）═══

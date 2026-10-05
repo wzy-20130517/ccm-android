@@ -1084,12 +1084,24 @@ class RootfsManager(private val context: Context) {
             // 这种情况（只勾了 Node.js）直接进入下面的 downloadSteps 处理。
             // ⚠️ 注意 ok 必须声明在 if 外（否则 if 跳过时下面引用不到）。
             if (todoPackages.isNotEmpty()) {
+                // 【2026-10-05 加 DNS 保活】apt 升级 systemd 类包时 postinst 会重置
+                // /etc/resolv.conf（变 0 字节 + 0600 root:root），之后 apt 自己的 DNS
+                // 就挂了，报 "Temporary failure resolving ..." —— 看起来像网络问题，
+                // 实际是配置文件被清空。每次 apt 操作前重写一遍，开销可忽略。
+                //
+                // 权限必须 644：0600 root:root 时 App（非 root）读不了。
+                val dnsPrelude = "mkdir -p /etc; " +
+                    "printf 'nameserver 223.5.5.5\\nnameserver 223.6.6.6\\n" +
+                    "nameserver 119.29.29.29\\n' > /etc/resolv.conf; " +
+                    "chmod 644 /etc/resolv.conf; "
+
                 onLine("更新软件源…")
                 var updated = false
                 for (attempt in 1..3) {
                     updated = exec(
                         listOf("/bin/bash", "-lc",
                             "export DEBIAN_FRONTEND=noninteractive; " +
+                            dnsPrelude +
                             "apt-get update -o Acquire::Retries=3 2>&1 | tail -20"),
                         onLine
                     )
@@ -1120,21 +1132,50 @@ class RootfsManager(private val context: Context) {
                 if (updated) {
                     onLine("")
                     onLine("同步基础系统版本…")
+
+                    // 【2026-10-05 照搬 Operit 的完整修复序列】
+                    //
+                    // 装机实测报 `E: Unmet dependencies. Try 'apt --fix-broken install'`
+                    // —— 那正是 apt 在提示「先修依赖再装」，而 CCM 原来没有这一步。
+                    //
+                    // Operit 的 SetupScreen 在装任何东西前固定跑这四步：
+                    //   dpkg --configure -a    收尾上次未完成的配置
+                    //   apt install -f -y      修复依赖（就是 apt 提示的那条）
+                    //   apt update -y          刷新索引
+                    //   apt upgrade -y         升级基础系统
+                    // 照搬过来，顺序不变。
+                    //
+                    // 【为什么 -f 是必须的】ubuntu-base 出厂镜像里有些包处于
+                    // 「已解包未配置」状态（dpkg 的 half-configured）。
+                    // 直接装新包时 apt 会先检查依赖图，撞上这些半成品就报
+                    // Unmet dependencies 并拒绝继续 —— 而它提示的解法正是 -f。
+
                     val configured = exec(
                         listOf(
                             "/bin/bash", "-lc",
                             "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; " +
-                                "dpkg --configure -a --force-confold 2>&1 | tail -15"
+                                "dpkg --configure -a 2>&1 | tail -15"
                         ),
                         onLine
                     )
                     if (!configured) onLine("  基础包收尾未完成，继续")
+
+                    // ★ 关键：修复依赖（Operit 的第二步，CCM 原来缺这步）
+                    val fixed = exec(
+                        listOf(
+                            "/bin/bash", "-lc",
+                            "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; " +
+                                "apt-get install -f -y 2>&1 | tail -20"
+                        ),
+                        onLine
+                    )
+                    if (!fixed) onLine("  依赖修复未完成，继续")
+
                     val upgraded = exec(
                         listOf(
                             "/bin/bash", "-lc",
                             "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; " +
-                                "apt-get upgrade -y -q -o Dpkg::Options::=--force-confold " +
-                                "-o APT::Get::Allow-Downgrades=true 2>&1 | tail -25"
+                                "apt-get upgrade -y 2>&1 | tail -25"
                         ),
                         onLine
                     )
