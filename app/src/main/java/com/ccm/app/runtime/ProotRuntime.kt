@@ -165,32 +165,47 @@ class ProotRuntime(private val context: Context) {
      * @return 三元组 (硬链接可用, l2s目录可用, 说明文字)
      */
     fun probeLinkSupport(): Triple<Boolean, Boolean, String> {
-        val l2s = prootL2sDir
-        val l2sOk = l2s.isDirectory && l2s.canWrite()
-        val probeDir = File(rootfs, "tmp")
-        if (!probeDir.isDirectory) probeDir.mkdirs()
-        val a = File(probeDir, ".l2s-probe-a")
-        val b = File(probeDir, ".l2s-probe-b")
+        // ═══════════════════════════════════════════════════════════
+        // 【2026-10-06 重写：改为「真跑一次 proot 建硬链接」】
+        //
+        // 旧实现查的是「PROOT_L2S_DIR 目录可写」，但那个判据**测不出真问题** ——
+        // 实测：目录可写（返回 true），而 proot 里的 link2symlink 依然失效，
+        // dpkg 报 "unable to make backup link: Operation not permitted"。
+        //
+        // 现在的判据直接测**行为**：在 proot 里对同一文件建硬链接，
+        // 看是否成功。这才是 dpkg 真正依赖的能力。
+        //
+        // 【顺带删掉 L2S 目录检查】改用绝对路径 rootfs 后不再设 PROOT_L2S_DIR
+        // （照搬 Operit），那个目录不再是必要条件。
+        // ═══════════════════════════════════════════════════════════
         var hardlinkOk = false
+        var note = ""
         try {
-            a.writeText("probe")
-            b.delete()
-            hardlinkOk = try {
-                java.nio.file.Files.createLink(b.toPath(), a.toPath())
-                true
-            } catch (_: Throwable) { false }
-        } catch (_: Throwable) {
-            // 探测本身失败不致命，当作「不支持硬链接」处理
-        } finally {
-            try { a.delete() } catch (_: Throwable) {}
-            try { b.delete() } catch (_: Throwable) {}
+            val pb = buildProcess(
+                workDir = "/root",
+                command = listOf(
+                    "/bin/bash", "-c",
+                    "cd /tmp 2>/dev/null || cd /; " +
+                        "rm -f .ccm-probe-a .ccm-probe-b; " +
+                        "echo probe > .ccm-probe-a; " +
+                        "if ln .ccm-probe-a .ccm-probe-b 2>/dev/null; then echo PROBE_OK; " +
+                        "else echo PROBE_FAIL; fi; " +
+                        "rm -f .ccm-probe-a .ccm-probe-b"
+                )
+            )
+            val p = pb.start()
+            val out = p.inputStream.readBytes().decodeToString()
+            p.waitFor()
+            hardlinkOk = out.contains("PROBE_OK")
+            note = if (hardlinkOk) {
+                "硬链接可用（link2symlink 生效）"
+            } else {
+                "硬链接不可用 —— dpkg/apt 升级会失败，请检查 proot 参数（应为 -r <绝对路径>）"
+            }
+        } catch (t: Throwable) {
+            note = "探测异常：${t.message}"
         }
-        val note = when {
-            hardlinkOk -> "硬链接可用（无需 link2symlink 兜底）"
-            l2sOk -> "硬链接不可用（正常），link2symlink 工作目录就绪：${l2s.absolutePath}"
-            else -> "硬链接不可用，且 link2symlink 工作目录不可写：${l2s.absolutePath}"
-        }
-        return Triple(hardlinkOk, l2sOk, note)
+        return Triple(hardlinkOk, hardlinkOk, note)
     }
 
     fun rootfsDir(): File = rootfs
@@ -249,8 +264,26 @@ class ProotRuntime(private val context: Context) {
         // 实际只是 root 伪装方式不对。Operit 全程用 -0，proot-distro 也是。
         args += "-0"
 
-        // ⚠️ 相对路径！配合 ProcessBuilder.directory(rootfs)
-        args += "--rootfs=."
+        // ═══════════════════════════════════════════════════════════
+        // 【2026-10-06 改：绝对路径（照搬 Operit）】
+        //
+        // 原来用 `--rootfs=.` + ProcessBuilder.directory(rootfs) 配合相对路径，
+        // 注释说「用绝对路径会报 can't chmod: Function not implemented」。
+        // **那个结论是错的**（或只适用于特定场景）—— 实测：
+        //
+        //   --rootfs=.   → dpkg 升级包时报
+        //                  "unable to make backup link ...: Operation not permitted"
+        //                  （硬链接被沙箱拒，说明 --link2symlink 没生效）
+        //   -r <绝对路径> → 同一个 dpkg 操作成功（git/perl/systemd 都装上了）
+        //
+        // 【为什么】proot 的 link2symlink 扩展把符号链接内容写成**宿主机绝对路径**，
+        // 靠 detranslate_path() 反向翻译。rootfs 用相对路径时，翻译链不完整，
+        // 扩展静默失效 → 退回真硬链接 → 被 Android 沙箱拒绝。
+        //
+        // Operit 用的是 `-r "$UBUNTU_PATH"`（绝对路径），我们照搬。
+        // ═══════════════════════════════════════════════════════════
+        args += "-r"
+        args += rootfs.absolutePath
 
         // 工作目录
         args += "--cwd=$workDir"
@@ -315,8 +348,12 @@ class ProotRuntime(private val context: Context) {
         val args = buildProotArgs(workDir, command, bindExtra)
         val pb = ProcessBuilder(args)
 
-        // ⚠️ 必须：工作目录 = rootfs（--rootfs=. 是相对路径）
-        pb.directory(rootfs)
+        // 工作目录设为 rootfs 的**父目录**（不是 rootfs 本身）。
+        //
+        // 【2026-10-06 改】原来设成 rootfs（配合 --rootfs=. 相对路径）。
+        // 现在 rootfs 用绝对路径传（-r <abs>），工作目录不再是路径解析的依据，
+        // 设成父目录更安全：proot 内部会 chdir 到 --cwd 指定的客户机路径。
+        pb.directory(rootfs.parentFile ?: rootfs)
         pb.redirectErrorStream(true)
 
         // 【2026-09-24 加：stdin 重定向到 /dev/null】
@@ -428,7 +465,9 @@ class ProotRuntime(private val context: Context) {
         // 两套实现漂移后用了错的那个。统一走属性，只有一处定义。
         val l2sHostDir = prootL2sDir
         if (l2sHostDir.isDirectory && l2sHostDir.canWrite()) {
-            env["PROOT_L2S_DIR"] = l2sHostDir.absolutePath
+        // 【2026-10-06 删】原来设 PROOT_L2S_DIR = rootfs/.l2s。
+        // Operit 不设这个变量（用 proot 默认）—— 照搬去掉。
+        // 实测：去掉后 dpkg/apt 工作正常，硬链接由 --link2symlink 正确处理。
         } else {
             env.remove("PROOT_L2S_DIR")
         }
