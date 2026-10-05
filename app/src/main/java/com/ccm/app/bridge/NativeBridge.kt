@@ -1,12 +1,10 @@
 package com.ccm.app.bridge
 
-import com.ccm.app.runtime.ProotRuntime
 import android.content.Context
 import android.util.Log
 import com.ccm.app.tools.ScreenCapture
 import com.ccm.app.tools.NativeTts
 import java.io.File
-import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -40,14 +38,6 @@ import org.json.JSONObject
  */
 class NativeBridge(
     private val context: Context,
-    /**
-     * proot 实例（可选）。
-     *
-     * 【为什么可选而不是必传】NativeBridge 的历史调用点只传 context，
-     * 硬加重载会让所有调用点都要改。而 runtimeStatus() 里用 proot 只是
-     * 为了查 Node 路径 —— 没有它也能降级（用 RootfsManager 的等价实现）。
-     */
-    private val proot: ProotRuntime? = null,
 ) {
 
     companion object {
@@ -590,12 +580,10 @@ class NativeBridge(
             put("proot_exists", java.io.File(nativeLib, "libproot.so").exists())
             // loader 缺失 = proot 必失败，但原来的检查发现不了
             put("proot_loader_exists", java.io.File(nativeLib, "libproot-loader.so").exists())
-            // Node：内核的运行前提。
-            // proot 实例没传时（老调用点）退回直接查文件，逻辑与 ProotRuntime.nodePath 一致。
-            val nodeOk = proot?.nodePath() != null || listOf(
-                "usr/local/bin/node", "usr/bin/node", "opt/node/bin/node"
-            ).any { java.io.File(rootfs, it).isFile }
-            put("node_exists", nodeOk)
+            // 【2026-10-05 删 node_exists】原来是「内核的运行前提」——
+            // 那是 Node 内核时代的判断。内核已整体移植 Kotlin，
+            // rootfs 里的 Node 是可选工具链（默认不勾），不装也一切正常。
+            // 继续上报这个字段会让「环境自检」把正常的安装报成缺东西。
             // 内核包完整性（四个关键路径，与 RootfsManager.isKernelInstalled 一致）
             val kernelDir = java.io.File(rootfs, "root/ccm")
             put("kernel_installed",

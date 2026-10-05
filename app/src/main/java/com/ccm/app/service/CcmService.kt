@@ -12,16 +12,12 @@ import android.os.IBinder
 import android.util.Log
 import com.ccm.app.MainActivity
 import com.ccm.app.bridge.NativeBridge
-import com.ccm.app.runtime.ProotRuntime
 import com.ccm.app.runtime.RootfsManager
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.net.URLDecoder
 import java.util.concurrent.Executors
 
 /**
@@ -75,61 +71,18 @@ class CcmService : Service() {
         var isRunning = false
             private set
 
-        /**
-         * Node 内核的最近输出（环形缓冲，最多 [NODE_LOG_LIMIT] 行）。
-         *
-         * 【为什么要暴露给界面】内核启动失败的原因都在它的 stdout/stderr 里：
-         *   · 模块缺失（MODULE_NOT_FOUND）
-         *   · 语法错误（进程直接退出）
-         *   · 端口被占（EADDRINUSE）
-         *   · proot 层的路径问题
-         * 但原来这些只进 logcat —— 用户在界面上只看到「Node 服务未启动」，
-         * 完全不知道为什么，也无法自助排查（手机上看 logcat 门槛太高）。
-         *
-         * 现在缓存最近 200 行，ReadyScreen 提供「查看内核日志」入口。
-         * 用 @Volatile + 同步块：写在线程池、读在 UI 线程。
-         */
-        private const val NODE_LOG_LIMIT = 200
-        private val nodeLogLines = ArrayDeque<String>()
-
-        @Volatile
-        var nodeLogText: String = ""
-            private set
-
-        fun appendNodeLog(line: String) {
-            synchronized(nodeLogLines) {
-                nodeLogLines.addLast(line)
-                while (nodeLogLines.size > NODE_LOG_LIMIT) nodeLogLines.removeFirst()
-                nodeLogText = nodeLogLines.joinToString("\n")
-            }
-        }
-
-        fun clearNodeLog() {
-            synchronized(nodeLogLines) {
-                nodeLogLines.clear()
-                nodeLogText = ""
-            }
-        }
     }
 
     private var serverSocket: ServerSocket? = null
     private val executor = Executors.newCachedThreadPool()
     private lateinit var bridge: NativeBridge
     private lateinit var rootfsManager: RootfsManager
-    private lateinit var prootRuntime: ProotRuntime
-
-    /** Node 进程（如果启动过） */
-    private var nodeProcess: Process? = null
 
     override fun onCreate() {
         super.onCreate()
         isRunning = true
         rootfsManager = RootfsManager(this)
-        // ⚠️ prootRuntime 必须在 bridge 之前初始化 —— bridge 的构造要拿它
-        // （第一次改的时候顺序反了，Kotlin 直接报 "variable must be initialized"）
-        prootRuntime = ProotRuntime(this)
-        // 传 proot 实例：让 /runtime/status 能报 Node 状态（见 NativeBridge 的说明）
-        bridge = NativeBridge(this, prootRuntime)
+        bridge = NativeBridge(this)
 
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotification("服务运行中"))
@@ -140,8 +93,6 @@ class CcmService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START_NODE -> startNode()
-            ACTION_STOP_NODE -> stopNode()
             ACTION_UPDATE_NOTIF -> {
                 val text = intent.getStringExtra("text") ?: "服务运行中"
                 updateNotification(text)
@@ -155,7 +106,6 @@ class CcmService : Service() {
     override fun onDestroy() {
         isRunning = false
         try { serverSocket?.close() } catch (_: Throwable) {}
-        stopNode()
         executor.shutdownNow()
         Log.i(TAG, "服务已停止")
         super.onDestroy()
@@ -295,18 +245,6 @@ class CcmService : Service() {
                 // 运行时状态
                 path == "/runtime/status" -> bridge.call("runtime.status", JSONObject())
 
-                // 启动 Node
-                path == "/runtime/start-node" -> {
-                    startNode()
-                    """{"ok":true,"message":"Node 启动中"}"""
-                }
-
-                // 停止 Node
-                path == "/runtime/stop-node" -> {
-                    stopNode()
-                    """{"ok":true,"message":"Node 已停止"}"""
-                }
-
                 else -> """{"ok":false,"error":"未知路径: $path"}"""
             }
         } catch (t: Throwable) {
@@ -328,119 +266,6 @@ class CcmService : Service() {
         out.flush()
     }
 
-    // ═══════════════════════════════════════════════════
-    //  Node 进程管理
-    // ═══════════════════════════════════════════════════
-
-    /**
-     * 启动 Node 内核（跑在 proot 里）。
-     *
-     * 命令形如：
-     *   proot -r rootfs ... /usr/bin/node /root/ccm/web/server.mjs
-     */
-    fun startNode(): Boolean {
-        // 检查已有进程是否真活着（可能是残留的僵尸引用）
-        nodeProcess?.let { p ->
-            if (p.isAlive) {
-                // 注：Process.pid() 是 Java 9+ 的 API，Android 上没有。
-                // 这里用 hashCode 做标识（够用于日志区分不同进程实例）。
-                Log.i(TAG, "Node 已在运行 (ref=${System.identityHashCode(p)})")
-                return true
-            }
-            Log.w(TAG, "发现已死进程引用，清理后重启")
-            nodeProcess = null
-        }
-        if (!rootfsManager.isInstalled()) {
-            Log.w(TAG, "rootfs 未安装")
-            updateNotification("rootfs 未安装，请先在 App 里初始化")
-            return false
-        }
-        val node = prootRuntime.nodePath()
-        if (node == null) {
-            Log.w(TAG, "rootfs 里没有 Node")
-            updateNotification("环境里没有 Node，请先安装")
-            appendNodeLog("❌ 环境里没有 Node —— 请先在「管理工具链」里装 Node.js")
-            return false
-        }
-        // 新一轮启动：清掉上次的日志，避免混淆
-        clearNodeLog()
-        appendNodeLog("启动 Node：$node")
-
-        // 内核入口：ccm-start.mjs（会自己拉起 web/server.mjs）
-        val hasKernel = java.io.File(filesDir, "rootfs/root/ccm/ccm-start.mjs").exists()
-        val script = if (hasKernel) "/root/ccm/ccm-start.mjs" else "web/server.mjs"
-        Log.i(TAG, "启动脚本: $script")
-
-        return try {
-            // buildProcess 已处理：--rootfs=. / LD_PRELOAD 清除 / PROOT_L2S_DIR / LD_LIBRARY_PATH
-            val pb = prootRuntime.buildProcess(
-                workDir = "/root/ccm",
-                command = listOf(node, script),
-                extraEnv = mapOf(
-                    "CCM_BRIDGE_PORT" to BRIDGE_PORT.toString(),
-                    "CCM_WEB_PORT" to "3456",
-                    "CCM_MODE" to "native",
-                    "CCM_NATIVE_ADAPTERS" to "1",
-                )
-            )
-            val p = pb.start()
-            nodeProcess = p
-
-            // 读输出到日志 + 进程退出时清理状态
-            executor.execute {
-                try {
-                    val r = BufferedReader(InputStreamReader(p.inputStream))
-                    while (true) {
-                        val line = r.readLine() ?: break
-                        Log.i("CcmNode", line)
-                        // 同时进缓冲区，供界面「查看内核日志」显示
-                        appendNodeLog(line)
-                    }
-                } catch (_: Throwable) {
-                } finally {
-                    // ⚠️ 必须清理，否则 nodeProcess != null 会让后续 startNode 误判"已在运行"
-                    try {
-                        val code = p.waitFor()
-                        Log.i(TAG, "Node 进程退出，code=$code")
-                        if (nodeProcess === p) {
-                            nodeProcess = null
-                            updateNotification("Node 已退出（code=$code）")
-                        }
-                    } catch (_: Throwable) {}
-                }
-            }
-
-            updateNotification("Node 已启动")
-            Log.i(TAG, "Node 已启动: $node")
-            true
-        } catch (t: Throwable) {
-            Log.e(TAG, "启动 Node 失败", t)
-            updateNotification("Node 启动失败: ${t.message}")
-            false
-        }
-    }
-
-    fun stopNode() {
-        val p = nodeProcess ?: return
-        nodeProcess = null
-        try {
-            p.destroy()   // SIGTERM，proot 的 --kill-on-exit 会清理子进程
-            // 给 2 秒优雅退出，超时强杀
-            executor.execute {
-                try {
-                    if (!p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
-                        Log.w(TAG, "Node 未响应 SIGTERM，强杀")
-                        p.destroyForcibly()
-                    }
-                } catch (_: Throwable) {}
-            }
-            Log.i(TAG, "Node 停止中")
-        } catch (t: Throwable) {
-            Log.w(TAG, "停止失败: ${t.message}")
-        }
-    }
-
-    // ═══════════════════════════════════════════════════
     //  通知
     // ═══════════════════════════════════════════════════
 
@@ -480,6 +305,4 @@ class CcmService : Service() {
     }
 }
 
-const val ACTION_START_NODE = "com.ccm.app.START_NODE"
-const val ACTION_STOP_NODE = "com.ccm.app.STOP_NODE"
 const val ACTION_UPDATE_NOTIF = "com.ccm.app.UPDATE_NOTIF"

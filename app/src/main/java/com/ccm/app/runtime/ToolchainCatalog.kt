@@ -129,7 +129,13 @@ object ToolchainCatalog {
         Toolchain(
             id = "nodejs",
             name = "Node.js 24",
-            description = "AI 内核自己要用（官方 LTS，约 200MB）",
+            // 【2026-10-05 改描述】原文案是「AI 内核自己要用」——
+            // 那是 Node 内核时代的遗留。内核已整体移植到 Kotlin
+            // （工具、Web、渲染全走原生实现），rootfs 里的 Node 不再被任何
+            // 生产路径依赖：CcmService.startNode() 是死代码（无调用者），
+            // Bash 工具（ProotChannel）只跑用户命令、不碰 Node。
+            // 继续写「内核要用」会让用户以为不装就跑不起来 —— 与事实相反。
+            description = "官方 LTS，给 rootfs 里跑 JS 项目/脚本用（约 230MB）",
             aptPackages = emptyList(),
             // 【2026-09-24 修正】原来写 50MB，实际差 4.6 倍。
             // 实测 Node v24 官方 tarball：
@@ -211,7 +217,11 @@ object ToolchainCatalog {
             aptPackages = listOf("gcc", "g++", "make", "pkg-config"),
             sizeMB = 250,
             verifyCommand = "command -v gcc make",
-            defaultChecked = true,
+            // 【2026-10-05 改】原来默认勾选（250MB）。
+            // 只有少数场景真要编译（C/C++ 项目、装带 C 扩展的 pip 包），
+            // 而它是默认勾选里最大的一项 —— 首次安装 10~20 秒里有相当一部分
+            // 花在下载它上。改成不勾，需要的人自己加。
+            defaultChecked = false,
         ),
         Toolchain(
             id = "cmake",
@@ -232,7 +242,9 @@ object ToolchainCatalog {
             aptPackages = listOf("openssh-client"),
             sizeMB = 30,
             verifyCommand = "command -v ssh",
-            defaultChecked = true,
+            // 【2026-10-05 改】原来默认勾选。手机上主动用 ssh 连远程的场景很少，
+            // git 用 https 协议也不需要它 —— 改成不勾，需要的人自己加。
+            defaultChecked = false,
         ),
         Toolchain(
             id = "sshd",

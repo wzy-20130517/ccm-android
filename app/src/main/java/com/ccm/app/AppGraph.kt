@@ -11,7 +11,6 @@ import com.ccm.app.core.tool.AppBackedToolStorage
 import com.ccm.app.core.tool.ToolRegistry
 import com.ccm.app.core.tool.ToolSettings
 import com.ccm.app.core.AppContainer
-import com.ccm.app.runtime.ProotRuntime
 import com.ccm.app.tools.AndroidImageScaler
 import com.ccm.app.tools.ToolsBootstrap
 import kotlinx.coroutines.CoroutineScope
@@ -352,7 +351,7 @@ object AppGraph {
                 context = app,
                 storage = AppBackedToolStorage(st),
                 settings = settings,
-                bridge = NativeBridge(app, ProotRuntime(app)),
+                bridge = NativeBridge(app),
                 // ★ 必须传 getter（不是字符串快照）—— GoalTools 在
                 //   每次调用时现取，这样 [rebuild] 换了会话 id 它也能跟上。
                 getSessionId = { sessionId },

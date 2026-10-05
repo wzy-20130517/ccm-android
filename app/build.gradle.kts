@@ -95,7 +95,14 @@ android {
         //   · `AssetManager.openFd()` 能拿到长度（进度条要用）
         //
         // ⚠️ 改这里必须同步 RootfsManager.ASSET_ARCHIVE 的文件名，两处是一体的。
+        // 【2026-10-05 加 xz】换用 Operit 的 proot-distro rootfs 包后，
+        // 主包是 `ubuntu-noble-aarch64-pd.tar.xz`（64MB）。
+        // 同样要 STORED：xz 本身已是高压缩（比 gz 小 20%），APK 再压一遍
+        // 既省不了多少，又会让 openFd() 拿不到长度（进度条失效）。
+        // 顺带说明：AAPT 的「自动 gunzip」只针对 `.gz` 后缀，
+        // `.xz` 不在其列 —— 不会被改名，命名是安全的。
         noCompress += "bin"
+        noCompress += "xz"
     }
 
     packaging {

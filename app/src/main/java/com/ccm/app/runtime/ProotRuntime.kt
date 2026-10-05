@@ -549,29 +549,6 @@ class ProotRuntime(private val context: Context) {
         return paths.any { File(rootfs, it).exists() }
     }
 
-    /** rootfs 里 Node 的路径（如果装了） */
-    fun nodePath(): String? {
-        val candidates = listOf(
-            "usr/local/bin/node", "usr/bin/node", "opt/node/bin/node"
-        )
-        candidates.forEach { rel ->
-            if (File(rootfs, rel).isFile) return "/$rel"
-        }
-        // nvm 风格
-        val nvmDir = File(rootfs, "root/.nvm/versions/node")
-        if (nvmDir.isDirectory) {
-            nvmDir.listFiles()?.firstOrNull()?.let { v ->
-                if (File(v, "bin/node").exists()) {
-                    return "/root/.nvm/versions/node/${v.name}/bin/node"
-                }
-            }
-        }
-        return null
-    }
-
-    /** 环境是否已装 Node */
-    fun hasNode(): Boolean = nodePath() != null
-
     /**
      * 在 rootfs 里执行一条命令，输出按行回调。
      *

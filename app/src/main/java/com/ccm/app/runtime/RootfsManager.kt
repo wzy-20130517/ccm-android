@@ -33,7 +33,14 @@ class RootfsManager(private val context: Context) {
         private const val TAG = "RootfsManager"
         private const val ROOTFS_DIR = "rootfs"
         private const val MARKER_FILE = "root/.ccm-installed"
-        private const val ARCHIVE_NAME = "rootfs.tar.gz"
+        /**
+         * rootfs 压缩包在 filesDir 下的文件名。
+         *
+         * 【2026-10-05 改名】原来叫 rootfs.tar.gz（Ubuntu 官方 base，gzip）。
+         * 现在用 Operit 的 proot-distro 包（xz），名字跟着改 ——
+         * 脚本里 `$HOME/$UBUNTU` 要能找到它（见 install-ubuntu.sh）。
+         */
+        private const val ARCHIVE_NAME = "ubuntu-noble-aarch64-pd.tar.xz"
 
         /**
          * APK 内置的 rootfs 包名**候选**（按优先级）。
@@ -80,9 +87,30 @@ class RootfsManager(private val context: Context) {
          * assets，或者 assets 里的包损坏了，不能让用户彻底装不上。
          */
         private val ASSET_ARCHIVES = listOf(
-            "ubuntu-base.tar.gz.bin",
-            "ubuntu-base.tar",
+            // 【2026-10-05 换包】全量照搬 Operit AI —— 用它的 proot-distro 定制包。
+            //
+            // 【为什么换】CCM 原来用 Ubuntu 官方 base（ubuntu-base.tar.gz.bin，
+            // 28MB gzip）。官方包有两个硬链接（perl5.38.2、uncompress），
+            // busybox tar 在 Android 上解不了（App 沙箱禁止建硬链接），
+            // 只能用 Java TarExtractor 绕。
+            //
+            // Operit 的包是 proot-distro 定制的（ubuntu-noble-aarch64-pd-v4.18.0）：
+            //   · 打包时硬链接已转符号链接 → busybox tar 直接能解
+            //   · 体积 64MB xz（解压 300MB），比官方 base 更完整（含 perl/python3 等）
+            //   · 它是为「Android + proot」场景专门打包的，少踩坑
+            //
+            // 【2026-10-05 删旧包】原来还列了 ubuntu-base.tar.gz.bin /
+            // ubuntu-base.tar 做兼容。但安装脚本只认 xz 包（$HOME/$UBUNTU），
+            // 列着旧名只会让人误以为「有两条路」——实际它们连不上脚本。
+            // 旧包已从 assets 删除（省 28MB），候选表同步收紧为一个。
+            "ubuntu-noble-aarch64-pd.tar.xz",
         )
+
+        /** 安装脚本名（assets 里，运行时写到 filesDir 执行）。 */
+        const val SCRIPT_NAME = "install-ubuntu.sh"
+
+        /** 压缩包内顶层目录名（解压后要 mv 出来 —— 照搬 Operit）。 */
+        const val ARCHIVE_INNER_DIR = "ubuntu-noble-aarch64"
 
         /**
          * rootfs 版本。升级这个值会触发重新安装。
@@ -96,7 +124,7 @@ class RootfsManager(private val context: Context) {
          *   · 镜像来源、体积、内容都变了，不是同一个东西
          * 不 bump 的话，已装用户会继续用 v1 的坏 rootfs，且没有任何代码能救它。
          */
-        const val ROOTFS_VERSION = "24.04-v2"
+        const val ROOTFS_VERSION = "24.04-pd-v1"
 
         /**
          * rootfs 下载地址 —— Ubuntu 官方 base 镜像（国内镜像站）。
@@ -115,11 +143,7 @@ class RootfsManager(private val context: Context) {
          * ═══════════════════════════════════════════════════════════
          */
         const val ROOTFS_URL =
-            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cdimage/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-arm64.tar.gz"
-
-        /** Node 内核包（core + web + 前端 + 配置） */
-        const val KERNEL_URL =
-            "https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ccm-node-kernel.tar.gz"
+            "https://github.com/wzy-20130517/ccm-android/releases/download/rootfs-v1/ubuntu-noble-aarch64-pd.tar.xz"
 
         /** 内核安装目标（rootfs 内） */
         const val KERNEL_DIR = "root/ccm"
@@ -141,8 +165,9 @@ class RootfsManager(private val context: Context) {
          */
         private val MIRRORS = listOf(
             ROOTFS_URL,
-            "https://mirrors.ustc.edu.cn/ubuntu-cdimage/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-arm64.tar.gz",
-            "https://mirror.nju.edu.cn/ubuntu-cdimage/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-arm64.tar.gz",
+            // gh-proxy 镜像（国内加速）—— 同一个文件，实测 content-length 一致
+            "https://gh-proxy.com/https://github.com/wzy-20130517/ccm-android/releases/download/rootfs-v1/ubuntu-noble-aarch64-pd.tar.xz",
+            "https://ghfast.top/https://github.com/wzy-20130517/ccm-android/releases/download/rootfs-v1/ubuntu-noble-aarch64-pd.tar.xz",
         )
 
         /**
@@ -161,11 +186,6 @@ class RootfsManager(private val context: Context) {
          * ⚠ 注意：这些镜像**都返回 HTTP 200** —— 不能只看状态码，
          * 必须比对 Content-Length 和实际字节数（下游 download() 已做）。
          */
-        private val KERNEL_MIRRORS = listOf(
-            "https://gh-proxy.com/https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ccm-node-kernel.tar.gz",
-            "https://ghfast.top/https://github.com/wzy-20130517/ccm-assets/releases/download/v1/ccm-node-kernel.tar.gz",
-            KERNEL_URL,
-        )
     }
 
     val rootfsPath: File get() = File(context.filesDir, ROOTFS_DIR)
@@ -350,7 +370,6 @@ class RootfsManager(private val context: Context) {
             onProgress("error", 0, 0)
             return false
         }
-        val tmpPath = File(context.filesDir, "rootfs.install.tmp")
         return try {
             // 1) 准备压缩包：**优先用 APK 内置的**，没有再走网络。
             //
@@ -378,70 +397,149 @@ class RootfsManager(private val context: Context) {
                 }
             }
 
-            // 2) 解压到临时目录（老 rootfs 不动）
-            if (tmpPath.exists()) tmpPath.deleteRecursively()
-            tmpPath.mkdirs()
-            onProgress("extract", 0, archiveFile.length())
-            val ok = TarExtractor.extract(
-                archiveFile, tmpPath,
-                { done, total -> onProgress("extract", done, total) },
-                { reason -> Log.e(TAG, "解压 rootfs 失败：$reason") }
-            )
-            if (!ok) {
-                Log.e(TAG, "解压失败")
-                tmpPath.deleteRecursively()
-                return false
-            }
-
-            // 3) 配置（在 tmp 里做，用 rootfsPath 之外的路径）
-            onProgress("config", 0, 1)
-
-            // 3.1) 三步后处理 —— **这一步是 apt 能不能用的分水岭**。
+            // 2) 解压 + 配置：**全量照搬 Operit AI**（2026-10-05）
             //
-            // 官方 ubuntu-base 镜像里没有宿主 UID（Android 的 App 沙箱 UID
-            // 如 10286 在 /etc/passwd 里根本不存在），不做这一步 apt 必挂，
-            // 且报错极具误导性（看着像网络问题/包损坏）。
-            // 详见 RootfsPostSetup 的类注释。
-            if (!RootfsPostSetup.applyAll(tmpPath)) {
-                Log.e(TAG, "rootfs 后处理失败：解压结果不是预期镜像")
-                tmpPath.deleteRecursively()
+            // 【为什么不再用 Kotlin 逐步做】
+            // 原来这条链是 Kotlin 实现的：TarExtractor 解压 → RootfsPostSetup
+            // 三步后处理 → setupBaseConfig → fixPermissionsIn → 原子替换。
+            // 反复出问题（进度显示 98MB/28MB、解压后配置不完整导致 apt 挂、
+            // 硬链接处理不干净），每次修都要改 Kotlin + 重新编译 + 装机验证。
+            //
+            // Operit 的做法是把**全部安装逻辑写成一个 shell 脚本**
+            // （assets/install-ubuntu.sh），Kotlin 只负责：
+            //   ① 把脚本和 rootfs 复制到 filesDir
+            //   ② 执行脚本，读它的 stdout 当进度
+            // 好处：脚本能随时改（不用重编译）、能单独跑（调试方便）、
+            // 逻辑与 Operit 一致（它是这个领域最成熟的实现）。
+            //
+            // 【脚本做的四件事】（照搬 OperitTerminalCore 的 generateStartScript）
+            //   install_ubuntu    —— busybox tar 解压 + 锁文件防并发
+            //   configure_sources —— apt/pip/uv/npm 四源配置
+            //   fix_permissions   —— 补 Android 组与宿主 UID
+            //   （login_ubuntu 只在启动时用，安装阶段不调）
+            onProgress("extract", 0, 1)
+            val scriptOk = runInstallScript(onProgress)
+            if (!scriptOk) {
+                Log.e(TAG, "安装脚本执行失败")
                 return false
             }
 
-            setupBaseConfigIn(tmpPath)
-            fixPermissionsIn(tmpPath)
-
-            // 4) 写标记 —— 注意写进 tmp，随 mv 一起生效
-            File(tmpPath, MARKER_FILE).apply {
-                parentFile?.mkdirs()
-                writeText(ROOTFS_VERSION)
+            // 2.1) 写版本标记（Kotlin 侧的 isInstalled() 靠它判断）
+            //
+            // 【为什么要 Kotlin 写而不是脚本写】
+            // 脚本不知道 ROOTFS_VERSION（那是 Kotlin 常量，换包时会 bump）。
+            // 让脚本写死一个值的话，下次换包就漏了 —— 用户会「装了但还是提示未安装」。
+            // 脚本自己写的 `.ccm_installed_ok`（无版本号）只用于它的幂等判断。
+            val marker = File(rootfsPath, MARKER_FILE)
+            try {
+                marker.parentFile?.mkdirs()
+                marker.writeText(ROOTFS_VERSION)
+            } catch (t: Throwable) {
+                Log.e(TAG, "写版本标记失败", t)
+                return false
             }
 
-            // 5) 原子替换：这一步才动老数据
-            if (rootfsPath.exists()) rootfsPath.deleteRecursively()
-            if (!tmpPath.renameTo(rootfsPath)) {
-                // renameTo 失败（跨文件系统等）→ 退回逐文件拷贝
-                Log.w(TAG, "renameTo 失败，改用拷贝")
-                if (!tmpPath.copyRecursively(rootfsPath, overwrite = true)) {
-                    Log.e(TAG, "拷贝失败")
-                    tmpPath.deleteRecursively()
-                    return false
-                }
-                tmpPath.deleteRecursively()
-            }
-
-            // 6) 清掉压缩包省空间（28MB）—— 只有真装好了才删
+            // 3) 清掉压缩包省空间 —— 只有真装好了才删
             try { archiveFile.delete() } catch (_: Throwable) {}
 
-            onProgress("config", 1, 1)
             Log.i(TAG, "rootfs 安装完成：${rootfsPath.absolutePath}")
             true
         } catch (t: Throwable) {
             Log.e(TAG, "安装 rootfs 失败", t)
-            try { tmpPath.deleteRecursively() } catch (_: Throwable) {}
             false
         } finally {
             lock.release()
+        }
+    }
+
+    /**
+     * 执行安装脚本（全量照搬 Operit AI 方案）。
+     *
+     * 【流程】
+     *   ① 把 assets 里的 install-ubuntu.sh 写到 filesDir（覆盖，脚本改了要生效）
+     *   ② 把 setup_fake_sysdata.sh 也写出来（脚本里 source 它）
+     *   ③ 确保 rootfs 压缩包在 filesDir（$HOME/$UBUNTU 位置）
+     *   ④ 跑 `sh install-ubuntu.sh install`，逐行读 stdout 上报进度
+     *
+     * 【为什么用 sh 而不是直接 exec】
+     * 脚本开头有 `#!/system/bin/sh`，但 Android 上 exec 脚本需要可执行权限，
+     * 而 assets 解出来的文件默认没有。用 `sh <script>` 最省事、跨版本可靠。
+     *
+     * 【环境变量注入】
+     * 脚本需要 BIN / HOME / UBUNTU_PATH / UBUNTU / UBUNTU_NAME / TMPDIR /
+     * PROOT_LOADER —— 这里按 Operit 的约定传（见脚本头部注释）。
+     *
+     * @return 脚本退出码为 0 时返回 true
+     */
+    private fun runInstallScript(onProgress: (String, Long, Long) -> Unit): Boolean {
+        val binDir = context.applicationInfo.nativeLibraryDir
+        val homeDir = context.filesDir
+        val tmpDir = File(homeDir, "tmp").apply { mkdirs() }
+
+        // ① 写脚本（每次都覆盖 —— 脚本是「代码」，改了必须生效）
+        val scriptFile = File(homeDir, SCRIPT_NAME)
+        try {
+            context.assets.open(SCRIPT_NAME).use { input ->
+                scriptFile.writeBytes(input.readBytes())
+            }
+            // 顺带写出假 /proc 脚本（脚本里 source "$HOME/setup_fake_sysdata.sh"）
+            context.assets.open("setup_fake_sysdata.sh").use { input ->
+                File(homeDir, "setup_fake_sysdata.sh").writeBytes(input.readBytes())
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "写安装脚本失败", t)
+            return false
+        }
+
+        // ② 确保压缩包在 $HOME/$UBUNTU（脚本从这里读）
+        val archive = File(homeDir, ARCHIVE_NAME)
+        if (!archive.exists()) {
+            Log.e(TAG, "压缩包不存在：${archive.absolutePath}")
+            return false
+        }
+
+        // ③ 组命令
+        val loader = File(binDir, "libproot-loader.so")
+        // 【为什么用绝对路径】Android 上 "sh" 依赖 PATH，而 App 进程的 PATH
+        // 可能被裁过（不同 ROM 不一样）。/system/bin/sh 是 AOSP 标准位置，
+        // 从 Android 1.0 起就在，比走 PATH 可靠。
+        val shBin = if (File("/system/bin/sh").exists()) "/system/bin/sh" else "sh"
+        val pb = ProcessBuilder(shBin, scriptFile.absolutePath, "install")
+        pb.directory(homeDir)
+        pb.redirectErrorStream(true)
+        pb.redirectInput(ProcessBuilder.Redirect.from(File("/dev/null")))
+        val env = pb.environment()
+        env["BIN"] = binDir
+        env["HOME"] = homeDir.absolutePath
+        env["UBUNTU_PATH"] = rootfsPath.absolutePath
+        env["UBUNTU"] = ARCHIVE_NAME
+        env["UBUNTU_NAME"] = ARCHIVE_INNER_DIR
+        env["TMPDIR"] = tmpDir.absolutePath
+        if (loader.exists()) env["PROOT_LOADER"] = loader.absolutePath
+        // proot 依赖库（$ORIGIN 兜底）
+        env["LD_LIBRARY_PATH"] = binDir
+        // 清掉可能干扰的变量（与 ProotRuntime.buildProcess 同规则）
+        env.remove("LD_PRELOAD")
+
+        return try {
+            val p = pb.start()
+            val reader = p.inputStream.bufferedReader()
+            var lineCount = 0
+            reader.useLines { lines ->
+                for (line in lines) {
+                    lineCount++
+                    Log.i("CcmInstall", line)
+                    // 上报给 UI（进度用「第几行」表示 —— 照搬 Operit 的
+                    // 文本行进度机制，不再算字节数，避免量纲不一致的 bug）
+                    onProgress("extract", lineCount.toLong(), 0)
+                }
+            }
+            val code = p.waitFor()
+            Log.i(TAG, "安装脚本退出码=$code（输出 $lineCount 行）")
+            code == 0
+        } catch (t: Throwable) {
+            Log.e(TAG, "执行安装脚本失败", t)
+            false
         }
     }
 
@@ -1338,113 +1436,6 @@ class RootfsManager(private val context: Context) {
                File(d, "web/dist").isDirectory
     }
 
-    /**
-     * 安装 Node 内核（core + web 源码，约 700KB）。
-     * 依赖 rootfs 已安装。
-     */
-    fun installKernel(onProgress: (Long, Long) -> Unit = { _, _ -> }): Boolean {
-        if (!isInstalled()) {
-            Log.w(TAG, "rootfs 未安装，无法装内核")
-            return false
-        }
-        val archive = File(context.filesDir, "kernel.tar.gz")
-
-        // 【并发锁】内核安装会 deleteRecursively + 重新解压 /root/ccm，
-        // 两个任务同时跑必然坏（用户连点「更新内核」就会触发）。
-        val lock = InstallLock(context, "kernel")
-        if (!lock.acquire()) {
-            Log.w(TAG, "另一个内核安装正在进行中")
-            return false
-        }
-
-        return try {
-            // 下载
-            if (!archive.exists() || archive.length() < 100_000) {
-                var ok = false
-                // 多轮重试（同 rootfs 的策略：网络抖动时利用 .part 续传）
-                outer@ for (round in 1..5) {
-                    // 换 host 时丢弃 .part（理由同 rootfs 下载，见那边的注释）
-                    var lastKernelHost: String? = null
-                    for (url in KERNEL_MIRRORS) {
-                        try {
-                            val host = try { java.net.URI(url).host } catch (_: Throwable) { null }
-                            if (host != null && lastKernelHost != null && host != lastKernelHost) {
-                                val part = File(archive.parentFile, "${archive.name}.part")
-                                if (part.exists()) { Log.i(TAG, "换镜像，丢弃内核 .part"); part.delete() }
-                            }
-                            lastKernelHost = host
-                            Log.i(TAG, "内核下载 第 $round 轮: ${url.take(45)}…")
-                            if (downloadTo(url, archive, onProgress)) { ok = true; break@outer }
-                        } catch (t: Throwable) {
-                            Log.w(TAG, "镜像失败: ${t.message}")
-                        }
-                    }
-                    if (round < 5) {
-                        Log.w(TAG, "第 $round 轮内核下载失败，10 秒后重试")
-                        try { Thread.sleep(10_000) } catch (_: InterruptedException) {}
-                    }
-                }
-                if (!ok) return false
-            }
-
-            // 解压到临时目录，成功后再原子替换 —— 跟 rootfs 安装同一套做法。
-            //
-            // 【为什么不能先删后解压】
-            // 原来是这样：
-            //   if (dest.exists()) dest.deleteRecursively()
-            //   dest.mkdirs()
-            //   TarExtractor.extract(archive, dest)
-            // 解压失败（下载不完整、空间不够）就留下一个**残缺的 /root/ccm** ——
-            // 而 isKernelInstalled() 只要 ccm-start.mjs 和 web/server.mjs 存在就返回 true，
-            // 于是「更新内核失败」被显示成成功，用户点「启动 Node」才发现起不来。
-            //
-            // 现在：解压到 .tmp → 成功后删旧的 → rename。任何一步失败老内核都完好，
-            // 用户还能继续用旧版。
-            val dest = File(rootfsPath, KERNEL_DIR)
-            val tmpDest = File(rootfsPath, "$KERNEL_DIR.install.tmp")
-            if (tmpDest.exists()) tmpDest.deleteRecursively()
-            tmpDest.mkdirs()
-
-            val ok = TarExtractor.extract(archive, tmpDest)
-            if (!ok) {
-                Log.e(TAG, "内核解压失败，保留旧版本")
-                tmpDest.deleteRecursively()
-                return false
-            }
-
-            // 校验解压结果：关键文件必须在
-            val hasStart = File(tmpDest, "ccm-start.mjs").exists()
-            val hasServer = File(tmpDest, "web/server.mjs").exists()
-            if (!hasStart || !hasServer) {
-                Log.e(TAG, "内核解压不完整（ccm-start.mjs=$hasStart, web/server.mjs=$hasServer）")
-                tmpDest.deleteRecursively()
-                return false
-            }
-
-            // 原子替换
-            if (dest.exists()) dest.deleteRecursively()
-            if (!tmpDest.renameTo(dest)) {
-                Log.w(TAG, "renameTo 失败，改用拷贝")
-                try {
-                    tmpDest.copyRecursively(dest, overwrite = true)
-                    tmpDest.deleteRecursively()
-                } catch (e: Throwable) {
-                    Log.e(TAG, "拷贝失败: ${e.message}")
-                    return false
-                }
-            }
-
-            // 清理
-            archive.delete()
-            Log.i(TAG, "内核安装完成（${dest.absolutePath}）")
-            true
-        } catch (t: Throwable) {
-            Log.e(TAG, "内核安装失败", t)
-            false
-        } finally {
-            lock.release()
-        }
-    }
 
     /** 通用下载到指定文件 */
     /**
@@ -1544,85 +1535,6 @@ class RootfsManager(private val context: Context) {
     //  Node 运行时安装（在 proot 里跑 apt）
     // ═══════════════════════════════════════════════════
 
-    /**
-     * 在 rootfs 里安装 Node。
-     *
-     * 【为什么用 apt 而不是打包二进制】
-     * Node 官方 arm64 二进制 23MB，打进 rootfs 包会让它翻倍。
-     * 而 Ubuntu 24.04 自带 nodejs 18.19.1，一条 apt 命令搞定，
-     * 且用户网络通常没问题（rootfs 本来就是联网下载的）。
-     *
-     * 【执行方式】
-     * proot -r rootfs -0 /usr/bin/env ... /bin/bash -c "apt-get install -y nodejs"
-     * 注意要先把 apt 源换成国内（setupBaseConfig 里已做）。
-     *
-     * @param onLine 每行输出回调（给 UI 显示进度）
-     */
-    fun installNode(
-        exec: (List<String>, (String) -> Unit) -> Boolean,
-        onLine: (String) -> Unit = {}
-    ): Boolean {
-        if (!isInstalled()) {
-            Log.w(TAG, "rootfs 未安装")
-            return false
-        }
-        if (hasNode()) {
-            Log.i(TAG, "Node 已存在，跳过安装")
-            return true
-        }
-
-        return try {
-            // 1) 修复执行权限（不做这步 apt 会静默失败）
-            onLine("修复文件权限…")
-            fixPermissionsInternal()
-
-            // 2) apt update（失败重试 3 次，网络抖动常见）
-            onLine("更新软件源…")
-            var updated = false
-            for (attempt in 1..3) {
-                updated = exec(listOf("/bin/bash", "-lc", "apt-get update"), onLine)
-                if (updated) break
-                onLine("  源更新失败，${attempt}/3 重试…")
-                try { Thread.sleep(3000) } catch (_: InterruptedException) {}
-            }
-            if (!updated) {
-                onLine("⚠️ 软件源更新失败（网络问题？）")
-            }
-
-            // 3) 装 nodejs + 常用工具（同样重试）
-            onLine("安装 Node.js 与基础工具…")
-            var ok = false
-            for (attempt in 1..3) {
-                ok = exec(
-                    listOf(
-                        "/usr/bin/env", "-i",
-                        "HOME=/root",
-                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                        "DEBIAN_FRONTEND=noninteractive",
-                        "/bin/bash", "-lc",
-                        "apt-get install -y nodejs git curl ca-certificates"
-                    ),
-                    onLine
-                )
-                if (ok && hasNode()) break
-                if (attempt < 3) {
-                    onLine("  安装失败，${attempt}/3 重试…")
-                    try { Thread.sleep(3000) } catch (_: InterruptedException) {}
-                }
-            }
-
-            if (ok && hasNode()) {
-                Log.i(TAG, "Node 安装成功")
-                true
-            } else {
-                Log.w(TAG, "Node 安装失败")
-                false
-            }
-        } catch (t: Throwable) {
-            Log.e(TAG, "安装 Node 异常", t)
-            false
-        }
-    }
 
 
     private fun fixPermissionsInternal() = fixPermissionsIn(rootfsPath)
@@ -1644,15 +1556,6 @@ class RootfsManager(private val context: Context) {
         } catch (_: Throwable) {}
     }
 
-    /** 检查 rootfs 里有没有 Node */
-    fun hasNode(): Boolean {
-        val candidates = listOf(
-            "usr/bin/node", "usr/local/bin/node", "bin/node"
-        )
-        return candidates.any { File(rootfsPath, it).exists() }
-    }
-
-    /** 删除 rootfs（用于重装 / 释放空间） */
     fun uninstall(): Boolean {
         return try {
             rootfsPath.deleteRecursively()

@@ -68,12 +68,10 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
         val rootfs = com.ccm.app.runtime.RootfsManager(ctx)
         val proot = com.ccm.app.runtime.ProotRuntime(ctx)
         val installed = try { rootfs.isInstalled() } catch (_: Throwable) { false }
-        val nodePath = if (installed) proot.nodePath() else null
         EnvFacts(
             shizuku = com.ccm.app.bridge.ShizukuBridge.granted(),
             linux = installed,
             proot = installed,
-            nodePath = nodePath,
             sdk = android.os.Build.VERSION.SDK_INT.toString(),
             abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown",
             home = ctx.filesDir.absolutePath,
@@ -147,13 +145,6 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
                 ok = env.proot,
                 value = if (env.proot) "就绪" else "不可用",
             )
-            EnvRow(
-                label = "Node 运行时",
-                ok = env.nodePath != null,
-                value = if (env.nodePath != null) {
-                    com.ccm.app.runtime.ToolchainCatalog.NODE_VERSION
-                } else "未安装",
-            )
             // 「CCM 内核」行已删（audit-settings #4：无法探测状态却写死「已安装」——
             // 不可探测的行不显示，别展示假状态）
             EnvRow(label = "Android SDK", ok = true, value = env.sdk)
@@ -166,13 +157,6 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
                 label = "运行模式",
                 ok = true,
                 value = if (env.linux) "proot (Ubuntu rootfs)" else "native",
-            )
-            EnvRow(
-                label = "Node 版本",
-                ok = env.nodePath != null,
-                value = if (env.nodePath != null) {
-                    com.ccm.app.runtime.ToolchainCatalog.NODE_VERSION
-                } else "—",
             )
             EnvRow(label = "平台", ok = true, value = "android / ${env.abi}")
             EnvRow(label = "家目录", ok = true, value = env.home)
@@ -369,7 +353,6 @@ private data class EnvFacts(
     val shizuku: Boolean,
     val linux: Boolean,
     val proot: Boolean,
-    val nodePath: String?,
     val sdk: String,
     val abi: String,
     val home: String,
