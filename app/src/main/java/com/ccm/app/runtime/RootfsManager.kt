@@ -478,45 +478,24 @@ class RootfsManager(private val context: Context) {
         val bin = File(homeDir, "bin")
         if (!bin.exists()) bin.mkdirs()
 
+        // ⚠️ 必须指向 **nativeLibraryDir** 里的文件，不能复制到 filesDir。
+        //
+        // 【为什么】Android 10+ 的 W^X 策略 + SELinux 禁止 App 执行自己数据目录
+        // 里的文件。实测 avc 日志：
+        //   avc: denied { execute_no_trans } for
+        //     path="/data/data/com.ccm.app/files/bin/libbusybox.so"
+        //     scontext=u:r:untrusted_app  tcontext=u:object_r:app_data_file
+        //     permissive=0
+        // 而 nativeLibraryDir（/data/app/.../lib/arm64/）里的文件是
+        // system:system 755，**允许执行** —— 那是唯一能跑的地方。
+        //
+        // 【升级后 hash 会变怎么办】那个路径含构建 hash（~~xxx==），
+        // App 升级后会变。但本函数**每次安装都会重新跑**，会先 delete
+        // 旧链接再建新的 —— 所以升级后第一次安装时会自动修正。
         val src = File(binDir, "libbusybox.so")
         if (!src.exists()) {
             Log.e(TAG, "libbusybox.so 不存在：${src.absolutePath}")
             return false
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        // 【为什么用「复制」而不是「软链到 nativeLibraryDir」】
-        //
-        // 两条路都试过，都有坑：
-        //
-        // ① 相对软链（bin/tar → libbusybox.so）
-        //    断链。相对路径按「链接所在目录」解析 = filesDir/bin/libbusybox.so，
-        //    而那个文件在 nativeLibraryDir —— 实测 `bin/tar` 报
-        //    "inaccessible or not found"，安装照样静默失败。
-        //
-        // ② 绝对软链（bin/tar → /data/app/~~hash==/.../lib/arm64/libbusybox.so）
-        //    能跑，但 **App 升级后失效**：那个路径含构建 hash
-        //    （~~mRFKEOkAZDEsep2U9QsgWw==），每次升级/重装都会变，
-        //    旧软链全部变成断链，而用户完全不知道为什么装不上。
-        //
-        // ③ 复制（本方案）
-        //    把 libbusybox.so 拷进 bin/，软链指向同目录的相对名。
-        //    代价：多占 1.5MB（一次性）。
-        //    好处：目录自包含，升级后重跑本函数会重新复制，不会断。
-        // ═══════════════════════════════════════════════════════════
-        val localBusybox = File(bin, "libbusybox.so")
-        val needCopy = !localBusybox.exists() || localBusybox.length() != src.length()
-        if (needCopy) {
-            try {
-                src.inputStream().use { input ->
-                    localBusybox.outputStream().use { out -> input.copyTo(out) }
-                }
-                localBusybox.setExecutable(true, false)
-                Log.i(TAG, "已复制 busybox 到 ${localBusybox.absolutePath}（${localBusybox.length()} 字节）")
-            } catch (t: Throwable) {
-                Log.e(TAG, "复制 busybox 失败", t)
-                return false
-            }
         }
 
         // 照搬 Operit 的命令清单（够安装脚本用即可）
@@ -535,27 +514,24 @@ class RootfsManager(private val context: Context) {
         for (name in applets) {
             val link = File(bin, name)
             try {
-                link.delete()   // 对断链也有效（exists() 会返回 false，delete() 不会）
-                // 相对名 —— 目标在同目录（上面刚复制过去），自包含
-                java.nio.file.Files.createSymbolicLink(
-                    link.toPath(),
-                    java.nio.file.Paths.get("libbusybox.so")
-                )
+                link.delete()   // 对断链也有效
+                // 绝对路径 —— 目标在 nativeLibraryDir，与 bin 不同目录，
+                // 用相对名会解析成 filesDir/bin/libbusybox.so（不存在，断链）
+                java.nio.file.Files.createSymbolicLink(link.toPath(), src.toPath())
                 okCount++
             } catch (t: Throwable) {
                 Log.w(TAG, "建软链 $name 失败：${t.message}")
             }
         }
-        Log.i(TAG, "busybox 软链：$okCount/${applets.size} 个")
+        Log.i(TAG, "busybox 软链：$okCount/${applets.size} 个 → ${src.absolutePath}")
 
-        // 关键验证：tar 必须真能跑（安装流程靠它解压）
+        // 关键验证：**直接执行 nativeLibraryDir 里的原始文件**（不经软链），
+        // 确认它本身能跑。软链只是给脚本用的便捷入口。
         //
-        // ⚠️ 必须验证**实际输出**，不能只看退出码 —— 断链时 sh 报
-        // "inaccessible or not found" 也可能返回非 0，但如果哪天变成
-        // 「找不到命令但继续跑」，光看码会漏。这里检查输出里有没有
-        // busybox 的版本串，那是最硬的证据。
+        // ⚠️ 检查实际输出而不是退出码 —— 断链/权限问题时 sh 可能返回非 0
+        // 但被上层吞掉，光看码会漏。
         return try {
-            val p = ProcessBuilder(localBusybox.absolutePath, "tar", "--help")
+            val p = ProcessBuilder(src.absolutePath, "tar", "--help")
                 .redirectErrorStream(true).start()
             val output = p.inputStream.readBytes().decodeToString()
             p.waitFor()
