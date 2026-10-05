@@ -107,47 +107,35 @@ exec_proot_binary(){
 # ═══ 安装（照搬 Operit install_ubuntu）═══
 install_ubuntu(){
   OK_FILE="$UBUNTU_PATH/.ccm_installed_ok"
-  LOCK_DIR="$UBUNTU_PATH.install.lock"
-  LOCK_PID_FILE="$LOCK_DIR/pid"
   TMP_DIR="$UBUNTU_PATH.install.tmp"
 
   UBUNTU_PARENT="${UBUNTU_PATH%/*}"
   mkdir -p "$UBUNTU_PARENT" 2>/dev/null
 
-  attempt=0
-  while true; do
-    if mkdir "$LOCK_DIR" 2>/dev/null; then
-      echo "$$" > "$LOCK_PID_FILE" 2>/dev/null || true
-      break
-    fi
-    if [ -f "$LOCK_PID_FILE" ]; then
-      lock_pid=$(cat "$LOCK_PID_FILE" 2>/dev/null)
-      if [ -z "$lock_pid" ]; then
-        if [ "$attempt" -gt 2 ]; then
-          rm -rf "$LOCK_DIR" 2>/dev/null
-          continue
-        fi
-      elif ! kill -0 "$lock_pid" 2>/dev/null; then
-        rm -rf "$LOCK_DIR" 2>/dev/null
-        continue
-      fi
-    else
-      if [ "$attempt" -gt 2 ]; then
-        rm -rf "$LOCK_DIR" 2>/dev/null
-        continue
-      fi
-    fi
-    attempt=$((attempt + 1))
-    if [ "$attempt" -gt 120 ]; then
-      progress_echo "Ubuntu install lock timeout"
-      return 1
-    fi
-    sleep 1
-  done
+  # ═══════════════════════════════════════════════════════════════
+  # 【2026-10-05 删掉脚本内的锁 —— 与 Kotlin 层重复且会自锁】
+  #
+  # 原实现照搬 Operit 的 LOCK_DIR 机制（mkdir 原子锁 + PID 检测 + 120 次重试）。
+  # 但 CCM 的 Kotlin 层**已经有一把同样的锁**（InstallLock，路径
+  # filesDir/rootfs.install.lock），而脚本的 LOCK_DIR 是
+  # "$UBUNTU_PATH.install.lock" = **同一个路径**。
+  #
+  # 于是流程变成：
+  #   ① Kotlin install() 拿到锁（建 rootfs.install.lock）
+  #   ② 调脚本 → 脚本又要抢同一个锁 → mkdir 失败（Kotlin 占着）
+  #   ③ 脚本读锁里的 PID → 是同一个 App 进程 → kill -0 成功
+  #      → 判定「锁有效」，一直等
+  #   ④ 等满 120 秒 → "Ubuntu install lock timeout" → 整个安装失败
+  #
+  # 实测症状：App 里安装必失败（等 2 分钟），但手动跑脚本秒过
+  # （手动跑时 Kotlin 没占锁）。
+  #
+  # 锁的职责留给 Kotlin 层（它有更完整的超时与释放逻辑），
+  # 脚本只管干活。
+  # ═══════════════════════════════════════════════════════════════
 
   cleanup_install(){
     rm -rf "$TMP_DIR" 2>/dev/null
-    rm -rf "$LOCK_DIR" 2>/dev/null
   }
   trap 'cleanup_install' EXIT INT TERM
 
@@ -211,7 +199,6 @@ install_ubuntu(){
   mkdir -p "$UBUNTU_PATH/etc" 2>/dev/null
   write_default_dns "$UBUNTU_PATH/etc/resolv.conf"
 
-  rm -rf "$LOCK_DIR" 2>/dev/null
   trap - EXIT INT TERM
   return 0
 }
