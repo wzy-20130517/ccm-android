@@ -2546,13 +2546,17 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                                 com.ccm.app.core.provider.AppConfig.save(
                                     loadR.config.copy(pexelsKey = subArg), st.configFile,
                                 )
-                                SlashResult.Notice("Pexels key 已保存。\n\n_需重启 App（或切换 Provider）后 FindImage 才会用新 key。_")
+                                // 【2026-10-06 热更新】settings 是 MapToolSettings
+                                // （get()=map[key] 实时读），put 后 FindImage 立即用新 key。
+                                com.ccm.app.AppGraph.toolSettings?.put("pexelsApiKey", subArg)
+                                SlashResult.Notice("Pexels key 已保存 · 立即生效。")
                             }
                         }
                         "clear" -> {
                             com.ccm.app.core.provider.AppConfig.save(
                                 loadR.config.copy(pexelsKey = null), st.configFile,
                             )
+                            com.ccm.app.AppGraph.toolSettings?.put("pexelsApiKey", null)
                             SlashResult.Notice("Pexels key 已清空。")
                         }
                         else -> {
@@ -2566,6 +2570,62 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                                     "_配置后 FindImage 工具能按关键词搜图并下载。免费额度 200 次/小时。_"
                             )
                         }
+                    }
+                }
+            }
+        }
+
+        // ── /tvly —— Tavily 搜索 key（WebSearch 用）─────────────────────
+        //
+        // 存 AppConfig.tavilyKey（顶层字段，与设置页「Tavily 密钥」同一处），
+        // 生效走 AppGraph.toolSettings.put("tavilyApiKey", …) ——
+        // WebTools 是 get()=map[key] 实时读，**无需重启**。
+        "/tvly" -> {
+            val st = com.ccm.app.AppGraph.storage
+            if (st == null) {
+                SlashResult.Notice("存储未初始化。")
+            } else {
+                val a = arg.trim()
+                val sub = a.substringBefore(" ").lowercase()
+                val subArg = a.substringAfter(" ", "").trim()
+                val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                if (loadR.error != null) {
+                    SlashResult.Notice("配置损坏：${loadR.error}")
+                } else when {
+                    sub == "clear" -> {
+                        com.ccm.app.core.provider.AppConfig.save(
+                            loadR.config.copy(tavilyKey = null), st.configFile,
+                        )
+                        com.ccm.app.AppGraph.toolSettings?.put("tavilyApiKey", null)
+                        SlashResult.Notice("Tavily key 已清空（WebSearch 会提示「未配置」）。")
+                    }
+                    sub == "set" || a.isNotEmpty() -> {
+                        // 支持 /tvly <tvly-...> 与 /tvly set <tvly-...> 两种写法
+                        val key = (if (sub == "set") subArg else a).trim()
+                        if (key.isBlank()) {
+                            SlashResult.Notice("用法：\`/tvly <tvly-...>\` 或 \`/tvly set <tvly-...>\`")
+                        } else {
+                            com.ccm.app.core.provider.AppConfig.save(
+                                loadR.config.copy(tavilyKey = key), st.configFile,
+                            )
+                            com.ccm.app.AppGraph.toolSettings?.put("tavilyApiKey", key)
+                            SlashResult.Notice(
+                                "Tavily key 已设置（${key.take(8)}…${key.takeLast(4)}）· 立即生效。\n\n" +
+                                    "_注册拿 key：<https://app.tavily.com/>（key 形如 \`tvly-xxxxxxxx\`）_"
+                            )
+                        }
+                    }
+                    else -> {
+                        val k = loadR.config.tavilyKey
+                        SlashResult.Notice(
+                            "**Tavily 搜索**（WebSearch 联网搜索用）\n\n" +
+                                "- Key：${if (k.isNullOrBlank()) "❌ 未配置" else "✅ 已配置（${k.take(8)}…）"}\n" +
+                                "- 格式：\`tvly-xxxxxxxx\`\n\n" +
+                                "用法：\n" +
+                                "- \`/tvly <tvly-...>\` 设置（立即生效）\n" +
+                                "- \`/tvly clear\` 清空\n\n" +
+                                "_没 key 时 WebSearch 不可用，可改用 SearchInfo（国内源）。_"
+                        )
                     }
                 }
             }

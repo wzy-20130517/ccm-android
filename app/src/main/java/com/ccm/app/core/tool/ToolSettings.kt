@@ -68,6 +68,18 @@ interface ToolSettings {
      */
     fun get(key: String): String? = null
 
+    /**
+     * 热更新一个配置项（【2026-10-06 /tvly】加）。
+     *
+     * settings 是装配期快照，但 MapToolSettings 的属性全是
+     * `get() = map[key]` 实时读 —— 只要改的是它持有的那份 map，
+     * **所有持有该 settings 引用的地方（WebTools/AgentLoop/子 Agent）
+     * 立即看到新值，不用重建任何对象**。
+     *
+     * 默认空实现：非 Map 驱动的实现（如 [Empty]）忽略即可。
+     */
+    fun put(key: String, value: String?) {}
+
     companion object {
         /**
          * 空实现 —— 单测 / 无配置场景用。
@@ -97,7 +109,15 @@ interface ToolSettings {
  * 好处：新增配置项时不用改这个类（走 [get] 兜底），
  * 但常用的那几项仍然有强类型字段。
  */
-class MapToolSettings(private val map: Map<String, String?>) : ToolSettings {
+class MapToolSettings(map: Map<String, String?>) : ToolSettings {
+    // 拷成可变的：put() 要能写。引用变了没关系 —— 属性全是 get() 实时读，
+    // 持有本对象的地方不受影响（buildSettings 传进来的 map 没人再改）。
+    private val map: MutableMap<String, String?> = HashMap(map)
+
+    override fun put(key: String, value: String?) {
+        map[key] = value
+    }
+
     override val providerBaseUrl: String get() = map["providerBaseUrl"] ?: ""
     override val providerApiKey: String get() = map["providerApiKey"] ?: ""
     override val providerModel: String get() = map["providerModel"] ?: ""

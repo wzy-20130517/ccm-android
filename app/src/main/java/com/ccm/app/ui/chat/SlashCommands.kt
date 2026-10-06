@@ -88,6 +88,7 @@ val COMMON_SLASH_COMMANDS: List<Pair<String, String>> = listOf(
     "/mail" to "邮箱说明",
     "/mcp" to "MCP 服务器（HTTP/SSE + stdio）",
     "/pexels" to "图库 key（/pexels set <key>）",
+    "/tvly" to "Tavily 搜索 key（WebSearch 用，/tvly <tvly-...>）",
     // ── 2026-10-06 补齐（问题40）──
     "/config" to "Provider 列表/切换（/config <编号>）",
     "/url" to "改 API 地址（/url <地址>）",

@@ -190,6 +190,17 @@ object AppGraph {
     var toolsResult: ToolsBootstrap.Result? = null
         private set
 
+    /**
+     * 工具侧只读配置（[com.ccm.app.core.tool.MapToolSettings] 持有可变 map）。
+     *
+     * 【/tvly 热生效】设完 Tavily key 后调
+     * `toolSettings?.put("tavilyApiKey", key)` —— WebTools 是
+     * `get() = map[key]` 实时读，**不重建任何对象立即生效**。
+     */
+    @Volatile
+    var toolSettings: com.ccm.app.core.tool.ToolSettings? = null
+        private set
+
     /** 核心容器（含 AgentLoop / ApiClient / SessionStore）。 */
     @Volatile
     var container: AppContainer? = null
@@ -517,6 +528,7 @@ object AppGraph {
             ).install(reg)
 
             toolsResult = tools
+            toolSettings = settings
             registry = reg
             toolNames = tools.registered
 

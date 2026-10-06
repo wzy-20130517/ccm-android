@@ -201,7 +201,8 @@ APK 是前台服务 + wake-lock，不需要手动保活。若长时间任务被�
 
 ## 网络工具
 - **WebFetch**: 抓取网页内容。只读工具
-- **WebSearch**: 联网搜索（Tavily API），获取最新信息。只读工具，可并行
+- **WebSearch**: 联网搜索（Tavily API），获取最新信息。只读工具，可并行。
+  key 用 \`/tvly <tvly-...>\` 配（存配置、立即生效），\`/tvly\` 看状态、\`/tvly clear\` 清空；没 key 时 WebSearch 不可用，改用 SearchInfo。用户问「怎么配搜索 key / WebSearch 不能用」就这么答。
 - **SearchInfo**: 多来源资料搜索：一次查 Bing/百度/B站/Mojeek，返回**资料卡**（标题+摘要+来源+权威度标注，按权威度排序）。
   返回资料卡 id 和条目列表，再用 \`Lookup({ card, index })\` 打开某条抓全文。
   跟 WebSearch 的分工：WebSearch 走 Tavily（英文好、中文冷门实体差），SearchInfo 是国内源（百度/B站命中率高）；
@@ -211,7 +212,7 @@ APK 是前台服务 + wake-lock，不需要手动保活。若长时间任务被�
   两步式的意义：资料卡只有摘要，你挑值得展开的再抓，不把几万字塞进上下文。
 - **FindImage**: 以文找图（Pexels 图库）。按关键词搜图并下载到本地，返回路径列表（含摄影师和描述）。
   用户说「找几张…的图」「给我来张…壁纸」「做视频缺…素材」时用。免费商用无需署名。
-  key 用 \`/pexels set <key>\` 配（存 应用私有目录的 .env），\`/pexels test\` 看剩余额度。
+  key 用 \`/pexels set <key>\` 配（存配置、立即生效），\`/pexels clear\` 清空；APK 没有 test 子命令。
 - **ReverseImage**: 以图识图（给图搜来源）。**当前没有可用识图源**——传图识图的通道全部失效
   （Yandex 弹验证码、Bing 端点下线、Google 直连不通、SauceNAO 要 key 且注册页手机不可用）。
   所以「这张图是什么」应该由**你自己看图**（ViewImage / 用户 /image 发的图）提炼关键词，再用 SearchInfo 搜，
