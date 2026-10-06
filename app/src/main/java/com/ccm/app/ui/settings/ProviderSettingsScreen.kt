@@ -102,6 +102,49 @@ import com.ccm.app.ui.theme.CcmMono
 @Composable
 fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
     val colors = CCMTheme.colors
+    // rebuild AppGraph 需要 Context（2026-10-06：加 Provider 后重建会话用）
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+
+    /**
+     * 改了 Provider 配置后重建会话（如果改的是**当前在用的**那个）。
+     *
+     * 【为什么需要】session / ApiClient 是装配期快照 —— 改完配置不重建，
+     * 当前会话继续用旧值。用户报的两个症状都源于此：
+     *   · 加完 Provider 顶部横幅仍显示「尚未配置 API」（session 还是 null）
+     *   · 改完 key/URL 要重启才生效
+     *
+     * 【为什么判 id】设置页能编辑**任意** Provider（不一定是当前用的）。
+     * 无脑 rebuild 会在改别的 Provider 时打断当前会话（flush + 重建 + 恢复历史，
+     * 虽然保留上下文但会中断正在跑的轮次）。所以只改当前那个才重建。
+     */
+    fun rebuildIfCurrent(changedId: String) {
+        try {
+            val st = com.ccm.app.AppGraph.storage ?: return
+            val cur = com.ccm.app.core.provider.ProviderStore(st).load().current
+            if (cur != changedId) return
+            com.ccm.app.AppGraph.appScope?.let { scope ->
+                com.ccm.app.AppGraph.rebuild(ctx, scope)
+            }
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * 防抖版重建 —— 给**逐字符触发**的输入框用（key / URL）。
+     *
+     * 【为什么需要】`onValueChange` 每敲一个字符就调一次 —— 直接 rebuild
+     * 会每字符重建一次会话（flush + 装配 + 恢复历史），卡到没法输入。
+     * 用 LaunchedEffect + delay 攒一下：停止输入 800ms 后才真正重建。
+     *
+     * @param trigger 变化计数（每次输入 +1，用作 effect key）
+     */
+    @Composable
+    fun DebouncedRebuild(trigger: Int, changedId: String) {
+        if (trigger <= 0) return
+        androidx.compose.runtime.LaunchedEffect(trigger, changedId) {
+            kotlinx.coroutines.delay(800)   // 停止输入 800ms 后生效
+            rebuildIfCurrent(changedId)
+        }
+    }
 
     // ★ 接真实数据（2026-09-27）：原来这里是 selectd=0 + 硬编码三个假 Provider，
     //   所有按钮 onClick 都是空的 —— 用户点了「什么都不发生」，看起来像界面坏了。
@@ -110,6 +153,9 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
     var selectedId by remember { mutableStateOf(items.firstOrNull()?.id ?: "") }
     var showAddDialog by remember { mutableStateOf(false) }
     var refreshTick by remember { mutableStateOf(0) }
+    // 防抖重建的触发计数（逐字符输入用，见 DebouncedRebuild）
+    var keyChangeTick by remember { mutableStateOf(0) }
+    var urlChangeTick by remember { mutableStateOf(0) }
     var fetchingModels by remember { mutableStateOf(false) }
     // 【2026-10-06 问题6】模型勾选弹窗的状态
     var showModelPicker by remember { mutableStateOf(false) }
@@ -134,6 +180,10 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
     }
 
     val selected = items.firstOrNull { it.id == selectedId }
+
+    // 防抖重建：key / URL 输入停止 800ms 后重建会话（改了当前 Provider 才重建）
+    DebouncedRebuild(trigger = keyChangeTick, changedId = selectedId)
+    DebouncedRebuild(trigger = urlChangeTick, changedId = selectedId)
 
     Column(modifier = modifier) {
         Text(
@@ -268,7 +318,10 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                                 if (!keyPoolMode && showKey) {
                                     apiKey = v
                                     // 立刻落盘（对齐 CLI 的 /key 命令「立即生效」）
-                                    selected?.let { sel -> store?.setKey(sel.id, v) }
+                                    selected?.let { sel ->
+                                        store?.setKey(sel.id, v)
+                                        keyChangeTick++   // 防抖重建（见 DebouncedRebuild）
+                                    }
                                     refreshTick++   // 让「池·N」等派生显示跟着变
                                 }
                             },
@@ -321,7 +374,10 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         value = baseUrl,
                         onValueChange = {
                             baseUrl = it
-                            selected?.let { sel -> store?.setUrl(sel.id, it) }
+                            selected?.let { sel ->
+                                store?.setUrl(sel.id, it)
+                                urlChangeTick++   // 防抖重建
+                            }
                         },
                     )
                 }
@@ -717,6 +773,23 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                 if (created != null) {
                     selectedId = created
                     refresh()
+                    // ══════════════════════════════════════════════════
+                    //  【2026-10-06 用户报】加完 Provider 顶部横幅仍显示
+                    //  「尚未配置 API」，要重启才消失。
+                    //
+                    //  根因：横幅判据是 `AppGraph.session != null`（装配结果），
+                    //  而添加 Provider 只写了 config.json、**没有重建 AppGraph**
+                    //  —— session 保持 null。状态栏却显示得出模型名（它现读
+                    //  config.json），于是出现「状态栏有模型、横幅说没配置」
+                    //  的自相矛盾画面。
+                    //
+                    //  修：加完立刻 rebuild（重建 ApiClient/AgentLoop/session）
+                    //  —— session 变非空 → 横幅自动消失（它是 Compose State）。
+                    //  rebuild 会保留当前历史，代价只是几毫秒装配。
+                    // ══════════════════════════════════════════════════
+                    // 新加的 Provider 是否成为 current 由 addProvider 决定 ——
+                    // 是就重建（横幅消失），不是也不亏（判 id 会拦掉）
+                    rebuildIfCurrent(created)
                 }
                 showAddDialog = false
             },

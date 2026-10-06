@@ -1434,6 +1434,26 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         // ★ 设置页关闭时刷新 profileName/modelName —— 加/改 Provider 在
         //   设置页里发生，CcmApp 的 remember(profileRefreshKey) 不知道，
         //   不刷新的话「加了配置模型名还显示未配置」。
-        LaunchedEffect(showSettings) { if (!showSettings) profileRefreshKey++ }
+        //
+        // 【2026-10-06 用户报·根因】只刷 UI 显示**不够** —— 顶部横幅的判据是
+        // `AppGraph.session != null`（**装配结果**），而加 Provider 只写了
+        // config.json，session 还是 null → 横幅不消失，要重启。
+        // 状态栏却显示得出模型名（它现读 config.json）→ 出现
+        // 「状态栏有模型、横幅说没配置」的自相矛盾画面。
+        //
+        // 现在：设置页一关就**重建 AppGraph**（覆盖所有配置路径 —— 向导、
+        // 手动添加、改 key/URL 都走这里收口，不依赖各页面自己记得调）。
+        // rebuild 保留当前历史，代价几毫秒；没配 Provider 时它会返回 null
+        // （横幅继续显示，正确）。
+        LaunchedEffect(showSettings) {
+            if (!showSettings) {
+                profileRefreshKey++
+                try {
+                    com.ccm.app.AppGraph.appScope?.let { scope ->
+                        com.ccm.app.AppGraph.rebuild(appCtx, scope)
+                    }
+                } catch (_: Throwable) {}
+            }
+        }
     }
 }
