@@ -1100,6 +1100,45 @@ class RootfsManager(private val context: Context) {
                     "nameserver 119.29.29.29\\n' > /etc/resolv.conf; " +
                     "chmod 644 /etc/resolv.conf; "
 
+                // ── 【2026-10-06 挪位：修复必须在 update 之前，无条件执行】──
+                //
+                // Operit 的 SetupScreen 固定顺序（照搬，不再改）：
+                //   dpkg --configure -a    收尾上次未完成的配置
+                //   apt install -f -y      修复依赖（apt 提示的那条 fix-broken）
+                //   apt update -y          刷新索引
+                //   apt upgrade -y         升级基础系统
+                //   apt install -y <包>    装用户勾选的工具
+                //
+                // 为什么不能放在 update 之后（原来的位置）：
+                //   · 这两步是**纯本地操作**，不需要网络 —— 放 update 后面纯属
+                //     绑错了顺序；
+                //   · update 自己会失败（DNS/网络），失败时 if (updated) 不成立
+                //     → **修复一步都不跑** → 半残 dpkg 直接进 install → 必挂；
+                //   · 真实事故（2026-10-06）：工具链装到一半 App 进程被杀，
+                //     留下 half-configured 状态 + 0 修复也失败，之后每次装机
+                //     都报 "dpkg was interrupted" / "Unmet dependencies"，
+                //     用户只能看着失败 —— 而修它的两步其实一个字节都不依赖网络。
+                onLine("修复 dpkg 状态…")
+                val preConfigured = exec(
+                    listOf(
+                        "/bin/bash", "-lc",
+                        "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; " +
+                            "dpkg --configure -a 2>&1"
+                    ),
+                    onLine
+                )
+                if (!preConfigured) onLine("  上次未完成的配置收尾未成功，继续")
+
+                val preFixed = exec(
+                    listOf(
+                        "/bin/bash", "-lc",
+                        "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; " +
+                            "apt-get install -f -y -o Dpkg::Progress-Fancy=0 -o APT::Color=0 2>&1"
+                    ),
+                    onLine
+                )
+                if (!preFixed) onLine("  依赖修复未成功，继续")
+
                 onLine("更新软件源…")
                 var updated = false
                 for (attempt in 1..3) {
@@ -1143,44 +1182,10 @@ class RootfsManager(private val context: Context) {
                     onLine("")
                     onLine("同步基础系统版本…")
 
-                    // 【2026-10-05 照搬 Operit 的完整修复序列】
-                    //
-                    // 装机实测报 `E: Unmet dependencies. Try 'apt --fix-broken install'`
-                    // —— 那正是 apt 在提示「先修依赖再装」，而 CCM 原来没有这一步。
-                    //
-                    // Operit 的 SetupScreen 在装任何东西前固定跑这四步：
-                    //   dpkg --configure -a    收尾上次未完成的配置
-                    //   apt install -f -y      修复依赖（就是 apt 提示的那条）
-                    //   apt update -y          刷新索引
-                    //   apt upgrade -y         升级基础系统
-                    // 照搬过来，顺序不变。
-                    //
-                    // 【为什么 -f 是必须的】ubuntu-base 出厂镜像里有些包处于
-                    // 「已解包未配置」状态（dpkg 的 half-configured）。
-                    // 直接装新包时 apt 会先检查依赖图，撞上这些半成品就报
-                    // Unmet dependencies 并拒绝继续 —— 而它提示的解法正是 -f。
-
-                    val configured = exec(
-                        listOf(
-                            "/bin/bash", "-lc",
-                            "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; " +
-                                "dpkg --configure -a 2>&1"
-                        ),
-                        onLine
-                    )
-                    if (!configured) onLine("  基础包收尾未完成，继续")
-
-                    // ★ 关键：修复依赖（Operit 的第二步，CCM 原来缺这步）
-                    val fixed = exec(
-                        listOf(
-                            "/bin/bash", "-lc",
-                            "export DEBIAN_FRONTEND=noninteractive TERM=dumb HOME=/root; " +
-                                "apt-get install -f -y -o Dpkg::Progress-Fancy=0 -o APT::Color=0 2>&1"
-                        ),
-                        onLine
-                    )
-                    if (!fixed) onLine("  依赖修复未完成，继续")
-
+                    // 修复两步已挪到 apt update **之前**（见上方「先修 dpkg」）——
+                    // 与 Operit 的 SetupScreen 顺序一致：configure -a → install -f
+                    // → update → upgrade → install。原来包在 if (updated) 里，
+                    // update 失败时修复根本不执行，半残 dpkg 直接进 install 必挂。
                     val upgraded = exec(
                         listOf(
                             "/bin/bash", "-lc",
@@ -1259,6 +1264,7 @@ class RootfsManager(private val context: Context) {
                         ok = false
                         onLine("❌ 以下包没装上：${missing.joinToString(" ")}")
                         onLine("   常见原因：软件源里没有这个包，或网络中断。")
+                        onLine("   可直接再点一次安装 —— 开头会先自动修复 dpkg 状态再装（Operit 同款序列）。")
                         onLine("   可稍后在「管理工具」里重试，或换源。")
                     } else {
                         onLine("✅ 本次要装的 ${todoPackages.size} 个包全部就绪")
