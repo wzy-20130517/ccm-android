@@ -131,6 +131,19 @@ fun LandingScreen(
     var activeSection by remember { mutableStateOf<PromptSection?>(null) }
     // 【2026-10-06 问题26】加号菜单展开状态
     var showPlusMenu by remember { mutableStateOf(false) }
+    // 加号菜单的项目列表（异步加载，见下方 LaunchedEffect）
+    var plusMenuProjects by remember { mutableStateOf<List<String>>(emptyList()) }
+    // 每次展开菜单时刷新（IO 线程）—— 新建项目后立刻能看到
+    androidx.compose.runtime.LaunchedEffect(showPlusMenu) {
+        if (!showPlusMenu) return@LaunchedEffect
+        plusMenuProjects = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                com.ccm.app.AppGraph.storage
+                    ?.let { com.ccm.app.core.project.ProjectStore(it).list() }
+                    ?.map { it.name } ?: emptyList()
+            } catch (_: Throwable) { emptyList() }
+        }
+    }
     // 灵感库（assets/inspirations.json，首次组合加载一次）
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val library = remember { com.ccm.app.core.inspiration.InspirationLibrary.ensure(ctx) }
@@ -327,11 +340,14 @@ fun LandingScreen(
                             input = if (input.isBlank()) "截取当前屏幕并告诉我上面有什么"
                                 else "$input\n截取当前屏幕并告诉我上面有什么"
                         },
-                        projects = remember {
-                            com.ccm.app.AppGraph.storage
-                                ?.let { com.ccm.app.core.project.ProjectStore(it).list() }
-                                ?.map { it.name } ?: emptyList()
-                        },
+                        // 【2026-10-06 修两处】
+                        // ① 原来是 `remember { ... }` —— ProjectStore.list() 内部是
+                        //    File.listFiles() 阻塞磁盘 IO，跑在**组合线程（主线程）**；
+                        //    项目多时展开菜单会卡。
+                        // ② remember 无 key → 只在首次组合时算一次，用户在别处
+                        //    新建项目后打开菜单看不到新项目。
+                        // 现在：LaunchedEffect(showPlusMenu) 在每次展开时于 IO 线程刷新。
+                        projects = plusMenuProjects,
                         onPickProject = { name ->
                             input = if (input.isBlank()) "在项目「$name」里："
                                 else "$input 在项目「$name」里："

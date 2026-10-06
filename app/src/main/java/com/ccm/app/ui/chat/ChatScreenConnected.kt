@@ -99,6 +99,18 @@ fun ChatScreenConnected(
     // 模型用 Read 工具读内容（core 的用户消息通道只支持图片）。
     var pendingFiles by remember { mutableStateOf<List<String>>(emptyList()) }
     var showAttachMenu by remember { mutableStateOf(false) }
+    // 加号菜单的项目列表（异步加载，同 LandingScreen 的修法）
+    var attachMenuProjects by remember { mutableStateOf<List<String>>(emptyList()) }
+    androidx.compose.runtime.LaunchedEffect(showAttachMenu) {
+        if (!showAttachMenu) return@LaunchedEffect
+        attachMenuProjects = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                com.ccm.app.AppGraph.storage
+                    ?.let { com.ccm.app.core.project.ProjectStore(it).list() }
+                    ?.map { it.name } ?: emptyList()
+            } catch (_: Throwable) { emptyList() }
+        }
+    }
     // 附件二级菜单（PlusMenu 的「附件」项 → 拍照/图片/文件）
     var showAttachSubmenu by remember { mutableStateOf(false) }
     val ctx = androidx.compose.ui.platform.LocalContext.current
@@ -289,11 +301,9 @@ fun ChatScreenConnected(
                         )
                         showAttachMenu = false
                     },
-                    projects = remember {
-                        com.ccm.app.AppGraph.storage
-                            ?.let { com.ccm.app.core.project.ProjectStore(it).list() }
-                            ?.map { it.name } ?: emptyList()
-                    },
+                    // 【2026-10-06 修】同 LandingScreen：原来在主线程 remember 里
+                    // 做磁盘 IO，且无 key 永不刷新。改用异步 state（见上方 LaunchedEffect）。
+                    projects = attachMenuProjects,
                     onPickProject = { name ->
                         val cur = session.state.value.draft
                         session.setDraft(if (cur.isBlank()) "在项目「$name」里：" else "$cur 在项目「$name」里：")

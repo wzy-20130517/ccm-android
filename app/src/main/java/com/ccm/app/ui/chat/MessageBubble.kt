@@ -196,7 +196,18 @@ fun UserBubble(
                     }
 
                     viewing?.let { p ->
-                        androidx.compose.ui.window.Dialog(onDismissRequest = { viewing = null }) {
+                        // 【2026-10-06 修】必须关掉「平台默认对话框宽度」——
+                        // 默认 Dialog 的 usePlatformDefaultWidth=true 会把内容
+                        // 限制在平台对话框宽度里，ImageViewerDialog 内部虽然
+                        // 是 fillMaxSize + 深色底，却只能撑到那个宽度 →
+                        // 用户看到「深色底只占屏幕中间一条、图片更小」，
+                        // 感觉「点开图反而变小了」。
+                        androidx.compose.ui.window.Dialog(
+                            onDismissRequest = { viewing = null },
+                            properties = androidx.compose.ui.window.DialogProperties(
+                                usePlatformDefaultWidth = false,
+                            ),
+                        ) {
                             com.ccm.app.ui.common.ImageViewerDialog(
                                 path = p,
                                 onDismiss = { viewing = null },

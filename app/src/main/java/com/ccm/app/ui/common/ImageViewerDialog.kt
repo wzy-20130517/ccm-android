@@ -37,11 +37,14 @@ fun ImageViewerDialog(
     path: String,
     onDismiss: () -> Unit,
 ) {
-    var bitmap by remember(path) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    // 【2026-10-06 加缓存】同 ThumbImage —— 全屏图也从共享 LRU 取
+    // （尺寸 key 用 1024，与缩略图的 512 分开存）
+    var bitmap by remember(path) { mutableStateOf(ThumbCache.get(path, 1024)) }
     var loadFailed by remember(path) { mutableStateOf(false) }
 
     LaunchedEffect(path) {
-        bitmap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        if (bitmap != null) return@LaunchedEffect
+        val decoded = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(path, bounds)
@@ -57,7 +60,9 @@ fun ImageViewerDialog(
                 null
             }
         }
-        loadFailed = bitmap == null
+        if (decoded != null) ThumbCache.put(path, 1024, decoded)
+        bitmap = decoded
+        loadFailed = decoded == null
     }
 
     Box(

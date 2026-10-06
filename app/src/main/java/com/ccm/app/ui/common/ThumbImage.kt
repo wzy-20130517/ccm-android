@@ -1,6 +1,5 @@
 package com.ccm.app.ui.common
 
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -36,10 +35,13 @@ fun ThumbImage(
     modifier: Modifier = Modifier,
     cornerRadius: Dp = 8.dp,
 ) {
-    var bitmap by remember(path) { mutableStateOf<Bitmap?>(null) }
+    // 【2026-10-06 加缓存】先查共享 LRU，命中直接显示（避免滑回来重新解码）。
+    var bitmap by remember(path) { mutableStateOf(ThumbCache.get(path, 512)) }
 
     LaunchedEffect(path) {
-        bitmap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        // 缓存命中就不解码了（remember 初始化已取过一次，这里防重组时漏取）
+        if (bitmap != null) return@LaunchedEffect
+        val decoded = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(path, bounds)
@@ -55,6 +57,8 @@ fun ThumbImage(
                 null
             }
         }
+        if (decoded != null) ThumbCache.put(path, 512, decoded)
+        bitmap = decoded
     }
 
     Box(
