@@ -151,6 +151,30 @@
             android:exported="true"
             android:multiprocess="false" />
 
+        <!--
+          FileProvider（2026-10-06 补）—— 「拍照」功能依赖它。
+
+          【原来缺这个声明】ChatScreenConnected 的拍照走
+          FileProvider.getUriForFile(ctx, "$packageName.fileprovider", file)，
+          但 Manifest 里没有对应 provider → getUriForFile 抛
+          IllegalArgumentException（"Couldn't find meta-data for provider
+          with authority com.ccm.app.fileprovider"）→ 被外层 catch 静默
+          吞掉 → 用户看到「点拍照没反应」。
+          res/xml/file_paths.xml 早就写好了，只是没人引用。
+
+          exported=false + grantUriPermissions=true：只把 URI 临时授权给
+          相机 App（Intent 带 FLAG_GRANT_*），不暴露给其他应用。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- 开机自启 -->
         <receiver
             android:name=".service.BootReceiver"

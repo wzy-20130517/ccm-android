@@ -188,7 +188,13 @@ fun ChatScreenConnected(
     }
 
     // 拍照（webgap #2：Web 的 + 菜单有相机 —— TakePicture 输出到 cache 文件）
-    val cameraFile = remember { java.io.File(ctx.cacheDir, "attachments/cam_${System.currentTimeMillis()}.jpg") }
+    // 【2026-10-06 修】原来 cameraFile 是 remember { File(...) } —— 文件名里的
+    // 时间戳在**首次组合时固定**，之后每次拍照都往同一路径写：
+    //   ① 连拍两张 → 第一张的缩略图被第二张覆盖（两个缩略图同一路径，
+    //      且文件内容已变）
+    //   ② 删其中一个 × → 两个一起消失（pendingImages - path 按值删）
+    // 现在：每次点「拍照」时动态生成新文件名。
+    var cameraFile by remember { mutableStateOf(java.io.File(ctx.cacheDir, "attachments/cam_init.jpg")) }
     val cameraLauncher = rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.TakePicture(),
     ) { ok ->
@@ -331,6 +337,13 @@ fun ChatScreenConnected(
                 androidx.compose.foundation.layout.Column {
                     listOf(
                         "拍照" to {
+                            // 【2026-10-06】每次拍照生成新文件名（见 cameraFile 声明处的说明）
+                            val camDir = java.io.File(ctx.cacheDir, "attachments")
+                            // 确保目录存在 —— 相机是**另一个进程**，它不会替我们建目录；
+                            // 目录不存在时写入失败（TakePicture 回 ok=false 或静默失败）。
+                            // AttachmentCache 的 mkdirs() 只在发消息时调，首次拍照可能还没跑过。
+                            camDir.mkdirs()
+                            cameraFile = java.io.File(camDir, "cam_${System.currentTimeMillis()}.jpg")
                             try {
                                 cameraFile.parentFile?.mkdirs()
                                 cameraLauncher.launch(
@@ -340,7 +353,16 @@ fun ChatScreenConnected(
                                         cameraFile,
                                     ),
                                 )
-                            } catch (_: Throwable) {}
+                            } catch (t: Throwable) {
+                                // 【2026-10-06 改】原来静默吞掉 —— 用户看到「点了没反应」，
+                                // 完全不知道是 FileProvider 配置问题、相机不可用还是别的。
+                                // 至少把原因说出来（这是最容易踩的坑之一）。
+                                android.widget.Toast.makeText(
+                                    ctx,
+                                    "拍照启动失败：${t.message ?: t.javaClass.simpleName}",
+                                    android.widget.Toast.LENGTH_LONG,
+                                ).show()
+                            }
                             showAttachSubmenu = false
                         },
                         "图片（可多选，随消息发给模型看）" to { attachLauncher.launch("image/*"); showAttachSubmenu = false },
@@ -525,13 +547,29 @@ fun ChatScreenConnected(
                     // ★ 2026-09-29 未支持命令兜底：/config /style /undo 这类
                     //   CLI 命令原来从 else 溜过去**发给模型**（模型回
                     //   「我不是这样用的」，白烧一轮）。
-                    text.startsWith("/") && !SUPPORTED_SLASH.contains(text.substringBefore(" ").trim()) -> {
+                    text.startsWith("/") && (
+                        // 【2026-10-06 修】原来只判「命令名不在支持集」——
+                        // 于是**带参数**的 `/compact force`、`/model 2 x` 从
+                        // else 溜过去**发给模型**（模型回「我不是这样用的」，
+                        // 白烧一轮 token，用户以为命令坏了）。
+                        // 现在：命令名不在支持集 **或** 带了参数 → 都进兜底提示。
+                        !SUPPORTED_SLASH.contains(text.substringBefore(" ").trim()) ||
+                            text.trim().contains(" ")
+                        ) -> {
                         val cmd = text.substringBefore(" ").trim()
+                        val hasArg = text.trim().contains(" ")
                         session.injectNotice(
-                            "**${cmd} 在 APK 暂不可用**\n\n" +
-                            "APK 共支持 ${COMMON_SLASH_COMMANDS.size} 个命令，输入 `/` 看候选面板" +
-                            "（或 /help 列全表）。\n\n" +
-                            "${SLASH_HINTS[cmd] ?: "CLI 专属命令（/rewind /doctor 等）请到终端侧使用。"}"
+                            if (hasArg) {
+                                "**`$cmd` 不支持带参数（APK 版）**\n\n" +
+                                    "APK 上这个命令没有参数形式 —— 相关设置在界面上操作" +
+                                    "（如 `/model` 点输入栏的模型选择器，`/compact` 直接敲不带参数）。\n\n" +
+                                    "_（命令没发给模型，这一轮不消耗 token。）_"
+                            } else {
+                                "**${cmd} 在 APK 暂不可用**\n\n" +
+                                    "APK 共支持 ${COMMON_SLASH_COMMANDS.size} 个命令，输入 `/` 看候选面板" +
+                                    "（或 /help 列全表）。\n\n" +
+                                    "${SLASH_HINTS[cmd] ?: "CLI 专属命令（/rewind /doctor 等）请到终端侧使用。"}"
+                            }
                         )
                     }
                     else -> {
