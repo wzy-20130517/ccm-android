@@ -268,6 +268,28 @@ fun OnboardingScreen(
                 }
 
                 Spacer(Modifier.height(18.dp))
+
+                // ══════════════════════════════════════════════════════
+                //  工具链选择 —— **只在内置 proot 模式显示**（2026-10-06 修）
+                //
+                // 上一版只是把它排在环境选择「后面」，选了 Termux 照样显示、
+                // 照样让你勾 —— 语义上完全说不通：工具装进内置 rootfs，
+                // 而 Termux 模式根本不装 rootfs，勾了也是白勾。
+                //
+                // 现在：Termux 模式整段换成一张说明卡（工具在 Termux 里自己装）。
+                // ══════════════════════════════════════════════════════
+                if (envMode == "termux") {
+                    InfoCard {
+                        Text("工具链", style = CCMText.body14.copy(fontWeight = FontWeight.Medium), color = colors.textMain)
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "外接 Termux 模式下不需要在这里装工具 —— " +
+                                "命令直接跑在你 Termux 的环境里，用 `pkg install` 或 `apt` " +
+                                "装什么、什么时候装都由你决定。",
+                            style = CCMText.body12, color = colors.textSecondary,
+                        )
+                    }
+                } else {
                 InfoCard {
                     Text("选择要安装的工具链", style = CCMText.body14.copy(fontWeight = FontWeight.Medium), color = colors.textMain)
                     toolchains.forEach { chain ->
@@ -283,6 +305,7 @@ fun OnboardingScreen(
                         }
                     }
                 }
+                }   // ← if (envMode != "termux") 的闭合
 
                 Spacer(Modifier.height(24.dp))
 
@@ -322,7 +345,10 @@ fun OnboardingScreen(
                         containerColor = colors.claudeOrange,
                     ),
                 ) {
-                    Text("开始安装", color = androidx.compose.ui.graphics.Color.White)
+                    Text(
+                        if (envMode == "termux") "使用外接 Termux" else "开始安装",
+                        color = androidx.compose.ui.graphics.Color.White,
+                    )
                 }
 
                 Spacer(Modifier.height(20.dp))
