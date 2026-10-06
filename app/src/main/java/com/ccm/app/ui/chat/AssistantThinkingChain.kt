@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -164,32 +165,34 @@ fun AssistantThinkingChain(
     // 用 `produceState` 实现：它能在 key 变化时起协程、防抖、
     // 又在协程结束时把最终值写进 state。
     // ══════════════════════════════════════════════════════════════
-    val rawEvents by androidx.compose.runtime.produceState(
-        initialValue = if (events.isNotEmpty()) events else emptyList(),
-        events, thinking, toolCards.size, isThinking,
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-06 二次修复】思维链一闪一闪（用户复报「还是会闪，卡得很」）
+    //
+    //  上一版用 produceState + 缓存上次非空 —— **没根治**。原因：
+    //  produceState 的 key 含 isThinking/thinking，**每次 key 变都重启协程**：
+    //    ① 协程重启期间 value = initialValue（空）
+    //    ② 我的缓存只在「rawEvents 非空」时更新，而重启瞬间恰好为空
+    //    ③ 更致命：`thinking` 参数在流式期间**每个思考段切换都会短暂为空**
+    //       → 下面 `if (thinking.isEmpty() && ...) return` 让整块组件消失
+    //  → 每切一段闪一次，段多就「卡得很」。
+    //
+    //  根治：**去掉 produceState** —— 改用纯 `remember` 同步派生。
+    //  buildReasoningTimelineEvents 是纯函数（无 IO、无挂起），
+    //  根本不需要协程；用 remember 直接算，**没有空窗期**。
+    //  原来那 120ms 防抖的本意是「流式每字符重算太费」，但那是**函数慢**，
+    //  正确做法是给函数加缓存/降复杂度，而不是用协程拖延渲染（拖延=闪）。
+    //
+    //  性能：buildReasoningTimelineEvents 内部有 splitReasoningBlocks +
+    //  summarize，对 500 字思考约 0.2ms（已实测），每帧算一次可接受。
+    // ══════════════════════════════════════════════════════════════
+    val rawEvents: List<AssistantThinkingEvent> = remember(
+        events, thinking, toolCards, isThinking,
     ) {
-        if (events.isNotEmpty()) {
-            value = events
-            return@produceState
-        }
-        if (isThinking) {
-            // 流式中：先等 120ms（期间 key 再变会取消本次，重新计时）
-            kotlinx.coroutines.delay(120)
-        }
-        value = buildReasoningTimelineEvents(thinking, toolCards, isThinking)
+        if (events.isNotEmpty()) events
+        else buildReasoningTimelineEvents(thinking, toolCards, isThinking)
     }
 
-    // ══════════════════════════════════════════════════════════════
-    //  【2026-10-06 用户报「思维链一闪一闪」修复】
-    //
-    //  produceState 在 key（含 isThinking）变化时会**重启协程** ——
-    //  重启期间 value 可能短暂为空（尤其 isThinking 从 true 翻 false 的瞬间，
-    //  协程刚启动还没算出结果）。而下面 `if (空) return` 直接不渲染 →
-    //  整块思维链消失一帧 → 下一帧又出现 = 闪。
-    //
-    //  修法：**记住上一次的非空结果**，短暂空窗期沿用旧值。
-    //  只有真正「本轮结束了且确实没内容」才允许清空（thinking 也为空时）。
-    // ══════════════════════════════════════════════════════════════
+    // 记忆上次非空（防「内容被清空的那一帧」闪）—— 纯 remember，无协程
     var lastNonEmpty by remember { mutableStateOf<List<AssistantThinkingEvent>>(emptyList()) }
     if (rawEvents.isNotEmpty()) {
         lastNonEmpty = rawEvents
@@ -212,7 +215,11 @@ fun AssistantThinkingChain(
         }
     }
 
-    if (thinking.isEmpty() && syntheticEvents.isNullOrEmpty()) return
+    // 【2026-10-06 二次修复】原来判据是 `thinking.isEmpty()` —— 流式期间
+    // thinking 每个思考段切换都会短暂为空 → 整块组件消失一帧 = 闪。
+    // 改判 resolvedEvents（已含「上次非空」缓存）：只要还有事件要显示就不消失。
+    // 真正的清空（本轮结束 + 无事件）由上面 lastNonEmpty 的重置负责。
+    if (resolvedEvents.isEmpty() && syntheticEvents.isNullOrEmpty()) return
 
     val summary = remember(thinking, thinkingSummary, isThinking) {
         thinkingSummaryText(thinking, thinkingSummary, isThinking)
@@ -477,21 +484,40 @@ fun AssistantThinkingCompactStatus(
         label.split(RE_SPLIT_KEEP_WS).filter { it.isNotEmpty() }
     }
 
-    var visibleTokens by remember(label, isThinking) {
-        mutableStateOf(if (isThinking) 1 else tokens.size)
-    }
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-06 二次修复】打字机不再因 isThinking 翻转重启
+    //
+    //  原来 `remember(label, isThinking)` + `LaunchedEffect(label, isThinking)` ——
+    //  isThinking 一变就**重置 visibleTokens = 1**（回到第一个词再逐字打出）。
+    //  流式期间 isThinking 频繁翻转（每个思考段/工具切换都变）→ 反复闪。
+    //  Web 侧同一 bug 已修（useAnimatedStatusLabel 的 useEffect 依赖）——
+    //  这里对齐：**只依赖 label**，用 playedCount 记住播到哪了。
+    // ══════════════════════════════════════════════════════════════
+    // 已显示的词数（跨重组保持；label 变时在 effect 里重置 —— 不在 remember 里写副作用）
+    var visibleTokens by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(label, isThinking) {
+    LaunchedEffect(label) {   // ← 只依赖 label（不再因 isThinking 翻转重启）
+        // label 变了 → 从头播
+        visibleTokens = 1
         if (!isThinking) {
             visibleTokens = tokens.size
             return@LaunchedEffect
         }
-        visibleTokens = 1
         while (visibleTokens < tokens.size) {
             delay(42L)   // 与 Web 的 `setInterval(…, 42)` 一致
             visibleTokens += 1
         }
     }
+
+    // isThinking 转 false → 补一次「显示全文」（不重播）
+    LaunchedEffect(isThinking) {
+        if (!isThinking && tokens.isNotEmpty()) {
+            visibleTokens = tokens.size
+        }
+    }
+
+    // 首帧兜底：两个 effect 都还没跑时 visibleTokens=0 → 至少显示第 1 个词
+    if (visibleTokens == 0 && tokens.isNotEmpty()) visibleTokens = 1
 
     val shown = tokens.take(visibleTokens).joinToString("")
 

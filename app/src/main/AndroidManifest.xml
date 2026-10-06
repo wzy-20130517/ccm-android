@@ -55,14 +55,19 @@
          start service Intent ... without permission
          com.termux.permission.RUN_COMMAND）
 
-         Termux 的 RunCommandService 在 manifest 里声明了
+         Termux 的 RunCommandService 声明了
          android:permission="com.termux.permission.RUN_COMMAND" ——
-         调用方必须**在 manifest 里声明同名 uses-permission**，否则
-         startService 被系统拦（错误信息就是这个）。
+         调用方必须在 manifest 里声明同名 uses-permission，**并且运行时请求**。
 
-         注意：这是 signature 级权限，Termux 会签名校验 ——
-         必须用 F-Droid 版 Termux（与 CCM 同为 F-Droid 签名体系）。
-         Play 版 Termux 签名不同，会静默失败。
+         ⚠️ 权限等级：**dangerous**（Termux 源码 manifest 里写的是
+         android:protectionLevel="dangerous"，不是 signature）——
+         所以弹系统框就能授予，**不需要与 Termux 同签名**。
+         实测 `pm grant com.ccm.app com.termux.permission.RUN_COMMAND` 成功。
+
+         授权入口：
+         · 设置 → 环境 → 「外接 Termux」行的授权按钮
+         · 或首次引导页选外接 Termux 时的提示按钮
+         · 或系统设置 → 应用 → CCM → 权限 → 在 Termux 中运行命令
          ══════════════════════════════════════════════════════════════ -->
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
 

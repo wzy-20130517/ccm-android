@@ -123,10 +123,18 @@ fun OnboardingScreen(
     var envMode by remember { mutableStateOf("proot") }
     // Termux 是否装了（没装时提示 + 自动回 proot，不让用户卡在死路）
     var termuxInstalled by remember { mutableStateOf<Boolean?>(null) }
+    // RUN_COMMAND 权限状态（2026-10-06）：装了 Termux 还要这个权限才能跑命令。
+    // 它是 dangerous 级 —— 弹系统框就能授（不是 signature，无需同签名）。
+    var termuxPermGranted by remember { mutableStateOf(false) }
+    val termuxPermLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted -> termuxPermGranted = granted }
     LaunchedEffect(Unit) {
         termuxInstalled = try {
             ctx.packageManager.getPackageInfo("com.termux", 0); true
         } catch (_: Throwable) { false }
+        termuxPermGranted = com.ccm.app.tools.bash.TermuxChannel
+            .hasRunCommandPermission(ctx)
     }
 
     val toolchains = remember { com.ccm.app.runtime.ToolchainCatalog.ALL }
@@ -246,6 +254,26 @@ fun OnboardingScreen(
                             onClick = { if (termuxInstalled == true) envMode = "termux" },
                         )
                         Column(modifier = Modifier.weight(1f)) {
+                            // 权限未授予时的提示 + 授权按钮（2026-10-06）
+                            if (termuxInstalled == true && !termuxPermGranted) {
+                                Text(
+                                    "⚠ 还需授权「在 Termux 中运行命令」",
+                                    style = CCMText.body12, color = colors.claudeOrange,
+                                )
+                                Text(
+                                    "点此授权（系统弹框）—— 没有它，选 Termux 后 Bash 会报 " +
+                                        "without permission RUN_COMMAND",
+                                    style = CCMText.body11, color = colors.textSecondary,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable {
+                                            termuxPermLauncher.launch(
+                                                com.ccm.app.tools.bash.TermuxChannel.PERMISSION_RUN_COMMAND
+                                            )
+                                        }
+                                        .padding(vertical = 4.dp),
+                                )
+                            }
                             Text(
                                 if (termuxInstalled == false) "外接 Termux（未安装）" else "外接 Termux",
                                 style = CCMText.body14,

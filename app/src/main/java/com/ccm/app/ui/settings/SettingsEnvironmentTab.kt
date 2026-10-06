@@ -59,6 +59,12 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
     // ★ 刷新按钮的触发器（2026-09-27）：改变它触发重组，重新读取环境状态。
     //   原来「刷新」的 onClick 是空的 —— 点了毫无反应。
     var refreshTick by remember { mutableStateOf(0) }
+    // RUN_COMMAND 权限请求（2026-10-06）—— dangerous 级，弹系统框即可授。
+    // 原来 CCM 声明了权限但**从不请求**，用户选外接 Termux 后必然报
+    // "Not allowed to start service Intent ... without permission"。
+    val termuxPermLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { refreshTick++ }
 
     // ── 真数据（2026-09-27：原来 11 行全是写死的假值，
     //    连 Node 版本都写着过时的 v22.14.0，工具链真值是 v24.21.0）──
@@ -72,6 +78,10 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
             shizuku = com.ccm.app.bridge.ShizukuBridge.granted(),
             linux = installed,
             proot = installed,
+            termuxInstalled = try {
+                ctx.packageManager.getPackageInfo("com.termux", 0); true
+            } catch (_: Throwable) { false },
+            termuxPerm = com.ccm.app.tools.bash.TermuxChannel.hasRunCommandPermission(ctx),
             sdk = android.os.Build.VERSION.SDK_INT.toString(),
             abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown",
             home = ctx.filesDir.absolutePath,
@@ -148,6 +158,41 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
             // 「CCM 内核」行已删（audit-settings #4：无法探测状态却写死「已安装」——
             // 不可探测的行不显示，别展示假状态）
             EnvRow(label = "Android SDK", ok = true, value = env.sdk)
+
+            // ── 外接 Termux（2026-10-06 加）────────────────────────────
+            // 三态：未安装 / 已装未授权 / 就绪。
+            // 权限那行可点（弹系统授权框）—— 这是用户报
+            // "Not allowed to start service ... without permission" 的解法。
+            EnvRow(
+                label = "外接 Termux",
+                ok = env.termuxInstalled && env.termuxPerm,
+                value = when {
+                    !env.termuxInstalled -> "未安装"
+                    !env.termuxPerm -> "已安装 · 待授权"
+                    else -> "就绪"
+                },
+            )
+            if (env.termuxInstalled && !env.termuxPerm) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(colors.claudeOrange.copy(alpha = 0.12f))
+                        .clickable {
+                            termuxPermLauncher.launch(
+                                com.ccm.app.tools.bash.TermuxChannel.PERMISSION_RUN_COMMAND
+                            )
+                        }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "点此授权「在 Termux 中运行命令」",
+                        style = CCMText.body12.copy(fontSize = 11.96.sp),
+                        color = colors.claudeOrange,
+                    )
+                }
+            }
         }
 
         // ── 运行时 ───────────────────────────────────────────────
@@ -353,6 +398,10 @@ private data class EnvFacts(
     val shizuku: Boolean,
     val linux: Boolean,
     val proot: Boolean,
+    /** Termux 是否已安装（2026-10-06：环境模式选外接 Termux 时用）。 */
+    val termuxInstalled: Boolean = false,
+    /** RUN_COMMAND 权限是否已授予（dangerous 级，弹框可授）。 */
+    val termuxPerm: Boolean = false,
     val sdk: String,
     val abi: String,
     val home: String,

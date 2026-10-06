@@ -206,11 +206,37 @@ class TermuxChannel(private val context: Context) : BashChannel {
     override suspend fun isAvailable(): Boolean = withContext(Dispatchers.IO) {
         try {
             context.packageManager.getPackageInfo(TERMUX_PACKAGE, 0)
-            true
+            // 【2026-10-06】还要求 RUN_COMMAND 权限 —— 装了 Termux 但没授权
+            // 时 isAvailable 不该报 true（否则工具注册了、一调用就失败）。
+            hasRunCommandPermission()
         } catch (_: Throwable) {
             false
         }
     }
+
+    companion object {
+        /**
+         * RUN_COMMAND 权限名。
+         *
+         * 【2026-10-06 重要纠正】这个权限是 **dangerous 级**（不是 signature）——
+         * Termux 的 AndroidManifest 写的是 `android:protectionLevel="dangerous"`。
+         * 所以**可以运行时请求**（弹系统授权框），不需要与 Termux 同签名。
+         * 实测 `pm grant com.ccm.app com.termux.permission.RUN_COMMAND` 直接成功。
+         *
+         * 之前的错误判断：以为 signature 级、CCM 自签名拿不到 —— 那是错的，
+         * 实际是「声明了但从来没请求过」。
+         */
+        const val PERMISSION_RUN_COMMAND = "com.termux.permission.RUN_COMMAND"
+
+        /** 检查权限是否已授予。 */
+        fun hasRunCommandPermission(context: android.content.Context): Boolean =
+            context.checkSelfPermission(PERMISSION_RUN_COMMAND) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+
+    /** 实例方法版（内部用）。 */
+    private fun hasRunCommandPermission(): Boolean =
+        hasRunCommandPermission(context)
 
     override suspend fun unavailableReason(): String? = withContext(Dispatchers.IO) {
         if (!isAvailable()) {
@@ -227,6 +253,20 @@ class TermuxChannel(private val context: Context) : BashChannel {
         timeoutMs: Long,
         onLine: (String) -> Unit,
     ): BashChannel.ExecResult = withContext(Dispatchers.IO) {
+        // 【2026-10-06】权限前置检查 —— 比让它抛 SecurityException 再猜原因清楚得多。
+        // 权限是 dangerous 级：设置 → 应用 → CCM → 权限 → 在 Termux 中运行命令
+        // （或环境 tab 的授权按钮）。
+        if (!hasRunCommandPermission()) {
+            return@withContext BashChannel.ExecResult(
+                exitCode = -1,
+                stdout = "",
+                stderr = "缺少权限：在 Termux 中运行命令（com.termux.permission.RUN_COMMAND）\n" +
+                    "授权方式：设置 → 环境 → 「外接 Termux」行的授权按钮（弹系统框），" +
+                    "或系统设置 → 应用 → CCM → 权限 → 在 Termux 中运行命令。\n" +
+                    "_（这个权限是 dangerous 级，弹框授予即可，不需要与 Termux 同签名）_",
+            )
+        }
+
         // ⚠️ Termux 的 Intent 是**异步**的：startService 立即返回，命令在 Termux 进程跑。
         // 拿结果必须靠 PendingIntent 回传（官方推荐方式）。
         //
@@ -292,9 +332,9 @@ class TermuxChannel(private val context: Context) : BashChannel {
                     "① Termux 未设置 allow-external-apps=true —— " +
                     "在 ~/.termux/termux.properties 里加一行 allow-external-apps=true，" +
                     "然后执行 termux-reload-settings（或重启 Termux）\n" +
-                    "② **Termux 不是 F-Droid 版** —— RUN_COMMAND 是 signature 级权限，" +
-                    "Play 版签名不同，会报 \"without permission com.termux.permission.RUN_COMMAND\"。 " +
-                    "从 F-Droid 装 Termux（与 CCM 同一签名体系）\n" +
+                    "② **RUN_COMMAND 权限未授予** —— 报 \"without permission " +
+                    "com.termux.permission.RUN_COMMAND\" 就是这个。该权限是 dangerous 级，" +
+                    "去 设置 → 环境 → 「外接 Termux」行点授权（弹系统框）\n" +
                     "③ Android 8+ 对后台 startService 有限制 —— 先手动打开一次 Termux 再试\n" +
                     "④ 未安装 Termux",
             )
