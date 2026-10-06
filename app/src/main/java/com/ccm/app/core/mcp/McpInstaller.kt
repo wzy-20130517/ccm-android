@@ -3,7 +3,6 @@ package com.ccm.app.core.mcp
 import android.content.Context
 import android.util.Log
 import com.ccm.app.runtime.ProotRuntime
-import java.io.File
 
 /**
  * MCP 自动安装器 —— 让用户「点一下就装好」，不用手动配。

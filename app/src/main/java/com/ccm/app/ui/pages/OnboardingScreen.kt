@@ -45,6 +45,7 @@ import com.ccm.app.ui.common.PainterIcon
 import com.ccm.app.ui.theme.CCMText
 import com.ccm.app.ui.theme.CCMTheme
 import com.ccm.app.ui.theme.CcmMono
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -574,7 +575,7 @@ private suspend fun runInstall(
     /** 运行环境模式（"proot" / "termux"）。termux 时整段 rootfs 安装跳过。 */
     envMode: String = "proot",
     emit: suspend (Float, String) -> Unit,
-): Boolean = kotlinx.coroutines.coroutineScope {
+): Boolean = coroutineScope {
     val sink = ProgressSink()
 
     // 推送协程：每 120ms 把最新进度刷进 UI。

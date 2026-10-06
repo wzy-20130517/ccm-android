@@ -1,10 +1,7 @@
 package com.ccm.app.tools
 
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
 import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import java.util.Locale
 import java.util.concurrent.CountDownLatch

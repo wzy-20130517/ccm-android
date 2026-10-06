@@ -14,6 +14,7 @@ import com.ccm.app.core.tool.ToolSettings
 import com.ccm.app.core.AppContainer
 import com.ccm.app.tools.AndroidImageScaler
 import com.ccm.app.tools.ToolsBootstrap
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import java.io.File
@@ -537,7 +538,7 @@ object AppGraph {
             // 用 runBlocking 起协程等 UI —— 调用方在 IO 线程，不会死锁主线程。
             phoneModePrompter = {
                 try {
-                    kotlinx.coroutines.runBlocking { requestPhoneModeBlocking() }
+                    runBlocking { requestPhoneModeBlocking() }
                 } catch (_: Throwable) { null }
             }
 
@@ -969,6 +970,26 @@ object AppGraph {
             toolSettings = settings
             registry = reg
             toolNames = tools.registered
+
+            // ══════════════════════════════════════════════════════════
+            //  【2026-10-06 修】重新注入子 Agent 观察器
+            // ══════════════════════════════════════════════════════════
+            //
+            // 每次 rebuildTools 都会 new 一套 AgentTools —— 新的实例
+            // observer 是 null，于是 AgentStatus/AgentOutput/AgentStop
+            // 三个工具全部返回「观察器未接入」。
+            //
+            // 触发路径很常见：引导页选完环境 → onReady → rebuildTools
+            // → 子 Agent 工具从此失效（用户看不出来，只觉得"查不到子 Agent"）。
+            //
+            // 复用已有 manager（pendingSubAgentManager 是 init 时建的，
+            // 它绑着 container 的 runSubAgent，重建工具不影响它）。
+            try {
+                val mgr = pendingSubAgentManager
+                if (mgr != null) {
+                    tools.agentTools?.observer = mgr.asToolObserver()
+                }
+            } catch (_: Throwable) {}
             true
         } catch (t: Throwable) {
             initError = "工具重建失败：${t::class.java.simpleName}: ${t.message}"
