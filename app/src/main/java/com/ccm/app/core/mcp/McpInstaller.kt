@@ -19,7 +19,7 @@ import java.io.File
  * 本类做全自动：
  * 1. **检测** rootfs 有没有 node
  * 2. **没有就装**（apt install nodejs，约 30MB）
- * 3. **部署 server**（从 assets/mcp/<名字>/ 解压到 rootfs）
+ * 3. **部署 server**（由 MarketClient 解压 tar.gz 到 rootfs）
  * 4. **返回可用的 command**（proot 包装的完整命令行）
  *
  * ## 为什么用 rootfs 的 node 而不是打包 Node 二进制
@@ -107,51 +107,7 @@ class McpInstaller(
         found
     } catch (_: Throwable) { false }
 
-    /**
-     * 部署一个 MCP server（从 assets 解压到 rootfs）。
-     *
-     * @param name server 名（对应 assets/mcp/<名字>/）
-     * @return rootfs 里的入口脚本路径；失败返回 null
-     */
-    suspend fun deployServer(name: String, onProgress: Progress? = null): String? {
-        onProgress?.onStep("正在部署 $name …")
-        return try {
-            val assets = context.assets
-            val files = listAssets(assets, "mcp/$name")
-            if (files.isEmpty()) {
-                Log.w(TAG, "assets/mcp/$name 里没有文件")
-                return null
-            }
-
-            // 写到 rootfs（通过 Kotlin 直接写文件 —— rootfs 是普通目录）
-            val targetDir = File(runtime.rootfsDir(), "$DEPLOY_ROOT/$name")
-            targetDir.mkdirs()
-
-            var count = 0
-            for (rel in files) {
-                try {
-                    val target = File(targetDir, rel)
-                    target.parentFile?.mkdirs()
-                    assets.open("mcp/$name/$rel").use { input ->
-                        target.outputStream().use { output -> input.copyTo(output) }
-                    }
-                    count++
-                } catch (_: Throwable) {}
-            }
-
-            Log.i(TAG, "部署 $name：$count 个文件 → ${targetDir.absolutePath}")
-            onProgress?.onStep("已部署 $count 个文件")
-
-            // 找入口脚本
-            val entry = File(targetDir, "server.mjs")
-            if (entry.exists()) entry.absolutePath else null
-        } catch (t: Throwable) {
-            Log.e(TAG, "部署 $name 失败：${t.message}", t)
-            null
-        }
-    }
-
-    /**
+/**
      * 生成 proot 包装的完整命令行（给 McpStdioTransport 用）。
      *
      * ⚠️ 关键：MCP server 跑在 rootfs 里，但 **McpStdioTransport 用
