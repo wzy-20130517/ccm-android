@@ -2757,8 +2757,13 @@ internal fun launchGitDiff(ctx: SlashContext, arg: String) {
     val cwd = com.ccm.app.AppGraph.workspacePath().ifBlank { null }
 
     scope.launch {
+        // 【2026-10-06 对齐 CLI】原来只跑 `git diff --stat`（**只有统计**）——
+        // CLI 的 /diff 给完整 diff + 词级高亮（cmd-extensions.mjs:139 cmdDiff）。
+        // 现在：stat 摘要 + 完整 diff（超长截断 20K，对齐 CLI 的 20000）。
+        // --stat / --staged 参数照传（CLI 支持 --staged/--cached/--stat）。
         val sub = if (arg.isBlank()) "" else " " + arg.trim()
-        val cmd = "git diff --stat$sub"
+        val statOnly = arg.contains("--stat") || arg.contains("--summary")
+        val cmd = if (statOnly) "git diff --stat$sub" else "git diff --stat$sub; echo '---DIFF---'; git diff$sub"
         val result = try {
             val r = channel.execute(cmd, cwd, 20_000L) { }
             val out = buildString {
@@ -2772,7 +2777,17 @@ internal fun launchGitDiff(ctx: SlashContext, arg: String) {
                 r.timedOut -> "⏱ git 超时（20s）"
                 out.isBlank() && r.exitCode == 0 -> "工作区没有未提交的改动。"
                 out.isBlank() -> "git 退出码 ${r.exitCode}（无输出）"
-                else -> out
+                else -> {
+                    // 拆分 stat 与完整 diff，完整部分超长截断（对齐 CLI 的 20000）
+                    val parts = out.split("---DIFF---")
+                    val stat = parts.getOrNull(0)?.trim().orEmpty()
+                    val diff = parts.getOrNull(1)?.trim().orEmpty()
+                    when {
+                        diff.isEmpty() -> stat
+                        diff.length > 20_000 -> stat + "\n\n" + diff.take(20_000) + "\n\n... [diff 超长，已截断]"
+                        else -> stat + "\n\n" + diff
+                    }
+                }
             }
         } catch (e: Throwable) {
             "执行失败：${e.message}"
