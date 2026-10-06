@@ -324,6 +324,29 @@ class ProotRuntime(private val context: Context) {
             args += "--bind=${extDir.absolutePath}:/mnt/ext"
         }
 
+        // ── 整个 /sdcard（2026-10-06 用户拍板加）────────────────────────
+        //
+        // 前提：系统设置里给 CCM 授予「所有文件访问」（MANAGE_EXTERNAL_STORAGE
+        // 已在 Manifest 声明，但**声明≠授予**，默认关）。
+        // 没授时时 canWrite() 为 false → 跳过：bind 一个访问不了的路径
+        // 只会在 proot 里冒出个 Permission denied 的空壳，还容易被当成
+        // 「proot 坏了」。每次 buildProotArgs 都现查 —— 用户开完权限
+        // 下次打开终端即生效，不用重启 App。
+        //
+        // 给两个挂载点：宿主真实路径 /storage/emulated/0 + 惯用别名 /sdcard
+        // （Ubuntu rootfs 里没有 /sdcard，proot 会把 dst 自动建出来 ——
+        //   同款语法见上面 /mnt/ext 的先例）。
+        //
+        // ⚠️ 语义边界：/sdcard 是 FUSE，**读写删改/重命名都没问题**，
+        // 但不支持 symlink / 硬链接 / chmod 权限位 —— git 仓库、
+        // node_modules、解压带链接的 tar 别放上面（npm install 死在这
+        // 是 Termux 老经验）。它只当**数据盘**；环境仍在 rootfs 里。
+        val sd = android.os.Environment.getExternalStorageDirectory()
+        if (sd.exists() && sd.canWrite()) {
+            args += "--bind=${sd.absolutePath}"
+            args += "--bind=${sd.absolutePath}:/sdcard"
+        }
+
         // 额外挂载
         bindExtra.forEach { args += "--bind=$it" }
 
