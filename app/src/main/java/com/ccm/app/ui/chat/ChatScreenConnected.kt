@@ -99,6 +99,8 @@ fun ChatScreenConnected(
     // 模型用 Read 工具读内容（core 的用户消息通道只支持图片）。
     var pendingFiles by remember { mutableStateOf<List<String>>(emptyList()) }
     var showAttachMenu by remember { mutableStateOf(false) }
+    // 附件二级菜单（PlusMenu 的「附件」项 → 拍照/图片/文件）
+    var showAttachSubmenu by remember { mutableStateOf(false) }
     val ctx = androidx.compose.ui.platform.LocalContext.current
 
     // ── slash 统一 handler 的上下文与结果执行器（2026-09-30）──────────
@@ -256,10 +258,64 @@ fun ChatScreenConnected(
         wasRunning = nowRunning
     }
 
-    // ── + 附件菜单（webgap #2：原「+」直接塌成选图）───────────────
+    // ── + 菜单（2026-10-06 改用 PlusMenu，对齐首页）────────────────
+    //
+    // 【用户报「对话页的 + 没接新版」】原来这里是个自制的 AlertDialog
+    // （只有 拍照/图片/文件 三项），而首页用的是完整的 PlusMenu 组件
+    // （截图 / 附件 / 项目 / 技能 / 连接器）—— 同一个 App 两套菜单，
+    // 功能不一致。
+    //
+    // 现在对话页也用 PlusMenu（同一组件，功能自然对齐）：
+    // · 截图 → 把「截取当前屏幕」指令塞进草稿
+    // · 项目 → 把「在项目「X」里：」前缀塞进草稿
+    // · 技能 → 把 /技能id 塞进草稿
+    // · 附件 → 弹二级（图片/文件/拍照）—— PlusMenu 的 onAttach 回调
     if (showAttachMenu) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showAttachMenu = false },
+            text = {
+                com.ccm.app.ui.common.PlusMenu(
+                    onDismiss = { showAttachMenu = false },
+                    onAttach = {
+                        // 附件二级：沿用原来的三个入口
+                        showAttachMenu = false
+                        showAttachSubmenu = true
+                    },
+                    onScreenshot = {
+                        val cur = session.state.value.draft
+                        session.setDraft(
+                            if (cur.isBlank()) "截取当前屏幕并告诉我上面有什么"
+                            else "$cur\n截取当前屏幕并告诉我上面有什么"
+                        )
+                        showAttachMenu = false
+                    },
+                    projects = remember {
+                        com.ccm.app.AppGraph.storage
+                            ?.let { com.ccm.app.core.project.ProjectStore(it).list() }
+                            ?.map { it.name } ?: emptyList()
+                    },
+                    onPickProject = { name ->
+                        val cur = session.state.value.draft
+                        session.setDraft(if (cur.isBlank()) "在项目「$name」里：" else "$cur 在项目「$name」里：")
+                    },
+                    skills = remember {
+                        com.ccm.app.core.skill.BuiltinSkills.all().map { it.id to it.name }
+                    },
+                    onPickSkill = { id ->
+                        val cur = session.state.value.draft
+                        session.setDraft(if (cur.isBlank()) "/$id" else "$cur /$id")
+                    },
+                    onConnectors = { showAttachMenu = false },
+                )
+            },
+            confirmButton = {},
+        )
+    }
+
+    // 附件二级菜单（PlusMenu 的 onAttach 转到这里）
+    if (showAttachSubmenu) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showAttachSubmenu = false },
             title = { androidx.compose.material3.Text("添加附件", style = com.ccm.app.ui.theme.CCMText.body14) },
             text = {
                 androidx.compose.foundation.layout.Column {
@@ -275,10 +331,10 @@ fun ChatScreenConnected(
                                     ),
                                 )
                             } catch (_: Throwable) {}
-                            showAttachMenu = false
+                            showAttachSubmenu = false
                         },
-                        "图片（可多选，随消息发给模型看）" to { attachLauncher.launch("image/*"); showAttachMenu = false },
-                        "文件（以路径附带，模型用 Read 读）" to { fileLauncher.launch("*/*"); showAttachMenu = false },
+                        "图片（可多选，随消息发给模型看）" to { attachLauncher.launch("image/*"); showAttachSubmenu = false },
+                        "文件（以路径附带，模型用 Read 读）" to { fileLauncher.launch("*/*"); showAttachSubmenu = false },
                     ).forEach { (label, act) ->
                         androidx.compose.material3.Text(
                             text = label,
@@ -295,7 +351,7 @@ fun ChatScreenConnected(
             },
             confirmButton = {},
             dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showAttachMenu = false }) {
+                androidx.compose.material3.TextButton(onClick = { showAttachSubmenu = false }) {
                     androidx.compose.material3.Text("取消", style = com.ccm.app.ui.theme.CCMText.body13)
                 }
             },
@@ -337,7 +393,12 @@ fun ChatScreenConnected(
         // 参数名不能直接当 label —— CI #218 报 Unresolved label('onSend')。
         onSend = onSend@{
             val text = coreState.draft.trim()
-            if (text.isNotEmpty()) {
+            // 【2026-10-06 用户报「仅选择图片/文件时无法发送」】
+            // 原来是 `if (text.isNotEmpty())` —— 只选附件不打字时 text 为空，
+            // 整个发送分支被跳过，点了发送没反应。
+            // 现在：文字**或**附件任一存在就允许发送。
+            val hasAttachments = pendingImages.isNotEmpty() || pendingFiles.isNotEmpty()
+            if (text.isNotEmpty() || hasAttachments) {
                 // ★ 2026-09-30 统一 handler（多 Agent 接入）：所有 slash 先过
                 //   SlashCommandHandler.handleSlashCommand（会话/查询/配置/工具
                 //   四大分区），认得的在这里执行副作用；不认的才落到下面的老

@@ -204,18 +204,34 @@ fun InputBar(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(7.36.dp),
                     ) {
-                        PainterIcon(
-                            R.drawable.ic_input_plus,
-                            size = 20.dp,
-                            tint = colors.textMain,
-                            modifier = Modifier.clickable(onClick = onAttach),
-                        )
-                        if (attachedPaths.isNotEmpty()) {
-                            Text(
-                                text = "图×${attachedPaths.size}",
-                                style = CCMText.body12,
-                                color = colors.claudeOrange,
+                        // 【2026-10-06 用户报「附件时语音键消失、发送键被挤出」】
+                        // 原来「图×N」是独立 Text —— 占约 40dp 横向空间，
+                        // 加上 token 计数（「30K/1.0M·3%」约 90dp）让左排暴涨，
+                        // Row 挤压右排 → 语音键（无 requiredSize 保护）先被挤没。
+                        // 改成叠在 + 图标右上角的小角标：**零额外宽度**。
+                        Box {
+                            PainterIcon(
+                                R.drawable.ic_input_plus,
+                                size = 20.dp,
+                                tint = colors.textMain,
+                                modifier = Modifier.clickable(onClick = onAttach),
                             )
+                            if (attachedPaths.isNotEmpty()) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .offset(x = 6.dp, y = (-4).dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(colors.claudeOrange)
+                                        .padding(horizontal = 3.dp),
+                                ) {
+                                    Text(
+                                        text = attachedPaths.size.toString(),
+                                        style = CCMText.body11.copy(fontSize = 9.sp),
+                                        color = Color.White,
+                                    )
+                                }
+                            }
                         }
                         if (tokenCount > 0) {
                             // ★ webgap #7（2026-09-29）：原来只有裸 tokens 数 ——
@@ -285,15 +301,23 @@ fun InputBar(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(7.36.dp),
                     ) {
-                        Box {
+                        // 模型名是可压缩的那个（weight(1f, fill=false)）——
+                        // 空间不够时它先截断，而不是把语音/发送键挤没。
+                        Box(modifier = Modifier.weight(1f, fill = false)) {
                             ModelChipInline(modelName = modelName, onClick = onModelClick)
                             modelPickerContent?.invoke()
                         }
+                        // 【2026-10-06】加 requiredSize 保护 —— 与发送键同款。
+                        // 原来没保护，横向空间不够时被 Row 压缩到 0（「语音键消失」）。
+                        // requiredSize 无视父约束，强制保尺寸；挤压会转移到
+                        // 模型名（它是设计好会截断的那个）。
                         PainterIcon(
                             R.drawable.ic_voice_mode,
                             size = 20.dp,
                             tint = colors.textMain,
-                            modifier = Modifier.clickable(onClick = onVoice),
+                            modifier = Modifier
+                                .requiredSize(20.dp)
+                                .clickable(onClick = onVoice),
                         )
                         // 【2026-10-06 mid-turn steering 接线】
                         // 原来运行时按钮固定是「停止」—— 用户想补充一句
@@ -302,9 +326,15 @@ fun InputBar(
                         // 不打断当前工具批次）；**无文字 = 停止**。
                         // 对齐 CLI/Web 的「执行中补充指令」语义。
                         SendButton(
-                            enabled = value.isNotBlank() || running,
-                            running = running && value.isBlank(),   // 有字时显示发送图标
-                            onClick = { if (running && value.isBlank()) onStop() else onSend() },
+                            // 【2026-10-06】原来只认文字 —— 只选附件不打字时
+                            // 按钮置灰，用户点不动（「仅选择图片/文件时无法发送」）。
+                            enabled = value.isNotBlank() || attachedPaths.isNotEmpty() || running,
+                            // 有字或有附件 → 显示发送图标；都没有且在跑 → 停止图标
+                            running = running && value.isBlank() && attachedPaths.isEmpty(),
+                            onClick = {
+                                if (running && value.isBlank() && attachedPaths.isEmpty()) onStop()
+                                else onSend()
+                            },
                         )
                     }
                 }
