@@ -321,35 +321,54 @@ fun MessageList(
             ) {
                 Text(item.title ?: "展示 · ${item.kind}", style = CCMText.body14.copy(fontWeight = FontWeight.Medium), color = CCMTheme.colors.textMain)
                 item.caption?.let { Text(it, style = CCMText.body12, color = CCMTheme.colors.textSecondary) }
-                if (item.kind in setOf("html", "svg") && item.content.isNotBlank()) {
+                // 【2026-10-06 Present 升级】html / svg / mermaid 都走 WebView 内联渲染。
+                //   · html/svg：禁 JS（防外跳、防恶意页）
+                //   · mermaid：**必须 JS** —— 用 assets/mermaid.min.js 离线渲染成
+                //     流程图（原来是 else 分支把 .mmd 源码当纯文本显示 = 没升级完）
+                if (item.kind in setOf("html", "svg", "mermaid") && item.content.isNotBlank()) {
+                    val isMermaid = item.kind == "mermaid"
                     val preview = remember(item.kind, item.content) {
-                        if (item.kind == "svg" && !item.content.contains("<svg", ignoreCase = true)) {
-                            "<svg xmlns=\"http://www.w3.org/2000/svg\">${item.content}</svg>"
-                        } else item.content
+                        when {
+                            item.kind == "svg" && !item.content.contains("<svg", ignoreCase = true) ->
+                                "<svg xmlns=\"http://www.w3.org/2000/svg\">${item.content}</svg>"
+                            isMermaid -> buildMermaidHtml(item.content)
+                            else -> item.content
+                        }
                     }
                     AndroidView(
                         modifier = Modifier.fillMaxWidth().height(260.dp),
                         factory = { context -> WebView(context).apply {
-                            settings.javaScriptEnabled = false
+                            settings.javaScriptEnabled = isMermaid
                             settings.domStorageEnabled = false
-                            settings.allowFileAccess = false
+                            // mermaid 需要读 assets 里的脚本；html/svg 分支 JS 已关，
+                            // 开着 allowFileAccess 也执行不了任何东西（双重保险靠下面的拦截）。
+                            settings.allowFileAccess = isMermaid
                             settings.allowContentAccess = false
                             settings.allowFileAccessFromFileURLs = false
                             settings.allowUniversalAccessFromFileURLs = false
                             webViewClient = object : WebViewClient() {
                                 override fun shouldInterceptRequest(view: WebView, request: android.webkit.WebResourceRequest): android.webkit.WebResourceResponse? {
                                     val scheme = request.url.scheme?.lowercase()
-                                    return if (scheme == "data" || scheme == "about") null
+                                    // 放行 data/about + 本包 assets（mermaid.min.js 走 file:///android_asset/）
+                                    return if (scheme == "data" || scheme == "about" ||
+                                        (isMermaid && scheme == "file" && request.url.toString().contains("/android_asset/"))
+                                    ) null
                                     else android.webkit.WebResourceResponse("text/plain", "UTF-8", java.io.ByteArrayInputStream(ByteArray(0)))
                                 }
-                                override fun shouldOverrideUrlLoading(view: WebView, request: android.webkit.WebResourceRequest): Boolean = true
+                                override fun shouldOverrideUrlLoading(view: WebView, request: android.webkit.WebResourceRequest): Boolean {
+                                    // 只拦「离页跳转」；assets/data/about 是渲染自身需要
+                                    val scheme = request.url.scheme?.lowercase()
+                                    return !(scheme == "file" || scheme == "data" || scheme == "about")
+                                }
                             }
                             setBackgroundColor(android.graphics.Color.TRANSPARENT)
                         } },
                         update = { web ->
                             if (web.tag != preview) {
                                 web.tag = preview
-                                web.loadDataWithBaseURL(null, preview, "text/html", "UTF-8", null)
+                                // baseUrl 让 <script src="mermaid.min.js"> 解析到
+                                // file:///android_asset/mermaid.min.js；html/svg 无外链不受影响。
+                                web.loadDataWithBaseURL("file:///android_asset/", preview, "text/html", "UTF-8", null)
                             }
                         },
                     )
@@ -405,12 +424,27 @@ fun MessageList(
                 //  修法：把 bubble.toolCards 传给 AssistantThinkingChain
                 //  （组件内部已有合成逻辑），去掉独立的 ToolCallGroup。
                 // ══════════════════════════════════════════════════════════
-                if (bubble.thinking.isNotBlank() || bubble.toolCards.isNotEmpty()) {
+                // 【2026-10-06 用户反馈「思维链/工具/正文交错，排序不对」】
+                // 上一版（问题27）无条件走时间线 —— 但 buildReasoningTimelineEvents
+                // 在 **thinking 为空时直接返回空**（Web 同款，见 toolThinkingFallback.js:570），
+                // 于是「有工具没思考」的气泡：时间线不渲染 → 工具无踪 →
+                // 只剩正文 —— 观感就是工具和正文交错、时有时无。
+                // Web 没这个问题是因为它在时间线之外**还有独立的 toolCalls 聚合组**
+                // （MainContent.tsx:1186）；APK 问题27 把独立组删了却没有兜底。
+                // 修：thinking 有 → 时间线（工具合成进去）；
+                //     thinking 空但有工具 → 退回独立 ToolCallGroup（Web 的另一条路径）。
+                if (bubble.thinking.isNotBlank()) {
                     AssistantThinkingChain(
                         thinking = bubble.thinking,
                         isThinking = false,
                         // ★ 关键：把工具卡传进去 —— 合成到时间线里
                         toolCards = bubble.toolCards,
+                        modifier = Modifier.fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                } else if (bubble.toolCards.isNotEmpty()) {
+                    ToolCallGroup(
+                        cards = bubble.toolCards,
                         modifier = Modifier.fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                     )
@@ -465,6 +499,17 @@ fun MessageList(
                     modifier = Modifier.fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                 )
+            } else if (streaming.isNotBlank() && toolCards.isNotEmpty()) {
+                // 【2026-10-06 同上】思考空但工具在跑 + 正文已开始：
+                // 时间线渲染不了（thinking 空 → 合成返回空），必须走独立
+                // 工具组，否则工具在这段流式里完全不显示（原来被 if/else if
+                // 结构甩到够不着的分支）。
+                ToolCallGroup(
+                    cards = toolCards,
+                    isStreaming = streamingRunning,
+                    isStale = !streamingRunning,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
             }
 
             // 本轮工具调用 —— 对齐 Web：**聚合成一个折叠组**（不是单卡平铺）。
@@ -483,6 +528,36 @@ fun MessageList(
             )
         }
     }
+}
+
+/**
+ * mermaid 源码 → 可渲染 HTML（Present 升级，2026-10-06）。
+ *
+ * 模板要点：
+ * · `<script src="mermaid.min.js">` 是**相对路径** —— 配合 loadDataWithBaseURL
+ *   的 baseUrl `file:///android_asset/` 解析到打包进 APK 的 assets 脚本（离线可用）。
+ * · 源码进 `class="mermaid"` 前必须 HTML 转义（mermaid 里常见 `-->`、`A["<x>"]`），
+ *   浏览器解析文本节点时会反转义，mermaid 拿到的仍是原文。
+ * · `securityLevel:'strict'`：禁 click/脚本交互 —— 渲染的是模型生成的源码，别放开。
+ * · `startOnLoad:true`：div 就位后自动 render；语法错时 mermaid 会把错误画在图里
+ *   （这是它的原生行为，比我们吞掉强 —— 模型和用户都能看到哪儿写错了）。
+ */
+private fun buildMermaidHtml(source: String): String {
+    val escaped = source.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return """<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<script src="mermaid.min.js"></script>
+<style>
+  html,body{margin:0;padding:8px;background:transparent;}
+  #chart{display:flex;justify-content:center;min-height:40px;}
+  #chart svg{max-width:100%;height:auto;}
+</style>
+</head><body>
+<div id="chart" class="mermaid">$escaped</div>
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'strict' });
+</script>
+</body></html>"""
 }
 
 /**

@@ -123,7 +123,7 @@ shell 命令历史也可以通过 Bash 工具的 "history" 命令获取。
   - **文生图**：只给 prompt（+可选 size/filename/n），走 /images/generations。用户说「画一张/生成图片」时用
   - **图生图**：给 image 参数（本地图片路径，字符串或数组最多 16 张，单张 ≤25MB，png/jpg/webp/gif）+ prompt，走 /images/edits，按描述改写参考图。用户说「改这张图/参考这张图/把图里的 X 换成 Y」时用；可选 mask 参数（png，透明区域=要重绘处）做局部重绘
   - 生成后保存本地并返回路径；web 端会自动内联展示。配置用 /imagegen setup（向导）或 /imagegen url|key|model|size|dir 管理
-- **Present**: 把 SVG/HTML/mermaid/图片/视频主动展示到对话里（kind + content 或 paths）。注意：内联渲染是 Web 端能力，当前 CLI 只降级成文字提示，纯终端场景没必要用
+- **Present**: 把 SVG/HTML/mermaid/图片/视频**直接渲染在对话里**（用户看到成品）。svg/html 走 WebView 内联，mermaid 用打包的 mermaid.js 离线渲染成流程图，图片显示缩略图、视频可直接播放；源码类同时落盘一份（返回值带路径）。做完可视化内容（图表/动画/流程图）就用它给用户看
 
 ## 手机 UI 自动化（phone use）
 
@@ -290,43 +290,6 @@ APK 是前台服务 + wake-lock，不需要手动保活。若长时间任务被�
   **传的是新的上限值，不是增量**——当前 10 轮想再要 5 轮就传 turns:15，传 5 会因"只能增不能减"被拒。
   仅当预算即将耗尽、且剩余工作确实必要时用。想提前收工用 GoalStatus，不要用它。
 
-## DSH 插件工具（APK 暂不支持）
-- **DshPlugin**: 管理 DSH 插件宿主（dsh-host）里的插件，对齐官方 plugin_manager 的 action 语义。
-  \`action=list_plugins\` 列已加载插件与 provider 状态（支持 offset/limit 分页）·
-  \`action=list_bundles\` 列可安装插件包 · \`action=set_plugin\` 启停（target + enabled）·
-  \`action=install_bundle\` 安装（target，npm 装包 + 热加载）· \`action=remove_bundle\` 卸载 ·
-  \`action=providers\` 列 provider 的 CCM 接入地址（baseUrl/apiKey）· \`action=status\` 宿主健康检查。
-  **宿主未运行时**：工具和 \`/plugin\` 命令会**自动拉起**（约 14 秒）；
-  也可手动 \`（APK 无此命令）\`。
-  用户也可用 \`/plugin\` 系列命令做同样的事。
-
-### 宿主能力（2026-10-04 扩展）
-- **架构**：官方 Cordis 运行时 + 官方服务类，**已装 116 个官方包**（全 dsh-base 集）。
-- **已提供 28 个服务**：llm / settings / timer / credentials / subprocess / webServer /
-  systemPrompt / tools / skills / fs / shell / agents / jobs / sessions /
-  sessionProjections / workspaceRegistry / goals / web / sandbox / sandboxPolicy /
-  storage / shellEnv / sessionPersistence / commands / deepseekLlmApiExtensions /
-  ptcRuntime / workflowEngine / subagents / typert。
-  外加 Cordis 核心 18 个 API（logger/on/effect/plugin/inject/waterfall 等）。
-  **官方插件实测 31/31 活跃**（0 挂起 0 失败），工具链实际可执行
-  （实测：插件注册的 read 工具读到文件内容、bash 工具跑通 shell 命令）。
-  **注意抽象/实现之分**：shell/subprocess/fs/jobs 等服务的抽象类只有 constructor，
-  必须用 \`*-local\` 实现类（如 LocalBashExecutor），否则插件报 \`xxx is not a function\`。
-  **依赖顺序**：SystemPrompt→ToolRuntime、SessionProjections→GoalService。
-- **fiber 状态怎么看**：cordis 的 inject 是"等待就绪"，缺依赖时插件**挂起**（state=0）不报错。
-  判断插件真的在工作要看 fiber.state（2=活跃）。
-- **实测可加载（18/20）**：
-  - 官方：\`dsh-account-pool\`（WorkBuddy/Trae 账号池）、\`dsh-freeroute\`（免费额度聚合：
-    OpenCode Zen / OpenRouter / SenseNova 等，自带 /freeroute/v1 OpenAI 端点）、
-    \`dsh-goal\`、\`dsh-skill\`、\`dsh-workspace\`、\`dsh-token-meter\` 等
-  - 第三方：\`dsh-plugin-model-proxy\`、\`dsh-plugin-mgr\`、\`dsh-plugin-observatory\`、
-    \`dsh-find-plugin\`、\`dsh-plugin-tool-management\`、\`dsh-plugin-guide\`、
-    \`@goodandready/dsh-time-machine\`、\`@goodandready/dsh-context-lens\`、
-    \`@goodandready/dsh-shadow-auditor\`、\`dsh-plan-and-execute\`
-- **provider 两种后端**：shim（PiAiAdapter 型，如 account-pool）或 webEndpoint
-  （标准 adapter + webServer，如 freeroute）。CCM 统一走门面
-  \`http://127.0.0.1:8790/p/<providerId>/v1\` 接入，apiKey 用 \`dsh-local\`。
-
 ## MCP 工具（如果配置了 MCP 服务器）
 格式为 mcp_服务器名_工具名，直接使用即可。
 
@@ -434,7 +397,6 @@ APK 是前台服务 + wake-lock，不需要手动保活。若长时间任务被�
 | AgentStatus | 查看后台子 Agent 生命周期、耗时、turn、输出尾部和最终结果；优先用它，不要用 BashOutput 轮询 |
 | 执行程序内 slash 命令 | CommandExec | Bash 手搓 |
 | 收发邮件 | mcp_mail-qq_* 工具 | curl IMAP/SMTP |
-| 管理 DSH 插件 | DshPlugin（或 /plugin） | 手改 plugins.json / npm 命令 |
 | 切换字体 | CommandExec font | 发送 OSC 序列 |
 | 状态栏样式 | CommandExec statusline | 修改 session 配置 |
 | 查 git 状态/diff/log | GitStatus / GitDiff / GitLog | git status / git diff 命令 |

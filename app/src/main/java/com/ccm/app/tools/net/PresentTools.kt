@@ -17,22 +17,23 @@ import java.io.File
  * 参照 Node 版 `core/present-tool.mjs`（152 行）。
  *
  * ══════════════════════════════════════════════════════════════
- *  ⚠️ APK 端是「保存 + 返回路径」的降级实现（刻意如此）
+ *  ✅ 2026-10-06 升级为**真渲染**（原「保存+返回路径」的降级实现已废弃）
  * ══════════════════════════════════════════════════════════════
  *
- * **为什么降级而不是不做**（main 2026-09-27 拍板）：
- * 工具存在 → 模型知道有这个东西、知道为什么这里用不了，不会瞎猜或绕路；
- * 工具不存在 → 模型以为没这能力，可能去调 Bash 写文件再猜路径。
+ * 链路（三段都是现成的，本工具只管 emit）：
+ *   execute → ctx.ui.onPresent(...)                    （ToolUiCallback）
+ *           → AgentLoop:870 emit(AgentEvent.Present)   （事件流）
+ *           → ChatSession 收事件 → state.presentItems  （UI 状态）
+ *           → MessageBubble.presentItems.forEach 渲染  （WebView/缩略图/VideoView）
  *
- * **为什么 APK 端没有渲染通道**：
- * 看 [com.ccm.app.core.tool.ToolUiCallback] —— 只有 onProgress / onContent 两个回调，
- * 没有 Present 事件。Node 版的 `onPresent(payload)` 是 Web 端推 SSE 用的
- * （前端收到后内联渲染 SVG/HTML）。APK 的 Compose 界面目前没有对应的渲染组件，
- * 所以这里**不假装能渲染**，改为把内容落盘 + 返回路径，让模型自己决定后续
- * （比如用 ViewImage 看渲染后的图，或告诉用户文件在哪）。
+ * 渲染分支（MessageBubble.kt）：
+ *   · html / svg → WebView（禁 JS，防外跳）
+ *   · mermaid    → WebView + assets/mermaid.min.js（JS on，离线渲染流程图）
+ *   · image 等   → ThumbImage 缩略图（可点开大图）
+ *   · video      → VideoView 播放
  *
- * **接线后想升级成真渲染**：给 ToolUiCallback 加一个 `onPresent` 方法，
- * 本工具里调它即可 —— schema / 描述 / 注册都不用动。
+ * **落盘保留**：源码类仍写一份到 files/present/<kind>/（用户可去文件管理器找，
+ * 也给「渲染失败时手动打开」留了后路）—— 但**渲染不再依赖它**。
  *
  * ══════════════════════════════════════════════════════════════
  *  两种输入方式（对齐 Node 版）
@@ -82,12 +83,11 @@ class PresentTools(private val saveDir: File) {
     inner class PresentTool : Tool() {
         override val name = "Present"
         override val description =
-            "把可视内容主动展示出来（用户直接看到成品，而不是源码或文件路径）。" +
+            "把可视内容主动展示出来（**直接渲染在对话里**，用户看到成品而不是源码）。" +
                 "适用：写完 SVG/HTML 动画想给用户看效果；处理视频后抽几帧；生成图表/流程图。\n" +
-                "kind=svg/html/mermaid 时用 content 传源码；kind=image/images/video 时用 paths 传本地文件路径。\n" +
-                "⚠️ **本端（Android APK）没有内联渲染通道**：源码类会写到本地文件并返回路径，" +
-                "图片/视频类校验路径后原样返回 —— 都不会在对话里渲染。" +
-                "想看渲染结果请用 ViewImage 打开返回的路径；想让用户看请把路径告诉他。"
+                "kind=svg/html/mermaid 时用 content 传源码（会内联渲染：SVG/HTML 走 WebView，" +
+                "mermaid 渲染成流程图）；kind=image/images/video 时用 paths 传本地文件路径" +
+                "（图片缩略图、视频直接播放）。源码类同时会落盘一份，返回值里带路径。"
         override val isReadOnly = false
         override val isConcurrencySafe = false
         override val maxResultSizeChars = 1_500
