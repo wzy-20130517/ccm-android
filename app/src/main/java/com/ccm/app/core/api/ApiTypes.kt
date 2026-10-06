@@ -66,8 +66,15 @@ object ApiTypes {
             val argumentsDelta: String,
         ) : StreamEvent()
 
-        /** 流结束标记（收到 `[DONE]` 或 message_stop）。 */
-        object Done : StreamEvent()
+        /**
+         * 流结束标记（收到 `[DONE]` 或 message_stop）。
+         *
+         * @param finishReason 上游给的结束原因（`length` = 被 max_output_tokens
+         *   截断，`stop` = 正常结束，`tool_calls` = 要调工具）。
+         *   【2026-10-06 加】原来 Done 不带这个字段，AgentLoop 无法区分
+         *   「正常结束」和「被截断」—— 截断时只能等用户催「继续」。
+         */
+        data class Done(val finishReason: String? = null) : StreamEvent()
 
         /**
          * 用量统计（通常流末尾才给）。

@@ -422,6 +422,47 @@ class ChatSession(
 
             // imagePaths 空 = 原路径，零行为变化（第18批向后兼容点）
             collectEvents(container.agentLoop.run(effectiveText, imagePaths))
+
+            // ── 自动压缩（2026-10-06 P1-8 接线）────────────────────────
+            //
+            // AutoCompact 类早就写好了（shouldCompact / reportSuccess /
+            // reportFailure / isTripped 三道闸），但**零调用** ——
+            // 阈值配了也不生效，长会话照样撞 400。
+            // 对齐 CLI：每轮 run 正常结束后触发（index.mjs:6343）。
+            //
+            // ⚠️ 默认关闭（config.compactThreshold 未设时 isEnabled=false）——
+            // 用户被自动压缩搞丢过记忆，明确反感，只有他显式设阈值才启用。
+            try {
+                maybeAutoCompact()
+            } catch (_: Throwable) {}
+        }
+    }
+
+    /**
+     * 自动压缩（P1-8）：run 结束后检查水位，超阈值就压。
+     *
+     * 连续失败 3 次后断路（AutoCompact 内部 isTripped），需手动 /compact 恢复。
+     */
+    private suspend fun maybeAutoCompact() {
+        val ac = container.autoCompact
+        val hist = container.agentLoop.getHistory()
+        val tokens = container.agentLoop.lastPromptTokens
+        if (!ac.shouldCompact(hist, tokens)) return
+
+        val before = hist.size
+        val msg = summarizeAndReplace() ?: return
+        val after = container.agentLoop.getHistory().size
+        if (after < before) {
+            ac.reportSuccess()
+            _state.value = _state.value.copy(
+                bubbles = _state.value.bubbles + Bubble(
+                    role = Message.ROLE_ASSISTANT,
+                    text = "**自动压缩**\n\n$msg",
+                    messageId = "autocompact-${System.currentTimeMillis()}",
+                ),
+            )
+        } else {
+            ac.reportFailure()
         }
     }
 

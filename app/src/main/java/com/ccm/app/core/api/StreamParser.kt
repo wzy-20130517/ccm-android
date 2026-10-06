@@ -3,13 +3,10 @@ package com.ccm.app.core.api
 import com.ccm.app.core.provider.Protocol
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * 三套协议的 SSE 负载解析。
@@ -61,9 +58,14 @@ class StreamParser(
      * @param data 单条 `data:` 后的负载（已 trim）
      * @return 零到多个事件（一条负载可能拆出多个语义，也可能什么都不产生）
      */
+    /** 最近一次 finish_reason（流末 [DONE] 时带出去，见 Done 的注释）。 */
+    private var lastFinishReason: String? = null
+
     fun parse(data: String): List<ApiTypes.StreamEvent> {
         // 结束标记：OpenAI 用 [DONE]
-        if (data == "[DONE]") return listOf(ApiTypes.StreamEvent.Done)
+        // 【2026-10-06】带上上一 chunk 记下的 finish_reason ——
+        // 原来是 `Done`（无参），AgentLoop 不知道是被截断还是正常结束。
+        if (data == "[DONE]") return listOf(ApiTypes.StreamEvent.Done(lastFinishReason))
 
         val root: JsonObject = try {
             json.parseToJsonElement(data).jsonObject
@@ -159,7 +161,10 @@ class StreamParser(
             val finish = (choice["finish_reason"] as? JsonPrimitive)?.takeIf { it.isString }?.content
             if (!finish.isNullOrEmpty()) {
                 // OpenAI 流在最后一个 chunk 给 finish_reason，随后才有 [DONE]
-                // 这里不吐 Done —— 让 [DONE] 统一负责，避免上层收到两次结束
+                // 这里不吐 Done —— 让 [DONE] 统一负责，避免上层收到两次结束。
+                // 【2026-10-06】但要把 finish_reason **记下来**，等 [DONE] 时带上
+                // （原来直接丢弃 → AgentLoop 无法识别 length 截断）。
+                lastFinishReason = finish
             }
         }
         return out

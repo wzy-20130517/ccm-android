@@ -361,6 +361,16 @@ class AgentLoop(
     fun getTotalUsage(): Pair<Int, Int> = totalInputTokens to totalOutputTokens
 
     /**
+     * 最近一次请求的真实 prompt_tokens（0 = 还没发过）。
+     *
+     * 【2026-10-06 P1-8】AutoCompact 的 shouldCompact 用它判断水位 ——
+     * 比估算准（估算会把工具输出算错）。
+     */
+    @Volatile
+    var lastPromptTokens: Int = 0
+        private set
+
+    /**
      * 工具存储根目录（问题40：/compact 写备份用）。
      *
      * 返回 null = 未注入 storage（单测场景）。
@@ -457,6 +467,8 @@ class AgentLoop(
         try {
             // 空响应重试计数（连续几轮都吐空 → 放弃并如实报告）
             var emptyRetries = 0
+            // 输出截断重试计数（finish_reason=length，最多 3 次）
+            var maxOutputRetries = 0
 
             // 循环条件实时读 watchMode：
             // - 关着 → 正常的「轮次上限」语义
@@ -525,6 +537,27 @@ class AgentLoop(
                 // 必须先判中断再判空响应：否则会往历史里塞一条「空响应提示语」，
                 // 污染会话（用户下次打开会看到一条莫名其妙的系统消息）。
                 if (aborted) throw CancellationException("用户中断")
+
+                // ── max_output_tokens 截断 → 注入「继续」重试（2026-10-06 P1-7）──
+                //
+                // 对齐 CLI agent.mjs:585-596：finish_reason=length 说明回复被
+                // 输出上限截断（模型没说完），此时**不能**当正常结束 ——
+                // 用户看到半截回复，得手动催「继续」。
+                // 注入系统提示让模型从断点续写，最多 3 次（防死循环）。
+                if (assistant.finishReason == "length" && assistant.text.isNotEmpty()) {
+                    maxOutputRetries++
+                    if (maxOutputRetries <= 3) {
+                        appendAssistantText(assistant)
+                        messages += Message.user(
+                            "（系统提示：上一条回复因达到 max_output_tokens 上限被截断，" +
+                                "非用户打断。请直接从断点处继续输出，不要道歉、不要重复已写内容。）",
+                            hidden = true,
+                        )
+                        emit(AgentEvent.TurnEnd(turnCount))
+                        continue   // 跳过工具执行，直接下一轮 API 调用
+                    }
+                }
+                maxOutputRetries = 0
 
                 if (assistant.toolCalls.isEmpty()) {
                     // ── 空响应 / 占位符回复 → 重试（对齐 Node 版 `onlyPlaceholder` 处理）──
@@ -632,6 +665,7 @@ class AgentLoop(
     ): AssistantTurn? {
         val textSb = StringBuilder()
         val reasoningSb = StringBuilder()
+        var doneFinishReason: String? = null
 
         val apiMessages = buildApiMessages()
         val toolDefs = toolsProvider().map {
@@ -675,7 +709,7 @@ class AgentLoop(
                 emit(AgentEvent.ReasoningDelta(it, messageId))
             }
             emitUsage(emit, resp.usage)
-            return AssistantTurn(textSb.toString(), reasoningSb.toString(), resp.toolCalls)
+            return AssistantTurn(textSb.toString(), reasoningSb.toString(), resp.toolCalls, resp.finishReason)
         }
 
         // 流式
@@ -709,7 +743,10 @@ class AgentLoop(
                 is ApiTypes.StreamEvent.ParseError ->
                     emit(AgentEvent.Error("流解析错误: ${ev.error}", ToolResult.UNKNOWN))
 
-                is ApiTypes.StreamEvent.Done -> Unit
+                is ApiTypes.StreamEvent.Done -> {
+                    // 【2026-10-06】记下结束原因 —— 循环里据此判断是否被截断
+                    doneFinishReason = ev.finishReason
+                }
             }
         }
 
@@ -730,7 +767,7 @@ class AgentLoop(
             emit(AgentEvent.ToolStart(tc.id, tc.name, parsed, formatInputPreview(tc.name, parsed)))
         }
 
-        return AssistantTurn(textSb.toString(), reasoningSb.toString(), toolCalls)
+        return AssistantTurn(textSb.toString(), reasoningSb.toString(), toolCalls, doneFinishReason)
     }
 
     private suspend fun emitUsage(
@@ -739,6 +776,7 @@ class AgentLoop(
     ) {
         if (usage.isEmpty) return
         totalInputTokens += usage.promptTokens
+        lastPromptTokens = usage.promptTokens   // P1-8：AutoCompact 水位判断用
         totalOutputTokens += usage.completionTokens
         emit(AgentEvent.Usage(usage.promptTokens, usage.completionTokens))
     }
@@ -749,25 +787,114 @@ class AgentLoop(
      * 单块纯文本消息走 `content: "..."` 简写（省 token，也是各家 API 的常规形态）；
      * 多块或含工具的消息走数组形态。
      */
-    private fun buildApiMessages(): List<JsonObject> = messages.map { m ->
+    private fun buildApiMessages(): List<JsonObject> =
+        ensureAlternatingRoles(messages.map { m ->
         val singleText = m.content.singleOrNull() as? ContentBlock.Text
         buildJsonObject {
             put("role", JsonPrimitive(m.role))
             if (singleText != null) {
-                put("content", JsonPrimitive(singleText.text))
+                // 文本清理（P1-5）：孤立 surrogate / 控制字符会让部分 API 直接 400
+                put("content", JsonPrimitive(sanitizeTextForApi(singleText.text)))
             } else {
                 put("content", buildJsonArray {
                     m.content.forEach { block -> add(blockToJson(block)) }
                 })
             }
         }
+    })
+
+    /**
+     * 确保 assistant/user 交替出现（对齐 CLI `ensureAlternatingRoles`）。
+     *
+     * 【2026-10-06 P1-5】OpenAI 系端点不接受相邻同 role：
+     *   · 相邻两个 assistant → 插 `(continue)` 空 user 占位
+     *   · 相邻两个 user（纯文本）→ 合并内容
+     *   · 相邻两个 user（含结构块，如图片）→ 插 `(continue)` assistant 占位
+     * 不修的话，某些网关直接 400（「相邻同 role」），对话卡死。
+     *
+     * 什么时候会相邻同 role：工具执行中断、图片加载失败、子 Agent 注入、
+     * 系统提示注入等 —— 历史是累积出来的，不保证天然交替。
+     */
+    private fun ensureAlternatingRoles(msgs: List<JsonObject>): List<JsonObject> {
+        val out = mutableListOf<JsonObject>()
+        for (msg in msgs) {
+            val last = out.lastOrNull()
+            val lastRole = (last?.get("role") as? JsonPrimitive)?.content
+            val role = (msg["role"] as? JsonPrimitive)?.content
+            if (last != null && lastRole == role) {
+                if (role == "assistant") {
+                    // 相邻两个 assistant → 插空 user 占位
+                    out += buildJsonObject {
+                        put("role", JsonPrimitive("user"))
+                        put("content", JsonPrimitive("(continue)"))
+                    }
+                } else {
+                    // 相邻两个 user：都是纯文本就合并，有结构块就插占位
+                    val lastContent = last["content"]
+                    val curContent = msg["content"]
+                    if (lastContent is JsonPrimitive && curContent is JsonPrimitive) {
+                        out[out.size - 1] = buildJsonObject {
+                            put("role", JsonPrimitive("user"))
+                            put("content", JsonPrimitive(
+                                listOf(lastContent.content, curContent.content)
+                                    .filter { it.isNotBlank() }.joinToString("\n")
+                            ))
+                        }
+                        continue
+                    } else {
+                        out += buildJsonObject {
+                            put("role", JsonPrimitive("assistant"))
+                            put("content", JsonPrimitive("(continue)"))
+                        }
+                    }
+                }
+            }
+            out += msg
+        }
+        return out
+    }
+
+    /**
+     * 发送前文本清理（对齐 CLI `sanitizeTextForApi`）。
+     *
+     * 【2026-10-06 P1-5】防「上下文污染导致整轮 400」：
+     *   · 孤立 surrogate（未配对的 U+D800-DFFF）→ U+FFFD
+     *     （来自终端乱码/截断粘贴，部分 API 直接拒）
+     *   · C0 控制字符（\x00-\x08 \x0B \x0C \x0E-\x1F）与 DEL → 删
+     *     （保留 \n \t \r）
+     * 合法 emoji 都是合法码点，不受影响。
+     */
+    private fun sanitizeTextForApi(str: String): String {
+        val sb = StringBuilder(str.length)
+        var i = 0
+        while (i < str.length) {
+            val c = str[i]
+            val code = c.code
+            if (code in 0xD800..0xDBFF) {
+                // 高代理：看下一个是不是低代理
+                if (i + 1 < str.length && str[i + 1].code in 0xDC00..0xDFFF) {
+                    sb.append(c).append(str[i + 1]); i += 2; continue
+                }
+                sb.append('\uFFFD')
+            } else if (code in 0xDC00..0xDFFF) {
+                sb.append('\uFFFD')
+            } else if (code <= 0x08 || code == 0x0B || code == 0x0C ||
+                (code in 0x0E..0x1F) || code == 0x7F
+            ) {
+                // 控制字符：丢弃（保留 \n \t \r）
+            } else {
+                sb.append(c)
+            }
+            i++
+        }
+        return sb.toString()
     }
 
     /** 单个内容块 → 线格式 JSON。 */
     private fun blockToJson(block: ContentBlock): JsonObject = when (block) {
         is ContentBlock.Text -> buildJsonObject {
             put("type", JsonPrimitive("text"))
-            put("text", JsonPrimitive(block.text))
+            put("text", JsonPrimitive(sanitizeTextForApi(block.text)))
         }
 
         is ContentBlock.Image -> buildJsonObject {
@@ -1320,5 +1447,7 @@ class AgentLoop(
         val text: String,
         val reasoning: String,
         val toolCalls: List<ApiTypes.ToolCall>,
+        /** 上游结束原因（`length` = 被 max_output_tokens 截断）。 */
+        val finishReason: String? = null,
     )
 }

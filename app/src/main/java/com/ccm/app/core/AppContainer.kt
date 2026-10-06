@@ -781,8 +781,19 @@ class AppContainer private constructor(
                 toolRegistry = registry,
                 sessionStore = sessionStore,
                 compactor = compactor,
-                // 阈值从配置读（AppConfig 目前没有这两个字段 → 用默认 0 = 关闭）
-                autoCompact = AutoCompact(maxContext = config.maxContextTokens),
+                // 【2026-10-06 P1-8 接线】阈值从配置读。
+                //
+                // APK 的配置是**百分比**（compactThreshold 0-100，/compact-threshold
+                // 设的），AutoCompact 要的是绝对 token 数 —— 换算一下：
+                //   tokenLimit = maxContext × pct / 100
+                // 不换算的话 isEnabled 恒 false（0 阈值 = 关闭），
+                // 用户设了阈值也不生效（这正是原来的状态）。
+                autoCompact = AutoCompact(
+                    tokenLimit = if (config.compactThreshold > 0) {
+                        (config.maxContextTokens.toLong() * config.compactThreshold / 100).toInt()
+                    } else 0,
+                    maxContext = config.maxContextTokens,
+                ),
                 modes = modes,
                 autoMemory = effectiveAutoMemory,
             )
