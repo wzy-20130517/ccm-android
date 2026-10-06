@@ -49,8 +49,29 @@ object MarketClient {
     /** 国内镜像前缀（github.com 直连不通时用）。 */
     private const val MIRROR_PREFIX = "https://gh-proxy.com/"
 
-    /** 拉清单。 */
+    /**
+     * 拉清单（**多源合并**，2026-10-06 改）。
+     *
+     * 三个来源：
+     *   1. 本仓库的 registry.json（自有 skill/mcp，原有逻辑）
+     *   2. **外部源**（MarketSources）：anthropics/skills、MCP Registry、
+     *      DSH Plugin Hub
+     *
+     * 每源独立失败 —— 自有源挂了仍有外部源可用，反之亦然。
+     * 只有**全部为空**才返回 null（让 UI 显示"拉取失败"而不是"没有内容"）。
+     */
     suspend fun fetchRegistry(): List<MarketItem>? = withContext(Dispatchers.IO) {
+        val own = fetchOwnRegistry()
+        val external = try { MarketSources.fetchAll() } catch (_: Throwable) { emptyList() }
+        val merged = own + external
+        // 按 id 去重（理论上不会重，但外部源 id 前缀不同，防御性去重）
+        val seen = mutableSetOf<String>()
+        val deduped = merged.filter { seen.add(it.id) }
+        return@withContext if (deduped.isEmpty() && own == null) null else deduped
+    }
+
+    /** 拉自有 registry.json（原 fetchRegistry 的逻辑，重命名保留）。 */
+    private suspend fun fetchOwnRegistry(): List<MarketItem>? = withContext(Dispatchers.IO) {
         try {
             val text = httpGet(REGISTRY_URL) ?: return@withContext null
             val root = JSONObject(text)
@@ -121,11 +142,40 @@ object MarketClient {
             // 按类型处理
             when (item.type) {
                 "skill" -> {
-                    onLog("正在解压…")
-                    val dest = File(ctx.filesDir, "skills")
-                    dest.mkdirs()
-                    extractTarGz(tmp, dest)
-                    onLog("✅ 已装到 ${dest.absolutePath}")
+                    // 【2026-10-06 改】支持两种形式：
+                    //   · tar.gz 包（自有 registry 的老格式）→ 解压
+                    //   · 散文件（外部源如 anthropics/skills 的单 SKILL.md）→ 逐个下载
+                    // 判据：url 非空 = tar.gz；files 非空 = 散文件。
+                    // 统一推导安装目录名（与 UI 的 installedNameOf 必须一致）
+                    val skillName = item.id
+                        .removePrefix("anthropic-skill-")
+                        .removePrefix("skill-")
+                        .ifBlank { item.id }
+                    if (item.url.isNotBlank()) {
+                        // tar.gz：解压到 skills/<skillName>/ —— 与散文件路径统一，
+                        // 这样 installed 检测（按目录名）对两种格式都成立。
+                        val dest = File(ctx.filesDir, "skills/$skillName")
+                        dest.mkdirs()
+                        onLog("正在解压…")
+                        extractTarGz(tmp, dest)
+                        onLog("✅ 已装到 ${dest.absolutePath}")
+                    } else if (item.files.isNotEmpty()) {
+                        // 散文件 skill：装到 files/skills/<名字>/
+                        val dest = File(ctx.filesDir, "skills/$skillName")
+                        dest.mkdirs()
+                        onLog("正在下载 ${item.files.size} 个文件…")
+                        item.files.forEach { fileUrl ->
+                            val fname = fileUrl.substringAfterLast('/').ifBlank { "SKILL.md" }
+                            if (!download(fileUrl, File(dest, fname))) {
+                                onLog("❌ 下载失败：$fname")
+                                return@withContext false
+                            }
+                        }
+                        onLog("✅ 已装到 ${dest.absolutePath}")
+                    } else {
+                        onLog("❌ 这个条目既没有包地址也没有文件列表（源数据异常）")
+                        return@withContext false
+                    }
                 }
                 "mcp" -> {
                     // MCP 要装到 rootfs（node 在那里）+ 写 mcp.json
@@ -244,7 +294,13 @@ object MarketClient {
         try {
             when (item.type) {
                 "skill" -> {
+                    // 三种可能的安装位置都清（散文件装的是「去前缀后的名字」目录）
+                    val skillName = item.id
+                        .removePrefix("anthropic-skill-")
+                        .removePrefix("skill-")
+                        .ifBlank { item.id }
                     File(ctx.filesDir, "skills/${item.id}").deleteRecursively()
+                    File(ctx.filesDir, "skills/$skillName").deleteRecursively()
                     File(ctx.filesDir, "skills/${item.id}.md").delete()
                 }
                 "mcp" -> {

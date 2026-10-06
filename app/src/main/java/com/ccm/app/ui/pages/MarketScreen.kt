@@ -83,6 +83,12 @@ fun MarketScreen(
     var configFor by remember { mutableStateOf<MarketItem?>(null) }
 
     // 已装的（从文件系统判断）
+    // 已安装集合：存「**安装目录名**」（skill）与「mcp 服务器名」。
+    //
+    // 【2026-10-06 修】原来直接用 item.id 比对，但 skill 装到磁盘时用的是
+    // **去掉前缀的名字**（anthropic-skill-academy-guide → academy-guide），
+    // 于是 `item.id in installed` 永远 false —— 装完还显示「下载」。
+    // 现在两边都走同一个推导函数（skillDirName），不会再错位。
     val installed = remember(refresh) {
         val s = mutableSetOf<String>()
         try {
@@ -205,7 +211,7 @@ fun MarketScreen(
                         list.forEach { item ->
                             MarketItemCard(
                                 item = item,
-                                installed = item.id in installed,
+                                installed = installedNameOf(item) in installed,
                                 busy = busy == item.id,
                                 onInstall = {
                                     if (item.type == "mcp" && item.env.isNotEmpty()) {
@@ -273,6 +279,20 @@ fun MarketScreen(
     }
 }
 
+/**
+ * 条目在磁盘上的「安装名」—— 与 MarketClient 的安装/卸载路径必须一致。
+ *
+ * skill：去掉源前缀（anthropic-skill- / skill-）→ 目录名
+ * 其他：直接用 id
+ *
+ * ⚠️ 改这里要同步改 MarketClient 的 install/uninstall（两边必须一致，
+ * 否则出现「装完了还显示未安装」）。
+ */
+private fun installedNameOf(item: MarketItem): String = when (item.type) {
+    "skill" -> item.id.removePrefix("anthropic-skill-").removePrefix("skill-").ifBlank { item.id }
+    else -> item.id
+}
+
 /** 市场 tab。 */
 private enum class MarketTab(val label: String, val type: String) {
     SKILL("技能", "skill"),
@@ -314,6 +334,7 @@ private fun MarketItemCard(
     onUninstall: () -> Unit,
 ) {
     val colors = CCMTheme.colors
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -356,6 +377,22 @@ private fun MarketItemCard(
         }
         when {
             busy -> Text("…", style = CCMText.body12, color = colors.textSecondary)
+            // 【2026-10-06 加】DSH 插件不在手机上装（要走 dsh-host）——
+            // 只提供「复制安装命令」，用户拿去在 CLI/服务器上跑。
+            // 显示成"复制命令"而不是"下载"，避免误导。
+            item.type == "plugin" && item.entry.isNotBlank() -> Text(
+                "复制命令",
+                style = CCMText.body12.copy(fontSize = 11.sp, fontWeight = FontWeight.Medium),
+                color = colors.accent,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable {
+                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("dsh", item.entry))
+                    }
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+            )
             installed -> Text(
                 "卸载",
                 style = CCMText.body12.copy(fontSize = 11.sp),
