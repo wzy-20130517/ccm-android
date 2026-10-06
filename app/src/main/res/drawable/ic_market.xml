@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自动生成，请勿手改 —— 由 tools/svg/svg2vd.py 从
+  web/src/assets/sdcard/market.svg 转换而来。
+
+  viewBox: 24.0 x 24.0（保留原始浮点，不做取整以免坐标偏移）
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24.0"
+    android:viewportHeight="24.0">
+    <path
+        android:pathData="M3.5 3a1 1 0 0 0-.96.73L1.06 7.5a3.5 3.5 0 0 0 1.44 4.06V19a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7.44a3.5 3.5 0 0 0 1.44-4.06l-1.48-3.77A1 1 0 0 0 20.5 3h-17Zm.52 2h15.96l1.13 2.88a1.5 1.5 0 0 1-2.79 1.06 1 1 0 0 0-1.87 0 1.5 1.5 0 0 1-2.79 0 1 1 0 0 0-1.87 0 1.5 1.5 0 0 1-2.79 0 1 1 0 0 0-1.87 0 1.5 1.5 0 0 1-2.79-1.06L4.02 5ZM5 13.44a3.5 3.5 0 0 0 2.5-.44 3.5 3.5 0 0 0 4 0 3.5 3.5 0 0 0 4 0 3.5 3.5 0 0 0 2.5.44V19H5v-5.56ZM8 15v2h8v-2H8Z"
+        android:fillColor="#121212" />
+</vector>

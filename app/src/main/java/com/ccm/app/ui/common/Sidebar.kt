@@ -74,6 +74,8 @@ fun SidebarDrawer(
     onNewChat: () -> Unit = {},
     onSearch: () -> Unit = {},
     onCustomize: () -> Unit = {},
+    /** 点「市场」。 */
+    onMarket: () -> Unit = {},
     onOpenChat: (ChatSummary) -> Unit = {},
     /** 「…」菜单：重命名（透传给 SidebarContent）。 */
     onRenameChat: (id: String, title: String) -> Unit = { _, _ -> },
@@ -159,6 +161,7 @@ fun SidebarDrawer(
                     onNewChat = onNewChat,
                     onSearch = onSearch,
                     onCustomize = onCustomize,
+                    onMarket = onMarket,
                     // ★ 2026-09-27 修：原来这里写死 `onPillChange = {}`，
                     //   侧栏顶部「聊天 / 协作 / 代码」三个胶囊点了**完全没反应**
                     //   —— 用户报的「侧边栏点不动」主要就是这三颗 + 搜索。

@@ -91,6 +91,8 @@ fun SidebarContent(
     onNewChat: () -> Unit = {},
     onSearch: () -> Unit = {},
     onCustomize: () -> Unit = {},
+    /** 点「市场」（问题40：skill/MCP/插件 的下载入口）。 */
+    onMarket: () -> Unit = {},
     onPillChange: (String) -> Unit = {},
     onNavigate: (String) -> Unit = {},
     onOpenChat: (ChatSummary) -> Unit = {},
@@ -140,6 +142,15 @@ fun SidebarContent(
                 iconSize = 22.1.dp,
                 rowHeight = 28.48.dp,
                 onClick = onCustomize,
+            )
+            // 【2026-10-06 问题40】市场 —— skill / MCP / 插件的下载入口。
+            // 独立成项而不是塞进定制页的 tab 条（那里已有 3 个 tab，太挤）。
+            SidebarActionRow(
+                iconRes = R.drawable.ic_market,
+                label = "市场",
+                iconSize = 22.1.dp,
+                rowHeight = 28.48.dp,
+                onClick = onMarket,
             )
         }
 

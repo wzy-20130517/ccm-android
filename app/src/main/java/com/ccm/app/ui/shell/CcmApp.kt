@@ -195,6 +195,8 @@ enum class CcmRoute(val path: String) {
     CHAT("/chat"),
     CHATS("/chats"),
     CUSTOMIZE("/customize"),
+    /** 市场（skill / MCP / 插件 的下载入口）—— 2026-10-06 新增。 */
+    MARKET("/market"),
     SETTINGS("/settings"),
     PROJECTS("/projects"),
     ARTIFACTS("/artifacts"),
@@ -1141,6 +1143,12 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         }
                     }
 
+                    CcmRoute.MARKET -> {
+                        com.ccm.app.ui.pages.MarketScreen(
+                            onBack = { navigate(CcmRoute.HOME) },
+                        )
+                    }
+
                     CcmRoute.CUSTOMIZE -> {
                         // H4：技能列表来自两个来源 ——
                         // 1) assets 内置技能清单（播种/展示用）
@@ -1308,6 +1316,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
             // 「新对话」= 真新建会话（原来只回首页 —— 旧会话还挂着）
             onNewChat = newChat,
             onCustomize = { navigate(CcmRoute.CUSTOMIZE) },
+            onMarket = { navigate(CcmRoute.MARKET) },
             onOpenProfile = { navigate(CcmRoute.SETTINGS) },
             // ★ 2026-09-27 修「侧边栏点不动」：
             //   下面两个回调原来**根本没传**，UI 侧拿到的是默认空实现
