@@ -1,13 +1,11 @@
 package com.ccm.app.ui.chat
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -159,15 +157,21 @@ fun UserBubble(
         val longText = text.length > 800
         val shownText = if (longText && !expanded) text.take(800) + "…" else text
 
+        // ══════════════════════════════════════════════════════════════
+        //  【2026-10-06 用户反馈】长按用户气泡和助手气泡行为不一致
+        //    · 助手气泡：SelectionContainer → 长按出**原生选取框**（拖手柄选）
+        //    · 用户气泡：combinedClickable → 长按**直接全文复制**
+        //
+        //  要求「按助手的来改用户的」→ 去掉这里 combinedClickable 的
+        //  长按复制（与助手同款处理：空 onClick 也一起去掉，免得拦截点击），
+        //  正文包进 SelectionContainer（见下方 Text 处）。
+        //  全文复制入口保留在按钮行的 Copy 图标。
+        // ══════════════════════════════════════════════════════════════
         Box(
             modifier = Modifier
                 .widthIn(max = 314.dp)                   // max-w-[85%] ≈ 393×0.8
                 .clip(RoundedCornerShape(11.04.dp))      // rounded-xl
                 .background(colors.hover)
-                .combinedClickable(
-                    onClick = {},
-                    onLongClick = { copyUser(text) },   // 长按 = 复制（菜单已移到按钮行）
-                )
                 .padding(horizontal = 12.88.dp, vertical = 8.28.dp),
         ) {
             Column {
@@ -201,11 +205,16 @@ fun UserBubble(
                     }
                 }
                 if (text.isNotBlank()) {
-                    Text(
-                        text = shownText,
-                        style = CCMText.body14,
-                        color = colors.textMain,
-                    )
+                    // 与助手气泡同款：原生长按选取（MarkdownRenderer 里对
+                    // Text 包的就是 SelectionContainer）。只包正文 Text ——
+                    // 「展开」按钮有自己的 clickable，包进去会互相抢。
+                    androidx.compose.foundation.text.selection.SelectionContainer {
+                        Text(
+                            text = shownText,
+                            style = CCMText.body14,
+                            color = colors.textMain,
+                        )
+                    }
                     if (longText) {
                         Text(
                             text = if (expanded) "收起" else "展开（共 ${text.length} 字）",
