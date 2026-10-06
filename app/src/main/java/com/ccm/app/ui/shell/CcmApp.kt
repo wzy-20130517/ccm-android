@@ -23,12 +23,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import com.ccm.app.ui.theme.CCMText
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.draw.clip
@@ -40,11 +37,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.ccm.app.AppGraph
 import com.ccm.app.core.ChatSession
 import com.ccm.app.core.session.SessionStore
@@ -715,7 +709,11 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         )
                     }
                 } else {
-                    // 有选项 → 点选即答
+                    // ── 有选项：选项 + **自由输入框并存**（2026-10-06 修）──────
+                    //
+                    // 原来有选项时**没有输入框** —— 用户只能从 Agent 给的选项里挑，
+                    // 想补充说明（「选 A 但顺便…」）或都不满意时无处可写。
+                    // 现在：选项照常点选即答；下方始终有输入框，想自己写就写。
                     options.forEach { opt ->
                         Text(
                             opt,
@@ -729,15 +727,46 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                                 .padding(horizontal = 12.dp, vertical = 10.dp),
                         )
                     }
-                    Text(
-                        "跳过",
-                        style = CCMText.body13,
-                        color = colors.textSecondary,
+                    // 自由输入框（选填）—— 与选项并存，回车即提交
+                    var freeText by remember { mutableStateOf("") }
+                    androidx.compose.foundation.text.BasicTextField(
+                        value = freeText,
+                        onValueChange = { freeText = it },
+                        textStyle = CCMText.body14.copy(color = colors.textMain),
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(colors.claudeOrange),
                         modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .clickable { com.ccm.app.AppGraph.answerQuestion(null) }
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                            .fillMaxWidth()
+                            .heightIn(min = 46.dp)
+                            .clip(RoundedCornerShape(7.36.dp))
+                            .background(colors.input)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
                     )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(9.2.dp, Alignment.End),
+                    ) {
+                        Text(
+                            "跳过",
+                            style = CCMText.body13,
+                            color = colors.textSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { com.ccm.app.AppGraph.answerQuestion(null) }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                        // 「回答」按钮：输入框有内容才亮，点了提交自由文本
+                        Text(
+                            "回答",
+                            style = CCMText.body13.copy(fontWeight = FontWeight.Medium),
+                            color = if (freeText.isNotBlank()) Color(0xFFD97757) else colors.textSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable(enabled = freeText.isNotBlank()) {
+                                    com.ccm.app.AppGraph.answerQuestion(freeText.trim())
+                                }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                    }
                 }
             }
         }
