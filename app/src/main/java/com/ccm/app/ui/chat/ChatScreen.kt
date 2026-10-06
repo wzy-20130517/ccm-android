@@ -206,15 +206,49 @@ fun ChatScreen(
                 // 用户上翻 → 离底部远 → false，停止跟随 ✓
                 // 用户滚回底部 → true，恢复跟随 ✓
                 //
-                // 唯一要防的是「内容增长瞬间」：maxValue 变大、value 还是旧的
-                // → 这一拍会判 false。用 autoScrolling 标志跳过（程序滚动期间
-                // 不判定），而 repeat(6) 结束前 autoScrolling 一直是 true。
+                // ══════════════════════════════════════════════════════════
+                //  【2026-10-06 问题46 修复·第五版（终于对）】
+                //
+                // 用户报「跟了一会就不跟了」—— 精准描述了现象。
+                //
+                // 第四版的 bug：`snapshotFlow { value to maxValue }` 在**内容增长**
+                // 时也会触发（maxValue 变了），此时 value 还是旧值 →
+                // `v >= max - 120` 算出 false → followBottom = false → **停跟**。
+                //
+                // autoScrolling 标志挡不住：它只在滚动协程运行期间为 true，
+                // 而内容增长（流式吐字）大部分时间滚动协程没在跑。
+                //
+                // 第五版（终于对）：**用「谁变了」区分，不用「离底部多远」**：
+                //   · maxValue 变了（内容增长）→ **不动 followBottom**（关键！）
+                //   · value 变了（滚动）→ 判是否到底（用户上翻=停，滚回底=恢复）
+                //
+                // 这是唯一能区分「内容增长」和「用户滚动」的可靠方法 ——
+                // 因为两者的信号源不同（maxValue vs value）。
+                // ══════════════════════════════════════════════════════════
                 LaunchedEffect(scrollState) {
-                    snapshotFlow { scrollState.value to scrollState.maxValue }
-                        .collect { (v, max) ->
-                            if (autoScrolling) return@collect   // 程序滚动期间不判定
-                            if (max <= 0) return@collect        // 内容没铺满
-                            followBottom = v >= max - 120
+                    var lastValue = scrollState.value
+                    var lastMax = scrollState.maxValue
+                    snapshotFlow { Triple(scrollState.value, scrollState.maxValue, scrollState.isScrollInProgress) }
+                        .collect { (v, max, scrolling) ->
+                            val maxChanged = max != lastMax
+                            val valueChanged = v != lastValue
+                            lastValue = v
+                            lastMax = max
+
+                            // 程序滚动期间不判定
+                            if (autoScrolling) return@collect
+                            if (max <= 0) return@collect
+
+                            if (maxChanged && !valueChanged) {
+                                // ★ 内容增长了、value 没动 → 这是流式吐字，不是用户操作
+                                // **不动 followBottom**（保持原值，继续跟或继续不跟）
+                                return@collect
+                            }
+
+                            if (valueChanged) {
+                                // 值变了 → 用户滚动或程序滚动到了底
+                                followBottom = v >= max - 120
+                            }
                         }
                 }
 

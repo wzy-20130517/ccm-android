@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -350,11 +351,23 @@ private fun SendButton(enabled: Boolean, running: Boolean, onClick: () -> Unit) 
 
     Box(
         modifier = Modifier
-            // 【2026-10-06 用户反馈修正】原来是 30.36dp（某次"实测"的值）——
-            // 但 Web 的真实算法是 `p-2 + ArrowUp size=22 + p-2`：
-            //   8 + 22 + 8 = 38px × 0.92 = **34.96dp**
-            // 用户报「对话页发送按钮窄了」—— 小了 4.6dp 确实明显。
-            .size(34.96.dp)
+            // ══════════════════════════════════════════════════════════
+            //  【2026-10-06 真根因】发送按钮被**挤压**了
+            //
+            // 截图实测：按钮渲染成 20.4dp 宽（不是设计的 34.96dp）。
+            //
+            // 原因：底部 Row 用 SpaceBetween，右边那组（模型chip 156dp +
+            // 语音 20dp + 间距 14.72dp + 发送 34.96dp = 225.7dp）加上
+            // 左边那组（+ 按钮 + token 圆环+文字 ≈ 147dp）= 372.7dp，
+            // **超过可用宽度 370dp** → Row 压缩子元素 → 发送按钮先中招
+            // （它没有 weight，是"可压缩"的）。
+            //
+            // 修法：用 `requiredSize` —— 它**无视父约束**，强制 34.96dp。
+            // 这样挤压会转移到其他元素（模型名会先截断，那是设计好的）。
+            //
+            // 尺寸依据：Web `p-2 + ArrowUp size=22 + p-2` = 38px × 0.92 = 34.96dp
+            // ══════════════════════════════════════════════════════════
+            .requiredSize(34.96.dp)
             .clip(RoundedCornerShape(7.36.dp))
             .background(bg)
             .clickable(enabled = enabled, onClick = onClick),

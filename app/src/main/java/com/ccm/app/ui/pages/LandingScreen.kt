@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -625,7 +626,9 @@ private fun InputCard(
                         val sendTint = if (CCMTheme.isDark) Color(0xFFF5D7CA) else Color.White
                         Box(
                             modifier = Modifier
-                                .size(width = 36.8.dp, height = 29.44.dp)
+                                // 【2026-10-06】用 requiredSize —— 防止被 Row 挤压
+                                // （与对话页同一个问题：模型 chip 变长时按钮被压扁）
+                                .requiredSize(width = 36.8.dp, height = 29.44.dp)
                                 .clip(RoundedCornerShape(7.36.dp))
                                 .background(sendBg)
                                 .clickable { onSend(input) },
@@ -641,7 +644,8 @@ private fun InputCard(
                     } else {
                         Box(
                             modifier = Modifier
-                                .size(width = 33.12.dp, height = 29.44.dp)
+                                // 【2026-10-06】同发送按钮：防挤压
+                                .requiredSize(width = 33.12.dp, height = 29.44.dp)
                                 .clip(RoundedCornerShape(7.36.dp))
                                 .clickable(onClick = voiceClick),
                             contentAlignment = Alignment.Center,
