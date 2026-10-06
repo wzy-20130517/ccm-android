@@ -227,6 +227,12 @@ class StreamParser(
 
             "message_delta" -> {
                 // 这里的 usage 是最终值（output_tokens）
+                // 【2026-10-06】也带 stop_reason（anthropic 的结束原因在这里）
+                (root["delta"] as? JsonObject)?.let { d ->
+                    (d["stop_reason"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.let {
+                        lastFinishReason = it
+                    }
+                }
                 val usage = root["usage"] as? JsonObject
                 if (usage != null) {
                     out += ApiTypes.StreamEvent.Usage(
@@ -252,7 +258,7 @@ class StreamParser(
                 }
             }
 
-            "message_stop" -> out += ApiTypes.StreamEvent.Done
+            "message_stop" -> out += ApiTypes.StreamEvent.Done(lastFinishReason)
 
             "error" -> {
                 val err = root["error"] as? JsonObject
@@ -320,7 +326,7 @@ class StreamParser(
                         outputTokens = (usage["output_tokens"] as? JsonPrimitive)?.intOrNull ?: 0,
                     )
                 }
-                out += ApiTypes.StreamEvent.Done
+                out += ApiTypes.StreamEvent.Done()
             }
 
             "response.failed", "error" -> {

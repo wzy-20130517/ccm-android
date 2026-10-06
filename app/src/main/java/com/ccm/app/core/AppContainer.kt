@@ -473,7 +473,7 @@ class AppContainer private constructor(
             //   · ≤ 35000 字符：全文注入
             //   · 超出：保留前 35000 + 尾部标题行目录（Agent 知道有什么、能去翻）
             //   · 目录排除代码块内的假标题（shell 注释 `# xxx`）
-            val memFile = java.io.File(storage.rootDir, "CLAUDE.md")
+            val memFile = java.io.File(storage.root, "CLAUDE.md")
             if (memFile.exists()) {
                 try {
                     val full = memFile.readText()
@@ -605,10 +605,10 @@ class AppContainer private constructor(
 
             // 队友消息自动送达的提供者（2026-10-06）：
             // 读「我的身份」→ 有团队就拉未读消息。TeamStore 与
-            // ToolsBootstrap 用的是**同一个目录**（storage.rootDir/teams），
+            // ToolsBootstrap 用的是**同一个目录**（storage.root/teams），
             // 两个实例共享同一份文件状态，不会漂移。
             val teamStoreForInbox = com.ccm.app.tools.task.TeamStore(
-                java.io.File(storage.rootDir, "teams")
+                java.io.File(storage.root, "teams")
             )
             val teamInboxProvider: () -> Pair<String, List<String>>? = {
                 val ident = teamStoreForInbox.myIdentity()

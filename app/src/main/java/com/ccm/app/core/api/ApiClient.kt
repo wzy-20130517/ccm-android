@@ -468,7 +468,10 @@ class ApiClient(
         return when (protocol) {
             Protocol.ANTHROPIC -> buildAnthropicBody(system, toAnthropicMessages(messages), effectiveTools, stream, maxTok)
             Protocol.RESPONSES -> buildResponsesBody(system, toResponsesInput(messages), effectiveTools, stream, maxTok)
-            Protocol.OPENAI -> buildOpenAiBody(system, toOpenAiMessages(messages), effectiveTools, stream, maxTok)
+            Protocol.OPENAI -> buildOpenAiBody(
+                system, toOpenAiMessages(messages), effectiveTools, stream, maxTok,
+                effortOverride = effortOverride,
+            )
         }
     }
 
@@ -842,6 +845,8 @@ class ApiClient(
         tools: List<ApiTypes.ToolDefinition>,
         stream: Boolean,
         maxTok: Int?,
+        /** 思考档位覆盖（摘要请求传 medium，见 buildRequestBody 注释）。 */
+        effortOverride: String? = null,
     ): JsonObject = buildJsonObject {
         put("model", model)
         put("messages", buildJsonArray {
