@@ -24,8 +24,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -297,10 +295,16 @@ fun InputBar(
                             tint = colors.textMain,
                             modifier = Modifier.clickable(onClick = onVoice),
                         )
+                        // 【2026-10-06 mid-turn steering 接线】
+                        // 原来运行时按钮固定是「停止」—— 用户想补充一句
+                        // （「顺便把 X 也改了」）只能先停再重说，打断当前工作。
+                        // 现在：**有文字 = 发送**（入 steering 队列，下一轮注入，
+                        // 不打断当前工具批次）；**无文字 = 停止**。
+                        // 对齐 CLI/Web 的「执行中补充指令」语义。
                         SendButton(
                             enabled = value.isNotBlank() || running,
-                            running = running,
-                            onClick = { if (running) onStop() else onSend() },
+                            running = running && value.isBlank(),   // 有字时显示发送图标
+                            onClick = { if (running && value.isBlank()) onStop() else onSend() },
                         )
                     }
                 }

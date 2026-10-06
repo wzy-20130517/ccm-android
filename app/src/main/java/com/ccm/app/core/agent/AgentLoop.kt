@@ -229,6 +229,35 @@ class AgentLoop(
     /** 对话历史（协议无关的中间表示）。 */
     private val messages = mutableListOf<Message>()
 
+    /**
+     * mid-turn steering 队列（2026-10-06 加，对齐 CLI agent.mjs 的
+     * `_steeringQueue`）。
+     *
+     * 【解决什么】用户/其他 Agent 想在**当前轮运行中**补充指令或纠偏，
+     * 但不想打断正在跑的工具批次。投进来的文本会在**下一轮模型调用前**
+     * 注入（作为 user 消息），不打断当前批次。
+     *
+     * 【谁在用】ChatSession.send 在 isRunning 时入队（原来直接丢弃）；
+     * 子 Agent 的 SendMessage 投递也可走这里。
+     */
+    private val steeringQueue = java.util.concurrent.ConcurrentLinkedQueue<String>()
+
+    /** 投入一条 steering 指令（下一轮注入）。线程安全。 */
+    fun pushSteering(text: String) {
+        if (text.isNotBlank()) steeringQueue.add(text.trim())
+    }
+
+    /** 取走所有待注入的 steering 指令（内部用）。 */
+    private fun pullSteering(): List<String> {
+        if (steeringQueue.isEmpty()) return emptyList()
+        val out = mutableListOf<String>()
+        while (true) {
+            val t = steeringQueue.poll() ?: break
+            out.add(t)
+        }
+        return out
+    }
+
     /** 已执行的轮次。 */
     var turnCount: Int = 0
         private set
@@ -525,6 +554,22 @@ class AgentLoop(
                                 )),
                             )
                         }
+                    }
+                } catch (_: Throwable) {}
+
+                // ── mid-turn steering（2026-10-06）──────────────────────
+                // 运行中用户/队友投进来的补充指令，在**下一轮调用前**注入，
+                // 不打断当前工具批次（对齐 CLI agent.mjs:265-275）。
+                try {
+                    val extras = pullSteering()
+                    if (extras.isNotEmpty()) {
+                        messages += Message(
+                            role = Message.ROLE_USER,
+                            hidden = false,   // 用户可见（他知道自己说了什么）
+                            content = listOf(ContentBlock.Text(
+                                extras.joinToString("\n\n")
+                            )),
+                        )
                     }
                 } catch (_: Throwable) {}
 

@@ -383,7 +383,22 @@ class ChatSession(
      */
     fun send(text: String, imagePaths: List<String> = emptyList()) {
         if (text.isBlank()) return
-        if (isRunning) return
+        // 【2026-10-06 mid-turn steering】运行中不再**静默丢弃** ——
+        // 入 steering 队列，AgentLoop 下一轮调用前注入（不打断当前工具批次）。
+        // 对齐 CLI/Web：用户长任务中想补充/纠偏时不用先打断再重说。
+        if (isRunning) {
+            container.agentLoop.pushSteering(text)
+            // 上屏让用户看到「我说的话被收下了」（原来无任何反馈，像石沉大海）
+            _state.value = _state.value.copy(
+                bubbles = _state.value.bubbles + Bubble(
+                    role = Message.ROLE_USER,
+                    text = text,
+                    messageId = "steer-${System.currentTimeMillis()}",
+                    images = imagePaths,
+                ),
+            )
+            return
+        }
 
         val userBubble = Bubble(
             role = Message.ROLE_USER,
