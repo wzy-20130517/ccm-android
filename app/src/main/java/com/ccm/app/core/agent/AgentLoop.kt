@@ -144,6 +144,20 @@ class AgentLoop(
     private val toolRunner: ToolRunner = ToolRunner.Unset,
     /** 是否开启流式。 */
     private val useStream: Boolean = true,
+    /**
+     * 队友消息自动送达（2026-10-06 修 P0）。
+     *
+     * 提示词和工具描述都承诺「队友消息自动送达，不用轮询」，但 AgentLoop
+     * 原来**零实现** —— 模型按提示词不调 CheckMessages，就永久等一个
+     * 永远不会来的消息（比没实现更毒：提示词在诱导踩坑）。
+     *
+     * 注入方式：由上层（AppContainer）传一个函数，返回「本 Agent 当前身份
+     * 所在团队 + 未读消息」。AgentLoop 每轮开头调它，有未读就注入一条
+     * user 消息（标注「队友消息 · 自动送达」）。
+     *
+     * 返回 null = 不在任何团队（多数情况，零开销）。
+     */
+    private val teamInboxProvider: (() -> Pair<String, List<String>>?)? = null,
 ) {
 
     /**
@@ -395,6 +409,23 @@ class AgentLoop(
             while (modes.watchMode || turnCount < maxTurns) {
                 if (aborted) throw CancellationException("用户中断")
                 turnCount++
+
+                // ── 队友消息自动送达（2026-10-06）────────────────────────
+                // 每轮开头拉一次未读；有就作为 user 消息注入历史。
+                // 提示词承诺的「标注『队友消息 · 自动送达』」就体现在这里。
+                try {
+                    teamInboxProvider?.invoke()?.let { (team, msgs) ->
+                        if (msgs.isNotEmpty()) {
+                            messages += Message(
+                                role = Message.ROLE_USER,
+                                content = listOf(ContentBlock.Text(
+                                    "【队友消息 · 自动送达】（团队 $team）\n\n" +
+                                        msgs.joinToString("\n\n")
+                                )),
+                            )
+                        }
+                    }
+                } catch (_: Throwable) {}
 
                 // 每次新的 API 响应 = 新 messageId（含重试）。
                 // UI 据此丢弃上一轮的半截输出（见 AgentEvent 类注释）。

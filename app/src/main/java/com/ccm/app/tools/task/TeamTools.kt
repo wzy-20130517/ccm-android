@@ -103,6 +103,8 @@ class TeamTools(
             val agent = input.str("agent")!!
             val info = store.join(team, agent, input.str("role") ?: "")
                 ?: return ToolResult.notFound("团队不存在：$team（先用 TeamCreate 建）")
+            // 记下「我是谁」—— 队友消息自动送达靠它找 inbox（见 setMyIdentity 注释）
+            store.setMyIdentity(team, agent)
 
             val others = info.members.filter { it.name != agent }
                 .joinToString(", ") { it.name } .ifEmpty { "(暂无)" }

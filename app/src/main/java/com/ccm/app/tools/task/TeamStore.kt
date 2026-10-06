@@ -211,6 +211,34 @@ class TeamStore(private val rootDir: File) {
      * 报错会让它以为「进不去」而放弃协作。
      */
     @Synchronized
+    /**
+     * 记录「**我**（本进程）以什么身份加入了哪个团队」。
+     *
+     * 【2026-10-06 加】原来只有团队花名册（成员列表），没有「我是谁」——
+     * 而队友消息自动送达需要知道从哪个 inbox 读。对齐 CLI 的 `_teamIds`。
+     *
+     * 存 my-identity.json：`{ "team": "...", "agent": "..." }`
+     * （一个进程同一时刻只在一个团队里干活，够用）。
+     */
+    fun setMyIdentity(team: String, agent: String) {
+        try {
+            File(rootDir, "my-identity.json").writeText(
+                JSONObject().apply { put("team", team); put("agent", agent) }.toString()
+            )
+        } catch (_: Throwable) {}
+    }
+
+    /** 读「我的身份」；没加入过任何团队时返回 null。 */
+    fun myIdentity(): Pair<String, String>? = try {
+        val f = File(rootDir, "my-identity.json")
+        if (!f.exists()) null
+        else {
+            val o = JSONObject(f.readText())
+            val t = o.optString("team"); val a = o.optString("agent")
+            if (t.isNotBlank() && a.isNotBlank()) t to a else null
+        }
+    } catch (_: Throwable) { null }
+
     fun join(team: String, agent: String, role: String = ""): TeamInfo? {
         val cfg = readTeam(team) ?: return null
         val name = safeName(agent)

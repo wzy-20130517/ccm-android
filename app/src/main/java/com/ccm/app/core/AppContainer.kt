@@ -593,9 +593,31 @@ class AppContainer private constructor(
             //   且**不是当前主 provider** 才建（是同一个就没必要路由）。
             val visionClient = buildVisionClient(config)
 
+            // 队友消息自动送达的提供者（2026-10-06）：
+            // 读「我的身份」→ 有团队就拉未读消息。TeamStore 与
+            // ToolsBootstrap 用的是**同一个目录**（storage.rootDir/teams），
+            // 两个实例共享同一份文件状态，不会漂移。
+            val teamStoreForInbox = com.ccm.app.tools.task.TeamStore(
+                java.io.File(storage.rootDir, "teams")
+            )
+            val teamInboxProvider: () -> Pair<String, List<String>>? = {
+                val ident = teamStoreForInbox.myIdentity()
+                if (ident == null) null
+                else {
+                    val (team, me) = ident
+                    val unread = teamStoreForInbox.readInboxMessages(team, me, unreadOnly = true)
+                    if (unread.isEmpty()) null
+                    else team to unread.map { m ->
+                        // 标注发送者 + 内容（对齐 CLI 的注入格式）
+                        val who = m.from.ifBlank { "?" }
+                        "[$who] ${m.text.ifBlank { "(空消息)" }}"
+                    }
+                }
+            }
             val agentLoop = AgentLoop(
                 api = apiClient,
                 visionClient = visionClient,
+                teamInboxProvider = teamInboxProvider,
                 systemPrompt = systemPrompt,
                 // 惰性取（不是快照）—— 后注册的工具（如 Agent 自己）也要能看见
                 toolsProvider = { registry.list },
@@ -674,6 +696,7 @@ class AppContainer private constructor(
                             "要么在报告里写清「未完成的是什么、下一步该怎么做、有哪些已查明的前置结论」。\n"
                         val subLoop = AgentLoop(
                             api = apiClient,
+                            teamInboxProvider = teamInboxProvider,
                             systemPrompt = subPrompt,
                             toolsProvider = { registry.list },
                             maxTurnsInit = DEFAULT_MAX_TURNS,
