@@ -131,14 +131,15 @@ class ChatSession(
         return try {
             val input = container.compactor.buildSummaryInput(history)
             val sys = container.compactor.summarySystemPrompt()
+            // ⚠️ apiClient.chat 要 **kotlinx.serialization** 的 JsonObject
+            // （不是 org.json 的）—— 编译期类型检查抓到的。
+            val userMsg = kotlinx.serialization.json.buildJsonObject {
+                put("role", kotlinx.serialization.json.JsonPrimitive("user"))
+                put("content", kotlinx.serialization.json.JsonPrimitive(input))
+            }
             val resp = container.apiClient.chat(
                 system = sys,
-                messages = listOf(
-                    org.json.JSONObject().apply {
-                        put("role", "user")
-                        put("content", input)
-                    },
-                ),
+                messages = listOf(userMsg),
             )
             val raw = resp.text
             val summary = container.compactor.extractSummary(raw)

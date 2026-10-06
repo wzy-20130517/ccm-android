@@ -250,6 +250,16 @@ object AppGraph {
     @Volatile
     var pendingSubAgentManager: com.ccm.app.core.agent.SubAgentManager? = null
 
+    /**
+     * 应用 Context（问题29：读 assets 提示词用）。
+     *
+     * 【为什么存起来】`ChatSession.create(context=...)` 需要它，
+     * 但 `openSession` / `rebuild` 这些方法**没有 context 参数** ——
+     * init 时存一份，各处直接用。
+     */
+    @Volatile
+    var appContext: android.content.Context? = null
+
     // ══════════════════════════════════════════════════════════════
     //  【2026-10-06 问题40】AskUserQuestion 的 UI 桥
     // ══════════════════════════════════════════════════════════════
@@ -376,6 +386,7 @@ object AppGraph {
         if (initialized) return session
 
         val app = context.applicationContext
+        appContext = app   // 存起来供 openSession / rebuild 用
         initialized = true   // 先置位：即使抛异常也不该每帧重试
 
         return try {
@@ -635,7 +646,7 @@ object AppGraph {
                 registry = reg,
                 toolRunner = tools.executor,
                 scope = scope,
-                context = app,
+                context = appContext,
                 imageScaler = imageScaler,
                 cwd = cwd,
                 sessionId = id,
