@@ -301,6 +301,38 @@ fun LandingScreen(
                 modelPickerContent = modelPickerContent,
                 attachedCount = pendingImages.size,
                 onAttach = { launcher.launch("image/*") },
+                showPlusMenu = showPlusMenu,
+                onTogglePlusMenu = { showPlusMenu = !showPlusMenu },
+                onDismissPlusMenu = { showPlusMenu = false },
+                plusMenuContent = {
+                    PlusMenu(
+                        onDismiss = { showPlusMenu = false },
+                        onAttach = { launcher.launch("image/*") },
+                        onScreenshot = {
+                            onValueChange(
+                                if (input.isBlank()) "截取当前屏幕并告诉我上面有什么"
+                                else "$input\n截取当前屏幕并告诉我上面有什么"
+                            )
+                        },
+                        projects = remember {
+                            com.ccm.app.AppGraph.storage
+                                ?.let { com.ccm.app.core.project.ProjectStore(it).list() }
+                                ?.map { it.name } ?: emptyList()
+                        },
+                        onPickProject = { name ->
+                            onValueChange(
+                                if (input.isBlank()) "在项目「$name」里："
+                                else "$input 在项目「$name」里："
+                            )
+                        },
+                        skills = remember {
+                            com.ccm.app.core.skill.BuiltinSkills.all().map { it.id to it.name }
+                        },
+                        onPickSkill = { id ->
+                            onValueChange(if (input.isBlank()) "/$id" else "$input /$id")
+                        },
+                    )
+                },
             )
 
             // 卡片底 256.37 → 胶囊顶 271.09
@@ -396,6 +428,12 @@ private fun InputCard(
     attachedCount: Int = 0,
     /** 点 + → 拉起图片多选。 */
     onAttach: () -> Unit = {},
+    // 【2026-10-06 问题26】加号菜单状态（原来状态在 LandingScreen，
+    // 但菜单渲染在 InputCard 里 —— 作用域不可见。改为参数传入。）
+    showPlusMenu: Boolean = false,
+    onTogglePlusMenu: () -> Unit = {},
+    onDismissPlusMenu: () -> Unit = {},
+    plusMenuContent: (@Composable () -> Unit)? = null,
 ) {
     val colors = CCMTheme.colors
     // 别名保持函数体内既有引用不变
@@ -496,7 +534,7 @@ private fun InputCard(
                         modifier = Modifier
                             .size(width = 31.27.dp, height = 29.44.dp)
                             .clip(RoundedCornerShape(7.36.dp))
-                            .clickable { showPlusMenu = !showPlusMenu },
+                            .clickable(onClick = onTogglePlusMenu),
                         contentAlignment = Alignment.Center,
                     ) {
                         PainterIcon(
@@ -512,48 +550,9 @@ private fun InputCard(
                         androidx.compose.ui.window.Popup(
                             alignment = Alignment.TopStart,
                             offset = androidx.compose.ui.unit.IntOffset(0, -(300 * 2.75f).toInt()),
-                            onDismissRequest = { showPlusMenu = false },
+                            onDismissRequest = onDismissPlusMenu,
                         ) {
-                            PlusMenu(
-                                onDismiss = { showPlusMenu = false },
-                                onAttach = onAttach,
-                                onScreenshot = {
-                                    // 【2026-10-06 问题26】截图能力在 core 的 Screencap
-                                    // 工具里（走 Shizuku/rish），UI 层直接调需要协程 +
-                                    // ToolContext（拿不到）。
-                                    // 折中：把「请截屏」写成一条待发消息填入输入框 ——
-                                    // 用户按发送，Agent 会调 Screencap 工具截屏并分析。
-                                    // （Web 是直接调后端接口截屏，APK 侧工具链不同，
-                                    //   但用户体验等价：点一下 → 得到屏幕内容分析。）
-                                    onValueChange(
-                                        if (value.isBlank()) "截取当前屏幕并告诉我上面有什么"
-                                        else "$value\n截取当前屏幕并告诉我上面有什么"
-                                    )
-                                },
-                                projects = remember {
-                                    com.ccm.app.AppGraph.storage
-                                        ?.let { com.ccm.app.core.project.ProjectStore(it).list() }
-                                        ?.map { it.name } ?: emptyList()
-                                },
-                                onPickProject = { name ->
-                                    // 把项目目录作为上下文提示填入输入框
-                                    onValueChange(
-                                        if (value.isBlank()) "在项目「$name」里："
-                                        else "$value 在项目「$name」里："
-                                    )
-                                },
-                                onCreateProject = { /* 项目创建在项目页，这里只跳转 */ },
-                                skills = remember {
-                                    com.ccm.app.core.skill.BuiltinSkills.all()
-                                        .map { it.id to it.name }
-                                },
-                                onPickSkill = { id ->
-                                    // 技能 = slash 命令，填进输入框让用户补参数
-                                    onValueChange(if (value.isBlank()) "/$id" else "$value /$id")
-                                },
-                                onManageSkills = { /* 定制页有技能 tab */ },
-                                onConnectors = { /* 定制页有连接器 tab */ },
-                            )
+                            plusMenuContent?.invoke()
                         }
                     }
                 }

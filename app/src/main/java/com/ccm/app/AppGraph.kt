@@ -194,9 +194,7 @@ object AppGraph {
     var autoMemory: com.ccm.app.core.memory.AutoMemory? = null
         private set
 
-    /** 对话门面 —— **UI 接入 Agent 的唯一入口**。 */
-    @Volatile
-    // 【2026-10-06 问题12 修复】原来是普通 var —— MainActivity 里
+    // 【2026-10-06 问题12 修复】原来是个 @Volatile var —— MainActivity 里
     // `CcmApp(session = AppGraph.session)` 只在**重组时**读一次，
     // 用户在设置页加了 Provider 后 session 变了但 UI 不重组，
     // 顶部「尚未配置 API」横幅不消失（用户报的问题12）。
@@ -204,14 +202,19 @@ object AppGraph {
     // 改用一个 Compose State 承载（显式 API，不用 by 委托 —— 委托要额外
     // import getValue/setValue，这个文件是纯逻辑层，不想引 Compose 依赖）。
     // 属性本身仍是普通 var，读写点不变；Compose 侧读 [sessionState] 即可。
+    //
+    // ⚠️ 不能用 @Volatile：它只对 backing field 生效，而下面这个属性是
+    //    getter/setter 委托给 State 的（没有 backing field），Kotlin 直接报错。
+    //    线程安全由 Compose 的 Snapshot 机制保证（跨线程写也是原子的）。
     private val _sessionState = androidx.compose.runtime.mutableStateOf<ChatSession?>(null)
+
+    /** 对话门面 —— **UI 接入 Agent 的唯一入口**。 */
     var session: ChatSession?
         get() = _sessionState.value
         set(value) { _sessionState.value = value }
 
     /** 供 Compose 观察的 State（问题12：MainActivity 读它才会在变更时重组）。 */
     val sessionState: androidx.compose.runtime.State<ChatSession?> get() = _sessionState
-        private set
 
     /** 已注册工具名清单（供设置页展示与自检）。 */
     @Volatile

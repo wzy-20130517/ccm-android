@@ -1434,7 +1434,11 @@ private fun ModelPickerDialog(
                     .fillMaxWidth()
                     .heightIn(max = 320.dp),
             ) {
-                items(filtered) { id ->
+                // ⚠️ 用 items(count) 重载而不是 items(list) —— 后者要
+                //    `import androidx.compose.foundation.lazy.items`，
+                //    全限定名写法下编译器找不到扩展函数。
+                items(count = filtered.size) { idx ->
+                    val id = filtered[idx]
                     val checked = id in picked
                     Row(
                         modifier = Modifier
