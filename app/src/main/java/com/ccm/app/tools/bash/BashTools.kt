@@ -351,8 +351,27 @@ class BashTool(
 ) : Tool() {
 
     override val name = "Bash"
-    override val description =
-        "执行 shell 命令。支持 timeout；run_in_background:true 后台跑并返回 task_id。"
+    // 【2026-10-06 envMode】描述里写明命令跑在**哪个环境** ——
+    // 两个通道的文件系统是隔离的（proot 在 App 私有目录里，
+    // Termux 在 Termux 自己的 home），模型不知道就会写错路径：
+    // 比如 proot 里写 /sdcard/xxx（bind 进来的是同一个物理目录，OK），
+    // Termux 里写 /root/xxx（不存在，Termux 的 home 是
+    // /data/data/com.termux/files/home）。按通道动态生成。
+    override val description: String =
+        "执行 shell 命令。支持 timeout；run_in_background:true 后台跑并返回 task_id。" +
+            "当前环境：${channel.label} —— " + when (channel.label) {
+                "内置 proot" ->
+                    "命令跑在 App 内置的 Ubuntu（rootfs）里，工作区默认 /root 或 /mnt/ext；" +
+                        "手机存储挂在 /sdcard（与 Android 是同一个物理目录，读写删改都行，" +
+                        "但**不支持符号链接/硬链接/chmod** —— git 仓库、node_modules、" +
+                        "解压带链接的 tar 别放上面）。装包用 apt。"
+                "外接 Termux" ->
+                    "命令跑在用户的 Termux 里（/data/data/com.termux/files/home），" +
+                        "手机存储在 /sdcard（Termux 已授权），装包用 pkg 或 apt（Termux 自带）。" +
+                        "App 私有目录（/data/data/com.ccm.app）Termux **访问不了** —— " +
+                        "跨环境文件放 /sdcard 下的公共位置。"
+                else -> "命令跑在 ${channel.label} 里。"
+            }
     override val isReadOnly = false
     override val isDestructive = true
     override val isConcurrencySafe = false

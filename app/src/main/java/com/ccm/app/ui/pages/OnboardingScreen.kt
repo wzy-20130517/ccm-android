@@ -20,6 +20,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -115,6 +116,19 @@ fun OnboardingScreen(
     var log by remember { mutableStateOf("") }
     /** 失败后**停住**，不自动跳走 —— 用户要看日志。 */
     var failed by remember { mutableStateOf(false) }
+    // ── 运行环境选择（2026-10-06）────────────────────────────────────
+    // 首次进入先选「内置 proot」还是「外接 Termux」，工具链选择在其后。
+    // 选完写进 config.json 的 envMode，之后不再问（MainActivity 按 rootfs
+    // 是否已装分流，老用户不会进这里）。
+    var envMode by remember { mutableStateOf("proot") }
+    // Termux 是否装了（没装时提示 + 自动回 proot，不让用户卡在死路）
+    var termuxInstalled by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(Unit) {
+        termuxInstalled = try {
+            ctx.packageManager.getPackageInfo("com.termux", 0); true
+        } catch (_: Throwable) { false }
+    }
+
     val toolchains = remember { com.ccm.app.runtime.ToolchainCatalog.ALL }
     var selectedToolchains by remember {
         mutableStateOf(toolchains.filter { it.defaultChecked }.map { it.id }.toSet())
@@ -192,6 +206,67 @@ fun OnboardingScreen(
                 }
 
                 Spacer(Modifier.height(18.dp))
+
+                // ── 运行环境选择（2026-10-06）────────────────────────────
+                // 排在最前：选 Termux 的话下面的「工具链安装」整段不适用
+                // （工具装进 Termux，不由我们管）。
+                InfoCard {
+                    Text("选择运行环境", style = CCMText.body14.copy(fontWeight = FontWeight.Medium), color = colors.textMain)
+                    Spacer(Modifier.height(8.dp))
+
+                    // 内置 proot
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { envMode = "proot" },
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        RadioButton(selected = envMode == "proot", onClick = { envMode = "proot" })
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("内置 proot（推荐）", style = CCMText.body14, color = colors.textMain)
+                            Text(
+                                "App 自带 Ubuntu 环境，点一下自动装好。" +
+                                    "不依赖其他 App，卸载重装可复现；缺点是与手机文件系统隔一层。",
+                                style = CCMText.body12, color = colors.textSecondary,
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    // 外接 Termux
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable {
+                            // 没装 Termux 时点了自动弹回 proot —— 不让用户卡死路
+                            if (termuxInstalled == true) envMode = "termux"
+                        },
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        RadioButton(
+                            selected = envMode == "termux",
+                            enabled = termuxInstalled == true,
+                            onClick = { if (termuxInstalled == true) envMode = "termux" },
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                if (termuxInstalled == false) "外接 Termux（未安装）" else "外接 Termux",
+                                style = CCMText.body14,
+                                color = if (termuxInstalled == false) colors.textSecondary else colors.textMain,
+                            )
+                            Text(
+                                if (termuxInstalled == false) {
+                                    "未检测到 Termux。从 F-Droid 安装 Termux 后可回来选它；" +
+                                        "现在选内置 proot 也能用。"
+                                } else {
+                                    "复用你已有的 Termux 环境（工具、配置、~/.claude 都在那边）。" +
+                                        "需要在 Termux 里开启 allow-external-apps=true。" +
+                                        "选它则跳过下面的工具链安装。"
+                                },
+                                style = CCMText.body12, color = colors.textSecondary,
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(18.dp))
                 InfoCard {
                     Text("选择要安装的工具链", style = CCMText.body14.copy(fontWeight = FontWeight.Medium), color = colors.textMain)
                     toolchains.forEach { chain ->
@@ -216,7 +291,17 @@ fun OnboardingScreen(
                         progress = 0f
                         log = ""
                         failed = false
-                        scope.launch { runInstall(rootfs, proot, selectedToolchains) { p, msg ->
+                        // 落盘 envMode（AppGraph 装配时按它选 Bash 通道）——
+                        // 写在最前：即使后面安装失败，用户的选择也保住了。
+                        try {
+                            val storage = com.ccm.app.core.FileAppStorage(ctx.filesDir)
+                            val loadR = com.ccm.app.core.provider.AppConfig.load(storage.configFile)
+                            com.ccm.app.core.provider.AppConfig.save(
+                                loadR.config.copy(envMode = envMode),
+                                storage.configFile,
+                            )
+                        } catch (_: Throwable) {}
+                        scope.launch { runInstall(rootfs, proot, selectedToolchains, envMode) { p, msg ->
                             progress = p
                             if (msg.isNotEmpty()) log = if (log.isEmpty()) msg else "$log\n$msg"
                         }.also { ok ->
@@ -328,7 +413,7 @@ fun OnboardingScreen(
                             progress = 0f
                             log = ""
                             failed = false
-                            scope.launch { runInstall(rootfs, proot, selectedToolchains) { p, msg ->
+                            scope.launch { runInstall(rootfs, proot, selectedToolchains, envMode) { p, msg ->
                                 progress = p
                                 if (msg.isNotEmpty()) log = if (log.isEmpty()) msg else "$log\n$msg"
                             }.also { ok ->
@@ -396,9 +481,29 @@ private suspend fun runInstall(
     rootfs: RootfsManager,
     proot: ProotRuntime,
     selectedToolchains: Set<String>,
+    /** 运行环境模式（"proot" / "termux"）。termux 时整段 rootfs 安装跳过。 */
+    envMode: String = "proot",
     emit: suspend (Float, String) -> Unit,
 ): Boolean = kotlinx.coroutines.coroutineScope {
     val sink = ProgressSink()
+
+    // ══════════════════════════════════════════════════════════════
+    //  Termux 模式：不装 rootfs（2026-10-06）
+    // ══════════════════════════════════════════════════════════════
+    //
+    // 用户已有 Termux 环境，命令通过 RUN_COMMAND Intent 跑在那边。
+    // 这里只做一次连通性自检（Intent 发出去了、Termux 接住了），
+    // 失败时**不阻断** —— allow-external-apps 的提示在 Termux 侧，
+    // 我们只能告诉用户去哪看。
+    if (envMode == "termux") {
+        sink.progress = 0.5f
+        sink.log = "已选择外接 Termux —— 跳过内置环境安装。"
+        sink.log = "提示：需在 Termux 里执行 echo 'allow-external-apps=true' >> ~/.termux/termux.properties 并重启 Termux，否则命令会静默失败。"
+        sink.finished = true
+        pump.join()
+        emit(1f, "外接 Termux 模式：无需安装内置环境。")
+        return@coroutineScope true
+    }
 
     // 推送协程：每 120ms 把最新进度刷进 UI。
     // 为什么要节流：install 的回调在复制 28MB 时会调几百次，

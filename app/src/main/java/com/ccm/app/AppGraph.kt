@@ -94,6 +94,23 @@ object AppGraph {
                 if (d.isDirectory || d.mkdirs()) return d.absolutePath
             } catch (_: Throwable) {}
         }
+        // 【2026-10-06 envMode】Termux 模式下默认工作区必须落在**两边都能访问**
+        // 的地方 —— files/workspace 是 App 私有目录，Termux 进程进不去，
+        // 会导致「工具在 A 写文件、Bash 在 B 找文件」的错位。
+        //
+        // 用 App 私有外部目录（Android/data/com.ccm.app/files/workspace）：
+        //   · Termux 侧：/sdcard/Android/data/com.ccm.app/files/workspace
+        //     （Termux 有存储权限就能读写，这是 Android 11+ 仍允许的例外路径）
+        //   · App 侧：无需任何权限（自己应用的外部目录）
+        // 两边是同一个物理目录，只是路径前缀不同。
+        if (cfg.envMode == "termux") {
+            try {
+                // appContext 是 init() 存下的 Application 引用（本方法是
+                // object 的成员，没有局部 context 可用）。
+                val ext = File(appContext?.getExternalFilesDir(null), WORKSPACE_DIR)
+                if (ext.isDirectory || ext.mkdirs()) return ext.absolutePath
+            } catch (_: Throwable) {}
+        }
         return File(st.root, WORKSPACE_DIR).apply { mkdirs() }.absolutePath
     }
 
@@ -525,7 +542,17 @@ object AppGraph {
                 //   也要读同一份，否则模式工具静默失效。
                 modes = modes,
                 autoMemory = autoMemory,
-            ).install(reg)
+            ).install(
+                reg,
+                // 【2026-10-06 envMode】主通道按用户在引导页/设置里选的运行环境来：
+                //   · termux → TermuxChannel（RUN_COMMAND Intent，命令跑在 Termux 里）
+                //   · 其它/空 → null（ToolsBootstrap 默认用内置 proot）
+                // 两个通道对象 ToolsBootstrap 都会建，选谁只是换 primary；
+                // 另一个自动成为 fallback（主通道不可用时降级，见 BashTool 逻辑）。
+                bashChannel = if (cfg.envMode == "termux") {
+                    com.ccm.app.tools.bash.TermuxChannel(app)
+                } else null,
+            )
 
             toolsResult = tools
             toolSettings = settings

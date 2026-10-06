@@ -182,7 +182,20 @@ fun CcmRoot() {
 
     LaunchedEffect(Unit) {
         installed = withContext(Dispatchers.IO) {
-            try { rootfs.isInstalled() } catch (t: Throwable) { false }
+            // 【2026-10-06 envMode】分流判据从「rootfs 装了没」升级为
+            // 「用户选的环境就绪了没」：
+            //   · termux 模式 → 不看 rootfs（那本来就不该装），直接进主界面；
+            //     命令能不能跑由 TermuxChannel 自己探（不可用时工具会报
+            //     明确原因 + 自动降级 proot）
+            //   · proot 模式/老用户（envMode 空）→ 维持原判据（rootfs 已装）
+            try {
+                val storage = com.ccm.app.core.FileAppStorage(ctx.filesDir)
+                val cfg = com.ccm.app.core.provider.AppConfig.load(storage.configFile).config
+                if (cfg.envMode == "termux") true
+                else rootfs.isInstalled()
+            } catch (t: Throwable) {
+                try { rootfs.isInstalled() } catch (_: Throwable) { false }
+            }
         }
     }
 

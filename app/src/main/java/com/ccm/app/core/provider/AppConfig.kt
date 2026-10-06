@@ -148,6 +148,20 @@ data class AppConfig(
     @SerialName("promptCache")
     val promptCache: Boolean = false,
 
+    /**
+     * 运行环境模式（2026-10-06 加）：首次引导时选一次，之后不再问。
+     *
+     * - `"proot"`（默认）：内置 Ubuntu proot 环境，Bash 命令跑在
+     *   `/data/data/com.ccm.app/files/rootfs` 里
+     * - `"termux"`：外接 Termux，Bash 命令通过 RUN_COMMAND Intent
+     *   发给 `com.termux` 执行
+     *
+     * ⚠️ 空串 = 老用户/尚未选择（MainActivity 视为已选 proot，不打扰）。
+     * 只有首次全新安装（rootfs 未装）才会进引导页问一次。
+     */
+    @SerialName("envMode")
+    val envMode: String = "",
+
     /** 其他未建模的字段原样保留（防保存时丢失用户的手工配置）。 */
     @SerialName("_extra")
     val extra: JsonObject? = null,
@@ -175,7 +189,7 @@ data class AppConfig(
             "providers", "current", "greeting", "stream", "temperature",
             "maxContextTokens", "permissionMode", "vision", "visionProviderId",
             "keyRotateEvery", "imageGen", "effort", "tavilyKey", "webSearch", "pexelsKey",
-            "compactThreshold", "replayHistory", "promptCache",
+            "compactThreshold", "replayHistory", "promptCache", "envMode",
             "outputStyle", "workspacePath",
             "_extra",
         )
