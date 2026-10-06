@@ -124,7 +124,12 @@ class RootfsManager(private val context: Context) {
          *   · 镜像来源、体积、内容都变了，不是同一个东西
          * 不 bump 的话，已装用户会继续用 v1 的坏 rootfs，且没有任何代码能救它。
          */
-        const val ROOTFS_VERSION = "24.04-pd-v1"
+        const val ROOTFS_VERSION = "24.04-pd-v2"
+        // 【2026-10-06 v1→v2】v2 = 预升级版。
+        // 打包前已跑完 apt-get upgrade（110 个包），用户装 App 时
+        // upgrade 是 0 个包 —— 不用再等 10+ 分钟。
+        // 对齐 Operit：它的 rootfs 也是预升级的（upgrade 秒过）。
+        // 系统版本 24.04.1 → 24.04.5。
 
         /**
          * rootfs 下载地址 —— Ubuntu 官方 base 镜像（国内镜像站）。
@@ -143,7 +148,7 @@ class RootfsManager(private val context: Context) {
          * ═══════════════════════════════════════════════════════════
          */
         const val ROOTFS_URL =
-            "https://github.com/wzy-20130517/ccm-android/releases/download/rootfs-v1/ubuntu-noble-aarch64-pd.tar.xz"
+            "https://github.com/wzy-20130517/ccm-android/releases/download/rootfs-v2/ubuntu-noble-aarch64-pd.tar.xz"
 
         /** 内核安装目标（rootfs 内） */
         const val KERNEL_DIR = "root/ccm"
@@ -166,8 +171,8 @@ class RootfsManager(private val context: Context) {
         private val MIRRORS = listOf(
             ROOTFS_URL,
             // gh-proxy 镜像（国内加速）—— 同一个文件，实测 content-length 一致
-            "https://gh-proxy.com/https://github.com/wzy-20130517/ccm-android/releases/download/rootfs-v1/ubuntu-noble-aarch64-pd.tar.xz",
-            "https://ghfast.top/https://github.com/wzy-20130517/ccm-android/releases/download/rootfs-v1/ubuntu-noble-aarch64-pd.tar.xz",
+            "https://gh-proxy.com/https://github.com/wzy-20130517/ccm-android/releases/download/rootfs-v2/ubuntu-noble-aarch64-pd.tar.xz",
+            "https://ghfast.top/https://github.com/wzy-20130517/ccm-android/releases/download/rootfs-v2/ubuntu-noble-aarch64-pd.tar.xz",
         )
 
         /**
