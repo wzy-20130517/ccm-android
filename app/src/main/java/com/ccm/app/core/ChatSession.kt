@@ -144,6 +144,60 @@ class ChatSession(
      *
      * 挂起函数（要发 API 请求），调用方在自己的协程里跑。
      */
+    /**
+     * 上下文用量报告（2026-10-06 对齐 CLI 的 `cmdContext`）。
+     *
+     * 【原来 APK 的 /context 只有 5 行裸数字】（消息条数/最近输入 token/
+     * 最近输出 token/合计）—— 用户看不出「离上限多远、该不该压缩」。
+     * CLI 的完整版有：当前上下文 token（真实值 + 估算兜底）、
+     * 进度条、水位提示（充裕/过半/接近上限建议 compact）。
+     *
+     * 照搬 CLI 的输出结构（cmd-extensions.mjs:64-135）。
+     */
+    fun contextReport(): String {
+        val history = container.agentLoop.getHistory()
+        val msgCount = history.size
+        // 当前上下文 = 最近一次 API 返回的 prompt_tokens（每次请求带全量历史）
+        var curTokens = container.agentLoop.lastPromptTokens
+        var estimated = false
+        if (curTokens <= 0 && msgCount > 0) {
+            // 兜底估算：重启恢复会话后 lastPromptTokens 还是 0，
+            // 直接显示 0 会让人以为上下文空了。按字符数粗估（中英混合约 2 字符/token）。
+            var chars = 0
+            history.forEach { m ->
+                m.content.forEach { b ->
+                    when (b) {
+                        is com.ccm.app.core.session.ContentBlock.Text -> chars += b.text.length
+                        is com.ccm.app.core.session.ContentBlock.ToolUse -> chars += b.input.toString().length
+                        is com.ccm.app.core.session.ContentBlock.ToolResult -> chars += b.content.length
+                        is com.ccm.app.core.session.ContentBlock.Image -> chars += 3000   // 图片粗算
+                    }
+                }
+            }
+            curTokens = chars / 2
+            estimated = curTokens > 0
+        }
+        val maxTokens = container.config.maxContextTokens.takeIf { it > 0 } ?: 1_000_000
+        val pct = if (maxTokens > 0) (curTokens * 100 / maxTokens).coerceAtMost(100) else 0
+        val filled = (pct / 5).coerceAtMost(20)
+        val bar = "█".repeat(filled) + "░".repeat(20 - filled)
+        val status = when {
+            curTokens > maxTokens * 0.8 -> "⚠ 接近上限，建议 /compact"
+            curTokens > maxTokens * 0.5 -> "· 使用过半，注意长度"
+            else -> "✓ 上下文充裕"
+        }
+        val fmt = { n: Int -> "%,d".format(n) }
+        return buildString {
+            append("**上下文使用量**\n\n")
+            append("- 消息条数：${fmt(msgCount)}\n")
+            append("- 当前上下文：${if (estimated) "~" else ""}${fmt(curTokens)} tokens\n")
+            append("- 上限：${fmt(maxTokens)}\n\n")
+            append("`$bar` $pct%\n\n")
+            append(status)
+            if (estimated) append("\n\n_（~ = 估算值，发一条消息后显示真实值）_")
+        }
+    }
+
     suspend fun summarizeNow(): String {
         if (isRunning) return "正在执行任务，等这轮结束再摘要。"
         val history = container.agentLoop.getHistory()

@@ -452,19 +452,23 @@ fun ChatScreenConnected(
                             session.retryLast()
                         }
                     }
-                    text == "/context" || text == "/cost" -> {
+                    text == "/context" -> {
+                        // 【2026-10-06 对齐 CLI】原来只有 5 行裸数字，看不出
+                        // 「离上限多远、该不该压缩」。改用 ChatSession.contextReport()
+                        // —— 有进度条 + 水位提示 + 估算兜底（照搬 CLI cmdContext）。
+                        session.injectNotice(session.contextReport())
+                    }
+                    text == "/cost" -> {
+                        // /cost 保持简单（它问的是「花了多少」，不是「还剩多少」）
                         val st = session.state.value
-                        val inT = st.inputTokens
-                        val outT = st.outputTokens
                         val turns = st.bubbles.count { !it.isUser }
                         session.injectNotice(
-                            "**上下文用量**\n\n" +
-                            "- 消息条数：${st.bubbles.size}\n" +
+                            "**用量**\n\n" +
                             "- 助手轮数：$turns\n" +
-                            "- 最近一次输入 token：$inT\n" +
-                            "- 最近一次输出 token：$outT\n" +
-                            "- 合计（最近一轮）：${inT + outT}\n\n" +
-                            "长会话可用 /compact 压缩。"
+                            "- 最近一次输入 token：${st.inputTokens}\n" +
+                            "- 最近一次输出 token：${st.outputTokens}\n" +
+                            "- 合计（最近一轮）：${st.inputTokens + st.outputTokens}\n\n" +
+                            "_看上下文压力用 /context（有进度条和水位提示）。_"
                         )
                     }
                     text == "/copy" -> {

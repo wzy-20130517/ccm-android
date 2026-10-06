@@ -186,8 +186,19 @@ def collect_definitions(files):
                 i += 1
             params_src = src[start + 1:i]
             # 提取参数名（形如 `name: Type`，跳过注解与默认值里的冒号）
+            #
+            # 【2026-10-06 修】原来正则 `(?:^|,)\s*(?:@\w+\s+)*(\w+)\s*:` 匹配不到
+            # 「逗号 + 换行 + 注释 + 参数」的情况：
+            #     onSwitchClick: () -> Unit = {},
+            #     /** /new 新建会话 */
+            #     onNewChat: () -> Unit = {},
+            # 于是 ChatScreenConnected 的 onNewChat/onOpenStyle/onNavigate 全部漏掉，
+            # 误报「调用了不存在的参数 onNewChat」。
+            # 修法：先把注释剥掉再匹配（保留换行，避免把两行粘一起）。
+            stripped = re.sub(r'/\*[\s\S]*?\*/', '', params_src)
+            stripped = re.sub(r'//[^\n]*', '', stripped)
             params = set()
-            for pm in re.finditer(r'(?:^|,)\s*(?:@\w+\s+)*(\w+)\s*:', params_src):
+            for pm in re.finditer(r'(?:^|,)\s*(?:@\w+\s+)*(\w+)\s*:', stripped):
                 params.add(pm.group(1))
             # 是否是 @Composable
             preceding = src[max(0, m.start() - 200):m.start()]

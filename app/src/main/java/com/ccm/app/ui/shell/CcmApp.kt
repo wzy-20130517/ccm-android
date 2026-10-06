@@ -557,19 +557,29 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                 "/stop" -> { activeSession?.stop(); navigate(CcmRoute.CHAT); return }
                 "/retry" -> { activeSession?.retryLast(); navigate(CcmRoute.CHAT); return }
                 "/style" -> { navigate(CcmRoute.SETTINGS); return }
-                "/context", "/cost" -> {
+                "/context" -> {
+                    // 2026-10-06 对齐 CLI：进度条 + 水位提示 + 估算兜底
+                    val sess = activeSession
+                    if (sess == null) {
+                        navigate(CcmRoute.CHAT)
+                    } else {
+                        sess.injectNotice(sess.contextReport())
+                        navigate(CcmRoute.CHAT)
+                    }
+                    return
+                }
+                "/cost" -> {
                     val st = activeSession?.state?.value
                     if (st == null) {
                         navigate(CcmRoute.CHAT)
                     } else {
                         val turns = st.bubbles.count { !it.isUser }
                         activeSession?.injectNotice(
-                            "**上下文用量**\n\n" +
-                            "- 消息条数：${st.bubbles.size}\n" +
+                            "**用量**\n\n" +
                             "- 助手轮数：$turns\n" +
                             "- 最近输入 token：${st.inputTokens}\n" +
                             "- 最近输出 token：${st.outputTokens}\n\n" +
-                            "长会话可用 /compact 压缩。"
+                            "_看上下文压力用 /context（有进度条和水位提示）。_"
                         )
                         navigate(CcmRoute.CHAT)
                     }
