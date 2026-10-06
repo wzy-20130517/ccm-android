@@ -186,11 +186,20 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = "点此授权「在 Termux 中运行命令」",
-                        style = CCMText.body12.copy(fontSize = 11.96.sp),
-                        color = colors.claudeOrange,
-                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "点此授权「在 Termux 中运行命令」",
+                            style = CCMText.body12.copy(fontSize = 11.96.sp),
+                            color = colors.claudeOrange,
+                        )
+                        // 【2026-10-06 补说明】用户不知道这权限是干嘛的 ——
+                        // 光看「在 Termux 中运行命令」不知道为什么要授权。
+                        Text(
+                            text = "Bash 工具要把命令送进 Termux 执行，系统要求先允许",
+                            style = CCMText.body11.copy(fontSize = 10.48.sp),
+                            color = colors.textSecondary,
+                        )
+                    }
                 }
             }
         }

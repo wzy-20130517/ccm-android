@@ -248,32 +248,16 @@ fun OnboardingScreen(
                         },
                         verticalAlignment = Alignment.Top,
                     ) {
+                        // 未装 Termux 或未授权时禁用 —— 授权后自动变可选
+                        // （termuxPermGranted 是 remember state，launcher 回调会更新它）
                         RadioButton(
                             selected = envMode == "termux",
-                            enabled = termuxInstalled == true,
-                            onClick = { if (termuxInstalled == true) envMode = "termux" },
+                            enabled = termuxInstalled == true && termuxPermGranted,
+                            onClick = {
+                                if (termuxInstalled == true && termuxPermGranted) envMode = "termux"
+                            },
                         )
                         Column(modifier = Modifier.weight(1f)) {
-                            // 权限未授予时的提示 + 授权按钮（2026-10-06）
-                            if (termuxInstalled == true && !termuxPermGranted) {
-                                Text(
-                                    "⚠ 还需授权「在 Termux 中运行命令」",
-                                    style = CCMText.body12, color = colors.claudeOrange,
-                                )
-                                Text(
-                                    "点此授权（系统弹框）—— 没有它，选 Termux 后 Bash 会报 " +
-                                        "without permission RUN_COMMAND",
-                                    style = CCMText.body11, color = colors.textSecondary,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .clickable {
-                                            termuxPermLauncher.launch(
-                                                com.ccm.app.tools.bash.TermuxChannel.PERMISSION_RUN_COMMAND
-                                            )
-                                        }
-                                        .padding(vertical = 4.dp),
-                                )
-                            }
                             Text(
                                 if (termuxInstalled == false) "外接 Termux（未安装）" else "外接 Termux",
                                 style = CCMText.body14,
@@ -284,13 +268,55 @@ fun OnboardingScreen(
                                     "未检测到 Termux。从 F-Droid 安装 Termux 后可回来选它；" +
                                         "现在选内置 proot 也能用。"
                                 } else {
-                                    "复用你已有的 Termux 环境（工具、配置、~/.claude 都在那边），" +
-                                        "文件与手机系统直通。" +
-                                        "需要在 Termux 里开启 allow-external-apps=true。" +
+                                    // 【2026-10-06 修文案】原来写「工具、配置、~/.claude 都在那边」
+                                    // —— 不准确：CCM 的配置在 App 私有目录（Termux 访问不了），
+                                    // ~/.claude 是 CLI 的东西，跟 Termux 无关。
+                                    // 真正成立的是：命令跑在 Termux 里，能用它装的工具链。
+                                    "Bash 命令跑在你已装的 Termux 里，直接用它已有的 " +
+                                        "pkg/apt 工具链（git、node、python 等），无需再装一遍。" +
+                                        "文件通过 /sdcard 与 App 互通。" +
                                         "选它则跳过下面的工具链安装。"
                                 },
                                 style = CCMText.body12, color = colors.textSecondary,
                             )
+                            // ── 授权按钮（2026-10-06 重做）──────────────────
+                            // 原来是一行 body11 灰色小字「点此授权」，混在描述里 ——
+                            // 用户不会注意到那里能点。现在做成**实心按钮**：
+                            // 橙色底 + 白字 + 明确的行动文案。
+                            if (termuxInstalled == true && !termuxPermGranted) {
+                                Spacer(Modifier.height(6.dp))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(colors.claudeOrange)
+                                        .clickable {
+                                            termuxPermLauncher.launch(
+                                                com.ccm.app.tools.bash.TermuxChannel.PERMISSION_RUN_COMMAND
+                                            )
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            "① 先点这里授权",
+                                            style = CCMText.body13.copy(fontWeight = FontWeight.SemiBold),
+                                            color = androidx.compose.ui.graphics.Color.White,
+                                        )
+                                        Text(
+                                            "系统会弹框问「允许在 Termux 中运行命令」—— 必须允许，否则选它也用不了",
+                                            style = CCMText.body11,
+                                            color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.85f),
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "授权后，左边的圆点才会变成可选状态",
+                                    style = CCMText.body11, color = colors.textSecondary,
+                                )
+                            }
                         }
                     }
                 }
@@ -339,6 +365,15 @@ fun OnboardingScreen(
 
                 Button(
                     onClick = {
+                        // 【2026-10-06 保险】权限没授予却选了 termux（理论不可达，
+                        // 因为 RadioButton 已禁用）→ 弹授权框并中止，别让用户
+                        // 进到一个「选了但用不了」的状态。
+                        if (envMode == "termux" && !termuxPermGranted) {
+                            termuxPermLauncher.launch(
+                                com.ccm.app.tools.bash.TermuxChannel.PERMISSION_RUN_COMMAND
+                            )
+                            return@Button
+                        }
                         phase = 1
                         progress = 0f
                         log = ""
