@@ -1641,6 +1641,143 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                         }
                         SlashResult.Notice(body)
                     }
+                } else if (a.startsWith("vision")) {
+                    // ── /config vision on|off|set <id> ────────────────────────
+                    // 【2026-10-06 对齐 CLI】（cmd-extensions.mjs:1214）
+                    // 控制「识图路由」：开启时优先用当前模型，关闭或未配置时
+                    // 用备用识图 Provider（visionProviderId）。
+                    val rest = a.removePrefix("vision").trim()
+                    val sub = rest.substringBefore(" ").lowercase()
+                    val restArg = rest.substringAfter(" ", "").trim()
+                    val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                    if (loadR.error != null) {
+                        SlashResult.Notice("配置损坏：${loadR.error}")
+                    } else {
+                        val cfg = loadR.config
+                        when {
+                            sub == "on" || sub == "off" -> {
+                                com.ccm.app.core.provider.AppConfig.save(
+                                    cfg.copy(vision = sub == "on"), st.configFile,
+                                )
+                                SlashResult.Notice(
+                                    "识图路由已**${if (sub == "on") "开启（优先用当前模型）" else "关闭（用备用识图 Provider 兜底）"}**。" +
+                                        hotUpdateHint()
+                                )
+                            }
+                            sub == "set" -> {
+                                if (restArg.isBlank()) {
+                                    SlashResult.Notice("用法：`/config vision set <providerId>`")
+                                } else if (!cfg.providers.containsKey(restArg)) {
+                                    SlashResult.Notice("Provider `$restArg` 不存在。用 `/config` 看列表。")
+                                } else {
+                                    com.ccm.app.core.provider.AppConfig.save(
+                                        cfg.copy(visionProviderId = restArg), st.configFile,
+                                    )
+                                    val p = cfg.providers[restArg]
+                                    SlashResult.Notice("备用识图 Provider 已设为 `$restArg`（${p?.name ?: ""}）。" + hotUpdateHint())
+                                }
+                            }
+                            else -> {
+                                val vid = cfg.visionProviderId
+                                val vp = vid?.let { cfg.providers[it] }
+                                SlashResult.Notice(
+                                    "**识图路由**\n\n" +
+                                        "- 开关：${if (cfg.vision) "开启" else "关闭"}\n" +
+                                        "- 备用 Provider：${if (vid.isNullOrBlank()) "(未配置)" else "`$vid`（${vp?.name ?: "?"}）"}\n\n" +
+                                        "用法：`/config vision on|off` · `set <providerId>`"
+                                )
+                            }
+                        }
+                    }
+                } else if (a.startsWith("provider")) {
+                    // ── /config provider add|rm|rename|list ──────────────────
+                    // 【2026-10-06 对齐 CLI】（cmd-extensions.mjs:1098）
+                    // 原来 APK 没有这一族，但列表文案里却写着「用 /config provider add」
+                    // —— 引导用户敲一个不存在的命令。
+                    val rest = a.removePrefix("provider").trim()
+                    val sub = rest.substringBefore(" ").lowercase()
+                    val restArg = rest.substringAfter(" ", "").trim()
+                    when (sub) {
+                        "" -> SlashResult.Notice(
+                            "用法：\n" +
+                                "- `/config provider list` 列出\n" +
+                                "- `/config provider add [ID] name=<名> url=<地址> model=<模型> key=<sk-...>`\n" +
+                                "- `/config provider rm <ID>` 删除（不能删当前）\n" +
+                                "- `/config provider rename <旧ID> <新ID>` 改编号（不是显示名）"
+                        )
+                        "list" -> {
+                            val items = store.list()
+                            SlashResult.Notice(
+                                if (items.isEmpty()) "没有 Provider。"
+                                else items.joinToString("\n") { p ->
+                                    val cur = if (p.id == store.load().current) " ←当前" else ""
+                                    "- `${p.id}`：${p.name} - ${p.model}$cur"
+                                }
+                            )
+                        }
+                        "add" -> {
+                            // key=value 一行式（顺序无关、缺哪个报哪个）——
+                            // 与 CLI 同款：位置参数记不住，顺序错还不报错。
+                            if (restArg.isBlank()) {
+                                SlashResult.Notice("用法：`/config provider add [ID] name=<名> url=<地址> model=<模型> key=<sk-...>`")
+                            } else {
+                                // 第一个非 key=value 的 token 当 ID（可选）
+                                val tokens = restArg.split(Regex("\\s+")).filter { it.isNotBlank() }
+                                var explicitId = ""
+                                val kv = mutableMapOf<String, MutableList<String>>()
+                                tokens.forEach { t ->
+                                    val eq = t.indexOf('=')
+                                    if (eq > 0) {
+                                        kv.getOrPut(t.substring(0, eq).lowercase()) { mutableListOf() }
+                                            .add(t.substring(eq + 1))
+                                    } else if (explicitId.isBlank()) {
+                                        explicitId = t
+                                    }
+                                }
+                                val url = kv["url"]?.firstOrNull().orEmpty()
+                                val model = kv["model"]?.firstOrNull().orEmpty()
+                                if (url.isBlank() || model.isBlank()) {
+                                    SlashResult.Notice("缺少必填字段：`url=` 和 `model=` 都要给。\n例：`/config provider add 4 name=x url=https://api.x/v1 model=gpt-4 key=sk-xxx`")
+                                } else {
+                                    val created = store.addProvider(
+                                        id = explicitId,
+                                        name = kv["name"]?.firstOrNull().orEmpty(),
+                                        url = url,
+                                        model = model,
+                                        key = kv["key"]?.firstOrNull().orEmpty(),
+                                        protocol = kv["protocol"]?.firstOrNull()?.lowercase() ?: "openai",
+                                    )
+                                    if (created == null) {
+                                        SlashResult.Notice("添加失败（编号 `${explicitId.ifBlank { "(自动)" }}` 可能已占用）。")
+                                    } else {
+                                        // key 给多个 → 存轮换池（与 CLI 一致）
+                                        val extraKeys = kv["key"]?.drop(1).orEmpty()
+                                        if (extraKeys.isNotEmpty()) store.setKeyPool(created, extraKeys)
+                                        SlashResult.Notice("已添加 Provider `$created`（${kv["name"]?.firstOrNull() ?: created}）。\n\n_用 `/config $created` 切过去。_" + hotUpdateHint())
+                                    }
+                                }
+                            }
+                        }
+                        "rm", "remove", "delete" -> {
+                            if (restArg.isBlank()) SlashResult.Notice("用法：`/config provider rm <ID>`")
+                            else if (restArg == store.load().current) SlashResult.Notice("不能删除**当前在用**的 Provider。先切到别的再删。")
+                            else if (store.removeProvider(restArg)) SlashResult.Notice("已删除 Provider `$restArg`。" + hotUpdateHint())
+                            else SlashResult.Notice("删除失败（`$restArg` 不存在？）")
+                        }
+                        "rename" -> {
+                            val parts = restArg.split(Regex("\\s+")).filter { it.isNotBlank() }
+                            if (parts.size < 2) {
+                                SlashResult.Notice("用法：`/config provider rename <旧ID> <新ID>`\n\n_（改的是编号，不是显示名 —— 显示名用 `/name`）_")
+                            } else {
+                                val err = store.renameProvider(parts[0], parts[1])
+                                SlashResult.Notice(
+                                    if (err == null) "已重命名：`${parts[0]}` → `${parts[1]}`" + hotUpdateHint()
+                                    else err
+                                )
+                            }
+                        }
+                        else -> SlashResult.Notice("未知子命令 `$sub`。用 `/config provider` 看用法。")
+                    }
                 } else {
                     // 切到指定 Provider
                     val ok = store.setCurrent(a)

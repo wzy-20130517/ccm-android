@@ -216,6 +216,35 @@ class ProviderStore(private val storage: AppStorage) {
         return AppConfig.save(next, file)
     }
 
+    /**
+     * 重命名 Provider 的 **ID/编号**（对应 CLI `/config provider rename`）。
+     *
+     * ⚠️ 改的是编号（config.providers 的 key），**不是显示名** ——
+     * 显示名用 `/name`。同步更新引用（current / visionProviderId），
+     * 否则会出现「current 指向一个不存在的 id」。
+     *
+     * @return null = 成功；非 null = 错误信息
+     */
+    fun renameProvider(oldId: String, newId: String): String? {
+        val cfg = load()
+        if (!cfg.providers.containsKey(oldId)) return "Provider `$oldId` 不存在"
+        if (newId.isBlank()) return "新 ID 不能为空"
+        if (cfg.providers.containsKey(newId)) return "Provider `$newId` 已存在"
+
+        // 保持键顺序（Map 重建时按原顺序遍历）
+        val next = linkedMapOf<String, ProviderConfig>()
+        cfg.providers.forEach { (id, p) ->
+            if (id == oldId) next[newId] = p.copy(id = newId) else next[id] = p
+        }
+        val newCfg = cfg.copy(
+            providers = next,
+            // 同步引用（与 CLI 同款：current 和 visionProviderId 都要跟）
+            current = if (cfg.current == oldId) newId else cfg.current,
+            visionProviderId = if (cfg.visionProviderId == oldId) newId else cfg.visionProviderId,
+        )
+        return if (AppConfig.save(newCfg, file)) null else "保存失败"
+    }
+
     /** 是否已配置可用 Provider（UI 判断显示引导还是对话页） */
     fun hasUsable(): Boolean {
         val cfg = load()
