@@ -37,6 +37,18 @@ class ToolContext(
     val storage: ToolStorage? = null,
     val settings: ToolSettings? = null,
     val sessionId: String = "",
+    /**
+     * 当前正在跑的 AgentLoop（问题40：ExtendTurns 用）。
+     *
+     * 【为什么放这里而不是全局 getter】ExtendTurns 是「给自己续轮」——
+     * 必须改**调用它的那个 loop** 的 maxTurns。主 Agent 和子 Agent 同时
+     * 在跑时，全局引用会指错对象（子 Agent 续轮改到主 loop 上）。
+     * 通过 ctx 传递，每个工具调用天然知道自己属于哪个 loop。
+     *
+     * 用 `Any?` 而不是具体类型 —— core/tool 不能依赖 core/agent
+     * （依赖方向），调用方自行 cast。
+     */
+    val selfLoop: Any? = null,
 ) {
 
     /** 便捷判断：取消信号是否已失效（用户中断 / 超时）。 */

@@ -120,6 +120,133 @@ class AppContainer private constructor(
     }
 
     /**
+     * 跑一个子 Agent（问题40）。
+     *
+     * ═══════════════════════════════════════════════════════════════
+     * 【2026-10-06 新建】用户报「各种的工具/命令未接入、行为降级」。
+     *
+     * 排查发现 `attachSubAgents` **零调用** —— 子 Agent 相关工具
+     * （Agent / AgentStatus / AgentOutput / AgentStop / TeamCreate /
+     * AgentWorkflow）全部报「观察器未接入」或「spawnSubAgent 未注入」。
+     *
+     * 本方法提供 spawn 的实现：每次派活新建一个独立 AgentLoop
+     * （独立上下文 = 子 Agent 的核心价值），跑完收集文本输出。
+     * ═══════════════════════════════════════════════════════════════
+     *
+     * ## 为什么在这里而不是单独一个类
+     *
+     * 子 Agent 需要的依赖（apiClient / registry / toolRunner / config /
+     * modes / storage）**全是本类的私有字段** —— 放外面就要暴露一堆 getter。
+     *
+     * ## 简化点（如实记录）
+     *
+     * - **不传 spawnSubAgent** → 子 Agent 不能再派孙 Agent
+     *   （递归无深度限制会失控；需要多层编排时主 Agent 自己分层）
+     * - **不传 askUser** → 子 Agent 无法与用户交互（会永久阻塞）
+     * - **系统提示词**：独立一段（不复用主提示词，避免子 Agent 误以为自己是主 Agent）
+     *
+     * @param spec 任务规格（prompt / 类型 / 名字）
+     * @return 执行结果（ok=false 时 error 有原因）
+     */
+    suspend fun runSubAgent(spec: com.ccm.app.core.tool.SubAgentSpec): com.ccm.app.core.tool.SubAgentResult {
+        val subPrompt = buildString {
+            append("你是一个子 Agent（subagent），由主 Agent 派来独立完成一个子任务。\n\n")
+            append("## 行为约束\n")
+            append("- 你没有派生子 Agent 的能力（不要调用 Agent 工具，会报错）\n")
+            append("- 你无法与用户交互（不要调用 AskUserQuestion，会永久阻塞）\n")
+            append("- 完成后用一段清晰的文字总结你的结论/产出 —— 这段文字会原样返回给主 Agent\n")
+            append("- 不要问「要我做吗」，直接做（信息不足时基于合理假设推进，并说明假设）\n")
+            append("\n## 任务信息\n")
+            append("subagent_type = ${spec.subagentType}\n")
+            if (spec.description.isNotBlank()) append("description = ${spec.description}\n")
+        }
+
+        val subLoop = try {
+            AgentLoop(
+                api = apiClient,
+                systemPrompt = subPrompt,
+                // 同一个注册表（工具集一致）
+                toolsProvider = { toolRegistry.list },
+                maxTurnsInit = ModeState.NORMAL_MAX_TURNS,
+                cwd = cwdForSubAgent,
+                permissionModeInit = config.permissionMode,
+                storage = storageForSubAgent,
+                settings = settingsForSubAgent,
+                sessionId = "sub-" + System.currentTimeMillis(),
+                // 关键：不传 spawnSubAgent（子 Agent 不能再派）
+                toolRunner = toolRunnerForSubAgent,
+                imageScaler = null,
+                modes = modes,
+                traceDir = traceDirForSubAgent,
+            )
+        } catch (t: Throwable) {
+            return com.ccm.app.core.tool.SubAgentResult(
+                ok = false, output = "",
+                error = "子 Agent 装配失败：${t.message}",
+            )
+        }
+
+        val sb = StringBuilder()
+        var turns = 0
+        return try {
+            subLoop.run(spec.prompt).collect { ev ->
+                when (ev) {
+                    is AgentEvent.TextDelta -> sb.append(ev.text)
+                    is AgentEvent.Done -> turns = subLoop.turnCount
+                    else -> {}
+                }
+            }
+            com.ccm.app.core.tool.SubAgentResult(
+                ok = true,
+                output = sb.toString().trim().ifBlank { "（子 Agent 没有产出文本）" },
+                turns = turns,
+            )
+        } catch (t: Throwable) {
+            com.ccm.app.core.tool.SubAgentResult(
+                ok = false,
+                output = sb.toString().trim(),
+                turns = turns,
+                error = "子 Agent 执行失败：${t.message}",
+            )
+        }
+    }
+
+    // ── 子 Agent 用的依赖快照（问题40）─────────────────────────────
+    //
+    // build() 里的这些值都是**局部变量**（没有存成字段），
+    // 所以这里用 private var 在 build 时记一份，供 runSubAgent 用。
+
+    /** 子 Agent 用的工作目录（build 时记录）。 */
+    private var cwdForSubAgent: String = "/"
+
+    /** 子 Agent 用的工具存储（build 时记录）。 */
+    private var storageForSubAgent: com.ccm.app.core.tool.ToolStorage? = null
+
+    /** 子 Agent 用的配置快照（build 时记录）。 */
+    private var settingsForSubAgent: com.ccm.app.core.tool.ToolSettings? = null
+
+    /** 子 Agent 用的工具执行器（build 时记录）。 */
+    private var toolRunnerForSubAgent: com.ccm.app.core.tool.ToolRunner? = null
+
+    /** 子 Agent 用的 trace 目录（build 时记录）。 */
+    private var traceDirForSubAgent: java.io.File? = null
+
+    /** 记录子 Agent 依赖（由 build 调用）。 */
+    private fun rememberSubAgentDeps(
+        cwd: String,
+        storage: com.ccm.app.core.tool.ToolStorage?,
+        settings: com.ccm.app.core.tool.ToolSettings?,
+        runner: com.ccm.app.core.tool.ToolRunner?,
+        traceDir: java.io.File?,
+    ) {
+        cwdForSubAgent = cwd
+        storageForSubAgent = storage
+        settingsForSubAgent = settings
+        toolRunnerForSubAgent = runner
+        traceDirForSubAgent = traceDir
+    }
+
+    /**
      * 会话自动保存（`null` = 未启用）。
      *
      * 需要协程作用域，所以不能在这里直接建 —— 由调用方
@@ -354,7 +481,65 @@ class AppContainer private constructor(
                 storage = AppBackedToolStorage(storage),
                 settings = buildSettings(config, provider),
                 sessionId = effectiveSessionId,
-                spawnSubAgent = null,   // 由上层在装配后注入（需要 Agent 工具支持）
+                // 【2026-10-06 问题40 修复】原来这里是 `null`，注释说
+                // 「由上层在装配后注入」—— **但从来没注入过** →
+                // Agent 工具永远报「当前环境不支持派生子 Agent（spawnSubAgent 未注入）」
+                // → 整个子 Agent / 团队协作 / AgentWorkflow 功能全部不可用。
+                //
+                // 现在实现在这里：每次 spawn 新建一个独立的 AgentLoop
+                // （独立上下文 = 子 Agent 的核心价值），跑完收集文本输出。
+                //
+                // ⚠️ 简化点（如实记录）：
+                //   · 不注入 spawnSubAgent（子 Agent 不能再派孙 Agent —— 防递归失控）
+                //   · 不注入 askUser（子 Agent 无法与用户交互，会永久阻塞）
+                //   · 系统提示词用主提示词 + 一段「你是子 Agent」的说明
+                spawnSubAgent = spawn@{ spec ->
+                    try {
+                        val subPrompt = assembleSystemPrompt(storage) +
+                            "\n\n## 你是子 Agent\n" +
+                            "你被主 Agent 派来独立完成一个子任务。\n" +
+                            "· 你没有派生子 Agent 的能力（不要尝试调用 Agent 工具）\n" +
+                            "· 你无法与用户交互（不要调用 AskUserQuestion）\n" +
+                            "· 完成后用一段清晰的文字总结你的结论/产出\n"
+                        val subLoop = AgentLoop(
+                            api = apiClient,
+                            systemPrompt = subPrompt,
+                            toolsProvider = { registry.list },
+                            maxTurnsInit = DEFAULT_MAX_TURNS,
+                            cwd = cwd,
+                            permissionModeInit = config.permissionMode,
+                            storage = AppBackedToolStorage(storage),
+                            settings = buildSettings(config, provider),
+                            sessionId = effectiveSessionId + "-sub-" + System.currentTimeMillis(),
+                            // 关键：不传 spawnSubAgent（子 Agent 不能再派）
+                            toolRunner = toolRunner,
+                            imageScaler = imageScaler,
+                            modes = modes,
+                            traceDir = storage.tracesDir,
+                        )
+                        // 跑完收集文本输出
+                        val sb = StringBuilder()
+                        var turns = 0
+                        subLoop.run(spec.prompt).collect { ev ->
+                            when (ev) {
+                                is com.ccm.app.core.agent.AgentEvent.TextDelta -> sb.append(ev.text)
+                                is com.ccm.app.core.agent.AgentEvent.Done -> turns = subLoop.turnCount
+                                else -> {}
+                            }
+                        }
+                        SubAgentResult(
+                            ok = true,
+                            output = sb.toString().trim().ifBlank { "（子 Agent 没有产出文本）" },
+                            turns = turns,
+                        )
+                    } catch (t: Throwable) {
+                        SubAgentResult(
+                            ok = false,
+                            output = "",
+                            error = "子 Agent 执行失败：${t.message}",
+                        )
+                    }
+                },
                 toolRunner = toolRunner,
                 imageScaler = imageScaler,
                 modes = modes,
@@ -379,7 +564,7 @@ class AppContainer private constructor(
                 null
             }
 
-            return AppContainer(
+            val container = AppContainer(
                 config = config,
                 apiClient = apiClient,
                 visionClient = visionClient,
@@ -392,6 +577,16 @@ class AppContainer private constructor(
                 modes = modes,
                 autoMemory = effectiveAutoMemory,
             )
+            // 【2026-10-06 问题40】记下子 Agent 需要的依赖 ——
+            // build() 里这些都是局部变量，runSubAgent() 够不着。
+            container.rememberSubAgentDeps(
+                cwd = cwd,
+                storage = AppBackedToolStorage(storage),
+                settings = provider?.let { buildSettings(config, it) },
+                runner = toolRunner,
+                traceDir = storage.tracesDir,
+            )
+            return container
         }
 
         /**

@@ -102,11 +102,32 @@ fun MarkdownRenderer(
     //   SelectionContainer 内部的长按会被它优先消费（文本选择优先），
     //   外层长按只在「长按非文本区」（如列表空白）时触发。
     //   两个入口共存，不冲突。
-    androidx.compose.foundation.text.selection.SelectionContainer {
-        Column(modifier = modifier.fillMaxWidth()) {
-            blocks.forEach { block -> MarkdownBlockView(block) }
+    // 【2026-10-06 问题34 真根因 · 问题15 的回归】
+    //
+    // 上一轮为了「长按选取」（问题15）给整个 Column 包了 SelectionContainer ——
+    // **副作用：代码块里的「复制」按钮点击失效**（用户报「点了完全没反应」）。
+    //
+    // 原因：SelectionContainer 会让内部所有 Text 进入选择模式，
+    // 单击/长按被它接管（用于定位光标、拖选择手柄），
+    // 内部子元素的 clickable 收不到事件。
+    //
+    // 修法：**代码块单独渲染在 SelectionContainer 之外** ——
+    // 代码本来就不该用「选一段」的交互（要复制就点按钮复制整块），
+    // 正文（段落/标题/列表）保留选择能力。
+    Column(modifier = modifier.fillMaxWidth()) {
+        blocks.forEach { block ->
+            if (block is MdBlock.CodeBlock) {
+                // 代码块：不包 SelectionContainer（否则复制按钮失效）
+                MarkdownBlockView(block)
+            } else {
+                androidx.compose.foundation.text.selection.SelectionContainer {
+                    MarkdownBlockView(block)
+                }
+            }
+        }
 
-            if (showSourcesList && sources.isNotEmpty()) {
+        if (showSourcesList && sources.isNotEmpty()) {
+            androidx.compose.foundation.text.selection.SelectionContainer {
                 MarkdownSourcesList(sources = sources)
             }
         }

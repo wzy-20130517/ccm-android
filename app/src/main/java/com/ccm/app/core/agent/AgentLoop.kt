@@ -751,6 +751,8 @@ class AgentLoop(
             storage = storage,
             settings = settings,
             sessionId = sessionId,
+            // 【2026-10-06 问题40】把自己传进去 —— ExtendTurns 用它续轮
+            selfLoop = this,
         )
 
         // 走统一执行入口（校验 → 权限 → hook → 执行 → 截断 → hook）。

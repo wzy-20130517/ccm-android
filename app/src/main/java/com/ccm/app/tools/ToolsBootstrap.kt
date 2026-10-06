@@ -146,6 +146,14 @@ class ToolsBootstrap(
         /** cron 调度器（#8：AppGraph 起心跳调 schedulerTick）。 */
         val cron: com.ccm.app.tools.system.CronTools? = null,
         val bashChannel: com.ccm.app.tools.bash.BashChannel,
+        /**
+         * Agent 工具组（问题40）。
+         *
+         * 【为什么暴露】SubAgentManager 需要 AppContainer（在 ToolsBootstrap
+         * **之后**才装配）→ observer 只能事后注入。暴露 agentTools 让 AppGraph
+         * 能在拿到 manager 后设 `agentTools.observer = mgr.asToolObserver()`。
+         */
+        val agentTools: com.ccm.app.tools.task.AgentTools? = null,
     )
 
     /** 默认工作目录（App 私有，无需运行时权限） */
@@ -410,6 +418,8 @@ class ToolsBootstrap(
             loadTodos = { miscTools.loadTodos() },
             cron = cronTools,
             bashChannel = primary,
+            // 【2026-10-06 问题40】暴露给 AppGraph 事后注入 observer
+            agentTools = agentTools,
         )
     }
 

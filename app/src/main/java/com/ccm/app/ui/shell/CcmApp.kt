@@ -581,6 +581,106 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         navigate(CcmRoute.CHAT)
     }
 
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-06 问题40】AskUserQuestion 弹窗
+    // ══════════════════════════════════════════════════════════════
+    // 工具侧调 AppGraph.askUserBlocking() → 这里弹对话框 → 用户回答
+    // → AppGraph.answerQuestion(答案)。
+    val pendingQ = com.ccm.app.AppGraph.pendingQuestion.value
+    if (pendingQ != null) {
+        val (question, options) = pendingQ
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { com.ccm.app.AppGraph.answerQuestion(null) },
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .shadow(8.dp, RoundedCornerShape(14.72.dp))
+                    .clip(RoundedCornerShape(14.72.dp))
+                    .background(colors.bgMain)
+                    .border(1.dp, colors.border, RoundedCornerShape(14.72.dp))
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(9.2.dp),
+            ) {
+                Text(
+                    "Agent 提问",
+                    style = CCMText.body16.copy(fontWeight = FontWeight.SemiBold),
+                    color = colors.textMain,
+                )
+                Text(
+                    question,
+                    style = CCMText.body14,
+                    color = colors.textMain,
+                )
+                if (options.isEmpty()) {
+                    // 无选项 → 纯文本输入
+                    var ans by remember { mutableStateOf("") }
+                    androidx.compose.foundation.text.BasicTextField(
+                        value = ans,
+                        onValueChange = { ans = it },
+                        textStyle = CCMText.body14.copy(color = colors.textMain),
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(colors.claudeOrange),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 50.dp)
+                            .clip(RoundedCornerShape(7.36.dp))
+                            .background(colors.input)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(9.2.dp, Alignment.End),
+                    ) {
+                        Text(
+                            "跳过",
+                            style = CCMText.body13,
+                            color = colors.textSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { com.ccm.app.AppGraph.answerQuestion(null) }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                        Text(
+                            "回答",
+                            style = CCMText.body13.copy(fontWeight = FontWeight.Medium),
+                            color = if (ans.isNotBlank()) Color(0xFFD97757) else colors.textSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable(enabled = ans.isNotBlank()) {
+                                    com.ccm.app.AppGraph.answerQuestion(ans.trim())
+                                }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                    }
+                } else {
+                    // 有选项 → 点选即答
+                    options.forEach { opt ->
+                        Text(
+                            opt,
+                            style = CCMText.body14,
+                            color = colors.textMain,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(7.36.dp))
+                                .clickable { com.ccm.app.AppGraph.answerQuestion(opt) }
+                                .background(colors.input)
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                        )
+                    }
+                    Text(
+                        "跳过",
+                        style = CCMText.body13,
+                        color = colors.textSecondary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { com.ccm.app.AppGraph.answerQuestion(null) }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                    )
+                }
+            }
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier

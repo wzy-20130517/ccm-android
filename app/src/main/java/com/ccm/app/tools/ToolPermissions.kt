@@ -83,8 +83,17 @@ class ToolPermissions(private val configDir: File) {
         }
     }
 
+    // 【2026-10-06 问题43 修复·第二版】
+    //
+    // 上一版只改了 AppConfig 的默认值（default → bypassPermissions），
+    // 但**这个类才是实际执行裁决的地方** —— 它的 mode 硬编码 "default"，
+    // 且 loadModeFrom() 在「配置里没有 permissionMode 字段」时直接 return
+    // （不 fallback）→ 老用户（config.json 没这字段）永远 default。
+    // 用户报「权限默认还是不对」。
+    //
+    // 现在：默认值也对齐 CLI（bypassPermissions）。
     @Volatile
-    var mode: String = "default"
+    var mode: String = "bypassPermissions"
         private set
 
     // 规则缓存（带 mtime，避免每次工具调用都读盘）
@@ -103,11 +112,16 @@ class ToolPermissions(private val configDir: File) {
         return "权限模式 → $newMode"
     }
 
-    /** 从配置加载模式（启动时调用） */
+    /**
+     * 从配置加载模式（启动时调用）。
+     *
+     * 【2026-10-06 问题43】字段缺失时**不再 return** —— 保持默认值
+     * （bypassPermissions，对齐 CLI）。原来 return 会让 mode 停在硬编码值上。
+     */
     fun loadModeFrom(configJson: JSONObject?) {
         val m = configJson?.optString("permissionMode", "")?.takeIf { it.isNotEmpty() }
             ?: configJson?.optString("permission_mode", "")?.takeIf { it.isNotEmpty() }
-            ?: return
+            ?: return   // 字段缺失 → 保持默认（bypassPermissions）
         if (m in MODES) mode = m
     }
 

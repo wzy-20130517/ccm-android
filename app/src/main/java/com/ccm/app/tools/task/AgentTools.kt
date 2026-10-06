@@ -52,6 +52,17 @@ import kotlinx.serialization.json.JsonObject
 class AgentTools(
     private val getRegistry: () -> com.ccm.app.core.tool.ToolRegistry?,
     /**
+     * 取当前 AgentLoop（问题40：ExtendTurns 用）。
+     *
+     * 【为什么需要】ExtendTurns 是「给自己续轮」—— 要改**当前正在跑的
+     * AgentLoop** 的 maxTurns。但 APK 的工具是全局注册的（ToolsBootstrap
+     * 构造一次），拿不到「当前是哪个 loop」。
+     *
+     * 所以由 AppGraph 提供一个 getter：子 Agent 场景返回子 loop，
+     * 主 Agent 场景返回主 loop。null = 取不到（工具报错）。
+     */
+    private val getAgentLoop: () -> com.ccm.app.core.agent.AgentLoop? = { null },
+    /**
      * 子 Agent 登记表 —— 支撑 `SendMessage(wake:true)` 的唤醒续跑。
      *
      * spawn 成功后把「名字 + 原始 prompt + 类型」记进去，之后就能按名唤醒。
@@ -532,14 +543,32 @@ class AgentTools(
         }
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val turns = (input.int("turns") ?: 60).coerceIn(1, 60)
+            val reason = input.str("reason")!!
+
+            // 【2026-10-06 问题40 修复】原来优先用 `extend` 回调 ——
+            // 但那个回调从来没被注入过 → 永远报「当前环境不支持续轮」。
+            //
+            // 现在用 `ctx.selfLoop`（AgentLoop 构造 ctx 时传的自己）——
+            // 这是**最准确**的来源：主 Agent 调就改主 loop，子 Agent 调
+            // 就改子 loop，不会串。
+            (ctx.selfLoop as? com.ccm.app.core.agent.AgentLoop)?.let { loop ->
+                return try {
+                    ToolResult.ok(loop.extendMaxTurns(turns, reason))
+                } catch (e: Throwable) {
+                    ToolResult.failed("续轮失败：${e.message}")
+                }
+            }
+
+            // 兜底：老路径（extend 回调）
             val fn = extend
                 ?: return ToolResult.Error(
-                    "当前环境不支持续轮（extend 回调未注入）。请收尾并如实交代未完成部分。",
+                    "当前环境不支持续轮（取不到当前 AgentLoop，extend 回调也未注入）。" +
+                        "请收尾并如实交代未完成部分。",
                     ToolResult.INTERNAL,
                 )
-            val turns = (input.int("turns") ?: 60).coerceIn(1, 60)
             return try {
-                ToolResult.ok(fn(turns, input.str("reason")!!))
+                ToolResult.ok(fn(turns, reason))
             } catch (e: Throwable) {
                 ToolResult.failed("续轮失败：${e.message}")
             }

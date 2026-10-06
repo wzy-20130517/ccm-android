@@ -9,6 +9,7 @@ import com.ccm.app.core.provider.AppConfig
 import com.ccm.app.core.session.SessionStore
 import com.ccm.app.core.tool.AppBackedToolStorage
 import com.ccm.app.core.tool.ToolRegistry
+import com.ccm.app.tools.task.asToolObserver
 import com.ccm.app.core.tool.ToolSettings
 import com.ccm.app.core.AppContainer
 import com.ccm.app.tools.AndroidImageScaler
@@ -110,6 +111,30 @@ object AppGraph {
         val cfg = AppConfig.load(st.configFile).config
         return resolveWorkspaceDir(st, cfg)
     }
+
+    /**
+     * 读 GitHub 配置（问题40）。
+     *
+     * 格式对齐 CLI 的 `~/.claude-code-mobile/github.json`：
+     * ```json
+     * { "token": "ghp_...", "defaultRepo": "owner/name" }
+     * ```
+     * APK 侧位置：`files/github.json`。
+     *
+     * 【为什么需要】ToolsBootstrap 的 githubToken/githubRepo 参数原来从来没传
+     * → GitHubRepo/GitHubIssues/GitHubPRs/GitHubFile 等 8 个工具全部报「未配置」。
+     */
+    private fun readGithubConfig(): Pair<String, String?>? = try {
+        val root = storage?.root ?: return null
+        val f = java.io.File(root, "github.json")
+        if (!f.exists()) null
+        else {
+            val o = org.json.JSONObject(f.readText())
+            val token = o.optString("token", "").takeIf { it.isNotBlank() }
+            val repo = o.optString("defaultRepo", "").takeIf { it.isNotBlank() }
+            token?.let { it to repo }
+        }
+    } catch (_: Throwable) { null }
 
     // ══════════════════════════════════════════════════════════════
     //  装配结果（UI 读这些决定渲染什么）
@@ -215,6 +240,45 @@ object AppGraph {
 
     /** 供 Compose 观察的 State（问题12：MainActivity 读它才会在变更时重组）。 */
     val sessionState: androidx.compose.runtime.State<ChatSession?> get() = _sessionState
+
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-06 问题40】AskUserQuestion 的 UI 桥
+    // ══════════════════════════════════════════════════════════════
+    //
+    // 原来 `askUser` 回调（ToolsBootstrap 参数）从来没传过 →
+    // AskUserQuestion 工具永远报「当前环境无法向用户提问（未接入 UI 回调）」。
+    //
+    // 实现：一个「待回答问题」State + 一个挂起的 CompletableDeferred。
+    //   工具侧调 askUserBlocking() → 设置 State（UI 弹窗）→ await 答案
+    //   UI 侧（CcmApp）监听 State → 弹对话框 → 用户选 → complete Deferred
+
+    /** 待回答的问题：问题文本 + 选项（空 = 纯文本输入）。null = 无待答。 */
+    private val _pendingQuestion = androidx.compose.runtime.mutableStateOf<Pair<String, List<String>>?>(null)
+    val pendingQuestion: androidx.compose.runtime.State<Pair<String, List<String>>?> get() = _pendingQuestion
+
+    /** 等待中的答案（工具侧 await）。 */
+    private var answerDeferred: kotlinx.coroutines.CompletableDeferred<String?>? = null
+
+    /** 工具侧调用：发起提问并挂起等待。 */
+    suspend fun askUserBlocking(question: String, options: List<String>): String? {
+        // 已有待答问题 → 拒绝（避免嵌套）
+        if (_pendingQuestion.value != null) return null
+        val d = kotlinx.coroutines.CompletableDeferred<String?>()
+        answerDeferred = d
+        _pendingQuestion.value = question to options
+        return try {
+            // 超时 5 分钟（等用户操作）
+            kotlinx.coroutines.withTimeoutOrNull(300_000L) { d.await() }
+        } finally {
+            _pendingQuestion.value = null
+            answerDeferred = null
+        }
+    }
+
+    /** UI 侧调用：用户回答（或取消传 null）。 */
+    fun answerQuestion(answer: String?) {
+        answerDeferred?.complete(answer)
+    }
 
     /** 已注册工具名清单（供设置页展示与自检）。 */
     @Volatile
@@ -369,6 +433,49 @@ object AppGraph {
                 storage = AppBackedToolStorage(st),
                 settings = settings,
                 bridge = NativeBridge(app),
+                // 【2026-10-06 问题40】AskUserQuestion 的 UI 桥 ——
+                // 原来这个参数从来没传 → 工具永远报「未接入 UI 回调」。
+                askUser = { q, opts -> askUserBlocking(q, opts) },
+                // 【2026-10-06 问题40】GitHub 工具 —— 原来这两个参数从来没传
+                // → GitHubRepo/GitHubIssues 等 8 个工具全部报「未配置」。
+                // 配置格式对齐 CLI 的 ~/.claude-code-mobile/github.json：
+                //   { "token": "ghp_...", "defaultRepo": "owner/name" }
+                githubToken = readGithubConfig()?.first,
+                githubRepo = readGithubConfig()?.second,
+                // 【2026-10-06 问题40】CommandExec —— 原来没传 →
+                // 工具永远报「未接入（需要 App 层注入命令执行器）」。
+                //
+                // ⚠️ 这里只能跑**不依赖 UI 的命令**（session 相关：/clear /compact
+                //    /cost /context /help 等）。依赖导航/面板的（/model /style）
+                //    会返回「需要在界面上操作」的提示，而不是假装成功。
+                commandExec = { cmd ->
+                    try {
+                        val full = if (cmd.startsWith("/")) cmd else "/$cmd"
+                        val result = com.ccm.app.ui.chat.handleSlashCommand(
+                            full,
+                            com.ccm.app.ui.chat.SlashContext(
+                                session = session,
+                                appContext = app,
+                                // 这三个依赖 UI —— 传空实现（命令会返回提示）
+                                navigate = {},
+                                newChat = {},
+                                openPanel = {},
+                            ),
+                        )
+                        // SlashResult 是 sealed class，toString() 会输出
+                        // `Notice(markdown=...)` 这种内部格式 —— 提取真正的内容。
+                        when (result) {
+                            null -> "命令 `$full` 不被识别（或需要界面操作）。可用：/clear /compact /cost /context /help"
+                            is com.ccm.app.ui.chat.SlashResult.Notice -> result.markdown
+                            is com.ccm.app.ui.chat.SlashResult.Toast -> result.text
+                            is com.ccm.app.ui.chat.SlashResult.Navigate -> "（命令要求跳转到 ${result.route} —— 请在界面上操作）"
+                            is com.ccm.app.ui.chat.SlashResult.OpenPanel -> "（命令要求打开面板 ${result.panel} —— 请在界面上操作）"
+                            else -> "命令已执行（无输出）"
+                        }
+                    } catch (t: Throwable) {
+                        "命令执行失败：${t.message}"
+                    }
+                },
                 // ★ 必须传 getter（不是字符串快照）—— GoalTools 在
                 //   每次调用时现取，这样 [rebuild] 换了会话 id 它也能跟上。
                 getSessionId = { sessionId },
@@ -410,6 +517,37 @@ object AppGraph {
             initError = null
             // 待办看板恢复（audit-core #3）
             try { sess.restoreTodos(tools.loadTodos()) } catch (_: Throwable) {}
+
+            // ══════════════════════════════════════════════════════════
+            //  【2026-10-06 问题40】接子 Agent（原来零调用）
+            // ══════════════════════════════════════════════════════════
+            // `attachSubAgents` 从来没被调用过 → AgentStatus/AgentOutput/
+            // AgentStop 全部报「观察器未接入」，子 Agent 派出去也看不见。
+            //
+            // spawn 的实现：**用当前 AppContainer 的装配**跑一个独立 AgentLoop
+            // （独立上下文 = 子 Agent 的核心价值），把文本输出收集起来。
+            // 与 AppContainer 里 spawnSubAgent 的实现同构 —— 两者都是
+            // 「独立 loop + 收集 TextDelta」。
+            appScope?.let { sc ->
+                try {
+                    val c = container
+                    if (c != null) {
+                        val mgr = c.attachSubAgents(sc) { spec, handle ->
+                            // 用 AppContainer.runSubAgent（它持有全部依赖）
+                            val r = c.runSubAgent(spec)
+                            handle.report(turns = r.turns, outputTail = r.output.takeLast(200))
+                            r
+                        }
+                        // 把 manager 注入 AgentTools.observer —— 否则
+                        // AgentStatus/AgentOutput/AgentStop 三个工具报「观察器未接入」。
+                        // （observer 是 @Volatile var，可以事后设）
+                        try {
+                            toolsResult?.agentTools?.observer = mgr.asToolObserver()
+                        } catch (_: Throwable) {}
+                        pendingSubAgentManager = mgr
+                    }
+                } catch (_: Throwable) {}
+            }
 
             // ★ cron 心跳（audit-core #8：持久任务存盘但没人调度 → 永不触发）。
             //   每 30s 扫一次；目标会话在忙就跳过本轮（返回 false 不记账，

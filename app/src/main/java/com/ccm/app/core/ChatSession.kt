@@ -692,9 +692,55 @@ class ChatSession(
                 }
             }
         } catch (_: kotlinx.coroutines.CancellationException) {
-            _state.value = _state.value.copy(running = false)
+            // 【2026-10-06 问题37 修复】原来只把 running=false ——
+            // **已收到的流式内容全丢了**。用户报「输出不完全的助手消息，
+            // 用户再发条消息会直接把助手消息吃了」：
+            //   流式输出到一半 → 用户发新消息/按停止 → CancellationException
+            //   → streaming 被清空且没进 bubbles → 半截回复消失。
+            //
+            // 现在：取消时把已收到的内容**定型成气泡**（保留半截回复），
+            // 与 Done 分支同样的逻辑（只是没有 automem 提取）。
+            val partialText = (accumulatedText + streaming).trim()
+            if (partialText.isNotBlank() || thinkingBuf.isNotBlank() || toolCards.isNotEmpty()) {
+                val nextState = _state.value.copy(
+                    bubbles = _state.value.bubbles + Bubble(
+                        role = Message.ROLE_ASSISTANT,
+                        text = partialText,
+                        messageId = currentMessageId.ifBlank { "turn-${System.currentTimeMillis()}" },
+                        thinking = thinkingBuf,
+                        toolCards = toolCards.toList(),
+                    ),
+                    streaming = "",
+                    thinking = "",
+                    toolCards = emptyList(),
+                    running = false,
+                )
+                _state.value = nextState
+                try { saveForced() } catch (_: Throwable) {}
+            } else {
+                _state.value = _state.value.copy(running = false)
+            }
         } catch (e: Throwable) {
-            _state.value = _state.value.copy(running = false, error = e.message ?: "未知错误")
+            // 同上：报错时也保留已收到的部分（原来直接丢）
+            val partialText = (accumulatedText + streaming).trim()
+            if (partialText.isNotBlank() || thinkingBuf.isNotBlank() || toolCards.isNotEmpty()) {
+                _state.value = _state.value.copy(
+                    bubbles = _state.value.bubbles + Bubble(
+                        role = Message.ROLE_ASSISTANT,
+                        text = partialText,
+                        messageId = currentMessageId.ifBlank { "turn-${System.currentTimeMillis()}" },
+                        thinking = thinkingBuf,
+                        toolCards = toolCards.toList(),
+                    ),
+                    streaming = "",
+                    thinking = "",
+                    toolCards = emptyList(),
+                    running = false,
+                    error = e.message ?: "未知错误",
+                )
+            } else {
+                _state.value = _state.value.copy(running = false, error = e.message ?: "未知错误")
+            }
         } finally {
             runningJob = null
         }

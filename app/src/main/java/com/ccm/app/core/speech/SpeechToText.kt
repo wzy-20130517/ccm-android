@@ -50,6 +50,16 @@ object SpeechToText {
             onError("正在识别中，请稍候")
             return
         }
+        // 【2026-10-06 问题36】SpeechRecognizer 必须在**主线程**创建/调用，
+        // 否则直接报 ERROR_CLIENT（Android 文档明确要求）。
+        // Compose 的回调默认在主线程，但如果调用方从协程/IO 线程来，
+        // 这里主动切回主线程 —— 避免「偶发 ERROR_CLIENT」。
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                start(context, onResult, onError, locale)
+            }
+            return
+        }
         val r = try {
             // 用 applicationContext —— 防止 Activity 泄漏（识别会话跨配置变化）
             SpeechRecognizer.createSpeechRecognizer(context.applicationContext)
@@ -74,7 +84,16 @@ object SpeechToText {
             override fun onError(error: Int) {
                 val msg = when (error) {
                     SpeechRecognizer.ERROR_AUDIO -> "录音出错"
-                    SpeechRecognizer.ERROR_CLIENT -> "客户端出错，请重试"
+                    // 【2026-10-06 问题36】用户报「语音键点击后安卓返回客户端错误」——
+                    // ERROR_CLIENT 在小米/部分 ROM 上很常见，原因通常是：
+                    //   · 系统语音服务被限制（省电策略杀了）
+                    //   · 没有网络（小米用讯飞，需联网）
+                    //   · 上次会话没干净结束（服务忙）
+                    // 给出可操作的建议，而不是干巴巴的「请重试」。
+                    SpeechRecognizer.ERROR_CLIENT ->
+                        "语音识别服务出错（ERROR_CLIENT）。\n" +
+                            "常见原因：系统语音服务被省电策略限制 / 无网络 / 服务忙。\n" +
+                            "试试：1) 检查网络 2) 系统设置→应用→语音服务→允许后台运行 3) 重开 App"
                     SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "缺录音权限"
                     SpeechRecognizer.ERROR_NETWORK -> "网络不可用（系统识别需要联网）"
                     SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "网络超时"
