@@ -104,8 +104,17 @@ class PhoneUseService : IPhoneUseService.Stub {
 
     constructor()
 
+    /**
+     * 应用 Context（2026-10-06 加字段）。
+     *
+     * 原来只在构造函数参数里可见，targetScreenSize() 这类**构造函数之外**
+     * 的方法用不到 —— 编译报 Unresolved reference: context。
+     */
+    @Volatile private var appContext: Context? = null
+
     @Keep
     constructor(context: Context) {
+        appContext = context
         startDisplay(context)
     }
 
@@ -156,7 +165,8 @@ class PhoneUseService : IPhoneUseService.Stub {
     private fun targetScreenSize(): Pair<Int, Int> {
         if (targetDisplay != 0) return dispW to dispH
         return try {
-            val wm = context.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
+            val c = appContext ?: return dispW to dispH
+            val wm = c.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
             val bounds = wm.currentWindowMetrics.bounds
             bounds.width() to bounds.height()
         } catch (_: Throwable) {
