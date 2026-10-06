@@ -177,91 +177,69 @@ fun ChatScreen(
                 //   视口外，用户必须手动往下滑，流式回复时看不到内容。
                 //   行为对齐 Web（跟底；用户上翻即停止跟随）。
                 var followBottom by remember { mutableStateOf(true) }
-                // 【2026-10-06 问题46 修复·第三版】
+                // 【2026-10-06 问题46 修复·第六版（最终）—— 对齐 Web 的判定模型】
                 //
-                // 上一版用 `isScrollInProgress` 区分「用户滚动」和「内容增长」——
-                // 但 Compose 的这个标志在**程序滚动（scrollTo）时也是 true**，
-                // 所以下面的 repeat(6) 每次 scrollTo 都会把自己判成"用户在滚"，
-                // 逻辑还是错的。
+                // 用户反馈：「我手动拉到页面最底下时一次都没触发过跟随」（提了 5 次）。
                 //
-                // 正确做法（对齐 Web 的两个 ref）：
-                //   · autoScrolling 标志 —— 程序滚动期间置 true，跳过判定
-                //   · 只有「用户主动滚」才改 followBottom
-                //   · 滚回底部（value >= max - 阈值）时**恢复** followBottom
-                var autoScrolling by remember { mutableStateOf(false) }
-
-                // 【2026-10-06 问题46 修复·第二版】上一版只加「6 帧重试」，
-                // 但真正卡住跟随的是这个判定本身：
+                // 前五版都栽在同一处：单一 followBottom + 阈值判定，而流式期间
+                // maxValue 一直在变（内容增长），判定时机与基准值都对不上。
                 //
-                //   snapshotFlow { value to maxValue }.collect {
-                //       followBottom = v >= max - 120      ← 有陷阱
-                //   }
+                // Web 的模型（MainContent.tsx:2524 handleScroll）是**实时位置判定**：
+                //   const isBottom = Math.abs(scrollHeight - clientHeight - scrollTop) < 50;
+                //   if (isBottom && userScrolledUpRef.current) userScrolledUpRef.current = false;
+                //   if (!userScrolledUpRef.current) isAtBottomRef.current = isBottom;
+                // 即：**滚到底一定恢复跟随**（无论拖拽还是程序滚），容差 50px。
                 //
-                // 内容增长时 maxValue 先变大（value 还没跟上），这一拍算出
-                // followBottom=false → 上面的 LaunchedEffect 立刻 return →
-                // **永远停止跟随**。用户报「还是没有 Sticky Scroll」。
+                // APK 等价实现（下面 snapshotFlow）：
+                //   · 只在 **value 变化**时判定（内容增长改 maxValue 不动 followBottom）
+                //   · value+max 同时变时用**旧 max**（用户拖拽那一刻的屏幕底部）
+                //   · 判据 (max - v) < 50 —— 与 Web 同值
+                //   · 程序滚动（scrollTo）是瞬时到 max 的 → 判定为 true，不自我否定
                 //
-                // 正确判据（对齐 Web 的 handleScroll）：
-                //   只在**用户主动滚动**时才更新 followBottom，
-                //   内容增长导致的 maxValue 变化不算。
-                //   用 `scrollState.isScrollInProgress` 区分。
-                // 【2026-10-06 问题46 修复·第四版（最终）】
-                //
-                // 前三版都在纠结「怎么区分用户滚动 vs 程序滚动」——
-                // isScrollInProgress 在 scrollTo 时也是 true，区分不了。
-                //
-                // 最终方案（**去掉那个区分需求**）：
-                //   只看「当前位置离底部多远」——
-                //   · 在底部附近（<120px）→ followBottom = true（继续跟）
-                //   · 不在底部 → followBottom = false（不跟）
-                //
-                // 为什么这样就够：程序滚动（repeat 6 帧）总是滚到 maxValue，
-                // 所以滚完必然在底部 → 判定为 true，不会自我否定。
-                // 用户上翻 → 离底部远 → false，停止跟随 ✓
-                // 用户滚回底部 → true，恢复跟随 ✓
-                //
-                // ══════════════════════════════════════════════════════════
-                //  【2026-10-06 问题46 修复·第五版（终于对）】
-                //
-                // 用户报「跟了一会就不跟了」—— 精准描述了现象。
-                //
-                // 第四版的 bug：`snapshotFlow { value to maxValue }` 在**内容增长**
-                // 时也会触发（maxValue 变了），此时 value 还是旧值 →
-                // `v >= max - 120` 算出 false → followBottom = false → **停跟**。
-                //
-                // autoScrolling 标志挡不住：它只在滚动协程运行期间为 true，
-                // 而内容增长（流式吐字）大部分时间滚动协程没在跑。
-                //
-                // 第五版（终于对）：**用「谁变了」区分，不用「离底部多远」**：
-                //   · maxValue 变了（内容增长）→ **不动 followBottom**（关键！）
-                //   · value 变了（滚动）→ 判是否到底（用户上翻=停，滚回底=恢复）
-                //
-                // 这是唯一能区分「内容增长」和「用户滚动」的可靠方法 ——
-                // 因为两者的信号源不同（maxValue vs value）。
+                // 这样「用户拉到底 → 恢复跟随」与 Web 行为一致。
                 // ══════════════════════════════════════════════════════════
                 LaunchedEffect(scrollState) {
                     var lastValue = scrollState.value
                     var lastMax = scrollState.maxValue
-                    snapshotFlow { Triple(scrollState.value, scrollState.maxValue, scrollState.isScrollInProgress) }
-                        .collect { (v, max, scrolling) ->
+                    // 只用 value 和 maxValue 两个信号（isScrollInProgress 证明不可靠 ——
+                    // scrollTo 也会置 true，见下方注释）
+                    snapshotFlow { scrollState.value to scrollState.maxValue }
+                        .collect { (v, max) ->
+                            // ⚠️ 顺序：先算「变没变」，再更新基准 ——
+                            //   且下面判定要用**旧 max**（用户拖拽那一刻屏幕上的
+                            //   底部位置），所以旧值存进 prevMax 再更新 lastMax。
                             val maxChanged = max != lastMax
                             val valueChanged = v != lastValue
+                            val prevMax = lastMax
                             lastValue = v
                             lastMax = max
 
-                            // 程序滚动期间不判定
-                            if (autoScrolling) return@collect
                             if (max <= 0) return@collect
 
-                            if (maxChanged && !valueChanged) {
-                                // ★ 内容增长了、value 没动 → 这是流式吐字，不是用户操作
-                                // **不动 followBottom**（保持原值，继续跟或继续不跟）
-                                return@collect
-                            }
-
-                            if (valueChanged) {
-                                // 值变了 → 用户滚动或程序滚动到了底
-                                followBottom = v >= max - 120
+                            // ── 判定：只看「离底部多远」（Web 同款，容差 50px）──
+                            //
+                            // ⚠️ 不能靠 `scrolling`（isScrollInProgress）区分用户/程序滚动：
+                            //   自动跟底的 scrollTo **也会**让它是 true，
+                            //   滚到一半时 max-v 可能 > 50 → 会被误判成「用户上翻」
+                            //   → followBottom=false → 自我否定（跟一会就停）。
+                            //
+                            // 只看位置就够，因为两个场景的期望一致：
+                            //   · 程序滚到底 → max-v≈0 → true（继续跟，正确）
+                            //   · 用户拖到底 → max-v≈0 → true（恢复跟，正确 ✓）
+                            //   · 用户上翻   → max-v 大 → false（停跟，正确）
+                            //
+                            // 且**只在 value 变化时**判定（maxChanged 不改 followBottom
+                            // —— 那是流式吐字，不是用户操作）。
+                            if (valueChanged && !maxChanged) {
+                                // 纯滚动：用当前 max 判定（用户拖或程序滚）
+                                followBottom = (max - v) < 50
+                            } else if (valueChanged && maxChanged) {
+                                // 滚动 + 内容增长同时发生（流式期间拖拽）：
+                                // 用**旧 max**（用户拖拽那一刻的屏幕底部）判定 ——
+                                // 那才是用户意图的准确表达。
+                                // 两个都试：旧 max 判定通过 = 用户拖到了当时底部；
+                                // 新 max 判定通过 = 内容刚好长到用户位置。
+                                followBottom = (prevMax - v) < 50 || (max - v) < 50
                             }
                         }
                 }
@@ -293,18 +271,21 @@ fun ChatScreen(
                         .collect { max ->
                             if (max <= 0) return@collect
                             if (!followBottom) return@collect
-                            // 程序滚动期间不重复触发
-                            if (autoScrolling) return@collect
-                            autoScrolling = true
-                            try {
-                                // 多补几帧 —— markdown 撑高是异步的
-                                repeat(3) {
-                                    withFrameNanos {}
-                                    if (!followBottom) return@repeat
-                                    scrollState.scrollTo(scrollState.maxValue)
-                                }
-                            } finally {
-                                autoScrolling = false
+                            // ⚠️ 不用 autoScrolling 挡 —— 它和判定协程互相干扰：
+                            //   自动滚动期间用户真拖到底时，判定协程因
+                            //   `if (autoScrolling) return@collect` 跳过，
+                            //   用户的意图丢失（这是「拉到底不触发跟随」的
+                            //   又一成因）。
+                            //
+                            // 正确做法：scrollTo 是**幂等**的（已在底部时是
+                            // no-op），重复触发无害；判定协程靠
+                            // `isScrollInProgress` 区分用户/程序滚动 ——
+                            // 而 scrollTo 是瞬时操作，isScrollInProgress
+                            // 的 true 窗口极短（<1 帧），不会误判。
+                            repeat(3) {
+                                withFrameNanos {}
+                                if (!followBottom) return@repeat
+                                scrollState.scrollTo(scrollState.maxValue)
                             }
                         }
                 }
