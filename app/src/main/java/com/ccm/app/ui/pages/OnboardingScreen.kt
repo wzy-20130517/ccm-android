@@ -221,10 +221,10 @@ fun OnboardingScreen(
                     ) {
                         RadioButton(selected = envMode == "proot", onClick = { envMode = "proot" })
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("内置 proot（推荐）", style = CCMText.body14, color = colors.textMain)
+                            Text("内置 proot", style = CCMText.body14, color = colors.textMain)
                             Text(
-                                "App 自带 Ubuntu 环境，点一下自动装好。" +
-                                    "不依赖其他 App，卸载重装可复现；缺点是与手机文件系统隔一层。",
+                                "App 自带 Ubuntu 环境，点一下自动装好，不依赖其他 App。" +
+                                    "适合想要开箱即用、环境干净可复现的；缺点是文件与手机系统隔一层。",
                                 style = CCMText.body12, color = colors.textSecondary,
                             )
                         }
@@ -256,7 +256,8 @@ fun OnboardingScreen(
                                     "未检测到 Termux。从 F-Droid 安装 Termux 后可回来选它；" +
                                         "现在选内置 proot 也能用。"
                                 } else {
-                                    "复用你已有的 Termux 环境（工具、配置、~/.claude 都在那边）。" +
+                                    "复用你已有的 Termux 环境（工具、配置、~/.claude 都在那边），" +
+                                        "文件与手机系统直通。" +
                                         "需要在 Termux 里开启 allow-external-apps=true。" +
                                         "选它则跳过下面的工具链安装。"
                                 },
