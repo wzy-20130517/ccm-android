@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
@@ -165,7 +164,7 @@ fun AssistantThinkingChain(
     // 用 `produceState` 实现：它能在 key 变化时起协程、防抖、
     // 又在协程结束时把最终值写进 state。
     // ══════════════════════════════════════════════════════════════
-    val resolvedEvents by androidx.compose.runtime.produceState(
+    val rawEvents by androidx.compose.runtime.produceState(
         initialValue = if (events.isNotEmpty()) events else emptyList(),
         events, thinking, toolCards.size, isThinking,
     ) {
@@ -179,6 +178,26 @@ fun AssistantThinkingChain(
         }
         value = buildReasoningTimelineEvents(thinking, toolCards, isThinking)
     }
+
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-06 用户报「思维链一闪一闪」修复】
+    //
+    //  produceState 在 key（含 isThinking）变化时会**重启协程** ——
+    //  重启期间 value 可能短暂为空（尤其 isThinking 从 true 翻 false 的瞬间，
+    //  协程刚启动还没算出结果）。而下面 `if (空) return` 直接不渲染 →
+    //  整块思维链消失一帧 → 下一帧又出现 = 闪。
+    //
+    //  修法：**记住上一次的非空结果**，短暂空窗期沿用旧值。
+    //  只有真正「本轮结束了且确实没内容」才允许清空（thinking 也为空时）。
+    // ══════════════════════════════════════════════════════════════
+    var lastNonEmpty by remember { mutableStateOf<List<AssistantThinkingEvent>>(emptyList()) }
+    if (rawEvents.isNotEmpty()) {
+        lastNonEmpty = rawEvents
+    } else if (thinking.isEmpty() && !isThinking) {
+        // 真正的清空：本轮已结束且思考文本也没了（新会话/被清）
+        lastNonEmpty = emptyList()
+    }
+    val resolvedEvents = if (rawEvents.isNotEmpty()) rawEvents else lastNonEmpty
 
     // 合成 done 事件（见类注释第 3 条）
     val syntheticEvents = remember(resolvedEvents, isThinking) {

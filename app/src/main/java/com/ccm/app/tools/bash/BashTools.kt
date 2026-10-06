@@ -288,9 +288,15 @@ class TermuxChannel(private val context: Context) : BashChannel {
                 exitCode = -1,
                 stdout = "",
                 stderr = "无法调用 Termux：${e.message}\n" +
-                    "可能原因：① 未安装 Termux ② Termux 未设置 allow-external-apps=true " +
-                    "（在 ~/.termux/termux.properties 里加，然后 termux-reload-settings）" +
-                    "③ Android 8+ 对后台 startService 有限制，请先手动打开一次 Termux",
+                    "可能原因：\n" +
+                    "① Termux 未设置 allow-external-apps=true —— " +
+                    "在 ~/.termux/termux.properties 里加一行 allow-external-apps=true，" +
+                    "然后执行 termux-reload-settings（或重启 Termux）\n" +
+                    "② **Termux 不是 F-Droid 版** —— RUN_COMMAND 是 signature 级权限，" +
+                    "Play 版签名不同，会报 \"without permission com.termux.permission.RUN_COMMAND\"。 " +
+                    "从 F-Droid 装 Termux（与 CCM 同一签名体系）\n" +
+                    "③ Android 8+ 对后台 startService 有限制 —— 先手动打开一次 Termux 再试\n" +
+                    "④ 未安装 Termux",
             )
         }
 
