@@ -428,6 +428,11 @@ class AppContainer private constructor(
         /** CLAUDE.md 全文注入上限（对齐 CLI persistence.mjs 的 35000）。 */
         private const val CLAUDE_MD_LIMIT = 35000
 
+        /** 默认输出风格段（未设 /style 时用；与 CLI prompts.mjs 的默认一致）。 */
+        private const val DEFAULT_OUTPUT_STYLE =
+            "直接、简洁、中文优先。代码块、错误信息、文件名保留英文。"
+
+
         private fun assembleSystemPrompt(
             storage: AppStorage,
             context: android.content.Context? = null,
@@ -484,12 +489,20 @@ class AppContainer private constructor(
                 } catch (_: Throwable) {}
             }
             // 输出风格（与 CLI/Web 的 outputStyle 同字段互通）
+            //
+            // ⚠️ **替换而非追加**（CLI 的教训，见 prompts.mjs 的 outputStyleSection）：
+            // 模板里 {{OUTPUT_STYLE}} 的位置就是风格段的位置。设了风格就整段
+            // 换掉 —— 若改成 append，默认段「直接、简洁」和用户选的「详细讲解」
+            // 会同时留在提示词里打架，模型无所适从。
             try {
                 val styleId = com.ccm.app.core.provider.AppConfig
                     .load(storage.configFile).config.outputStyle
-                com.ccm.app.core.output.OutputStyles
-                    .promptFor(styleId)?.let { sb.append("\n\n").append(it) }
-            } catch (_: Throwable) {}
+                val styleText = com.ccm.app.core.output.OutputStyles.promptFor(styleId)
+                    ?: DEFAULT_OUTPUT_STYLE
+                sb.replace(0, sb.length, sb.toString().replace("{{OUTPUT_STYLE}}", styleText))
+            } catch (_: Throwable) {
+                sb.replace(0, sb.length, sb.toString().replace("{{OUTPUT_STYLE}}", DEFAULT_OUTPUT_STYLE))
+            }
             sb.toString()
         } catch (_: Throwable) {
             context?.let { loadSystemPrompt(it) }

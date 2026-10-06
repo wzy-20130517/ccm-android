@@ -85,7 +85,10 @@ object PromptVars {
         vars["KEEPALIVE_NOTE"] = "APK 是前台服务 + wake-lock，通常不需要手动保活。" +
             "若长时间任务被系统杀，去系统设置给 CCM 开「无限制后台」。"
         vars["BROWSER_TOOLS_SECTION"] = "（APK 暂无浏览器工具）"
-        vars["OUTPUT_STYLE"] = "直接、简洁、中文优先。代码块、错误信息、文件名保留英文。"
+        // OUTPUT_STYLE 不在这里填 —— 它由 assembleSystemPrompt 按用户选的
+        // 风格**替换**（CLI 同款：设了风格就整段换掉，避免两段指令打架）。
+        // 留成空串占位，让上层 replace。
+        vars["OUTPUT_STYLE"] = ""
 
         return vars
     }

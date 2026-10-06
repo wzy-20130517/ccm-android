@@ -148,7 +148,13 @@ class ApiClient(
         /** 思考档位覆盖（摘要请求传 "medium"，见 buildRequestBody 注释）。 */
         effortOverride: String? = null,
     ): ApiTypes.ChatResponse {
-        val body = buildRequestBody(system, messages, tools, stream = false, effortOverride = effortOverride)
+        // 【2026-10-06】历史旧图裁剪（对齐 CLI _pruneOldImages）：
+        // 只保留最近一条带图消息，更早的图片块换成「（图片已省略）」文本。
+        // 为什么必须做：base64 图片极占 token（一张 1080p ≈ 1.5k token），
+        // 多轮带图对话会迅速撑爆上下文。**只改发给 API 的副本** ——
+        // 会话存档/撤回/重看依赖原图，抹掉就真丢了。
+        val pruned = pruneOldImages(messages)
+        val body = buildRequestBody(system, pruned, tools, stream = false, effortOverride = effortOverride)
         val raw = executeWithRetry(body, stream = false)
         return parseResponse(raw)
     }
@@ -176,7 +182,8 @@ class ApiClient(
         messages: List<JsonObject>,
         tools: List<ApiTypes.ToolDefinition> = emptyList(),
     ): Flow<ApiTypes.StreamEvent> = flow {
-        val body = buildRequestBody(system, messages, tools, stream = true)
+        // 历史旧图裁剪（与 chat() 同款，见 pruneOldImages 注释）
+        val body = buildRequestBody(system, pruneOldImages(messages), tools, stream = true)
 
         // ── 重试循环（**重试只在这一层**，见类注释规则 1） ──
         //
@@ -638,6 +645,53 @@ class ApiClient(
         }
 
         return out
+    }
+
+    /**
+     * 历史旧图裁剪 —— 对齐 CLI `agent.mjs` 的 `_pruneOldImages`。
+     *
+     * 规则：找**最后一条**带图消息，它及其之后的图片不动；
+     * 更早的图片块替换为「（图片已省略）」文本。
+     *
+     * 为什么必须做：base64 图片极占 token（一张 1080p ≈ 1.5k token），
+     * 多轮带图对话会迅速撑爆上下文。**只改发给 API 的副本** ——
+     * 会话存档/撤回/UI 缩略图依赖原图块，抹掉就真丢了。
+     */
+    private fun pruneOldImages(messages: List<JsonObject>): List<JsonObject> {
+        if (messages.isEmpty()) return messages
+        var lastImageIdx = -1
+        for (i in messages.indices.reversed()) {
+            val content = messages[i]["content"] as? kotlinx.serialization.json.JsonArray ?: continue
+            if (content.any { it is JsonObject && prim(it["type"]) in setOf("image_url", "image") }) {
+                lastImageIdx = i; break
+            }
+        }
+        if (lastImageIdx < 0) return messages
+
+        var changed = false
+        val out = messages.mapIndexed { i, m ->
+            if (i >= lastImageIdx) return@mapIndexed m
+            val content = m["content"] as? kotlinx.serialization.json.JsonArray ?: return@mapIndexed m
+            if (content.none { it is JsonObject && prim(it["type"]) in setOf("image_url", "image") }) {
+                return@mapIndexed m
+            }
+            val newContent = kotlinx.serialization.json.JsonArray(
+                content.map { block ->
+                    if (block is JsonObject && prim(block["type"]) in setOf("image_url", "image")) {
+                        kotlinx.serialization.json.buildJsonObject {
+                            put("type", kotlinx.serialization.json.JsonPrimitive("text"))
+                            put("text", kotlinx.serialization.json.JsonPrimitive("（图片已省略）"))
+                        }
+                    } else block
+                }
+            )
+            changed = true
+            kotlinx.serialization.json.buildJsonObject {
+                m.forEach { (k, v) -> if (k != "content") put(k, v) }
+                put("content", newContent)
+            }
+        }
+        return if (changed) out else messages
     }
 
     /**
