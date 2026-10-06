@@ -309,10 +309,8 @@ fun LandingScreen(
                         onDismiss = { showPlusMenu = false },
                         onAttach = { launcher.launch("image/*") },
                         onScreenshot = {
-                            onValueChange(
-                                if (input.isBlank()) "截取当前屏幕并告诉我上面有什么"
+                            input = if (input.isBlank()) "截取当前屏幕并告诉我上面有什么"
                                 else "$input\n截取当前屏幕并告诉我上面有什么"
-                            )
                         },
                         projects = remember {
                             com.ccm.app.AppGraph.storage
@@ -320,16 +318,14 @@ fun LandingScreen(
                                 ?.map { it.name } ?: emptyList()
                         },
                         onPickProject = { name ->
-                            onValueChange(
-                                if (input.isBlank()) "在项目「$name」里："
+                            input = if (input.isBlank()) "在项目「$name」里："
                                 else "$input 在项目「$name」里："
-                            )
                         },
                         skills = remember {
                             com.ccm.app.core.skill.BuiltinSkills.all().map { it.id to it.name }
                         },
                         onPickSkill = { id ->
-                            onValueChange(if (input.isBlank()) "/$id" else "$input /$id")
+                            input = if (input.isBlank()) "/$id" else "$input /$id"
                         },
                     )
                 },
