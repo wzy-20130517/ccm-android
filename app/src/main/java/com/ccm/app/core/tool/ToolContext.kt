@@ -124,6 +124,19 @@ data class SubAgentSpec(
     val runInBackground: Boolean = false,
     /** 给子 Agent 起名，便于之后用 SendMessage 唤醒它继续干活（复用其上下文）。 */
     val agentName: String? = null,
+    /**
+     * 覆盖角色卡的轮次上限（null = 用角色卡默认）。
+     *
+     * 【2026-10-06 加】原来 AgentWorkflow 的 max_turns 参数算了却传不进来 ——
+     * 只能塞进结果文案，模型以为生效了实际没有。加这个字段把契约打通。
+     */
+    val maxTurns: Int? = null,
+    /**
+     * 覆盖超时（毫秒，null = 用默认）。
+     *
+     * 同 maxTurns：AgentWorkflow 的 timeout_ms 原来完全没接线。
+     */
+    val timeoutMs: Long? = null,
 )
 
 /**

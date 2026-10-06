@@ -147,6 +147,8 @@ class DevTools(
 
     inner class DiagnosticsTool : Tool() {
         override val name = "Diagnostics"
+        // ⚠️ 本工具**只做语法检查**（node --check / py_compile / tsc），
+        // 没有 LSP 路径 —— 别在 description 里承诺类型检查。
         override val description =
             "获取文件的代码诊断（语法/类型错误）。" +
                 "js/mjs/cjs 走 node --check，py 走 py_compile，ts 走 tsc。" +
@@ -156,7 +158,10 @@ class DevTools(
 
         override val inputSchema: JsonObject = ToolSchema.objectSchema(
             "file_path" to ToolSchema.string("要诊断的文件"),
-            "check_only" to ToolSchema.boolean("true 时只跑语法检查（更快）"),
+            // 【2026-10-06 删】原 check_only 参数（"true 时只跑语法检查"）——
+            // 本工具的实现**本来就只跑语法检查**（调 node --check / py_compile），
+            // 没有 LSP 路径，所以这个参数没有任何行为差异。
+            // 留着会让模型以为"不传它就会跑更慢的完整诊断"，白付认知成本。
             required = listOf("file_path"),
         )
 

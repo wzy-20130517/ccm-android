@@ -84,7 +84,15 @@ class SubAgentManager(
 
         handle.job = scope.launch {
             try {
-                val result = spawn(spec, handle)
+                // 【2026-10-06 加】spec.timeoutMs 生效（原来 AgentWorkflow 的
+                // timeout_ms 参数传进来完全没人用）。null = 不限制。
+                val result = spec.timeoutMs?.let { ms ->
+                    kotlinx.coroutines.withTimeoutOrNull(ms) { spawn(spec, handle) }
+                        ?: SubAgentResult(
+                            ok = false, output = "",
+                            error = "超时（${ms / 1000}s）—— 任务可能太大，拆小或延长 timeout_ms",
+                        )
+                } ?: spawn(spec, handle)
                 handle.finish(result)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 handle.finish(
@@ -135,7 +143,13 @@ class SubAgentManager(
         runningCount.incrementAndGet()
 
         return try {
-            val result = spawn(spec, handle)
+            val result = spec.timeoutMs?.let { ms ->
+                kotlinx.coroutines.withTimeoutOrNull(ms) { spawn(spec, handle) }
+                    ?: SubAgentResult(
+                        ok = false, output = "",
+                        error = "超时（${ms / 1000}s）—— 任务可能太大，拆小或延长 timeout_ms",
+                    )
+            } ?: spawn(spec, handle)
             handle.finish(result)
             result
         } catch (e: kotlinx.coroutines.CancellationException) {

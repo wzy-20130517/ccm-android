@@ -176,7 +176,6 @@ class PhoneTools(
             "interactive_only" to ToolSchema.boolean("只列可点击/带 id 的元素（默认 true，省 token）"),
             "max_nodes" to ToolSchema.integer("最多返回多少元素（默认 120）", minimum = 1, maximum = 1000),
             "no_system_ui" to ToolSchema.boolean("滤掉状态栏/导航栏/输入法（默认 true）"),
-            "include_text" to ToolSchema.boolean("额外补文本内容（慢，动画中会失败）"),
         )
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
@@ -401,15 +400,65 @@ class PhoneTools(
                 enum = listOf("up", "down", "left", "right"),
             ),
             "duration" to ToolSchema.integer("毫秒，默认 300", minimum = 50, maximum = 5000),
-            "ref" to ToolSchema.string("可选：在这个元素范围内滑动"),
+            "ref" to ToolSchema.string("可选：以这个元素的中心为滑动起点（在元素范围内滑）"),
+            // 【2026-10-06 加】坐标模式 —— 原来 description 承诺「可给两点坐标」
+            // 但 schema 里根本没这几个参数（AIDL 早有 swipe 坐标版）。
+            "x1" to ToolSchema.integer("起点 x（给了坐标就忽略 direction/ref）"),
+            "y1" to ToolSchema.integer("起点 y"),
+            "x2" to ToolSchema.integer("终点 x"),
+            "y2" to ToolSchema.integer("终点 y"),
         )
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
             val svc = service().getOrElse {
                 return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
             }
-            val dir = input.str("direction") ?: "up"
             val duration = input.int("duration") ?: 300
+
+            // ① 坐标模式（优先级最高）—— 四个坐标都给才生效
+            val x1 = input.int("x1"); val y1 = input.int("y1")
+            val x2 = input.int("x2"); val y2 = input.int("y2")
+            if (x1 != null && y1 != null && x2 != null && y2 != null) {
+                return try {
+                    val ok = svc.swipe(x1, y1, x2, y2, duration)
+                    if (ok) ToolResult.ok("已从 ($x1, $y1) 滑到 ($x2, $y2)")
+                    else ToolResult.failed("滑动失败")
+                } catch (e: Throwable) {
+                    ToolResult.Error("滑动失败：${e.message}", ToolResult.INTERNAL)
+                }
+            }
+
+            // ② ref 模式：以元素中心为起点，按方向滑一小段（元素高度的 1/4）
+            //    【2026-10-06 修】原来 ref 声明了但从不读取 —— 模型以为
+            //    「只滚某个列表」，实际整屏滑动（嵌套滚动时会滚错容器）。
+            val ref = input.str("ref")
+            val dir = input.str("direction") ?: "up"
+            if (!ref.isNullOrBlank()) {
+                val xy = svc.tapRefAt(normalizeRef(ref))
+                if (xy == null || xy.size < 2) {
+                    return ToolResult.failed(
+                        "节点已失效（#$ref）—— 重新 phone_snapshot 再试（ref 模式需要节点坐标）",
+                    )
+                }
+                val cx = xy[0]; val cy = xy[1]
+                val d = 200   // 元素内滑动距离（不按元素高度算 —— 小元素会滑不动）
+                val (fx, fy, tx, ty) = when (dir.lowercase()) {
+                    "up" -> listOf(cx, cy + d, cx, cy - d)
+                    "down" -> listOf(cx, cy - d, cx, cy + d)
+                    "left" -> listOf(cx + d, cy, cx - d, cy)
+                    "right" -> listOf(cx - d, cy, cx + d, cy)
+                    else -> return ToolResult.failed("direction 必须是 up/down/left/right")
+                }
+                return try {
+                    val ok = svc.swipe(fx, fy, tx, ty, duration)
+                    if (ok) ToolResult.ok("已在 #$ref 上向 $dir 滑动")
+                    else ToolResult.failed("滑动失败")
+                } catch (e: Throwable) {
+                    ToolResult.Error("滑动失败：${e.message}", ToolResult.INTERNAL)
+                }
+            }
+
+            // ③ 整屏模式（默认）
             return try {
                 val ok = svc.swipeDir(dir, duration)
                 if (ok) ToolResult.ok("已向 $dir 滑动") else ToolResult.failed("滑动失败")

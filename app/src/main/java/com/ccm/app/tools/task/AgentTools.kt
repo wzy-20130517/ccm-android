@@ -233,7 +233,9 @@ class AgentTools(
 
         override val inputSchema: JsonObject = ToolSchema.objectSchema(
             "task_id" to ToolSchema.string("可选。指定后台子 Agent task_id；省略则列出全部子 Agent。"),
-            "include_traces" to ToolSchema.boolean("是否附带最近 Agent trace 摘要；默认 false"),
+            // 【2026-10-06 删】原 include_traces 参数声明了但从不读取
+            // （observer 接口没有 trace 能力）。与其留假承诺，不如去掉 ——
+            // 要 trace 可以用 /trace 命令或直接看 files/traces/。
         )
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {

@@ -254,6 +254,12 @@ class AgentWorkflowTools {
                     subagentType = STAGE_AGENT_TYPE[stageName] ?: "general-purpose",
                     runInBackground = false,
                     agentName = null,
+                    // 【2026-10-06 接线】这两个参数原来算出来了但传不进去 ——
+                    // 只塞进结果文案，模型以为生效实际没有。
+                    // （SubAgentSpec 加了字段 + AppContainer/SubAgentManager 接上后，
+                    //  这里才真正把值送下去。）
+                    maxTurns = maxTurns,
+                    timeoutMs = timeoutMs.toLong(),
                 )
 
                 val res = try {
