@@ -379,21 +379,38 @@ fun MessageList(
                     timestampMs = bubble.timestamp,
                 )
             } else {
-                // 定型消息：思考已结束（isThinking=false，组件自己合成 done 事件）
-                if (bubble.thinking.isNotBlank()) {
+                // ══════════════════════════════════════════════════════════
+                //  【2026-10-06 问题27 修复】思维链与正文「割裂」的真根因：
+                //
+                //  APK 原来把三者拆成**三块独立渲染**：
+                //    ① AssistantThinkingChain(thinking)  ← 只有思考，没工具
+                //    ② ToolCallGroup(bubble.toolCards)   ← 工具单独一块
+                //    ③ AssistantBubble(text)             ← 正文单独一块
+                //
+                //  用户看到的：
+                //    [思考：我要调用 bash]
+                //    （空一大段）
+                //    [工具：bash echo]
+                //    （空一大段）
+                //    [正文：调用成功]
+                //  → 完全看不出「哪次工具调用对应哪段输出」。
+                //
+                //  Web 的做法（`MainContent.tsx:1009`）：把 toolCalls **传进**
+                //  `buildReasoningTimelineEvents`，合成**一条时间线**：
+                //    [思考段] → [工具事件] → [思考段] → [工具事件] → [Done]
+                //  正文在时间线**之外**（它是最终产出，不属于"思考过程"）。
+                //
+                //  修法：把 bubble.toolCards 传给 AssistantThinkingChain
+                //  （组件内部已有合成逻辑），去掉独立的 ToolCallGroup。
+                // ══════════════════════════════════════════════════════════
+                if (bubble.thinking.isNotBlank() || bubble.toolCards.isNotEmpty()) {
                     AssistantThinkingChain(
                         thinking = bubble.thinking,
                         isThinking = false,
+                        // ★ 关键：把工具卡传进去 —— 合成到时间线里
+                        toolCards = bubble.toolCards,
                         modifier = Modifier.fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp),
-                    )
-                }
-                if (bubble.toolCards.isNotEmpty()) {
-                    ToolCallGroup(
-                        cards = bubble.toolCards,
-                        isStreaming = false,
-                        isStale = true,
-                        modifier = Modifier.padding(horizontal = 16.dp),
                     )
                 }
                 AssistantBubble(text = bubble.text)
