@@ -250,13 +250,6 @@ fun MarketScreen(
                 )
             }
 
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "市场资源托管在 GitHub Release（`market-v1`）。\n" +
-                    "加新 skill/MCP：往那个 release 传包 + 更新 registry.json 即可。",
-                style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.sp),
-                color = colors.textSecondary,
-            )
         }
     }
 
