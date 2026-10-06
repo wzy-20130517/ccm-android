@@ -1367,10 +1367,10 @@ private fun buildToolStepLabel(card: ChatToolCard): String {
 // 命名按用途（不按模式），避免以后改了模式忘改名。
 
 /** 空行分段（`splitReasoningBlocks`）。 */
-private val RE_BLANK_LINES = RE_BLANK_LINES
+private val RE_BLANK_LINES = Regex("\\n{2,}")
 
 /** 列表续行标记（`- xxx` / `* xxx` / `• xxx` / `1. xxx` / `1) xxx`）。 */
-private val RE_LIST_MARKER = RE_LIST_MARKER
+private val RE_LIST_MARKER = Regex("^([-*•]|\\d+[.)]\\s)")
 
 /** 英文思考起始词（兜底切分）。 */
 private val RE_THINKING_STARTERS = Regex(
