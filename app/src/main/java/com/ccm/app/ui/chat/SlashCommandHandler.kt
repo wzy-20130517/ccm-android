@@ -1850,7 +1850,7 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                         if (t.description.isNotBlank()) sb.append(" — ${t.description}")
                         sb.append("\n")
                         t.members.forEach { m ->
-                            sb.append("  · ${m.agent}（${m.role.ifBlank { "无角色" }}）[${m.status}]\n")
+                            sb.append("  · ${m.name}（${m.role.ifBlank { "无角色" }}）[${m.status}]\n")
                         }
                     }
                     SlashResult.Notice(sb.toString())
@@ -2064,7 +2064,7 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                 SlashResult.Notice("存储未初始化。")
             } else {
                 val dir = java.io.File(root, "memory")
-                val parts = arg.trim().split(Regex("\s+")).filter { it.isNotEmpty() }
+                val parts = arg.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
                 val sub = parts.firstOrNull()?.lowercase() ?: "list"
                 val rest = parts.drop(1)
 
@@ -2116,7 +2116,7 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                             val restStr = rest.drop(1).joinToString(" ")
                             val bodyPart = restStr.substringAfter("::", "")
                             val headPart = restStr.substringBefore("::").trim()
-                            val bits = headPart.split(Regex("\s+")).filter { it.isNotEmpty() }
+                            val bits = headPart.split(Regex("\\s+")).filter { it.isNotEmpty() }
                             val rel = bits.firstOrNull().orEmpty()
                             val desc = bits.drop(1).joinToString(" ")
                             if (rel.isBlank()) {

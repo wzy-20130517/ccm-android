@@ -114,7 +114,13 @@ class McpStdioTransport(
             // 发 initialized 通知（无 id，不读响应）
             notify("notifications/initialized", JSONObject())
 
-            Log.i(TAG, "[$serverName] 已连接（pid=${p.pid()}）")
+            // ⚠️ Android 的 Process 没有 pid() 方法（那是 Java 9+）——
+            // 用反射读 field（Java 8 兼容），失败就不显示
+            val pid = try {
+                val f2 = p.javaClass.getDeclaredField("pid").apply { isAccessible = true }
+                f2.getInt(p)
+            } catch (_: Throwable) { -1 }
+            Log.i(TAG, "[$serverName] 已连接（pid=$pid）")
             true
         } catch (t: Throwable) {
             Log.e(TAG, "[$serverName] 启动失败：${t.message}", t)
