@@ -68,6 +68,7 @@ import com.ccm.app.ui.pages.greetingFor
 import com.ccm.app.ui.settings.SettingsScreen
 import com.ccm.app.ui.theme.CCMTheme
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 
 /**
  * CCM 应用根 Composable —— **阶段 5 的 MainActivity 只调这一个**。
@@ -418,6 +419,21 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         navigate(if (r == "home") CcmRoute.HOME else CcmRoute.SETTINGS)
                     },
                     newChat = { newChat() },
+                    // 【2026-10-06 问题40】goal 模式（同 ChatScreenConnected）
+                    startGoal = { _, first ->
+                        val gs = com.ccm.app.AppGraph.toolsResult?.goalStore
+                        val sc = AppGraph.appScope
+                        val sess = activeSession
+                        if (gs != null && sc != null && sess != null) {
+                            sc.launch {
+                                try { sess.runGoal(gs, first) } catch (_: Throwable) {}
+                            }
+                        }
+                    },
+                    goalStatusText = {
+                        val gs = com.ccm.app.AppGraph.toolsResult?.goalStore
+                        gs?.get(AppGraph.sessionId)?.let { g -> gs.render(g) }
+                    },
                     openPanel = { p ->
                         when (p) {
                             "model" -> showModelPicker = true
@@ -493,7 +509,19 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     return
                 }
                 "/compact" -> {
-                    activeSession?.injectNotice("**/compact**\n\n" + (activeSession?.compactNow() ?: "无会话"))
+                    // 【2026-10-06 问题40】改用挂起版 —— 能等 PreCompact hook
+                    val sess = activeSession
+                    val sc = AppGraph.appScope
+                    if (sess != null && sc != null) {
+                        sc.launch {
+                            val msg = try { sess.compactNowSuspend() } catch (t: Throwable) {
+                                "压缩失败：${t.message}"
+                            }
+                            sess.injectNotice("**/compact**\n\n$msg")
+                        }
+                    } else {
+                        activeSession?.injectNotice("**/compact**\n\n无会话")
+                    }
                     navigate(CcmRoute.CHAT)
                     return
                 }

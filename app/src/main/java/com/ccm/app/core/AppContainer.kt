@@ -330,8 +330,41 @@ class AppContainer private constructor(
 
     companion object {
 
-        /** 默认系统提示词（阶段5 会换成从资源读的完整版）。 */
-        private const val DEFAULT_SYSTEM_PROMPT = "你是 CCM，一个运行在 Android 上的 AI 编程助手。"
+        /**
+         * 默认系统提示词（问题29 修复：从 assets 读完整版）。
+         *
+         * 【历史】原来是一句 `"你是 CCM，一个运行在 Android 上的 AI 编程助手。"`
+         * —— 注释写着「阶段5 会换成从资源读的完整版」，但从来没做。
+         * 后果：APK 的提示词只有 25 个字符，而 CLI 有 900 行（工具说明、
+         * 场景映射表、行为准则全缺）→ 模型在 APK 里的表现远差于 CLI。
+         *
+         * 现在从 `assets/system-prompt.md` 读（24K 字符，CLI 提示词的
+         * APK 适配版：删了输入快捷键/息屏保活/DSH 插件等 APK 不适用段）。
+         *
+         * ⚠️ 读失败时回退到简短版 —— 不能因为读不到资源就让 App 起不来。
+         */
+        private var cachedPrompt: String? = null
+
+        private fun loadSystemPrompt(context: android.content.Context): String {
+            cachedPrompt?.let { return it }
+            val text = try {
+                context.assets.open("system-prompt.md")
+                    .bufferedReader().use { it.readText() }
+            } catch (_: Throwable) {
+                null
+            }
+            val raw = text?.takeIf { it.isNotBlank() }
+                ?: "你是 CCM，一个运行在 Android 上的 AI 编程助手。"
+            // 【2026-10-06 问题29】填 `{{XXX}}` 占位符 —— **从代码常量现算**，
+            // 不写死（改代码自动同步提示词，不会出现"文档说 3 轮、工具按 5 轮拒绝"）。
+            val result = try {
+                com.ccm.app.core.prompt.PromptVars.fill(raw)
+            } catch (_: Throwable) {
+                raw
+            }
+            cachedPrompt = result
+            return result
+        }
 
         /**
          * 组装系统提示词 = 常量基底 + 用户资料（audit-core #6）。
@@ -341,9 +374,15 @@ class AppContainer private constructor(
          * 这里拼进去 —— 改了资料后需重建会话（切会话/重启）才生效，
          * 设置页关闭时会自动重建（AppScaffold 的 showSettings 监听）。
          */
-        private fun assembleSystemPrompt(storage: AppStorage): String = try {
+        private fun assembleSystemPrompt(
+            storage: AppStorage,
+            context: android.content.Context? = null,
+        ): String = try {
             val prof = com.ccm.app.core.user.UserProfileStore(storage).load()
-            val sb = StringBuilder(DEFAULT_SYSTEM_PROMPT)
+            // 【2026-10-06 问题29】从 assets 读完整提示词（原来是一句话常量）
+            val base = context?.let { loadSystemPrompt(it) }
+                ?: "你是 CCM，一个运行在 Android 上的 AI 编程助手。"
+            val sb = StringBuilder(base)
             val lines = buildList {
                 prof.fullName.takeIf { it.isNotBlank() }?.let { add("用户姓名：$it") }
                 prof.displayName.takeIf { it.isNotBlank() }?.let { add("怎么称呼用户：$it") }
@@ -364,7 +403,8 @@ class AppContainer private constructor(
             } catch (_: Throwable) {}
             sb.toString()
         } catch (_: Throwable) {
-            DEFAULT_SYSTEM_PROMPT
+            context?.let { loadSystemPrompt(it) }
+                ?: "你是 CCM，一个运行在 Android 上的 AI 编程助手。"
         }
 
         /**
@@ -385,7 +425,12 @@ class AppContainer private constructor(
             toolRunner: ToolRunner,
             config: AppConfig,
             initialHistory: List<com.ccm.app.core.session.Message> = emptyList(),
-            systemPrompt: String = assembleSystemPrompt(storage),
+            /**
+             * Android Context（问题29：读 assets/system-prompt.md 用）。
+             * null = 用简短兜底提示词。
+             */
+            context: android.content.Context? = null,
+            systemPrompt: String = assembleSystemPrompt(storage, context),
             cwd: String = "/",
             imageScaler: ImageScaler? = null,
             /**
@@ -498,7 +543,7 @@ class AppContainer private constructor(
                 //   · 系统提示词用主提示词 + 一段「你是子 Agent」的说明
                 spawnSubAgent = spawn@{ spec ->
                     try {
-                        val subPrompt = assembleSystemPrompt(storage) +
+                        val subPrompt = assembleSystemPrompt(storage, context) +
                             "\n\n## 你是子 Agent\n" +
                             "你被主 Agent 派来独立完成一个子任务。\n" +
                             "· 你没有派生子 Agent 的能力（不要尝试调用 Agent 工具）\n" +
@@ -612,6 +657,10 @@ class AppContainer private constructor(
                 //   WebSearch 工具永远 `map["tavilyApiKey"] == null`。
                 "tavilyApiKey" to config.tavilyKey,
                 "webSearch" to config.webSearch?.toString(),
+                // 【2026-10-06 问题40】Pexels key —— FindImage 用。
+                // 原来 map 里没这个键 → 工具永远报「未配置」。
+                "pexelsApiKey" to config.pexelsKey,
+                "pexelsKey" to config.pexelsKey,
             )
             // 识图 Provider（vision 路由回退）
             config.visionProvider?.let { vp ->

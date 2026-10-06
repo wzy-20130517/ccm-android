@@ -280,6 +280,13 @@ class AgentLoop(
     fun getTotalUsage(): Pair<Int, Int> = totalInputTokens to totalOutputTokens
 
     /**
+     * 工具存储根目录（问题40：/compact 写备份用）。
+     *
+     * 返回 null = 未注入 storage（单测场景）。
+     */
+    fun toolStorageRoot(): java.io.File? = storage?.rootDir
+
+    /**
      * 跑一轮完整对话。
      *
      * @param userMessage 用户输入

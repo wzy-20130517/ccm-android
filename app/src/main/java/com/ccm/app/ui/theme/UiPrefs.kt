@@ -69,6 +69,21 @@ object UiPrefs {
     /** 协作页输入草稿（H1 —— 发送前退出不丢字）。 */
     val coworkDraft: MutableState<String> = mutableStateOf("")
 
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-06 问题40】/voice —— 正文自动朗读
+    // ══════════════════════════════════════════════════════════════
+    //
+    // 原来 APK 报「正文自动朗读是 CLI 终端专属功能」—— 但其实 NativeTts
+    // 就能做（只是之前只给 Agent 的 say 工具用）。
+    //
+    // 这里存开关，UI 层（ChatScreenConnected）监听正文变化 → 调 NativeTts。
+
+    /** 正文自动朗读开关。 */
+    val voiceEnabled: MutableState<Boolean> = mutableStateOf(false)
+
+    /** 朗读语速（0.5~2.0，1.0 = 正常）。 */
+    val voiceRate: MutableState<Float> = mutableStateOf(1.0f)
+
     private var prefs: SharedPreferences? = null
 
     /** MainActivity.onCreate 调一次。重复调用安全（幂等）。 */
@@ -85,6 +100,20 @@ object UiPrefs {
         coworkProject.value = p.getString(KEY_COWORK_PROJECT, "在项目中工作") ?: "在项目中工作"
         coworkDraft.value = p.getString(KEY_COWORK_DRAFT, "") ?: ""
         newlineKey.value = p.getString(KEY_NEWLINE, "Enter") ?: "Enter"
+        voiceEnabled.value = p.getBoolean("voice_enabled", false)
+        voiceRate.value = p.getFloat("voice_rate", 1.0f)
+    }
+
+    /** 设正文朗读开关。 */
+    fun setVoiceEnabled(v: Boolean) {
+        voiceEnabled.value = v
+        prefs?.edit()?.putBoolean("voice_enabled", v)?.apply()
+    }
+
+    /** 设朗读语速。 */
+    fun setVoiceRate(r: Float) {
+        voiceRate.value = r
+        prefs?.edit()?.putFloat("voice_rate", r)?.apply()
     }
 
     fun setThemeMode(mode: String) {

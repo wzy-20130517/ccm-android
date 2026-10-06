@@ -508,6 +508,7 @@ object AppGraph {
                 registry = reg,
                 toolRunner = tools.executor,
                 scope = scope,
+                context = app,
                 imageScaler = imageScaler,
                 cwd = cwd,
                 sessionId = sid,
@@ -526,6 +527,12 @@ object AppGraph {
             initError = null
             // 待办看板恢复（audit-core #3）
             try { sess.restoreTodos(tools.loadTodos()) } catch (_: Throwable) {}
+
+            // 【2026-10-06 问题40】SessionStart hook ——
+            // 原来 APK 完全不触发这个事件。
+            appScope?.launch {
+                try { sess.triggerHook("SessionStart") } catch (_: Throwable) {}
+            }
 
             // ══════════════════════════════════════════════════════════
             //  【2026-10-06 问题40】接子 Agent（原来零调用）
@@ -628,6 +635,7 @@ object AppGraph {
                 registry = reg,
                 toolRunner = tools.executor,
                 scope = scope,
+                context = app,
                 imageScaler = imageScaler,
                 cwd = cwd,
                 sessionId = id,
@@ -787,6 +795,7 @@ object AppGraph {
                 registry = reg,
                 toolRunner = runner,
                 scope = scope,
+                context = app,
                 imageScaler = AndroidImageScaler(app.cacheDir),
                 cwd = cwd,
                 sessionId = sessionId.ifBlank { SessionStore(st).newSessionId() },

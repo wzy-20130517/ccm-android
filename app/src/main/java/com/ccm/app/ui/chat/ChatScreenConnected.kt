@@ -116,6 +116,25 @@ fun ChatScreenConnected(
                 "style" -> onOpenStyle()
             }
         },
+        // 【2026-10-06 问题40】goal 模式（/goal）——
+        // 原来报「APK 暂未接入」，但 runGoal 早就实现好了。
+        // 循环是挂起的长任务，必须 launch 在独立协程里。
+        startGoal = { desc, first ->
+            val gs = com.ccm.app.AppGraph.toolsResult?.goalStore
+            val scope = com.ccm.app.AppGraph.appScope
+            if (gs != null && scope != null) {
+                scope.launch {
+                    try {
+                        session.runGoal(gs, first)
+                    } catch (_: Throwable) {}
+                }
+            }
+        },
+        goalStatusText = {
+            val gs = com.ccm.app.AppGraph.toolsResult?.goalStore
+            val sid = com.ccm.app.AppGraph.sessionId
+            gs?.get(sid)?.let { g -> gs.render(g) }
+        },
         // 对话页不直接刷新列表：删除/重命名后回列表页时
         // CcmApp 的 CHATS 分支有 LaunchedEffect(route){refreshSessions()}
         refreshSessions = {},
@@ -215,6 +234,24 @@ fun ChatScreenConnected(
             md.flush()
             md.reset()
             stableStreaming = ""
+
+            // ── 【2026-10-06 问题40】正文自动朗读（/voice）────────────
+            //
+            // 在**本轮完成时**念最后一条助手消息的正文 —— 不在流式过程中念
+            // （会把半句话反复念出来）。
+            if (com.ccm.app.ui.theme.UiPrefs.voiceEnabled.value) {
+                try {
+                    val lastAssistant = uiState.bubbles.lastOrNull { !it.isUser }
+                    val text = lastAssistant?.text.orEmpty()
+                    if (text.isNotBlank()) {
+                        com.ccm.app.tools.NativeTts.speak(
+                            context = ctx,
+                            text = text,
+                            rate = com.ccm.app.ui.theme.UiPrefs.voiceRate.value,
+                        )
+                    }
+                } catch (_: Throwable) {}
+            }
         }
         wasRunning = nowRunning
     }

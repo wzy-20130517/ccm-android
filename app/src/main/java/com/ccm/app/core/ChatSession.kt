@@ -114,14 +114,100 @@ class ChatSession(
      *
      * @return 给用户看的报告（未变化时说明原因）
      */
+    /**
+     * 生成对话摘要（问题40：`/summary` 命令）。
+     *
+     * 【原来】APK 报「暂无独立摘要功能，请手动发『总结一下』」——
+     * 但 Compactor 的 `buildSummaryInput` / `summarySystemPrompt` /
+     * `extractSummary` **全都有**，只差发一次请求。用户报「行为降级」。
+     *
+     * 挂起函数（要发 API 请求），调用方在自己的协程里跑。
+     */
+    suspend fun summarizeNow(): String {
+        if (isRunning) return "正在执行任务，等这轮结束再摘要。"
+        val history = container.agentLoop.getHistory()
+        if (history.size < 4) return "历史仅 ${history.size} 条，无需摘要。"
+
+        return try {
+            val input = container.compactor.buildSummaryInput(history)
+            val sys = container.compactor.summarySystemPrompt()
+            val resp = container.apiClient.chat(
+                system = sys,
+                messages = listOf(
+                    org.json.JSONObject().apply {
+                        put("role", "user")
+                        put("content", input)
+                    },
+                ),
+            )
+            val raw = resp.text
+            val summary = container.compactor.extractSummary(raw)
+            if (summary.isBlank()) "摘要生成失败（模型返回为空）。"
+            else "**对话摘要**\n\n$summary"
+        } catch (t: Throwable) {
+            "摘要生成失败：${t.message}"
+        }
+    }
+
+    /**
+     * 压缩（挂起版 —— 问题40：能等 PreCompact hook）。
+     *
+     * 与 [compactNow] 的区别：那个是同步的（UI 直接调），这个是挂起的
+     * （能跑 hook）。两者逻辑相同，只是 hook 触发点。
+     */
+    suspend fun compactNowSuspend(): String {
+        // PreCompact hook（输出 DENY 可阻止压缩）
+        try {
+            val r = triggerHook("PreCompact")
+            if (r?.deny == true) {
+                return "PreCompact hook 阻止了压缩：${r.message}"
+            }
+        } catch (_: Throwable) {}
+
+        val result = compactNow()
+
+        // PostCompact hook（观察类）
+        try { triggerHook("PostCompact") } catch (_: Throwable) {}
+
+        return result
+    }
+
     fun compactNow(): String {
         if (isRunning) return "正在执行任务，等这轮结束再压缩。"
         val history = container.agentLoop.getHistory()
         if (history.size < 6) return "历史仅 ${history.size} 条，无需压缩。"
+
+        // 【2026-10-06 问题40】压缩前写备份 —— 对齐 CLI 的 compact-trash 机制。
+        // 用户可用 /compact-trash 恢复被压缩掉的原始记录。
+        val backupName = try {
+            // ToolStorage.rootDir = 应用私有存储根（files/）
+            val root = container.agentLoop.toolStorageRoot()
+                ?: throw IllegalStateException("no storage")
+            val trashDir = java.io.File(root, "compact-trash").apply { mkdirs() }
+            val ts = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+                .format(java.util.Date())
+            val f = java.io.File(trashDir, "session-$ts.json")
+            val arr = org.json.JSONArray()
+            history.forEach { m ->
+                arr.put(org.json.JSONObject().apply {
+                    put("role", m.role)
+                    put("text", m.text)
+                    put("timestamp", m.timestamp)
+                })
+            }
+            f.writeText(arr.toString())
+            f.name
+        } catch (_: Throwable) { null }
+
         val r = container.compactor.microCompact(history)
         if (!r.changed) return "无可回收的旧工具输出（最近的都在保护区）。"
         container.agentLoop.setHistory(r.messages)   // MicroResult.messages = 压缩后列表
-        return "已压缩：回收约 ${r.reclaimedTokens} tokens（截断了旧工具输出）。"
+        return buildString {
+            append("已压缩：回收约 ${r.reclaimedTokens} tokens（截断了旧工具输出）。")
+            if (backupName != null) {
+                append("\n\n_压缩前备份：`compact-trash/$backupName`（可用 `/compact-trash` 查看）_")
+            }
+        }
     }
 
     /**
@@ -238,8 +324,19 @@ class ChatSession(
         saveForced()   // 用户消息立即落盘，进程被回收时不丢首条输入
 
         runningJob = scope.launch {
+            // 【2026-10-06 问题40】UserPromptSubmit hook ——
+            // 输出 `INJECT: 内容` 会把额外上下文注入到用户消息。
+            // 原来 APK 完全不触发这个事件（用户报「hooks 也缺了」）。
+            var effectiveText = text
+            try {
+                val r = triggerHook("UserPromptSubmit", prompt = text)
+                if (r?.inject != null) {
+                    effectiveText = text + "\n\n" + r.inject
+                }
+            } catch (_: Throwable) {}
+
             // imagePaths 空 = 原路径，零行为变化（第18批向后兼容点）
-            collectEvents(container.agentLoop.run(text, imagePaths))
+            collectEvents(container.agentLoop.run(effectiveText, imagePaths))
         }
     }
 
@@ -262,6 +359,41 @@ class ChatSession(
         resetAutoMemoryCursor()   // automem：游标也要归零，否则增量永远为负
         markDirty()   // B3：清空也是改动 —— 不标脏则删除不落盘，重启后旧对话复活
         _state.value = State()
+    }
+
+    /**
+     * 触发 hook 事件（问题40：补齐 6 个事件）。
+     *
+     * 【原来】APK 只在 ToolExecutor 触发 PreToolUse/PostToolUse ——
+     * SessionStart / SessionEnd / UserPromptSubmit / Stop / PreCompact
+     * 全缺。用户报「hooks 也缺了」。
+     *
+     * 挂起（hook 要跑外部命令），调用方自行决定要不要等。
+     */
+    suspend fun triggerHook(
+        event: String,
+        prompt: String = "",
+        reason: String = "",
+    ): com.ccm.app.tools.ToolHooks.HookOutcome? {
+        val hooks = com.ccm.app.AppGraph.toolsResult?.hooks ?: return null
+        return try {
+            hooks.trigger(
+                event,
+                com.ccm.app.tools.ToolHooks.HookContext(
+                    event = event,
+                    sessionId = sessionId,
+                    prompt = prompt,
+                    reason = reason,
+                ),
+            ).let { r ->
+                com.ccm.app.tools.ToolHooks.HookOutcome(
+                    deny = r.deny,
+                    block = r.block,
+                    inject = r.inject,
+                    message = r.denyMessage.ifBlank { r.blockMessages.joinToString("\n") },
+                )
+            }
+        } catch (_: Throwable) { null }
     }
 
     /** 从历史恢复（`/resume`）。 */
@@ -677,6 +809,18 @@ class ChatSession(
                         // 工具卡已随 Bubble 定型，这里必须保持空。
                         _state.value = _state.value.copy(running = false)
 
+                        // 【2026-10-06 问题40】Stop hook —— 输出 `BLOCK: 原因` 会
+                        // 阻止 agent 结束（注入原因后继续跑一轮）。
+                        //
+                        // ⚠️ APK 简化：不做「续跑一轮」（那要改 AgentLoop 的循环结构），
+                        //    只在 blocked 时把原因注入成一条通知，让用户知道 hook 说了什么。
+                        try {
+                            val r = triggerHook("Stop")
+                            if (r?.block == true && r.message.isNotBlank()) {
+                                injectNotice("**Stop hook 拦截**\n\n${r.message}")
+                            }
+                        } catch (_: Throwable) {}
+
                         // ★ automem（2026-10-01）：每轮正常结束后触发一次记忆提取。
                         //
                         // **fire-and-forget**（不 await）：
@@ -874,6 +1018,8 @@ class ChatSession(
             registry: ToolRegistry,
             toolRunner: ToolRunner,
             scope: CoroutineScope,
+            /** Android Context（问题29：读 assets/system-prompt.md）。null = 简短兜底。 */
+            context: android.content.Context? = null,
             imageScaler: com.ccm.app.core.image.ImageScaler? = null,
             cwd: String = "/",
             /** 会话 id（恢复旧会话时传，空 = 新建）。**Agent 与存盘共用这一个**。 */
@@ -904,6 +1050,7 @@ class ChatSession(
                 registry = registry,
                 toolRunner = toolRunner,
                 config = cfg,
+                context = context,
                 imageScaler = imageScaler,
                 cwd = cwd,
                 sessionId = sid,

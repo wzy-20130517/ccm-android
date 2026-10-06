@@ -154,6 +154,16 @@ class ToolsBootstrap(
          * 能在拿到 manager 后设 `agentTools.observer = mgr.asToolObserver()`。
          */
         val agentTools: com.ccm.app.tools.task.AgentTools? = null,
+        /**
+         * 目标存储（问题40：/goal 命令用）。
+         *
+         * 【为什么暴露】GoalStore 在本类创建（213 行），但 /goal 命令
+         * 在 SlashCommandHandler —— 需要经 AppGraph 传过去。
+         * 且 ChatSession.runGoal() 也要它（goal 循环的跨轮驱动）。
+         */
+        val goalStore: com.ccm.app.tools.task.GoalStore? = null,
+        /** Skill 工具（问题40：/skills 命令用 —— 动态列目录里的 skill）。 */
+        val skillTools: com.ccm.app.tools.task.SkillTools? = null,
     )
 
     /** 默认工作目录（App 私有，无需运行时权限） */
@@ -187,6 +197,28 @@ class ToolsBootstrap(
 
         // ── Bash 通道 ─────────────────────────────────────────────
         val prootChannel = ProotChannel(context, ProotRuntime(context))
+
+        // 【2026-10-06 问题40】注入 CommandRunner（外部 hook 用）——
+        // ⚠️ 必须在 prootChannel 创建**之后**（之前会前向引用编译失败）。
+        try {
+            hooks.setCommandRunner(object : ToolHooks.CommandRunner {
+                override suspend fun run(
+                    command: String,
+                    env: Map<String, String>,
+                    timeoutMs: Long,
+                ): String? {
+                    return try {
+                        val r = prootChannel.execute(
+                            command = command,
+                            workDir = null,
+                            timeoutMs = timeoutMs,
+                            onLine = {},
+                        )
+                        r.stdout
+                    } catch (_: Throwable) { null }
+                }
+            })
+        } catch (_: Throwable) {}
         val termuxChannel = TermuxChannel(context)
         // 默认用 proot；若用户选了 Termux，主通道换过来、proot 作兜底
         val primary: com.ccm.app.tools.bash.BashChannel = bashChannel ?: prootChannel
@@ -400,6 +432,28 @@ class ToolsBootstrap(
             add(ghTools.GitHubFileTool())
             add(ghTools.GitHubCommentTool())
             add(ghTools.GitHubCreateIssueTool())
+
+            // ── 【2026-10-06 问题40】MCP 工具（动态注册）─────────────
+            //
+            // MCP server 的工具是**运行时发现的**（连上后 listTools），
+            // 不能在编译期列出来。所以这里同步读配置 + 用已缓存的工具列表
+            // 注册（首次连接在 App 启动后异步做，见 McpBootstrap）。
+            //
+            // 配置：files/mcp.json（对齐 CLI 的 ~/.claude-code-mobile/mcp.json）
+            try {
+                val mcpFile = File(storage.rootDir, "mcp.json")
+                if (mcpFile.exists()) {
+                    val mgr = com.ccm.app.core.mcp.McpManager(mcpFile)
+                    // 同步读配置里 HTTP 类型的服务器，注册**占位工具**
+                    // （真正的工具列表在首次调用时懒加载 —— 见 McpToolAdapter）
+                    mgr.loadServers()
+                        .filter { !it.disabled && it.url != null }
+                        .forEach { cfg ->
+                            // 用通用「调用」工具（因为编译期不知道有哪些工具）
+                            add(com.ccm.app.tools.mcp.McpGenericTool(mgr, cfg.name))
+                        }
+                }
+            } catch (_: Throwable) {}
         }
 
         val rejected = registry.registerAll(*all.toTypedArray())
@@ -420,6 +474,8 @@ class ToolsBootstrap(
             bashChannel = primary,
             // 【2026-10-06 问题40】暴露给 AppGraph 事后注入 observer
             agentTools = agentTools,
+            goalStore = goalStore,
+            skillTools = skillTools,
         )
     }
 

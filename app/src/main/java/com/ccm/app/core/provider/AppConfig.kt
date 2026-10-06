@@ -94,6 +94,15 @@ data class AppConfig(
     @SerialName("tavilyKey")
     val tavilyKey: String? = null,
 
+    /**
+     * Pexels 图库 key（FindImage 用）—— 问题40。
+     *
+     * 【为什么补】原来全链路缺失：AppConfig 没这字段、buildSettings 没传、
+     * 设置页没输入框 → FindImage 永远报「未配置 key」。
+     */
+    @SerialName("pexelsKey")
+    val pexelsKey: String? = null,
+
     /** WebSearch 工具总开关（设置页开关的落盘位；null = 未设置过 = 开）。 */
     @SerialName("webSearch")
     val webSearch: Boolean? = null,
@@ -139,7 +148,7 @@ data class AppConfig(
         private val KNOWN_KEYS = setOf(
             "providers", "current", "greeting", "stream", "temperature",
             "maxContextTokens", "permissionMode", "vision", "visionProviderId",
-            "keyRotateEvery", "imageGen", "effort", "tavilyKey", "webSearch",
+            "keyRotateEvery", "imageGen", "effort", "tavilyKey", "webSearch", "pexelsKey",
             "outputStyle", "workspacePath",
             "_extra",
         )

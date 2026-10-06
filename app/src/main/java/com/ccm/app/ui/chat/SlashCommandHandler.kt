@@ -71,6 +71,17 @@ class SlashContext(
     val openPanel: (String) -> Unit = {},
     /** 刷新会话列表（删除/重命名后）。 */
     val refreshSessions: () -> Unit = {},
+    /**
+     * 启动 goal 循环（问题40：/goal 用）。
+     *
+     * 【为什么是回调而不是直接拿 GoalStore】
+     * goal 循环是**挂起的长任务**（一条 15 轮的目标可能跑几十分钟）——
+     * handler 不能阻塞，必须由 UI 层在自己的协程里 launch。
+     * 参数：(目标描述, 首轮消息) → 立刻返回（循环在后台跑）
+     */
+    val startGoal: ((description: String, firstMessage: String) -> Unit)? = null,
+    /** 读当前 goal 状态文本（null = 无目标）。 */
+    val goalStatusText: (() -> String?)? = null,
 )
 
 /**
@@ -143,11 +154,27 @@ private fun handleSessionCommands(cmd: String, arg: String, ctx: SlashContext): 
             }
         }
 
-        // /summary —— APK 没有独立摘要机制（CLI 侧才有），
-        // 引导用户直接发一句话让模型总结。
-        "/summary" -> SlashResult.Notice(
-            "APK 暂无独立摘要功能。发送「总结一下我们的对话」即可让模型生成摘要。"
-        )
+        // /summary —— 生成对话摘要
+        //
+        // 【2026-10-06 问题40 修复】原来报「APK 暂无独立摘要功能」——
+        // 但 Compactor 的摘要构建/提取**全都有**，只差发一次请求。
+        // 现在 ChatSession.summarizeNow() 实现了，这里接上。
+        //
+        // 注意：要发 API 请求（几秒），挂起 —— 必须 launch 在协程里，
+        // 不能阻塞 handler。
+        "/summary" -> {
+            val s = ctx.session
+            val scope = com.ccm.app.AppGraph.appScope
+            if (s == null || scope == null) {
+                SlashResult.Notice("无会话或协程作用域未就绪。")
+            } else {
+                scope.launch {
+                    val text = try { s.summarizeNow() } catch (t: Throwable) { "摘要失败：${t.message}" }
+                    s.injectNotice(text)
+                }
+                SlashResult.Notice("正在生成摘要…（几秒后出现在对话里）")
+            }
+        }
 
         // /load、/resume —— 打开会话切换器（UI 层弹 switcher 面板）。
         "/load", "/resume" -> SlashResult.OpenPanel("switcher")
@@ -286,13 +313,94 @@ private fun handleSessionCommands(cmd: String, arg: String, ctx: SlashContext): 
 
         // /clear-restore —— APK 无压缩回收站机制（CLI 的 /compact-trash）。
         // 见下方 /compact-trash 分支的说明。
-        "/clear-restore", "/compact-trash" -> SlashResult.Notice(
-            "**压缩回收站**（`/compact-trash`）是 CLI 侧机制：CLI 的 /compact 会先把完整会话\n" +
-                "备份到 `compact-trash/`，可用它恢复被压缩掉的原始记录。\n\n" +
-                "APK 侧的 `/compact` 只做**无损微压缩**（截断可再生的旧工具输出，不动对话本体），\n" +
-                "所以没有「压缩丢了记忆」的问题，也就没有配套的回收站。\n\n" +
-                "_如需完整备份，用 `/export` 导出对话，或 `/save` 存档会话文件。_",
-        )
+        // ── /clear-restore / /compact-trash —— 压缩回收站 ─────────────────
+        //
+        // 【2026-10-06 问题40 修复】原来报「CLI 侧机制，APK 无」——
+        // 但现在 APK 的 /compact 也写备份了（见 ChatSession.compactNow），
+        // 这个命令该能列/恢复/清空。
+        "/clear-restore", "/compact-trash" -> {
+            val root = com.ccm.app.AppGraph.toolsResult?.goalStore?.let { null }
+                ?: com.ccm.app.AppGraph.storage?.root
+            if (root == null) {
+                SlashResult.Notice("存储未初始化。")
+            } else {
+                val dir = java.io.File(root, "compact-trash")
+                val a = arg.trim().lowercase()
+                val sub = a.substringBefore(" ")
+                val subArg = a.substringAfter(" ", "").trim()
+
+                when (sub) {
+                    "list", "" -> {
+                        val files = dir.listFiles()?.sortedByDescending { it.lastModified() } ?: emptyList()
+                        if (files.isEmpty()) {
+                            SlashResult.Notice("压缩回收站为空。\n\n_（每次 /compact 前会自动备份到这里）_")
+                        } else {
+                            val body = buildString {
+                                appendLine("**压缩回收站**（${files.size} 份）")
+                                appendLine()
+                                files.take(15).forEachIndexed { i, f ->
+                                    val kb = f.length() / 1024
+                                    appendLine("${i + 1}. `${f.name}`（${kb}KB）")
+                                }
+                                if (files.size > 15) appendLine("… 还有 ${files.size - 15} 份")
+                                appendLine()
+                                append("恢复：`/compact-trash restore <文件名>` · 清空：`/compact-trash clear`")
+                            }
+                            SlashResult.Notice(body)
+                        }
+                    }
+                    "clear" -> {
+                        val n = dir.listFiles()?.size ?: 0
+                        dir.listFiles()?.forEach { it.delete() }
+                        SlashResult.Notice("已清空压缩回收站（$n 份）。")
+                    }
+                    "restore" -> {
+                        if (subArg.isBlank()) {
+                            SlashResult.Notice("用法：`/compact-trash restore <文件名>`")
+                        } else {
+                            val f = java.io.File(dir, subArg)
+                            if (!f.exists()) {
+                                SlashResult.Notice("文件不存在：$subArg")
+                            } else {
+                                // 恢复 = 把备份的历史灌回 AgentLoop
+                                val s = ctx.session
+                                if (s == null) {
+                                    SlashResult.Notice("无会话，无法恢复。")
+                                } else {
+                                    try {
+                                        val arr = org.json.JSONArray(f.readText())
+                                        val msgs = (0 until arr.length()).mapNotNull { i ->
+                                            val o = arr.getJSONObject(i)
+                                            // Message 的构造：role + content（List<ContentBlock>）
+                                            com.ccm.app.core.session.Message(
+                                                role = o.optString("role", "user"),
+                                                content = listOf(
+                                                    com.ccm.app.core.session.ContentBlock.Text(
+                                                        o.optString("text", "")
+                                                    )
+                                                ),
+                                                timestamp = o.optLong("timestamp", 0L),
+                                            )
+                                        }
+                                        s.loadHistory(msgs)
+                                        SlashResult.Notice("已恢复 ${msgs.size} 条历史（来自 `$subArg`）。")
+                                    } catch (t: Throwable) {
+                                        SlashResult.Notice("恢复失败：${t.message}")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else -> SlashResult.Notice(
+                        "**压缩回收站**\n\n" +
+                            "- `/compact-trash` 或 `/compact-trash list` 列出备份\n" +
+                            "- `/compact-trash restore <文件名>` 恢复\n" +
+                            "- `/compact-trash clear` 清空\n\n" +
+                            "_每次 /compact 前会自动备份完整历史到这里。_"
+                    )
+                }
+            }
+        }
 
         // /add-dir —— 额外可访问目录。
         //
@@ -968,16 +1076,53 @@ private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): S
                 "APK 用 Compose 原生渲染 Markdown，无需也无法切换终端样式。",
         )
 
-        // ── /voice：APK 暂无「自动朗读 AI 回复」的机制 ───────────────────────────────
-        //   说明：NativeTts/SayTool 是「工具侧朗读」（供 Agent 主动播报用），
-        //   不是「把助手正文自动念出来」的渲染层能力（那是 CLI 的 /voice）。
-        //   语音输入（SpeechToText/VoiceInput）是另一回事，别混。
-        "voice" -> SlashResult.Notice(
-            "正文自动朗读是 **CLI 终端专属**功能。\n\n" +
-                "APK 目前没有「把 AI 回复自动念出来」的开关：\n" +
-                "- 系统 TTS（NativeTts）只给 Agent 的播报工具用\n" +
-                "- 语音**输入**在输入栏的麦克风按钮（SpeechToText），与朗读无关",
-        )
+        // ── /voice：正文自动朗读 ─────────────────────────────────────────
+        //   实现：UiPrefs.voiceEnabled + ChatScreenConnected 监听本轮完成 → NativeTts。
+        //   （原来报「CLI 终端专属」，已修 —— 见下方分支）
+        // 【2026-10-06 问题40 修复】原来报「CLI 终端专属功能」——
+        // 但 NativeTts 就能做（只是之前只给 say 工具用）。
+        // 现在存 UiPrefs.voiceEnabled，UI 层（ChatScreenConnected）监听正文朗读。
+        "voice" -> {
+            val a = arg.trim().lowercase()
+            when {
+                a == "on" || a == "开" -> {
+                    com.ccm.app.ui.theme.UiPrefs.setVoiceEnabled(true)
+                    SlashResult.Notice("正文朗读已**开启** —— 每条回复完成后会自动念出来。\n\n_关闭：`/voice off`_")
+                }
+                a == "off" || a == "关" -> {
+                    com.ccm.app.ui.theme.UiPrefs.setVoiceEnabled(false)
+                    SlashResult.Notice("正文朗读已**关闭**。")
+                }
+                a == "stop" || a == "停" -> {
+                    try { com.ccm.app.tools.NativeTts.stop() } catch (_: Throwable) {}
+                    SlashResult.Notice("已停止当前朗读。")
+                }
+                a.startsWith("rate") -> {
+                    val v = a.removePrefix("rate").trim().removeSuffix("%").toFloatOrNull()
+                    if (v == null) {
+                        SlashResult.Notice("用法：`/voice rate 1.2`（0.5~2.0）")
+                    } else {
+                        val r = v.coerceIn(0.5f, 2.0f)
+                        com.ccm.app.ui.theme.UiPrefs.setVoiceRate(r)
+                        SlashResult.Notice("朗读语速已设为 **$r**。")
+                    }
+                }
+                else -> {
+                    val on = com.ccm.app.ui.theme.UiPrefs.voiceEnabled.value
+                    val rate = com.ccm.app.ui.theme.UiPrefs.voiceRate.value
+                    SlashResult.Notice(
+                        "**正文朗读**\n\n" +
+                            "- 状态：${if (on) "✅ 开启" else "❌ 关闭"}\n" +
+                            "- 语速：$rate\n\n" +
+                            "用法：\n" +
+                            "- `/voice on` 开启 · `/voice off` 关闭\n" +
+                            "- `/voice rate 1.2` 调语速（0.5~2.0）\n" +
+                            "- `/voice stop` 停当前朗读\n\n" +
+                            "_开启后，每条助手回复**完成时**会自动念出来（流式过程中不念，避免断句）。_"
+                    )
+                }
+            }
+        }
 
         // ── /plan —— 计划模式（对齐 CLI /plan，真正切换 ModeState）────────────
         //
@@ -1210,26 +1355,56 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
 
         // ── /skills —— 列出内置技能清单（APK 真有：BuiltinSkills.all()）──────
         //
-        // APK 侧没有 skills 运行时（见 BuiltinSkills.kt 头注），这里只做「展示」：
-        // 列出有哪些技能、各自干什么。技能正文注入到对话的能力后续再接。
+        // ── /skills：动态列目录里的 skill ──────────────────────────────
+        // 数据源与 Skill 工具一致（工作区 skills/ + files/skills/）。
+        // 原来只列硬编码的 BuiltinSkills —— 用户放个 .md 看不到（已修）。
         "/skills" -> {
             val a = arg.trim()
             if (a.isBlank()) {
-                // 无参：列出内置技能清单
-                val skills = com.ccm.app.core.skill.BuiltinSkills.all()
-                if (skills.isEmpty()) {
-                    SlashResult.Notice("当前没有内置技能。")
-                } else {
+                // 【2026-10-06 问题40 修复】原来只列**硬编码**的 BuiltinSkills ——
+                // 但 SkillTools 早就能从**文件系统**动态读（工作区 skills/ +
+                // files/skills/，对齐 CLI 的 .claude/skills/）。
+                // 用户报「行为降级」：CLI 放个 .md 就能用，APK 却看不到。
+                //
+                // 现在优先动态扫描（与 Skill 工具同一套查找规则）。
+                val cwd = com.ccm.app.AppGraph.workspacePath()
+                val st = com.ccm.app.AppGraph.toolsResult?.skillTools
+                val dynamic = try { st?.listAll(cwd) ?: emptyList() } catch (_: Throwable) { emptyList() }
+
+                if (dynamic.isNotEmpty()) {
                     val body = buildString {
-                        appendLine("**可用技能（${skills.size} 个）**")
+                        appendLine("**可用技能（${dynamic.size} 个）**")
                         appendLine()
-                        skills.forEach { s ->
-                            appendLine("- **${s.name}** — ${s.description}")
+                        dynamic.forEach { (name, scope) ->
+                            val tag = if (scope == "global") "全局" else "项目"
+                            appendLine("- **$name**（$tag）")
                         }
                         appendLine()
                         append("_看详情：`/skills <名字>` · 执行：让模型调 Skill 工具，或直接说「用 xxx 技能」_")
+                        appendLine()
+                        appendLine()
+                        append("_放新技能：在工作区 `skills/` 或应用 `files/skills/` 下放 `<名字>.md`_")
                     }
                     SlashResult.Notice(body)
+                } else {
+                    // 兜底：动态扫描为空时列内置清单
+                    val skills = com.ccm.app.core.skill.BuiltinSkills.all()
+                    if (skills.isEmpty()) {
+                        SlashResult.Notice(
+                            "当前没有可用技能。\n\n_放新技能：在工作区 `skills/` 或应用 `files/skills/` 下放 `<名字>.md`_"
+                        )
+                    } else {
+                        val body = buildString {
+                            appendLine("**可用技能（${skills.size} 个，内置）**")
+                            appendLine()
+                            skills.forEach { s ->
+                                appendLine("- **${s.name}** — ${s.description}")
+                            }
+                            appendLine()
+                            append("_看详情：`/skills <名字>` · 执行：让模型调 Skill 工具，或直接说「用 xxx 技能」_")
+                        }
+                        SlashResult.Notice(body)
+                    }
                 }
             } else {
                 // 带参：展示该技能详情（对齐 CLI 的「技能详情」语义）。
@@ -1329,9 +1504,10 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
         "/plugins" -> SlashResult.Notice(
             "**插件**\n\n" +
                 "CLI 的 `/plugins` 列出已装插件（`plugins/` 目录下的扩展）。\n" +
-                "APK 侧没有插件机制 —— 能力扩展走两条路：\n" +
+                "APK 无 DSH 插件宿主（那是 CLI 侧能力）—— 能力扩展走三条路：\n" +
                 "- **技能**：放 `skills/<名字>.md`（用 `/skills` 查看）\n" +
-                "- **Hooks**：放 `hooks.json`（用 `/hooks` 查看已注册事件）",
+                "- **Hooks**：放 `hooks.json`（用 `/hooks` 查看已注册事件）\n" +
+                "- **子 Agent**：放 `agents/<名字>.md`（用 `/agents` 查看）",
         )
 
         // ── /agents —— 列出可用子 agent 类型 ────────────────────────────────
@@ -1339,24 +1515,84 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
         // APK 没有独立的 agent 定义清单文件，内置类型硬编码在 AgentTools 的
         // subagent_type schema 里（general-purpose/Explore/Plan/Coordinator）。
         // 自定义 agent（.claude/agents/*.md）的加载在 CLI 侧。
-        "/agents" -> SlashResult.Notice(
-            buildString {
-                appendLine("**可用子 Agent 类型（内置）**")
-                appendLine()
-                appendLine("- **general-purpose** — 全工具，独立完成复杂任务")
-                appendLine("- **Explore** — 只读，调研代码库")
-                appendLine("- **Plan** — 只读 + 待办，制定执行计划")
-                appendLine("- **Coordinator** — 编排多个 worker 并行，做综合分析")
-                appendLine()
-                append("_说明：自定义子 Agent（`.claude/agents/*.md`）的加载在 CLI 侧，APK 用上述内置类型即可。派发子 Agent 由模型通过 Agent 工具完成。_")
-            }
-        )
+        "/agents" -> {
+            // 【2026-10-06 问题40 修复】原来只列**内置** 4 种，说「自定义的
+            // 加载在 CLI 侧」—— 那是功能缺失。现在 CustomAgentLoader 实现了
+            // （读 files/agents/ 和 工作区 .claude/agents/）。
+            val cwd = com.ccm.app.AppGraph.workspacePath()
+            val appRoot = com.ccm.app.AppGraph.storage?.root
+            val custom = try {
+                com.ccm.app.core.agent.CustomAgentLoader.create(appRoot, cwd).list()
+            } catch (_: Throwable) { emptyList() }
 
-        // ── /goal —— 目标模式（APK 无 goal runtime）────────────────────────
-        "/goal" -> SlashResult.Notice(
-            "目标模式是 CLI 侧的「完成契约」自主推进机制（设目标 → 逐轮推进 → 验证判据 → 自动终止），APK 暂未接入。\n\n" +
-                "如需明确目标，直接在对话里说清要做什么和完成标准即可。"
-        )
+            SlashResult.Notice(
+                buildString {
+                    appendLine("**可用子 Agent 类型**")
+                    appendLine()
+                    appendLine("内置：")
+                    appendLine("- **general-purpose** — 全工具，独立完成复杂任务")
+                    appendLine("- **Explore** — 只读，调研代码库")
+                    appendLine("- **Plan** — 只读 + 待办，制定执行计划")
+                    appendLine("- **Coordinator** — 编排多个 worker 并行，做综合分析")
+                    if (custom.isNotEmpty()) {
+                        appendLine()
+                        appendLine("自定义（${custom.size} 个）：")
+                        custom.forEach { a ->
+                            appendLine("- **${a.name}** — ${a.description.ifBlank { "(无描述)" }}")
+                        }
+                    }
+                    appendLine()
+                    append("_派发子 Agent：让模型调 Agent 工具（subagent_type 填上面的名字）。_")
+                    appendLine()
+                    append("_放新角色：在应用 `files/agents/` 或工作区 `.claude/agents/` 下放 `<名字>.md`_")
+                }
+            )
+        }
+
+        // ── /goal —— 目标模式（完成契约）──────────────────────────────────
+        //
+        // 【2026-10-06 问题40 修复】原来报「APK 暂未接入」——
+        // 但 GoalStore / GoalRuntime / ChatSession.runGoal **全都实现了**，
+        // 只是命令没接。用户报「行为降级」的典型。
+        //
+        // 用法（对齐 CLI）：
+        //   /goal              看当前目标与进度
+        //   /goal <描述>       设定并开始推进
+        //   /goal status       看状态
+        //   /goal clear        放弃目标
+        "/goal" -> {
+            val a = arg.trim()
+            when {
+                a.isBlank() || a == "status" -> {
+                    val text = ctx.goalStatusText?.invoke()
+                    SlashResult.Notice(text ?: "当前没有目标。\n\n用法：`/goal <目标描述>` 设定并开始推进。")
+                }
+                a == "clear" || a == "取消" -> {
+                    val st = com.ccm.app.AppGraph.toolsResult?.goalStore
+                    val sid = com.ccm.app.AppGraph.sessionId
+                    if (st != null) {
+                        st.clear(sid)
+                        SlashResult.Notice("已清除目标。")
+                    } else SlashResult.Notice("目标存储未就绪。")
+                }
+                a == "help" -> SlashResult.Notice(
+                    "**/goal —— 完成契约**\n\n" +
+                        "- `/goal <描述>` 设定并开始自动推进\n" +
+                        "- `/goal` 或 `/goal status` 看当前目标与进度\n" +
+                        "- `/goal clear` 放弃目标\n\n" +
+                        "_设定后 runtime 会跨轮自动推进，直到判据验证通过、预算耗尽、或你 Ctrl+C 暂停。_"
+                )
+                else -> {
+                    val fn = ctx.startGoal
+                    if (fn == null) {
+                        SlashResult.Notice("目标模式在当前界面不可用（需在对话页操作）。")
+                    } else {
+                        fn(a, a)
+                        SlashResult.Notice("**已设定目标**\n\n$a\n\n开始自动推进…（`/goal` 看进度，`/goal clear` 取消）")
+                    }
+                }
+            }
+        }
 
         // ── /mem、/memory —— 项目记忆（对齐 CLI /mem 的核心子命令）─────────
         //
@@ -1460,32 +1696,234 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
             }
         }
 
-        // ── /automem —— 自动记忆开关（APK 无此机制）────────────────────────
-        "/automem" -> SlashResult.Notice(
-            "自动记忆（对话结束后增量提取结论写入 CLAUDE.md）是 CLI 侧机制，APK 暂未接入。"
-        )
+        // ── /automem —— 自动记忆开关 ───────────────────────────────────────
+        //
+        // 【2026-10-06 问题40 修复】原来报「APK 暂未接入」——
+        // 但 AutoMemory 类**早就实现好了**（core/memory/AutoMemory.kt），
+        // ChatSession 每轮结束都会调它（maybeRunAutoMemory），
+        // 只是这个命令没接。用户报「行为降级」的典型。
+        //
+        // 用法（对齐 CLI）：
+        //   /automem            看状态
+        //   /automem on|off     开关
+        "/automem" -> {
+            val am = com.ccm.app.AppGraph.autoMemory
+            if (am == null) {
+                SlashResult.Notice("自动记忆未初始化。")
+            } else {
+                val a = arg.trim().lowercase()
+                when (a) {
+                    "on", "开" -> {
+                        am.setEnabled(true)
+                        SlashResult.Notice("自动记忆已**开启** —— 每轮对话结束后增量提取结论写入 CLAUDE.md。")
+                    }
+                    "off", "关" -> {
+                        am.setEnabled(false)
+                        SlashResult.Notice("自动记忆已**关闭**。")
+                    }
+                    else -> {
+                        val (enabled, cursor, runs) = am.status()
+                        SlashResult.Notice(
+                            "**自动记忆**\n\n" +
+                                "- 状态：${if (enabled) "✅ 开启" else "❌ 关闭"}\n" +
+                                "- 游标：$cursor（已处理到历史第几条）\n" +
+                                "- 已跑：$runs 次\n\n" +
+                                "用法：`/automem on` 开 · `/automem off` 关\n\n" +
+                                "_机制：每轮对话结束后，用当前 Provider 提取「值得记住的结论」追加到 CLAUDE.md。_"
+                        )
+                    }
+                }
+            }
+        }
 
-        // ── /github —— GitHub 工具配置（在 CLI 侧）──────────────────────────
-        "/github" -> SlashResult.Notice(
-            "GitHub 工具的配置（token / 仓库 / 连通性）在 CLI 侧用 `/github` 管理，APK 暂未接入。"
-        )
+        // ── /github —— GitHub 工具配置 ─────────────────────────────────────
+        //
+        // 【2026-10-06 问题40 修复】原来报「在 CLI 侧管理，APK 暂未接入」——
+        // 但 GitHub 工具（8 个）**刚接好了**（AppGraph 读 files/github.json），
+        // 命令也该能配。
+        //
+        // 配置格式对齐 CLI：{ "token": "ghp_...", "defaultRepo": "owner/name" }
+        //
+        // 用法：
+        //   /github              看状态
+        //   /github login <token>  设 token
+        //   /github repo <owner/name>  设默认仓库
+        "/github" -> {
+            val root = com.ccm.app.AppGraph.storage?.root
+            if (root == null) {
+                SlashResult.Notice("存储未初始化。")
+            } else {
+                val f = java.io.File(root, "github.json")
+                val a = arg.trim()
+                val sub = a.substringBefore(" ").lowercase()
+                val subArg = a.substringAfter(" ", "").trim()
+
+                fun readCfg(): org.json.JSONObject =
+                    try { if (f.exists()) org.json.JSONObject(f.readText()) else org.json.JSONObject() }
+                    catch (_: Throwable) { org.json.JSONObject() }
+
+                fun writeCfg(o: org.json.JSONObject) {
+                    try { f.writeText(o.toString(2)) } catch (_: Throwable) {}
+                }
+
+                when (sub) {
+                    "login", "token" -> {
+                        if (subArg.isBlank()) {
+                            SlashResult.Notice("用法：`/github login <ghp_...>`")
+                        } else {
+                            writeCfg(readCfg().put("token", subArg))
+                            SlashResult.Notice("GitHub token 已保存。\n\n_注意：需重启 App 后工具才会用新 token。_")
+                        }
+                    }
+                    "repo" -> {
+                        if (subArg.isBlank()) {
+                            SlashResult.Notice("用法：`/github repo <owner/name>`")
+                        } else {
+                            writeCfg(readCfg().put("defaultRepo", subArg))
+                            SlashResult.Notice("默认仓库已设为 `$subArg`。")
+                        }
+                    }
+                    else -> {
+                        val c = readCfg()
+                        val tok = c.optString("token", "")
+                        val repo = c.optString("defaultRepo", "")
+                        SlashResult.Notice(
+                            "**GitHub 配置**\n\n" +
+                                "- Token：${if (tok.isBlank()) "❌ 未配置" else "✅ 已配置（${tok.take(8)}…）"}\n" +
+                                "- 默认仓库：${repo.ifBlank { "（未设置）" }}\n\n" +
+                                "用法：\n" +
+                                "- `/github login <token>` 设 PAT\n" +
+                                "- `/github repo <owner/name>` 设默认仓库\n\n" +
+                                "_配置后可用 GitHubRepo / GitHubIssues / GitHubPRs / GitHubFile 等 8 个工具。_"
+                        )
+                    }
+                }
+            }
+        }
 
         // ── /mail —— 邮箱（CLI 的 MCP 侧）────────────────────────────────────
         "/mail" -> SlashResult.Notice(
-            "邮箱收发在 CLI 的 MCP（mail-qq）侧配置与使用，APK 暂未接入。"
+            "**邮箱**\n\n" +
+                "APK 暂未接入邮件（CLI 的 mail-qq 走 MCP，APK 无 MCP 通道）。\n\n" +
+                "_需要接码/收邮件时，可用 CLI 侧的 mail-qq；APK 侧暂无法替代。_"
         )
 
         // ── /mcp —— MCP 服务器（APK 无 MCP）─────────────────────────────────
         //
         // 已确认 APK 源码里没有任何 MCP 相关实现（find *Mcp* 无结果）。
-        "/mcp" -> SlashResult.Notice(
-            "MCP 服务器的接入与管理在 CLI 侧用 `/mcp` 完成，APK 暂未接入 MCP。"
-        )
+        "/mcp" ->
+            // 【2026-10-06 问题40 修复】原来报「APK 暂未接入」——
+            // 用户指出「mcp 可以接，你看 operit 的实现」。
+            // 查了 Operit（AAswordman/Operit）→ 它用官方 Kotlin SDK
+            // （io.modelcontextprotocol:kotlin-sdk-client）。
+            // 已接入：McpManager + McpGenericTool（HTTP/SSE 类型）。
+            run {
+                val root = com.ccm.app.AppGraph.storage?.root
+                if (root == null) {
+                    SlashResult.Notice("存储未初始化。")
+                } else {
+                    val f = java.io.File(root, "mcp.json")
+                    if (!f.exists()) {
+                        SlashResult.Notice(
+                            "**MCP 服务器**\n\n" +
+                                "未配置（找不到 `mcp.json`）。\n\n" +
+                                "配置格式（对齐 CLI）：\n" +
+                                "```json\n" +
+                                "{\n" +
+                                "  \"mcpServers\": {\n" +
+                                "    \"my-server\": {\n" +
+                                "      \"url\": \"http://127.0.0.1:3001/mcp\"\n" +
+                                "    }\n" +
+                                "  }\n" +
+                                "}\n" +
+                                "```\n\n" +
+                                "**当前只支持 HTTP/SSE 类型**（`url` 字段）——\n" +
+                                "stdio 类型（`command` + `args`）需要 proot 常驻进程支持，暂未实现。\n\n" +
+                                "_放好配置后重启 App，工具会以 `mcp_<服务器名>` 的形式出现。_"
+                        )
+                    } else {
+                        val mgr = com.ccm.app.core.mcp.McpManager(f)
+                        val servers = mgr.loadServers()
+                        if (servers.isEmpty()) {
+                            SlashResult.Notice("`mcp.json` 里没有配置任何服务器。")
+                        } else {
+                            val body = buildString {
+                                appendLine("**MCP 服务器（${servers.size} 个）**")
+                                appendLine()
+                                servers.forEach { s ->
+                                    val status = when {
+                                        s.disabled -> "⏸ 已禁用"
+                                        s.url != null -> "✅ HTTP/SSE（可用）"
+                                        s.command != null -> "⚠ stdio（暂不支持）"
+                                        else -> "❓ 配置不完整"
+                                    }
+                                    appendLine("- **${s.name}** — $status")
+                                    s.url?.let { appendLine("  `$it`") }
+                                    s.command?.let { appendLine("  `$it`（需 proot 常驻进程支持）") }
+                                }
+                                appendLine()
+                                append("_工具名：`mcp_<服务器名>`（用 action:list 看具体工具）_")
+                            }
+                            SlashResult.Notice(body)
+                        }
+                    }
+                }
+            }
 
-        // ── /pexels —— 图库 key（在 CLI 侧）─────────────────────────────────
-        "/pexels" -> SlashResult.Notice(
-            "Pexels 图库 key（FindImage 用）在 CLI 侧用 `/pexels` 配置，APK 暂未接入该命令。"
-        )
+        // ── /pexels —— 图库 key ────────────────────────────────────────────
+        //
+        // 【2026-10-06 问题40 修复】原来报「在 CLI 侧配置」——
+        // 但 AppConfig 刚补了 pexelsKey 字段、buildSettings 也传了，
+        // 这里接上配置命令。
+        //
+        // 用法：
+        //   /pexels              看状态
+        //   /pexels set <key>    设 key
+        //   /pexels clear        清空
+        "/pexels" -> {
+            val st = com.ccm.app.AppGraph.storage
+            if (st == null) {
+                SlashResult.Notice("存储未初始化。")
+            } else {
+                val a = arg.trim()
+                val sub = a.substringBefore(" ").lowercase()
+                val subArg = a.substringAfter(" ", "").trim()
+                val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                if (loadR.error != null) {
+                    SlashResult.Notice("配置损坏：${loadR.error}")
+                } else {
+                    when (sub) {
+                        "set" -> {
+                            if (subArg.isBlank()) {
+                                SlashResult.Notice("用法：`/pexels set <key>`")
+                            } else {
+                                com.ccm.app.core.provider.AppConfig.save(
+                                    loadR.config.copy(pexelsKey = subArg), st.configFile,
+                                )
+                                SlashResult.Notice("Pexels key 已保存。\n\n_需重启 App（或切换 Provider）后 FindImage 才会用新 key。_")
+                            }
+                        }
+                        "clear" -> {
+                            com.ccm.app.core.provider.AppConfig.save(
+                                loadR.config.copy(pexelsKey = null), st.configFile,
+                            )
+                            SlashResult.Notice("Pexels key 已清空。")
+                        }
+                        else -> {
+                            val k = loadR.config.pexelsKey
+                            SlashResult.Notice(
+                                "**Pexels 图库**（FindImage 用）\n\n" +
+                                    "- Key：${if (k.isNullOrBlank()) "❌ 未配置" else "✅ 已配置（${k.take(6)}…）"}\n\n" +
+                                    "用法：\n" +
+                                    "- `/pexels set <key>` 配置（免费申请：https://www.pexels.com/api/）\n" +
+                                    "- `/pexels clear` 清空\n\n" +
+                                    "_配置后 FindImage 工具能按关键词搜图并下载。免费额度 200 次/小时。_"
+                            )
+                        }
+                    }
+                }
+            }
+        }
 
         else -> null
     }

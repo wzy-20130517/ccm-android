@@ -227,6 +227,13 @@ class SkillTools(
     }
 
     /** 列出所有可用 skill 名（只扫文件名，不读正文 —— 性能考虑，见 MAX_LIST 注释） */
+    /**
+     * 列出所有可用 skill（公开版 —— 问题40：/skills 命令用）。
+     *
+     * @return (名字, 作用域) 列表，作用域 = "project" | "global"
+     */
+    fun listAll(cwd: String): List<Pair<String, String>> = listNames(cwd)
+
     private fun listNames(cwd: String): List<Pair<String, String>> {
         val out = LinkedHashMap<String, String>()   // name → scope
         for (dir in rootDirsFor(cwd)) {

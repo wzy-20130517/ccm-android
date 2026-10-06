@@ -142,12 +142,33 @@ class ToolExecutor(
         }
 
         // ⑤ 执行
+        //
+        // 【2026-10-06 问题40】超时分级 —— 原来所有工具都用 600s，
+        // 与 CLI 的行为不符（CLI：只读 15s / 写入 60s / 网络 120s / ...）。
+        // 600s 对只读工具太长（卡住要等 10 分钟），对 ImageGen 又不够。
+        //
+        // 现在从 ToolTimeouts 表取（与 CLI 逐项对齐），并支持：
+        //   · 工具入参里的 `timeout` / `timeout_ms` 显式覆盖
+        //   · 显式值受 MAX_TOOL_TIMEOUT 硬上限约束
+        val timeoutMs = try {
+            val base = com.ccm.app.core.tool.ToolTimeouts.forTool(tool.name)
+            val raw = effectiveInput["timeout"]?.toString()?.toLongOrNull()
+                ?: effectiveInput["timeout_ms"]?.toString()?.toLongOrNull()
+            if (raw != null && raw > 0) {
+                // AgentOutput 的 timeout 单位是**秒**（CLI 同款约定），其余是毫秒
+                val ms = if (tool.name == "AgentOutput") raw * 1000 else raw
+                ms.coerceAtMost(com.ccm.app.core.tool.ToolTimeouts.MAX_TOOL_TIMEOUT)
+            } else base
+        } catch (_: Throwable) {
+            defaultTimeoutMs
+        }
+
         val result: ToolResult = try {
-            val r = withTimeoutOrNull(defaultTimeoutMs) {
+            val r = withTimeoutOrNull(timeoutMs) {
                 tool.execute(effectiveInput, ctx)
             }
             r ?: ToolResult.Error(
-                "工具执行超时（${defaultTimeoutMs / 1000} 秒）",
+                "工具执行超时（${timeoutMs / 1000} 秒）",
                 ToolResult.TIMEOUT,
             )
         } catch (_: ToolCancelledException) {

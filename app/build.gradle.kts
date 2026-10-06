@@ -171,6 +171,20 @@ dependencies {
     //      STREAM_CONNECT_TIMEOUT(150s 实测阈值) 与 watchdog(300s) 双层设计
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-06 问题40】MCP（Model Context Protocol）客户端
+    // ══════════════════════════════════════════════════════════════
+    //
+    // 用户报「mcp 可以接，你看 operit 的实现」—— 查了 Operit
+    // （AAswordman/Operit，8416 星），它用的是**官方 Kotlin SDK**：
+    //   io.modelcontextprotocol:kotlin-sdk-client:0.10.0
+    //   + io.ktor:ktor-client-okhttp:3.2.3（传输层）
+    //
+    // 直接用官方 SDK 比自己实现 JSON-RPC + SSE 稳得多（协议细节：
+    // 初始化握手、能力协商、分页、错误码，SDK 都处理了）。
+    implementation("io.modelcontextprotocol:kotlin-sdk-client:0.10.0")
+    implementation("io.ktor:ktor-client-okhttp:3.2.3")
+
     // 【kotlinx.serialization 1.7.3】JSON 序列化。
     // 为什么不用 Gson（虽然它已在缓存里，是 AGP 的传递依赖）：
     //   Gson 用反射绕过 Kotlin 的构造器，data class 的非空字段能被塞进 null、
