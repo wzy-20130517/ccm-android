@@ -467,20 +467,35 @@ fun ChatScreen(
                 Spacer(Modifier.height(7.36.dp))
                 }
 
+                // ══════════════════════════════════════════════════════════
+                //  【2026-10-06 问题24 真根因】
+                //
+                // 重构时把 InputBar 的 ime padding **弄丢了** ——
+                // 它现在没有任何 modifier，键盘弹出时不上推 → 被键盘盖住。
+                //
+                // 补回：ime.union(navigationBars) ——
+                // 键盘弹出用 ime 高度上推；无键盘时用导航栏高度（手势条避让）。
+                // union 取两者较高者，不会「键盘高 + 导航栏高」叠加。
+                //
+                // 消息区（weight 1f）会因输入栏上推而自动缩 —— 不需要额外处理。
+                // ══════════════════════════════════════════════════════════
                 InputBar(
-                value = input,
-                onValueChange = onInputChange,
-                onSend = onSend,
-                onStop = onStop,
-                running = running,
-                modelName = modelName,
-                tokenCount = tokenCount,
-                onModelClick = onModelClick,
-                modelPickerContent = modelPickerContent,
-                onAttach = onAttach,
-                attachedPaths = attachedPaths,
-                onVoice = onVoice,
-                onRemoveImage = onRemoveImage,
+                    value = input,
+                    onValueChange = onInputChange,
+                    onSend = onSend,
+                    onStop = onStop,
+                    running = running,
+                    modelName = modelName,
+                    tokenCount = tokenCount,
+                    onModelClick = onModelClick,
+                    modelPickerContent = modelPickerContent,
+                    onAttach = onAttach,
+                    attachedPaths = attachedPaths,
+                    onVoice = onVoice,
+                    onRemoveImage = onRemoveImage,
+                    modifier = Modifier.windowInsetsPadding(
+                        WindowInsets.ime.union(WindowInsets.navigationBars),
+                    ),
                 )
 
                 if (!imeVisible) {

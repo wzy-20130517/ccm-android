@@ -296,6 +296,10 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
     // 重建时 route 重置为 HOME，但 activeSession 由 AppGraph 恢复，
     // 表现为「显示首页样式，发消息却进的是原对话」。改用 rememberSaveable。
     var route by rememberSaveable { mutableStateOf(CcmRoute.HOME) }
+    // 【2026-10-06 问题21 诊断】打 route 变化（排查「切页回来变首页」）
+    LaunchedEffect(route) {
+        android.util.Log.i("CcmApp", "route → $route | activeSession=${activeSession?.let { "有" } ?: "null"} | showSettings=$showSettings")
+    }
     // 设置是**覆盖层不是路由**（对齐 Web：showSettings 状态，location 不变）
     var showSettings by remember { mutableStateOf(false) }
 
@@ -320,14 +324,26 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
     //   与用户报的「本该是对话页，却显示成了首页的样式，发条消息过去
     //   还是那个对话页」完全吻合。
     //
-    // 修法：用 session 作 key —— 参数变化时同步跟上（前提是用户没手动切过会话）。
-    // 手动切过的（activeSession 与 AppGraph.session 不同源）不动。
-    var activeSession by remember(session) { mutableStateOf(session) }
-    // 兜底：AppGraph.session 比参数更新（比如设置页加的），也跟上。
-    // 只在 activeSession 为 null 或与 AppGraph 当前 id 不一致时同步。
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-06 问题21 修复·第二版】
+    //
+    // 上一版用 `remember(session)` —— **每次 session 参数变都重置
+    // activeSession**。副作用：切页/重组时若 AppGraph.session 有变化
+    // （哪怕是同一个实例被重新读），activeSession 被覆盖 →
+    // 如果那一刻它是 null，就渲染空态（用户看到的「首页样式」）。
+    //
+    // 正确做法：**只在「从 null 变非 null」时同步** ——
+    // 那是「用户在设置页加了 Provider」这个唯一需要同步的场景。
+    // 其他情况（同一实例、非 null 变另一个非 null）不碰 —— 用户手动
+    // 切的会话不能被冲掉。
+    // ══════════════════════════════════════════════════════════════
+    var activeSession by remember { mutableStateOf(session) }
     LaunchedEffect(session) {
         val g = com.ccm.app.AppGraph.session
-        if (g != null && activeSession == null) activeSession = g
+        // 只在 activeSession 还是空、而 AppGraph 已有会话时补上
+        if (g != null && activeSession == null) {
+            activeSession = g
+        }
     }
     // 会话列表（侧栏最近 + 列表页共用一个数据源）
     var sessions by remember { mutableStateOf<List<SessionSummary>>(emptyList()) }
@@ -1037,8 +1053,21 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         // 重建走 AppGraph.openSession(同 id)：dispose 会先 flush
                         // 自动保存，历史不丢。
                     } else {
+                        // ══════════════════════════════════════════════════
+                        //  【2026-10-06 问题21 修复·第三版】兜底恢复
+                        //
+                        //  到这里说明 activeSession == null。但 AppGraph.session
+                        //  可能**有**会话（UI 状态没跟上）—— 用户报「显示成首页
+                        //  样式，发条消息过去还是那个对话页」就是这个：
+                        //  UI 拿不到 session，但底层还在用原会话。
+                        //
+                        //  这里主动拉一次，拉到了就恢复（LaunchedEffect 触发重组）。
+                        // ══════════════════════════════════════════════════
+                        LaunchedEffect(Unit) {
+                            val g = com.ccm.app.AppGraph.session
+                            if (g != null) activeSession = g
+                        }
                         // 没配 Provider —— 渲染空态而不是崩。
-                        // 用户此时应该去设置页，这里给个能点的入口。
                         ChatScreen(
                             bubbles = emptyList(),
                             onSend = { },
