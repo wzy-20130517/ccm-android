@@ -608,19 +608,20 @@ private fun InputCard(
                         // → 屏幕 **36.8 × 29.44**、圆角 **7.36**、底色 `#EFCBC0`。
                         // （原来是 29.44 见方的橙色方块 + 文字箭头，比 Web 小一圈、
                         //   颜色也不是 Web 的浅陶土色。）
-                        // 【2026-10-06 问题22 修复·第三版】
+                        // 【2026-10-06 问题22 修复·第四版】
                         //
-                        // Web 原色 `#efcbc0` 是**浅陶土粉**，在桌面端有 hover
-                        // （变 `#e7bcaf`）+ 手型光标，所以不觉得弱。
-                        // 手机上两者都没有 → 用户报「颜色不对」。
+                        // 历史：
+                        //   第三版改成 Web 的 hover 色 #e7bcaf → 用户说「颜色
+                        //   完全没变化」（对：只深了一点点，肉眼看不出）。
                         //
-                        // 用户实测截图确认：对话页用 `#C6613F`（深），首页用
-                        // `#EFCBC0`（浅）—— 这是 Web 的设计差异，但**首页那个
-                        // 在手机上就是看着像禁用**。
+                        // 现在直接对齐**对话页同款** `#C6613F`（Web 的
+                        // `conversationSendButtonClass`）—— 这是同一套设计语言里
+                        // 明确"能点"的深陶土色，两个页面的发送按钮视觉统一。
                         //
-                        // 改为 Web 自己的 hover 色 `#e7bcaf`（比原色深一档，
-                        // 仍是同一色系，不算偏离设计）。
-                        val sendBg = if (CCMTheme.isDark) Color(0xFF34312E) else Color(0xFFE7BCAF)
+                        // 为什么不用 Web 首页原色 `#efcbc0`：那是桌面端设计
+                        // （有 hover 反馈 + 手型光标撑着），手机上没有这些，
+                        // 浅色就是显弱。用户三次反馈「颜色不对」，不要再保守。
+                        val sendBg = if (CCMTheme.isDark) Color(0xFF34312E) else Color(0xFFC6613F)
                         val sendTint = if (CCMTheme.isDark) Color(0xFFF5D7CA) else Color.White
                         Box(
                             modifier = Modifier

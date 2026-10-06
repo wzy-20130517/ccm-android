@@ -148,19 +148,33 @@ fun ChatScreen(
             //
             // 修法：消息区也吃同样的 ime padding（union navigationBars），
             // 这样它的**可用高度**随键盘缩小，内容自然上移。
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .windowInsetsPadding(
-                        WindowInsets.ime.union(WindowInsets.navigationBars),
-                    ),
-            ) {
+            // 【2026-10-06 问题45 修复·第三版（最终）】
+            //
+            // 历史：第一版加底部 Spacer（不够）、第二版给消息区加 ime padding
+            // （与输入栏的 ime padding 叠加，缩两次）。
+            //
+            // 最终方案：**把输入栏从浮动层改成 Column 的普通子元素** ——
+            // 它自己吃 ime padding 上推时，消息区 `weight(1f)` 自动缩，
+            // 消息区**不需要**再吃一次 ime padding。
+            Box(modifier = Modifier.weight(1f)) {
                 val scrollState = rememberScrollState()
 
                 // ★ 2026-09-27：原来没有自动滚动 —— 新消息只画在
                 //   视口外，用户必须手动往下滑，流式回复时看不到内容。
                 //   行为对齐 Web（跟底；用户上翻即停止跟随）。
                 var followBottom by remember { mutableStateOf(true) }
+                // 【2026-10-06 问题46 修复·第三版】
+                //
+                // 上一版用 `isScrollInProgress` 区分「用户滚动」和「内容增长」——
+                // 但 Compose 的这个标志在**程序滚动（scrollTo）时也是 true**，
+                // 所以下面的 repeat(6) 每次 scrollTo 都会把自己判成"用户在滚"，
+                // 逻辑还是错的。
+                //
+                // 正确做法（对齐 Web 的两个 ref）：
+                //   · autoScrolling 标志 —— 程序滚动期间置 true，跳过判定
+                //   · 只有「用户主动滚」才改 followBottom
+                //   · 滚回底部（value >= max - 阈值）时**恢复** followBottom
+                var autoScrolling by remember { mutableStateOf(false) }
 
                 // 【2026-10-06 问题46 修复·第二版】上一版只加「6 帧重试」，
                 // 但真正卡住跟随的是这个判定本身：
@@ -177,20 +191,31 @@ fun ChatScreen(
                 //   只在**用户主动滚动**时才更新 followBottom，
                 //   内容增长导致的 maxValue 变化不算。
                 //   用 `scrollState.isScrollInProgress` 区分。
+                // 【2026-10-06 问题46 修复·第四版（最终）】
+                //
+                // 前三版都在纠结「怎么区分用户滚动 vs 程序滚动」——
+                // isScrollInProgress 在 scrollTo 时也是 true，区分不了。
+                //
+                // 最终方案（**去掉那个区分需求**）：
+                //   只看「当前位置离底部多远」——
+                //   · 在底部附近（<120px）→ followBottom = true（继续跟）
+                //   · 不在底部 → followBottom = false（不跟）
+                //
+                // 为什么这样就够：程序滚动（repeat 6 帧）总是滚到 maxValue，
+                // 所以滚完必然在底部 → 判定为 true，不会自我否定。
+                // 用户上翻 → 离底部远 → false，停止跟随 ✓
+                // 用户滚回底部 → true，恢复跟随 ✓
+                //
+                // 唯一要防的是「内容增长瞬间」：maxValue 变大、value 还是旧的
+                // → 这一拍会判 false。用 autoScrolling 标志跳过（程序滚动期间
+                // 不判定），而 repeat(6) 结束前 autoScrolling 一直是 true。
                 LaunchedEffect(scrollState) {
-                    snapshotFlow {
-                        Triple(
-                            scrollState.value,
-                            scrollState.maxValue,
-                            scrollState.isScrollInProgress,
-                        )
-                    }.collect { (v, max, scrolling) ->
-                        // 只在用户手指按着滚（scrolling=true）时才改判定；
-                        // 程序滚动 / 内容增长时不碰 followBottom。
-                        if (scrolling) {
+                    snapshotFlow { scrollState.value to scrollState.maxValue }
+                        .collect { (v, max) ->
+                            if (autoScrolling) return@collect   // 程序滚动期间不判定
+                            if (max <= 0) return@collect        // 内容没铺满
                             followBottom = v >= max - 120
                         }
-                    }
                 }
 
                 // 内容变化 → 跟到底。
@@ -199,18 +224,41 @@ fun ChatScreen(
                 // 用瞬时 scrollTo 而非 animate：流式每个 chunk 都会触发，
                 // 动画叠加会抖。
                 //
-                // 【2026-10-06 问题23 修复】原来只滚**一帧** —— 但 markdown
-                // 渲染是异步撑高的：代码块、表格、图片的行高在后续帧才确定，
-                // 一帧滚完内容又长高了 → 停在中间（用户报「Sticky Scroll 未做好」）。
-                // 对齐 Web 的 scheduleScrollToBottomAfterRender：
-                // 连续 6 帧重试，每帧都检查用户是否还在底部（上翻即中止）。
-                LaunchedEffect(bubbles.size, streaming.length, toolCards.size) {
-                    if (!followBottom) return@LaunchedEffect
-                    repeat(6) {
-                        withFrameNanos {}
-                        if (!followBottom) return@repeat   // 用户中途上翻 → 停
-                        scrollState.scrollTo(scrollState.maxValue)
-                    }
+                // ══════════════════════════════════════════════════════════
+                //  【2026-10-06 问题46 修复·第四版（真正的根因）】
+                //
+                // 前三版都错在：用 `LaunchedEffect(key)` 驱动滚动。
+                // 而 key 里有 `streaming.length` —— **流式每吐一个字符
+                // key 就变一次** → LaunchedEffect **反复重启** →
+                // 每次重启取消上一次的协程 → repeat(6) 永远跑不完 →
+                // 滚动被反复打断。
+                //
+                // 这就是「Sticky Scroll 没用」的真根因：
+                // **不是判定逻辑错，是滚动协程被反复杀死。**
+                //
+                // 正确做法：**一个常驻协程**（key 不变），内部用 snapshotFlow
+                // 监听「内容高度」变化 → 变化就滚。流式吐 1000 个字符也
+                // 只是触发 1000 次滚动（每次瞬时），不会重启协程。
+                // ══════════════════════════════════════════════════════════
+                LaunchedEffect(Unit) {
+                    snapshotFlow { scrollState.maxValue }
+                        .collect { max ->
+                            if (max <= 0) return@collect
+                            if (!followBottom) return@collect
+                            // 程序滚动期间不重复触发
+                            if (autoScrolling) return@collect
+                            autoScrolling = true
+                            try {
+                                // 多补几帧 —— markdown 撑高是异步的
+                                repeat(3) {
+                                    withFrameNanos {}
+                                    if (!followBottom) return@repeat
+                                    scrollState.scrollTo(scrollState.maxValue)
+                                }
+                            } finally {
+                                autoScrolling = false
+                            }
+                        }
                 }
 
                 // ★ 第38批：打开历史会话时**强制滚到底**（不看 followBottom）。
@@ -247,15 +295,10 @@ fun ChatScreen(
                         todos = emptyList(),
                         presentItems = presentItems,
                     )
-                    // 底部留白 —— 实测滚动容器 pad: `0px 0px 154px`（pb-154）
-                    // 给浮动输入栏 + 底部状态行让位。
-                    //
-                    // 【2026-10-06 问题24 修复】原来固定 154dp —— 键盘弹出时
-                    // 输入栏被 ime padding 顶上去了（约 300dp），但消息区留白
-                    // 还是 154dp → **正文下半部分被输入栏+键盘盖住**，
-                    // 用户报「拉起输入框时正文不会往上移动」。
-                    // 现在留白 = 154dp + 键盘高度，正文随之上移。
-                    Spacer(Modifier.height(154.dp + imeBottomDp))
+                    // 【2026-10-06 问题45 修复·第三版】输入栏已移进 Column
+                    // （不再是浮层）→ 不需要 154dp 的"给浮层让位"留白。
+                    // 只留一点点呼吸空间。
+                    Spacer(Modifier.height(12.dp))
                 }
 
                 if (todos.isNotEmpty()) {
@@ -267,13 +310,9 @@ fun ChatScreen(
                     )
                 }
             }
-        }
-
-        // ── 输入栏 + 底部状态行（浮在底部）──────────────────────────
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
+            Column(
+                modifier = Modifier
+                                .fillMaxWidth()
                 .background(colors.bgMain)
                 // ★ 2026-09-29 键盘遮挡修复：targetSdk 35 强制 edge-to-edge，
                 //   AndroidManifest 的 adjustResize 被系统忽略 → 键盘弹出时
@@ -286,8 +325,8 @@ fun ChatScreen(
                         WindowInsets.navigationBars,
                     ),
                 ),
-        ) {
-            if (errorMessage != null) {
+            ) {
+                if (errorMessage != null) {
                 ErrorBanner(
                     message = errorMessage,
                     // 重试（第36批）：错误横幅原来只有显示 —— 用户只能手动
@@ -295,10 +334,10 @@ fun ChatScreen(
                     onRetry = onRetry,
                 )
                 Spacer(Modifier.height(7.36.dp))
-            }
+                }
 
-            // ── 已选图片管理条（第19批：选了才能删，原来只能发出去）──
-            if (attachedPaths.isNotEmpty()) {
+                // ── 已选图片管理条（第19批：选了才能删，原来只能发出去）──
+                if (attachedPaths.isNotEmpty()) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -340,16 +379,16 @@ fun ChatScreen(
                         modifier = Modifier.padding(vertical = 5.dp),
                     )
                 }
-            }
+                }
 
-            // ── slash 命令候选（2026-09-28）──────────────────────────
-            // 输入 "/" 开头且还没敲到空格 → 浮出候选（对齐 Web 的
-            // slash 面板；点选填入输入框，再按发送执行）。
-            val slashQuery = input.trim()
-            val slashCandidates = if (slashQuery.startsWith("/") && !slashQuery.contains(" ")) {
+                // ── slash 命令候选（2026-09-28）──────────────────────────
+                // 输入 "/" 开头且还没敲到空格 → 浮出候选（对齐 Web 的
+                // slash 面板；点选填入输入框，再按发送执行）。
+                val slashQuery = input.trim()
+                val slashCandidates = if (slashQuery.startsWith("/") && !slashQuery.contains(" ")) {
                 SLASH_COMMANDS.filter { it.first.startsWith(slashQuery) }
-            } else emptyList()
-            if (slashCandidates.isNotEmpty()) {
+                } else emptyList()
+                if (slashCandidates.isNotEmpty()) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -392,9 +431,9 @@ fun ChatScreen(
                     }
                 }
                 Spacer(Modifier.height(7.36.dp))
-            }
+                }
 
-            InputBar(
+                InputBar(
                 value = input,
                 onValueChange = onInputChange,
                 onSend = onSend,
@@ -408,9 +447,9 @@ fun ChatScreen(
                 attachedPaths = attachedPaths,
                 onVoice = onVoice,
                 onRemoveImage = onRemoveImage,
-            )
+                )
 
-            if (!imeVisible) {
+                if (!imeVisible) {
                 Spacer(Modifier.height(7.36.dp))
                 // 底部提示不在输入期间占位。
                 Text(
@@ -422,8 +461,10 @@ fun ChatScreen(
                         .padding(bottom = 11.04.dp),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
+                }
             }
         }
+
     }
 }
 

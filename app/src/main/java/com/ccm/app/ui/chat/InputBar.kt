@@ -350,7 +350,11 @@ private fun SendButton(enabled: Boolean, running: Boolean, onClick: () -> Unit) 
 
     Box(
         modifier = Modifier
-            .size(30.36.dp)                           // 实测发送按钮尺寸
+            // 【2026-10-06 用户反馈修正】原来是 30.36dp（某次"实测"的值）——
+            // 但 Web 的真实算法是 `p-2 + ArrowUp size=22 + p-2`：
+            //   8 + 22 + 8 = 38px × 0.92 = **34.96dp**
+            // 用户报「对话页发送按钮窄了」—— 小了 4.6dp 确实明显。
+            .size(34.96.dp)
             .clip(RoundedCornerShape(7.36.dp))
             .background(bg)
             .clickable(enabled = enabled, onClick = onClick),
@@ -360,13 +364,16 @@ private fun SendButton(enabled: Boolean, running: Boolean, onClick: () -> Unit) 
             // 停止：实心方块
             Box(
                 modifier = Modifier
-                    .size(10.dp)
-                    .clip(RoundedCornerShape(1.84.dp))
+                    // Web 的停止图标：实心方块约 14px → 12.88dp
+                    .size(12.88.dp)
+                    .clip(RoundedCornerShape(2.3.dp))
                     .background(colors.bgMain),
             )
         } else {
-            // 上箭头
-            UpArrowGlyph(tint = Color.White, size = 14.dp, strokeWidth = 2.2f)
+            // 上箭头 —— 【2026-10-06 用户反馈修正】原来 14dp，
+            // Web 是 `ArrowUp size=22 strokeWidth=2.5` → 22 × 0.92 = 20.24dp。
+            // 14dp 配 34.96dp 按钮显得空旷，20.24 才是 Web 的比例。
+            UpArrowGlyph(tint = Color.White, size = 20.24.dp, strokeWidth = 2.5f)
         }
     }
 }
