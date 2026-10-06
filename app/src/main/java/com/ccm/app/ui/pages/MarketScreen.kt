@@ -295,7 +295,14 @@ data class MarketItem(
     val description: String,
     val author: String = "",
     val size: String = "",
+    /** tar.gz 包地址（skill 用）。 */
     val url: String = "",
+    /** 散文件地址列表（mcp 用 —— 逐个下载）。 */
+    val files: List<String> = emptyList(),
+    /** 是否需要 npm install（装依赖）。 */
+    val npmInstall: Boolean = false,
+    /** 入口文件名（mcp 用，如 server.mjs）。 */
+    val entry: String = "",
     val env: Map<String, String> = emptyMap(),
 )
 

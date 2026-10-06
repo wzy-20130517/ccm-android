@@ -61,6 +61,11 @@ object MarketClient {
                 o.optJSONObject("env")?.let { e ->
                     e.keys().forEach { k -> env[k] = e.optString(k, "") }
                 }
+                val filesArr = o.optJSONArray("files")
+                val files = if (filesArr != null) {
+                    (0 until filesArr.length()).mapNotNull { j -> filesArr.optString(j, "").takeIf { it.isNotBlank() } }
+                } else emptyList()
+
                 MarketItem(
                     id = o.optString("id", ""),
                     type = o.optString("type", ""),
@@ -69,6 +74,9 @@ object MarketClient {
                     author = o.optString("author", ""),
                     size = o.optString("size", ""),
                     url = o.optString("url", ""),
+                    files = files,
+                    npmInstall = o.optBoolean("npmInstall", false),
+                    entry = o.optString("entry", ""),
                     env = env,
                 )
             }.filter { it.id.isNotBlank() }
@@ -91,15 +99,18 @@ object MarketClient {
         onLog: (String) -> Unit = {},
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            // 1. 下载 tar.gz
-            onLog("正在下载 ${item.name}…")
+            // ⚠️ 只有 tar.gz 方式（url 非空）才在这里下载 ——
+            // files 方式（mcp）在每个分支里逐个下载散文件。
             val tmp = File(ctx.cacheDir, "${item.id}.tar.gz")
-            if (!download(item.url, tmp)) {
-                onLog("❌ 下载失败")
-                return@withContext false
+            if (item.url.isNotBlank()) {
+                onLog("正在下载 ${item.name}…")
+                if (!download(item.url, tmp)) {
+                    onLog("❌ 下载失败")
+                    return@withContext false
+                }
             }
 
-            // 2. 按类型解压
+            // 按类型处理
             when (item.type) {
                 "skill" -> {
                     onLog("正在解压…")
@@ -110,12 +121,41 @@ object MarketClient {
                 }
                 "mcp" -> {
                     // MCP 要装到 rootfs（node 在那里）+ 写 mcp.json
-                    onLog("正在部署 server…")
                     val runtime = com.ccm.app.runtime.ProotRuntime(ctx)
                     val rootfs = runtime.rootfsDir()
                     val dest = File(rootfs, "root/.ccm/mcp/${item.id}")
                     dest.mkdirs()
-                    extractTarGz(tmp, dest)
+
+                    if (item.files.isNotEmpty()) {
+                        // 【2026-10-06】散文件方式（不打包 tar.gz）——
+                        // 从 GitHub raw 逐个下载（server.mjs + package.json 等）
+                        onLog("正在下载 ${item.files.size} 个文件…")
+                        item.files.forEach { url ->
+                            val name = url.substringAfterLast('/')
+                            if (!download(url, File(dest, name))) {
+                                onLog("❌ 下载失败：$name")
+                                return@withContext false
+                            }
+                        }
+                        // 需要 npm install（装依赖）
+                        if (item.npmInstall) {
+                            onLog("正在装依赖（npm install）…")
+                            val installer0 = com.ccm.app.core.mcp.McpInstaller(ctx, runtime)
+                            if (!installer0.ensureNode { s -> onLog(s) }) {
+                                onLog("❌ Node 安装失败")
+                                return@withContext false
+                            }
+                            val ok = runNpmInstall(runtime, "/root/.ccm/mcp/${item.id}") { s -> onLog(s) }
+                            if (!ok) {
+                                onLog("❌ npm install 失败")
+                                return@withContext false
+                            }
+                        }
+                    } else {
+                        // tar.gz 方式
+                        onLog("正在部署 server…")
+                        extractTarGz(tmp, dest)
+                    }
 
                     onLog("检查 Node 运行时…")
                     val installer = com.ccm.app.core.mcp.McpInstaller(ctx, runtime)
@@ -125,7 +165,8 @@ object MarketClient {
                     }
 
                     onLog("写入配置…")
-                    val entry = File(dest, "server.mjs")
+                    val entryName = item.entry.ifBlank { "server.mjs" }
+                    val entry = File(dest, entryName)
                     val cmd = installer.buildProotCommand(entry.absolutePath, env)
                     val mcpFile = File(ctx.filesDir, "mcp.json")
                     val o = if (mcpFile.exists()) JSONObject(mcpFile.readText()) else JSONObject()
@@ -184,6 +225,33 @@ object MarketClient {
             Log.e(TAG, "卸载 ${item.id} 失败：${t.message}", t)
             false
         }
+    }
+
+    /** 在 rootfs 里跑 npm install。 */
+    private fun runNpmInstall(
+        runtime: com.ccm.app.runtime.ProotRuntime,
+        dir: String,
+        onLog: (String) -> Unit,
+    ): Boolean {
+        var ok = false
+        try {
+            runtime.execWithTimeout(
+                command = listOf(
+                    "/bin/bash", "-c",
+                    "cd $dir && npm install --omit=dev --no-audit --no-fund 2>&1 | tail -5; echo NPM_DONE",
+                ),
+                workDir = "/root",
+                onLine = { line ->
+                    if (line.contains("NPM_DONE")) ok = true
+                    if (line.contains("added") || line.contains("npm error")) onLog(line.take(80))
+                },
+                timeoutMs = 5 * 60_000L,
+                idleMs = 2 * 60_000L,
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "npm install 失败：${t.message}", t)
+        }
+        return ok
     }
 
     // ── 工具方法 ────────────────────────────────────────────────────
