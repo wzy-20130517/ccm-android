@@ -61,11 +61,24 @@ import com.ccm.app.core.tool.ToolSettings
  */
 class AppContainer private constructor(
     /** 当前配置。 */
-    val config: AppConfig,
-    /** API 客户端（唯一出网点）。 */
-    val apiClient: ApiClient,
+    var config: AppConfig,
+    /**
+     * API 客户端（唯一出网点）。
+     *
+     * 【2026-10-06 热更新】原来是 `val`（构造快照）—— /key /url /model
+     * 等命令改完配置要「重启 App 才生效」。现在改 `var`，
+     * 由 [refreshApi] 在命令改完后原地换新实例。
+     */
+    var apiClient: ApiClient,
     /** 识图客户端（vision 路由；null = 不路由）。 */
-    val visionClient: ApiClient? = null,
+    var visionClient: ApiClient? = null,
+    /**
+     * 应用存储（[refreshApi] 重读 config.json 用）。
+     *
+     * 构造参数单独留一份 —— 实例里原有的 storage 是 ToolStorage（工具视角），
+     * 拿不到 configFile。
+     */
+    private val appStorage: AppStorage? = null,
     /** Agent 主循环。 */
     val agentLoop: AgentLoop,
     /** 工具注册表。 */
@@ -282,6 +295,44 @@ class AppContainer private constructor(
         return auto
     }
 
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-06 用户反馈】/key 等命令要热更新（无需重启）
+    //
+    //  根因：ApiClient 是构造快照（baseUrl/keys/model/protocol/effort/
+    //  temperature 全在构造参数里），slash 命令改完配置后没人换实例 →
+    //  只能重启 App。CLI 同名命令是立即生效的，APK 这里是行为缺口。
+    //
+    //  修法：命令改完**落盘之后**调 [refreshApi] —— 重读磁盘配置、
+    //  原地换 apiClient / visionClient / agentLoop 的引用。
+    //  正在跑的那一轮用旧实例跑完（不受影响），下一轮自动用新的。
+    // ══════════════════════════════════════════════════════════════
+
+    /**
+     * 热更新 API 客户端 —— **无需重启**。
+     *
+     * 调用前提：新配置已经落盘（[refreshApi] 自己从磁盘重读）。
+     *
+     * @return true = 换好了；false = 新配置不可用（没 provider / 没 key），
+     *   此时**保持旧实例不动**（不能因为一次坏配置把正在用的链路弄断）。
+     */
+    fun refreshApi(): Boolean {
+        val st = appStorage ?: return false
+        // AppConfig.load 返回自定义 Result（.config / .error），不是 kotlin.Result
+        val cfg = com.ccm.app.core.provider.AppConfig.load(st.configFile).config
+        val provider = cfg.currentProvider ?: return false
+        if (provider.allKeys().isEmpty()) return false
+
+        val newApi = buildApiClient(st, cfg, provider) ?: return false
+        val newVision = buildVisionClient(cfg)
+
+        config = cfg
+        apiClient = newApi
+        visionClient = newVision
+        // AgentLoop 里换掉引用 —— 正在跑的请求持有旧引用跑完即可
+        agentLoop.swapClients(newApi, newVision)
+        return true
+    }
+
     /** 释放资源（切 Provider 或退出前调）。 */
     fun shutdown() {
         try {
@@ -474,19 +525,8 @@ class AppContainer private constructor(
 
             val effectiveSessionId = sessionId.ifBlank { SessionStore(storage).newSessionId() }
 
-            // ── API 客户端 ──
-            val apiClient = ApiClient(
-                baseUrl = provider.url,
-                apiKeys = keys,
-                model = provider.model,
-                protocol = provider.protocolType,
-                maxOutputTokens = provider.maxOutputTokens,
-                temperature = provider.temperature ?: config.temperature,
-                // key 池冷却状态落盘（重启后不从头撞已耗尽的 key）
-                keyPoolStateFile = java.io.File(storage.root, "key-pool-state.json"),
-                // 深度思考（audit-core #2：config.effort 原来零消费）
-                effort = provider.effort ?: config.effort,
-            )
+            // ── API 客户端（与 refreshApi 共用同一构造，避免两处漂移）──
+            val apiClient = buildApiClient(storage, config, provider) ?: return null
 
             // ── 会话与压缩 ──
             val sessionStore = SessionStore(storage)
@@ -500,22 +540,7 @@ class AppContainer private constructor(
             // ── Agent 主循环 ──
             // ★ 识图路由客户端（2026-09-29）：开关开 + 配了独立 vision provider
             //   且**不是当前主 provider** 才建（是同一个就没必要路由）。
-            val vp = config.visionProvider
-            val visionClient: ApiClient? =
-                if (config.vision == true && vp != null &&
-                    config.visionProviderId != null &&
-                    config.visionProviderId != config.current &&
-                    vp.url.isNotBlank() && vp.allKeys().isNotEmpty()
-                ) {
-                    ApiClient(
-                        baseUrl = vp.url,
-                        apiKeys = vp.allKeys(),
-                        model = vp.model,
-                        protocol = vp.protocolType,
-                        maxOutputTokens = vp.maxOutputTokens,
-                        temperature = vp.temperature ?: 1.0,
-                    )
-                } else null
+            val visionClient = buildVisionClient(config)
 
             val agentLoop = AgentLoop(
                 api = apiClient,
@@ -614,6 +639,7 @@ class AppContainer private constructor(
 
             val container = AppContainer(
                 config = config,
+                appStorage = storage,
                 apiClient = apiClient,
                 visionClient = visionClient,
                 agentLoop = agentLoop,
@@ -643,6 +669,56 @@ class AppContainer private constructor(
          * 传的是**快照**不是引用 —— 工具执行期间配置不该变
          * （否则用户在设置页改 Provider 会让正在跑的请求中途换端点）。
          */
+        /**
+         * 按配置建主 API 客户端。
+         *
+         * **build() 和 refreshApi() 必须共用它** —— 分两处写会漂移
+         * （改了热更新路径忘了初始化路径，表现是「新装的和切配置后的行为不一致」）。
+         *
+         * @return null = provider 没 key（调用方自行决定兜底）
+         */
+        fun buildApiClient(
+            storage: AppStorage,
+            config: AppConfig,
+            provider: ProviderConfig,
+        ): ApiClient? {
+            val keys = provider.allKeys()
+            if (keys.isEmpty()) return null
+            return ApiClient(
+                baseUrl = provider.url,
+                apiKeys = keys,
+                model = provider.model,
+                protocol = provider.protocolType,
+                maxOutputTokens = provider.maxOutputTokens,
+                temperature = provider.temperature ?: config.temperature,
+                // key 池冷却状态落盘（重启后不从头撞已耗尽的 key）
+                keyPoolStateFile = java.io.File(storage.root, "key-pool-state.json"),
+                // 深度思考（audit-core #2：config.effort 原来零消费）
+                effort = provider.effort ?: config.effort,
+            )
+        }
+
+        /**
+         * 按配置建识图客户端（vision 路由；不满足条件返回 null）。
+         * 同样由 build() 与 refreshApi() 共用。
+         */
+        fun buildVisionClient(config: AppConfig): ApiClient? {
+            val vp = config.visionProvider
+            val need = config.vision == true && vp != null &&
+                config.visionProviderId != null &&
+                config.visionProviderId != config.current &&
+                vp.url.isNotBlank() && vp.allKeys().isNotEmpty()
+            if (!need || vp == null) return null
+            return ApiClient(
+                baseUrl = vp.url,
+                apiKeys = vp.allKeys(),
+                model = vp.model,
+                protocol = vp.protocolType,
+                maxOutputTokens = vp.maxOutputTokens,
+                temperature = vp.temperature ?: 1.0,
+            )
+        }
+
         fun buildSettings(config: AppConfig, provider: ProviderConfig): ToolSettings {
             val map = mutableMapOf<String, String?>(
                 "providerBaseUrl" to provider.url,

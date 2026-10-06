@@ -76,7 +76,7 @@ import kotlinx.serialization.json.put
  * base64 用 `java.util.Base64`（API 26+ 可用，与 minSdk 一致），不用 `android.util.Base64`。
  */
 class AgentLoop(
-    private val api: ApiClient,
+    private var api: ApiClient,
     /** 系统提示词。 */
     private val systemPrompt: String,
     /**
@@ -118,7 +118,7 @@ class AgentLoop(
      * 就不会 400；识图失败回退直接带图（保持原行为）。
      * null = 不路由（开关关 / 没配 / vision 就是当前 provider）。
      */
-    private val visionClient: ApiClient? = null,
+    private var visionClient: ApiClient? = null,
     /**
      * trace 目录（`null` = 不记录）。
      *
@@ -196,6 +196,17 @@ class AgentLoop(
     /** 设置最大轮次（deep 模式用）。**不计数、不受闸门限制** —— 这是用户/系统行为。 */
     fun setMaxTurns(n: Int) {
         maxTurns = n.coerceAtMost(MAX_TURNS_HARD_CAP)
+    }
+
+    /**
+     * 换 API 客户端（热更新 —— /key /url /model 等改完配置后由
+     * [com.ccm.app.core.AppContainer.refreshApi] 调）。
+     *
+     * 正在跑的一轮持有旧引用跑完不受影响，下一轮自动用新实例。
+     */
+    fun swapClients(newApi: ApiClient, newVision: ApiClient?) {
+        api = newApi
+        visionClient = newVision
     }
 
     /**

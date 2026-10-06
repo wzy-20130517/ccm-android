@@ -862,6 +862,23 @@ private fun extractJsonValue(line: String, key: String): String? {
 // 分区 4：配置类（worker-3 填充）
 //   /effort /temperature /voice /me /markdown /greeting
 // ═══════════════════════════════════════════════════════════════════
+/**
+ * 配置刚落盘 → 热更新 API 客户端，返回追加到 Notice 的提示。
+ *
+ * 【2026-10-06 用户反馈】/key 等命令要「无需重启」。
+ * 根因是 ApiClient 构造快照；现在 [com.ccm.app.core.AppContainer.refreshApi]
+ * 原地换实例，命令落盘后调一次即可 —— 成功就**无声生效**（不加任何后缀，
+ * 跟 CLI 的体感一致），失败才提示需重启（新配置不可用时保持旧链路不动）。
+ */
+private fun hotUpdateHint(): String {
+    val ok = try {
+        com.ccm.app.AppGraph.container?.refreshApi() == true
+    } catch (_: Throwable) {
+        false
+    }
+    return if (ok) "" else "\n\n⚠ 热更新失败（新配置不可用），保持旧配置运行；修好后需重启生效。"
+}
+
 private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): SlashResult? {
     // 配置落盘统一走 AppConfig.load(file).config -> copy(...) -> AppConfig.save(cfg, file)。
     // storage 从 AppGraph 拿；拿不到说明容器还没初始化，直接提示不可用（绝不乱写盘）。
@@ -910,7 +927,7 @@ private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): S
                     st.configFile,
                 )
                 if (ok) {
-                    SlashResult.Notice("思考强度已设为 `$a`。切换会话或重启后对新对话生效。")
+                    SlashResult.Notice("思考强度已设为 `$a`。" + hotUpdateHint())
                 } else {
                     SlashResult.Notice("保存失败：写入 config.json 出错。")
                 }
@@ -952,7 +969,7 @@ private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): S
                         st.configFile,
                     )
                     if (ok) {
-                        SlashResult.Notice("温度已设为 `$v`。切换会话或重启后对新对话生效。")
+                        SlashResult.Notice("温度已设为 `$v`。" + hotUpdateHint())
                     } else {
                         SlashResult.Notice("保存失败：写入 config.json 出错。")
                     }
@@ -1557,7 +1574,8 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
         // 有完整接口（setCurrent/setUrl/setKey/setModel/setProtocol），
         // 命令能直接改。对齐 CLI 的 /config 系列。
         //
-        // ⚠️ 改完需重启 App 或切 Provider 才生效（ApiClient 是快照）。
+        // ✅ 2026-10-06 起**热更新**（无需重启）：落盘后 hotUpdateHint()
+        //    会调 AppContainer.refreshApi() 原地换 ApiClient 实例。
 
         // ── /config —— 切 Provider ────────────────────────────────────────
         "/config" -> {
@@ -1594,7 +1612,7 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                     // 切到指定 Provider
                     val ok = store.setCurrent(a)
                     if (ok) {
-                        SlashResult.Notice("已切到 Provider `$a`。\n\n⚠ **需重启 App**（或切会话）才生效 —— ApiClient 是快照。")
+                        SlashResult.Notice("已切到 Provider `$a`。" + hotUpdateHint())
                     } else {
                         SlashResult.Notice("找不到 Provider `$a`。用 `/config` 看列表。")
                     }
@@ -1614,7 +1632,7 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                 if (cur.isBlank()) {
                     SlashResult.Notice("没有当前 Provider。")
                 } else if (store.setUrl(cur, a)) {
-                    SlashResult.Notice("已改 URL → `$a`（Provider `$cur`）\n\n⚠ 需重启生效。")
+                    SlashResult.Notice("已改 URL → `$a`（Provider `$cur`）" + hotUpdateHint())
                 } else {
                     SlashResult.Notice("改 URL 失败。")
                 }
@@ -1649,7 +1667,7 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                         }
                     }
                     a == "clear" -> {
-                        if (store.setKey(cur, "")) SlashResult.Notice("已清空 key（Provider `$cur`）。")
+                        if (store.setKey(cur, "")) SlashResult.Notice("已清空 key（Provider `$cur`）。" + hotUpdateHint())
                         else SlashResult.Notice("清空失败。")
                     }
                     a.startsWith("pool ") -> {
@@ -1657,14 +1675,14 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                         if (keys.isEmpty()) {
                             SlashResult.Notice("用法：`/key pool <k1> <k2> ...`")
                         } else if (store.setKeyPool(cur, keys)) {
-                            SlashResult.Notice("已设 ${keys.size} 个 key 的轮换池（Provider `$cur`）。\n\n⚠ 需重启生效。")
+                            SlashResult.Notice("已设 ${keys.size} 个 key 的轮换池（Provider `$cur`）。" + hotUpdateHint())
                         } else {
                             SlashResult.Notice("设置失败。")
                         }
                     }
                     else -> {
                         if (store.setKey(cur, a)) {
-                            SlashResult.Notice("已设 key（Provider `$cur`，`${a.take(8)}…`）。\n\n⚠ 需重启生效。")
+                            SlashResult.Notice("已设 key（Provider `$cur`，`${a.take(8)}…`）。" + hotUpdateHint())
                         } else {
                             SlashResult.Notice("设置失败。")
                         }
@@ -1711,7 +1729,7 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                 } else if (a !in listOf("openai", "anthropic", "responses")) {
                     SlashResult.Notice("协议必须是 openai / anthropic / responses 之一。")
                 } else if (store.setProtocol(cur, a)) {
-                    SlashResult.Notice("协议已改为 `$a`。\n\n⚠ 需重启生效。")
+                    SlashResult.Notice("协议已改为 `$a`。" + hotUpdateHint())
                 } else {
                     SlashResult.Notice("改协议失败。")
                 }
