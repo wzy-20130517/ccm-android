@@ -296,6 +296,12 @@ data class MarketItem(
     val npmInstall: Boolean = false,
     /** 入口文件名（mcp 用，如 server.mjs）。 */
     val entry: String = "",
+    /** npm 包名（如 @playwright/mcp）—— 有则用 npm install 装。 */
+    val npmPackage: String = "",
+    /** 是否需要额外下载浏览器（playwright）。 */
+    val installBrowser: Boolean = false,
+    /** 需要的 apt 依赖（如 libnss3）。 */
+    val aptDeps: List<String> = emptyList(),
     val env: Map<String, String> = emptyMap(),
 )
 

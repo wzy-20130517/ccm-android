@@ -66,6 +66,11 @@ object MarketClient {
                     (0 until filesArr.length()).mapNotNull { j -> filesArr.optString(j, "").takeIf { it.isNotBlank() } }
                 } else emptyList()
 
+                val aptArr = o.optJSONArray("aptDeps")
+                val aptDeps = if (aptArr != null) {
+                    (0 until aptArr.length()).mapNotNull { j -> aptArr.optString(j, "").takeIf { it.isNotBlank() } }
+                } else emptyList()
+
                 MarketItem(
                     id = o.optString("id", ""),
                     type = o.optString("type", ""),
@@ -77,6 +82,9 @@ object MarketClient {
                     files = files,
                     npmInstall = o.optBoolean("npmInstall", false),
                     entry = o.optString("entry", ""),
+                    npmPackage = o.optString("npmPackage", ""),
+                    installBrowser = o.optBoolean("installBrowser", false),
+                    aptDeps = aptDeps,
                     env = env,
                 )
             }.filter { it.id.isNotBlank() }
@@ -126,7 +134,40 @@ object MarketClient {
                     val dest = File(rootfs, "root/.ccm/mcp/${item.id}")
                     dest.mkdirs()
 
-                    if (item.files.isNotEmpty()) {
+                    if (item.npmPackage.isNotBlank()) {
+                        // 【2026-10-06】npm 包方式（playwright 这类）——
+                        // 1. 确保 node
+                        // 2. apt 装系统依赖（libnss3 等）
+                        // 3. npm install 包
+                        // 4. 可选：下载浏览器
+                        onLog("检查 Node 运行时…")
+                        val installer1 = com.ccm.app.core.mcp.McpInstaller(ctx, runtime)
+                        if (!installer1.ensureNode { s -> onLog(s) }) {
+                            onLog("❌ Node 安装失败")
+                            return@withContext false
+                        }
+
+                        // apt 依赖
+                        if (item.aptDeps.isNotEmpty()) {
+                            onLog("正在装系统依赖（${item.aptDeps.size} 个）…")
+                            runAptInstall(runtime, item.aptDeps) { s -> onLog(s) }
+                        }
+
+                        // npm install
+                        onLog("正在装 npm 包（${item.npmPackage}）…")
+                        val npmDir = "/root/.ccm/mcp/${item.id}"
+                        val ok1 = runNpmPackageInstall(runtime, npmDir, item.npmPackage) { s -> onLog(s) }
+                        if (!ok1) {
+                            onLog("❌ npm install 失败")
+                            return@withContext false
+                        }
+
+                        // 浏览器（playwright）
+                        if (item.installBrowser) {
+                            onLog("正在下载浏览器（~150MB，慢）…")
+                            runPlaywrightInstall(runtime, npmDir) { s -> onLog(s) }
+                        }
+                    } else if (item.files.isNotEmpty()) {
                         // 【2026-10-06】散文件方式（不打包 tar.gz）——
                         // 从 GitHub raw 逐个下载（server.mjs + package.json 等）
                         onLog("正在下载 ${item.files.size} 个文件…")
@@ -224,6 +265,86 @@ object MarketClient {
         } catch (t: Throwable) {
             Log.e(TAG, "卸载 ${item.id} 失败：${t.message}", t)
             false
+        }
+    }
+
+    /** apt 装系统依赖。 */
+    private fun runAptInstall(
+        runtime: com.ccm.app.runtime.ProotRuntime,
+        pkgs: List<String>,
+        onLog: (String) -> Unit,
+    ) {
+        try {
+            runtime.execWithTimeout(
+                command = listOf(
+                    "/bin/bash", "-c",
+                    "export DEBIAN_FRONTEND=noninteractive; " +
+                        "apt-get install -y -qq ${pkgs.joinToString(" ")} 2>&1 | tail -3; echo APT_DONE",
+                ),
+                workDir = "/root",
+                onLine = { line -> if (line.contains("APT_DONE")) onLog("系统依赖装完") },
+                timeoutMs = 5 * 60_000L,
+                idleMs = 2 * 60_000L,
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "apt 装依赖失败：${t.message}", t)
+        }
+    }
+
+    /** npm install 一个包（到指定目录）。 */
+    private fun runNpmPackageInstall(
+        runtime: com.ccm.app.runtime.ProotRuntime,
+        dir: String,
+        pkg: String,
+        onLog: (String) -> Unit,
+    ): Boolean {
+        var ok = false
+        try {
+            runtime.execWithTimeout(
+                command = listOf(
+                    "/bin/bash", "-c",
+                    "mkdir -p $dir && cd $dir && " +
+                        "npm init -y > /dev/null 2>&1; " +
+                        "npm install --no-audit --no-fund $pkg 2>&1 | tail -3; echo NPM_DONE",
+                ),
+                workDir = "/root",
+                onLine = { line ->
+                    if (line.contains("NPM_DONE")) ok = true
+                    if (line.contains("added") || line.contains("npm error")) onLog(line.take(80))
+                },
+                timeoutMs = 10 * 60_000L,
+                idleMs = 3 * 60_000L,
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "npm 装包失败：${t.message}", t)
+        }
+        return ok
+    }
+
+    /** playwright install chromium（下载浏览器）。 */
+    private fun runPlaywrightInstall(
+        runtime: com.ccm.app.runtime.ProotRuntime,
+        dir: String,
+        onLog: (String) -> Unit,
+    ) {
+        try {
+            runtime.execWithTimeout(
+                command = listOf(
+                    "/bin/bash", "-c",
+                    "cd $dir && " +
+                        "export PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright; " +
+                        "npx playwright install chromium 2>&1 | tail -5; echo PW_DONE",
+                ),
+                workDir = "/root",
+                onLine = { line ->
+                    if (line.contains("PW_DONE")) onLog("浏览器下载完成")
+                    else if (line.contains("Downloading") || line.contains("%")) onLog(line.take(80))
+                },
+                timeoutMs = 30 * 60_000L,   // 150MB 慢，给 30 分钟
+                idleMs = 5 * 60_000L,
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "playwright install 失败：${t.message}", t)
         }
     }
 
