@@ -26,6 +26,45 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
+    <!-- ══════════════════════════════════════════════════════════════
+         应用列表权限（2026-10-06）—— 用户指出「你都没要获取应用列表权限」
+
+         Android 11+ 默认过滤包可见性，PackageManager 看不到别的 App。
+         下面 <queries> 只放开**显式声明**的几个包；要能查询/列举**任意**
+         已装应用（比如「装了哪些浏览器」「按名字找应用」），必须声明
+         QUERY_ALL_PACKAGES。
+
+         Google Play 对此权限有审核限制（需核心功能依赖），但本项目自建
+         分发、不依赖 Play，不受影响。tools:ignore 消 lint 提示。
+         ══════════════════════════════════════════════════════════════ -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
+    <!-- ══════════════════════════════════════════════════════════════
+         包可见性声明（2026-10-06）—— 缺了它「检测不到 Termux」
+
+         Android 11+（API 30+）默认过滤包可见性：不声明 <queries> 时
+         `packageManager.getPackageInfo("com.termux", 0)` 对**任何**
+         第三方包都抛 NameNotFoundException —— 哪怕 Termux 就装在旁边。
+         （实测：本机 pm list 能看到 com.termux，App 里却探测为未安装。）
+
+         声明后 TermuxChannel.isAvailable() / 引导页检测才准。
+         ══════════════════════════════════════════════════════════════ -->
+    <queries>
+        <!-- 外接 Termux 通道（RUN_COMMAND Intent 发给它执行命令） -->
+        <package android:name="com.termux" />
+        <!-- Termux 的附加组件（:api 提供 termux-api 命令、:x11 起图形环境） -->
+        <package android:name="com.termux.api" />
+        <package android:name="com.termux.x11" />
+        <!-- Shizuku（手机 Shell 通道探测，同理会受可见性影响） -->
+        <package android:name="moe.shizuku.manager" />
+        <!-- 系统浏览器（OpenUrl 用 ACTION_VIEW，部分设备需显式声明） -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+    </queries>
+
     <application
         android:label="@string/app_name"
         android:icon="@drawable/ic_launcher"
