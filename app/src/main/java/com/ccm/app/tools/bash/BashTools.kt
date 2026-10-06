@@ -182,6 +182,21 @@ class ProotChannel(
 class TermuxChannel(private val context: Context) : BashChannel {
 
     companion object {
+        /**
+         * RUN_COMMAND 权限名。
+         *
+         * 【2026-10-06 重要纠正】这个权限是 **dangerous 级**（不是 signature）——
+         * Termux 的 AndroidManifest 写的是 `android:protectionLevel="dangerous"`。
+         * 所以**可以运行时请求**（弹系统授权框），不需要与 Termux 同签名。
+         * 实测 `pm grant com.ccm.app com.termux.permission.RUN_COMMAND` 直接成功。
+         */
+        const val PERMISSION_RUN_COMMAND = "com.termux.permission.RUN_COMMAND"
+
+        /** 检查权限是否已授予。 */
+        fun hasRunCommandPermission(context: android.content.Context): Boolean =
+            context.checkSelfPermission(PERMISSION_RUN_COMMAND) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+
         const val TERMUX_PACKAGE = "com.termux"
         const val ACTION_RUN_COMMAND = "com.termux.RUN_COMMAND"
         const val SERVICE_CLASS = "com.termux.app.RunCommandService"
@@ -212,26 +227,6 @@ class TermuxChannel(private val context: Context) : BashChannel {
         } catch (_: Throwable) {
             false
         }
-    }
-
-    companion object {
-        /**
-         * RUN_COMMAND 权限名。
-         *
-         * 【2026-10-06 重要纠正】这个权限是 **dangerous 级**（不是 signature）——
-         * Termux 的 AndroidManifest 写的是 `android:protectionLevel="dangerous"`。
-         * 所以**可以运行时请求**（弹系统授权框），不需要与 Termux 同签名。
-         * 实测 `pm grant com.ccm.app com.termux.permission.RUN_COMMAND` 直接成功。
-         *
-         * 之前的错误判断：以为 signature 级、CCM 自签名拿不到 —— 那是错的，
-         * 实际是「声明了但从来没请求过」。
-         */
-        const val PERMISSION_RUN_COMMAND = "com.termux.permission.RUN_COMMAND"
-
-        /** 检查权限是否已授予。 */
-        fun hasRunCommandPermission(context: android.content.Context): Boolean =
-            context.checkSelfPermission(PERMISSION_RUN_COMMAND) ==
-                android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 
     /** 实例方法版（内部用）。 */

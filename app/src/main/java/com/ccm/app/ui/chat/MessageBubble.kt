@@ -594,6 +594,11 @@ data class ChatBubble(
     val messageId: String,
     /** 该消息的思考过程（空 = 没有/历史消息）。AssistantThinkingChain 渲染。 */
     val thinking: String = "",
+    /**
+     * 工具后的正文起点（对齐 Web toolTextEndOffset）。
+     * 正文区只显示从这里往后的内容 —— 工具期间的正文已在工具卡里显示过。
+     */
+    val toolTextEndOffset: Int = 0,
     val toolCards: List<ChatToolCard> = emptyList(),
     /** 附带图片路径（用户消息；渲染缩略图，第20批）。 */
     val images: List<String> = emptyList(),
@@ -632,4 +637,6 @@ data class ChatToolCard(
     val result: String = "",
     /** 完整入参 JSON —— ToolDiffView 展开渲染用（2026-09-27 加）。 */
     val input: String = "",
+    /** 这个工具调用**之前**累积的正文（对齐 Web 的 textBefore）。 */
+    val textBefore: String = "",
 )

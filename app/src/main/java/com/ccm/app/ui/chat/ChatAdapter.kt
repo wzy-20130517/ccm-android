@@ -33,6 +33,8 @@ object ChatAdapter {
         text = bubble.text,
         messageId = bubble.messageId,
         thinking = bubble.thinking,
+        // 2026-10-06：正文/工具时序切分（对齐 Web toolTextEndOffset）
+        toolTextEndOffset = bubble.toolTextEndOffset,
         toolCards = bubble.toolCards.map(::toUi),
         images = bubble.images,
     )
@@ -54,6 +56,8 @@ object ChatAdapter {
         isError = card.isError,
         progress = card.progress,
         result = card.result,
+        // 2026-10-06：工具前的正文（渲染在工具卡上方，还原时序）
+        textBefore = card.textBefore,
     )
 
     /** 整个 State 一次性转换（UI 主路径用这个） */
