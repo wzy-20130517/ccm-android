@@ -446,6 +446,8 @@ class AppContainer private constructor(
         private fun assembleSystemPrompt(
             storage: AppStorage,
             context: android.content.Context? = null,
+            /** 当前工作目录（注入提示词用；空 = 不注入该行）。 */
+            currentCwd: String = "",
         ): String = try {
             val prof = com.ccm.app.core.user.UserProfileStore(storage).load()
             // 【2026-10-06 问题29】从 assets 读完整提示词（原来是一句话常量）
@@ -463,6 +465,24 @@ class AppContainer private constructor(
                 sb.append("\n\n## 关于用户\n")
                 lines.forEach { sb.append("- ").append(it).append('\n') }
             }
+            // ── 当前会话信息（2026-10-06 补，对齐 CLI 的 SESSION_START_PROMPT）──
+            //
+            // CLI 每轮注入：日期 / 工作目录 / 平台 / 工作区实际路径。
+            // APK 原来**完全没有** —— 模型不知道今天几号（「三天后提醒我」
+            // 这类请求只能猜），也不知道工作区的绝对路径（写文件时容易
+            // 搞错层级）。这里现算注入（assembleSystemPrompt 是提供者函数，
+            // 每次调模型前重算，跨天自动更新）。
+            sb.append("\n\n# 当前会话\n")
+            sb.append("- 日期：")
+                .append(java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                    .format(java.util.Date()))
+                .append('\n')
+            sb.append("- 平台：Android (APK, Compose UI)\n")
+            if (currentCwd.isNotBlank()) {
+                sb.append("- 工作目录：").append(currentCwd).append('\n')
+                sb.append("- 工作区：").append(currentCwd).append('\n')
+            }
+
             // ── CLAUDE.md 项目记忆注入（2026-10-06 补）──────────────────
             //
             // 【原来完全没有】APK 的提示词装配只拼了 assets 模板 + 用户资料，
@@ -631,7 +651,9 @@ class AppContainer private constructor(
                 // 传**提供者**而非快照：每次调模型前现算，Memory 写完
                 // CLAUDE.md / /me 改资料后立即生效（P1-4）。
                 systemPromptProvider = {
-                    assembleSystemPrompt(storage, context)
+                    // cwd 传进去 → 提示词里有「工作目录：<实际路径>」
+                    // （每次现算，跨天日期也自动更新）
+                    assembleSystemPrompt(storage, context, cwd)
                 },
                 // 惰性取（不是快照）—— 后注册的工具（如 Agent 自己）也要能看见
                 toolsProvider = { registry.list },
@@ -693,7 +715,7 @@ class AppContainer private constructor(
                                     "你的任务会由主 Agent 在 prompt 中描述，请自行规划步骤、调用工具、完成任务。\n" +
                                     "完成后返回简洁的结果摘要给主 Agent，不要返回无意义的空话。"
                         }
-                        val subPrompt = assembleSystemPrompt(storage, context) + "\n" + roleCard +
+                        val subPrompt = assembleSystemPrompt(storage, context, cwdForSubAgent) + "\n" + roleCard +
                             "\n\n## 你是子 Agent（通用约束）\n" +
                             "你被主 Agent 派来独立完成一个子任务，运行在**后台**。\n" +
                             "· **你的正文输出其他 Agent 看不见** —— 想让主 Agent 知道任何事，" +
