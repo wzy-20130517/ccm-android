@@ -167,6 +167,16 @@ fun SettingsTextField(
     singleLine: Boolean = true,
     minHeight: Dp = SettingsInputHeight,
     trailing: (@Composable () -> Unit)? = null,
+    /**
+     * 只读（2026-10-06 加）。
+     *
+     * 【为什么需要】密钥框在「掩码态」时 onValueChange 会**静默丢弃**输入
+     * （防止把展示用的省略号写进配置）—— 但输入框仍可聚焦、光标闪烁、
+     * 键盘能弹，用户打字毫无反应，以为 App 卡死。
+     * readOnly 让输入框明确不可编辑（不聚焦、不出光标），配合 trailing
+     * 的眼睛图标，用户自然知道要先点眼睛。
+     */
+    readOnly: Boolean = false,
 ) {
     val colors = CCMTheme.colors
     Box(
@@ -183,6 +193,7 @@ fun SettingsTextField(
             value = value,
             onValueChange = onValueChange,
             singleLine = singleLine,
+            readOnly = readOnly,
             textStyle = SettingsInputTextSize.copy(color = colors.textMain),
             cursorBrush = androidx.compose.ui.graphics.SolidColor(colors.accent),
             modifier = Modifier

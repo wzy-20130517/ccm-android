@@ -98,7 +98,6 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
     // ★ 2026-09-28：落 UiPrefs —— 原来是本地 remember，重启丢 +
     //   输入框根本不读它（设置是假的）。
     var sendKey by remember { mutableStateOf(com.ccm.app.ui.theme.UiPrefs.sendKey.value) }
-    var newlineKey by remember { mutableStateOf(com.ccm.app.ui.theme.UiPrefs.newlineKey.value) }
     // ★ 2026-09-27：原来是本地 remember —— 选完重启就丢，且主题没有
     //   消费端。现在读写 UiPrefs（SharedPreferences + MutableState）：
     //   这里改 → CcmApp 的 darkTheme 自动重组；重启后从磁盘恢复。
@@ -234,11 +233,14 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
             val enabledItems = items.filter { it.enabled }
             val current = items.firstOrNull { it.isCurrent }
             var effortOn by remember(modelRefresh) {
+                // 【2026-10-06 修】开关状态要与**消费端同源**（provider.effort
+                // 优先，回退全局）—— 原来只读全局字段，于是「对话页开过
+                // （写 provider）→ 本页显示关」的自相矛盾。
                 val st = com.ccm.app.AppGraph.storage
-                mutableStateOf(
-                    st?.let { com.ccm.app.core.provider.AppConfig.load(it.configFile).config.effort }
-                        ?.let { it.isNotBlank() && it != "none" } ?: false
-                )
+                val cfg = st?.let { com.ccm.app.core.provider.AppConfig.load(it.configFile).config }
+                val provEffort = cfg?.currentProvider?.effort
+                val effective = provEffort?.takeIf { it.isNotBlank() } ?: cfg?.effort.orEmpty()
+                mutableStateOf(effective.isNotBlank() && effective != "none")
             }
 
             SettingsField(label = "模型") {
@@ -272,9 +274,15 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                     SettingsLabel("扩展思考")
                     Spacer(Modifier.height(3.68.dp))
                     Text(
-                        // 【2026-10-06 问题8】说明三处入口的关系（同一份配置）
+                        // 【2026-10-06 修文案与行为】原来这里写「与对话页…是同一份
+                        // 配置，在哪调都一样」—— 但实际写的是**两个字段**：
+                        //   对话页 → provider.effort（当前供应商）
+                        //   本页   → config.effort（全局）
+                        // 而消费端是 `provider.effort ?: config.effort`（provider 优先），
+                        // 于是「对话页开过 → 本页关掉」不生效（provider 的值还在）。
+                        // 现在本页也写 provider 级（与对话页一致），文案才成立。
                         text = "开启后模型先深度思考再回答（对应 effort=high；关闭 = none）。" +
-                            "与对话页模型选择器里的「扩展思考」是同一份配置，在哪调都一样。",
+                            "作用于当前供应商（与对话页的「扩展思考」是同一份配置）。",
                         style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
                         color = CCMTheme.colors.textSecondary,
                     )
@@ -283,7 +291,15 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                     checked = effortOn,
                     onCheckedChange = { on ->
                         effortOn = on
-                        pstore?.setGlobalEffort(if (on) "high" else "none")
+                        // 写 provider 级（不是全局）—— 与对话页同一个字段，
+                        // 这样「在哪调都一样」才是真的。
+                        val cur = pstore?.load()?.current.orEmpty()
+                        if (cur.isNotBlank()) {
+                            pstore?.setEffort(cur, if (on) "high" else "none")
+                        } else {
+                            // 没有当前供应商时退回全局（至少存下来）
+                            pstore?.setGlobalEffort(if (on) "high" else "none")
+                        }
                         com.ccm.app.AppGraph.openSession(com.ccm.app.AppGraph.sessionId)
                         modelRefresh++
                     },
@@ -430,6 +446,25 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                         else true
                     )
                 }
+                // 【2026-10-06 修】用户去系统设置授权后返回，警告条不消失 ——
+                // 因为 hasAllFiles 是无 key 的 remember，Activity 从后台回前台
+                // 不会重新求值，用户以为授权没生效。
+                //
+                // 实现方式：**轻量轮询**（未授权时每秒查一次，授权后停）。
+                // 为什么不用 lifecycle-compose 的 LocalLifecycleOwner：
+                // 项目没有 lifecycle-runtime-compose 依赖，加依赖会动 build.gradle；
+                // 而轮询零依赖、行为等价（用户从系统设置回来最多 1 秒后消失）。
+                if (!hasAllFiles && android.os.Build.VERSION.SDK_INT >= 30) {
+                    androidx.compose.runtime.LaunchedEffect(Unit) {
+                        while (true) {
+                            kotlinx.coroutines.delay(1000)
+                            if (android.os.Environment.isExternalStorageManager()) {
+                                hasAllFiles = true
+                                break
+                            }
+                        }
+                    }
+                }
                 if (!hasAllFiles && android.os.Build.VERSION.SDK_INT >= 30) {
                     Row(
                         modifier = Modifier
@@ -490,19 +525,12 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                         )
                     }
                 }
-                Column(modifier = Modifier.weight(1f)) {
-                    SettingsField(label = "换行") {
-                        SettingsSelectMenu(
-                            value = newlineKey,
-                            options = NEWLINE_KEY_OPTIONS,
-                            onPick = {
-                                newlineKey = it
-                                com.ccm.app.ui.theme.UiPrefs.setNewlineKey(it)
-                            },
-                            title = "换行",
-                        )
-                    }
-                }
+                // 【2026-10-06 删「换行」下拉】原来这里有个「换行: Enter /
+                // Alt+Enter / Ctrl+Enter」下拉 —— 但 newlineKey **全项目零消费**
+                // （InputBar 只读 sendByEnter；Android 的换行由输入法自身的
+                // 换行键决定，物理键盘修饰键不适用）。用户改了毫无效果，
+                // 属于「假设置」。与其留个骗人的控件，不如去掉 ——
+                // 要换行就按输入法的换行键（或 Alt+Enter / Ctrl+J）。
             }
         }
 

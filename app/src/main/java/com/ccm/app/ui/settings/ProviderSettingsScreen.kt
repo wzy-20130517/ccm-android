@@ -335,8 +335,22 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                             //   从没参与值渲染 → 永远明文，「点了没变化」。
                             //   现在显示层掩码：闭眼 = 只留头尾（sk-ab…3fgh），
                             //   开眼 = 明文。输入始终改真实 apiKey，掩码不写盘。
-                            value = if (showKey || keyPoolMode) apiKey
-                            else maskKey(apiKey),
+                            // 【2026-10-06 修明文回显】原来池模式直接显示 apiKey
+                            // （`if (showKey || keyPoolMode) apiKey`）—— 而 apiKey
+                            // state 是 remember(selectedId, refreshTick)，refreshTick
+                            // 一变就重读磁盘、取到 apiKeys.first() 的**明文**；
+                            // 那个「轮换池 · N 个 key」的占位文本是 LaunchedEffect
+                            // (selectedId) 设的，refreshTick 变化不重跑 —— 于是
+                            // 用户改一下显示名（触发 refreshTick++）就露出第一把
+                            // key 的明文。
+                            // 现在：池模式**不读 apiKey**，直接渲染固定文案。
+                            value = if (keyPoolMode) {
+                                "轮换池 · ${selected?.keyCount ?: 0} 个 key（编辑会清空整组）"
+                            } else if (showKey) {
+                                apiKey
+                            } else {
+                                maskKey(apiKey)
+                            },
                             onValueChange = { v ->
                                 // 池模式 + 掩码态都忽略敲键
                                 // （掩码态编辑会把「sk-ab…3fgh」的省略号后内容写进配置）
@@ -352,15 +366,20 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                             },
                             placeholder = if (keyPoolMode) "轮换池（只读）" else "sk-...",
                             modifier = Modifier.weight(1f),
+                            // 【2026-10-06 修】掩码态设为只读 —— 原来可聚焦、
+                            // 光标闪烁、键盘能弹，但打字被 onValueChange 静默
+                            // 丢弃（防止把「sk-ab…3fgh」的省略号写进配置），
+                            // 用户以为 App 卡死或输入法坏了。
+                            // 只读 + 右侧眼睛图标 = 明确的「先点眼睛再编辑」。
+                            readOnly = !keyPoolMode && !showKey,
                         )
                         // 池模式禁敲 —— 保护 apiKeys（setKeyPool 才是池的安全入口，
                         // CCM 暂无池编辑 UI，提示到 CLI 配）
-                        if (keyPoolMode) {
-                            LaunchedEffect(selectedId) {
-                                // 进入池 provider 时把显示值换成占位说明（不写盘）
-                                apiKey = "轮换池 · ${selected?.keyCount} 个 key（编辑会清空整组）"
-                            }
-                        }
+                        //
+                        // 【2026-10-06 删】原来这里有个 LaunchedEffect(selectedId)
+                        // 把占位文本写进 apiKey —— 那是上面明文回显 bug 的一环
+                        // （占位文本靠它、而它不跟 refreshTick）。现在显示值直接
+                        // 由 value 表达式算，不需要往 state 里塞展示文本。
                         Text(
                             text = if (keyPoolMode) "池 · ${selected?.keyCount} 个" else "",
                             style = CCMText.body11.copy(fontSize = 10.12.sp),
@@ -433,17 +452,20 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         horizontalArrangement = Arrangement.spacedBy(7.36.dp),
                     ) {
                         SettingsSelectMenu(
-                            value = effort,
+                            value = if (effort == INHERIT_EFFORT) "继承全局" else effort,
                             options = listOf(
                                 "继承全局", "none", "minimal", "low",
                                 "medium", "high", "xhigh", "max",
                             ),
-                            onPick = {
-                                effort = it
+                            onPick = { picked ->
+                                // 显示文本 ↔ 存储值 的映射：UI 上是"继承全局"，
+                                // 存储是 null（provider.effort=null 表示继承）。
+                                // state 里用 INHERIT_EFFORT 哨兵，避免与"没读到"混淆。
+                                effort = if (picked == "继承全局") INHERIT_EFFORT else picked
                                 com.ccm.app.AppGraph.storage?.let { st ->
                                     com.ccm.app.core.provider.ProviderStore(st).setEffort(
                                         selectedId,
-                                        if (it == "继承全局") null else it,
+                                        if (picked == "继承全局") null else picked,
                                     )
                                 }
                             },
@@ -463,7 +485,11 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         ) {
                             Text(
                                 // ★ audit-settings 附注：原恒 "已开启"（选 none/继承也不变）
-                                text = if (effort == "继承全局" || effort == "none" || effort.isBlank()) "已关闭" else "已开启",
+                                // 【2026-10-06 修】判据要跟 state 的实际值比 ——
+                                // 现在 state 存的是哨兵 INHERIT_EFFORT（不是
+                                // 显示文本"继承全局"），原来那句永远不匹配 →
+                                // 选了继承仍显示"已开启"。
+                                text = if (effort == INHERIT_EFFORT || effort == "none" || effort.isBlank()) "已关闭" else "已开启",
                                 style = CCMText.body12.copy(
                                     fontSize = 11.04.sp,
                                     fontWeight = FontWeight.Medium,
@@ -825,8 +851,19 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                     // 新加的 Provider 是否成为 current 由 addProvider 决定 ——
                     // 是就重建（横幅消失），不是也不亏（判 id 会拦掉）
                     rebuildIfCurrent(created)
+                    // 只有成功才关窗
+                    showAddDialog = false
+                } else {
+                    // 【2026-10-06 修】原来无论成功失败都关窗 —— 用户填了
+                    // 已占用的编号（如已有 "1" 又填 "1"）时：对话框关闭、
+                    // 列表没新增、零提示，用户以为加成功了反复试。
+                    // 现在保持对话框打开 + 明确提示原因。
+                    android.widget.Toast.makeText(
+                        ctx,
+                        "添加失败：编号「${id.ifBlank { "(自动)" }}」已被占用，或保存出错 —— 换个编号再试",
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
                 }
-                showAddDialog = false
             },
         )
     }
@@ -1184,7 +1221,13 @@ private fun ProviderAvatar(name: String, size: androidx.compose.ui.unit.Dp) {
         Color(0xFFD97757), Color(0xFF387EE0), Color(0xFF22C55E),
         Color(0xFFF59E0B), Color(0xFF8B5CF6), Color(0xFFEC4899),
     )
-    val idx = (name.hashCode().let { if (it < 0) -it else it }) % palette.size
+    // 【2026-10-06 修崩溃】原来用 `if (it < 0) -it else it` 手动取绝对值 ——
+    // Int.MIN_VALUE 取负在 Int 域里**溢出后仍是自身**（-Int.MIN_VALUE == Int.MIN_VALUE），
+    // 于是 idx = Int.MIN_VALUE % 6 = -2 → palette[-2] → IndexOutOfBoundsException。
+    // Java 里 "polygenelubricants".hashCode() == Int.MIN_VALUE 是著名案例，
+    // 而 Provider 显示名由用户自由填写（无字符限制），存在触发路径。
+    // Math.floorMod 返回非负余数，一行解决。
+    val idx = Math.floorMod(name.hashCode(), palette.size)
     Box(
         modifier = Modifier
             .size(size)
@@ -1731,3 +1774,12 @@ private fun ModelPickerDialog(
         }
     }
 }
+
+/**
+ * 「继承全局」的哨兵值（2026-10-06 加）。
+ *
+ * 为什么不用 null：null 有二义性 —— 既可能是「用户选了继承」，
+ * 也可能是「没读到/读取失败」。用显式哨兵区分，UI 显示才稳定
+ * （之前用户选完继承、改个显示名就变回全局值的 bug 就是 null 二义性导致的）。
+ */
+private const val INHERIT_EFFORT = "__inherit__"

@@ -1437,6 +1437,12 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
 
         // ── 设置覆盖层（全屏，在抽屉之下）─────────────────────────────
         if (showSettings) {
+            // 【2026-10-06 加】拦截系统返回键 —— 原来按返回直接退出 App
+            // （全屏覆盖层没有任何 BackHandler，Activity 收到返回就 finish）。
+            // 用户从设置页按返回的期望是「关掉设置回对话」，不是「退出程序」。
+            androidx.activity.compose.BackHandler(enabled = true) {
+                showSettings = false
+            }
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -1448,6 +1454,12 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         }
 
         // ── 侧栏抽屉（浮层，含遮罩）───────────────────────────────────
+        // 【2026-10-06 加】抽屉打开时拦截返回键（同设置页的理由）
+        if (sidebarOpen) {
+            androidx.activity.compose.BackHandler(enabled = true) {
+                sidebarOpen = false
+            }
+        }
         SidebarDrawer(
             open = sidebarOpen,
             onClose = { sidebarOpen = false },
