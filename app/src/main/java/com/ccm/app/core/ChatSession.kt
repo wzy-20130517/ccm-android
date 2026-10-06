@@ -258,8 +258,12 @@ class ChatSession(
         // 但长会话真正的问题是**对话本体太长** —— 只有摘要能救。
         // CLI 的 compact() 就是干这个的；APK 原来只有 micro 一半。
         //
-        // 判据：micro 没能回收多少（说明大头在对话本体）或用户明确要摘要。
-        val needSummary = result.contains("无可回收") || result.contains("回收约 0")
+        // 判据：micro 回收量低于阈值（说明大头在对话本体，micro 治不了）
+        // —— 用结构化字段而非文案匹配（文案改了行为不该变）。
+        // 阈值 2000 tokens：低于它说明截断工具输出没解决问题，
+        // 需要摘要对话本体。CLI 的同款判据是「压力仍 >70% 才升级」，
+        // 这里用回收量做等价近似（压力值 APK 侧拿不到实时值）。
+        val needSummary = lastMicroReclaimed < 2000
         if (needSummary) {
             val extra = summarizeAndReplace()
             if (extra != null) return extra
@@ -314,7 +318,12 @@ class ChatSession(
     fun compactNow(): String {
         if (isRunning) return "正在执行任务，等这轮结束再压缩。"
         val history = container.agentLoop.getHistory()
-        if (history.size < 6) return "历史仅 ${history.size} 条，无需压缩。"
+        if (history.size < 6) {
+            // ⚠️ 也要重置字段 —— 否则 compactNowSuspend 的判据会读到
+            // 上一次调用的陈旧值（历史太短时不该升级摘要）。
+            lastMicroReclaimed = 0
+            return "历史仅 ${history.size} 条，无需压缩。"
+        }
 
         // 【2026-10-06 问题40】压缩前写备份 —— 对齐 CLI 的 compact-trash 机制。
         // 用户可用 /compact-trash 恢复被压缩掉的原始记录。
@@ -339,8 +348,12 @@ class ChatSession(
         } catch (_: Throwable) { null }
 
         val r = container.compactor.microCompact(history)
-        if (!r.changed) return "无可回收的旧工具输出（最近的都在保护区）。"
+        if (!r.changed) {
+            lastMicroReclaimed = 0
+            return "无可回收的旧工具输出（最近的都在保护区）。"
+        }
         container.agentLoop.setHistory(r.messages)   // MicroResult.messages = 压缩后列表
+        lastMicroReclaimed = r.reclaimedTokens
         return buildString {
             append("已压缩：回收约 ${r.reclaimedTokens} tokens（截断了旧工具输出）。")
             if (backupName != null) {
@@ -348,6 +361,18 @@ class ChatSession(
             }
         }
     }
+
+    /**
+     * 上次 microCompact 回收的 token 数（结构化字段，供 compactNowSuspend
+     * 判断「要不要升级到真摘要」）。
+     *
+     * 【为什么不用文案匹配】原来判据是
+     *   `result.contains("无可回收") || result.contains("回收约 0")`
+     * —— 字符串匹配，文案一改就失效（改个措辞行为就变了）。
+     * 用数值字段：回收量低于阈值就升级摘要。
+     */
+    @Volatile
+    private var lastMicroReclaimed: Int = 0
 
     /**
      * 从某条用户消息**重发**（webgap #1：Web 的 RotateCcw 重发按钮，APK 缺）。

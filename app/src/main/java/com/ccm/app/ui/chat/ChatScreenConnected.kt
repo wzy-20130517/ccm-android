@@ -436,9 +436,31 @@ fun ChatScreenConnected(
                     text == "/export" -> onExport()
                     // /permissions 已搬进 SlashCommandHandler（B5：首页/对话页统一路径）
                     text == "/compact" -> {
-                        // audit-core #7：原来无任何压缩入口，长会话必撞 400。
-                        // microCompact 免 API；摘要式后续再接。
-                        session.injectNotice("**/compact**\n\n" + session.compactNow())
+                        // ══════════════════════════════════════════════════
+                        //  【2026-10-06 修·双入口不一致】
+                        //
+                        //  原来这里调 compactNow()（**只有 microCompact**，
+                        //  只截断可再生工具输出）—— 而首页调的是
+                        //  compactNowSuspend()（micro + **真摘要**）。
+                        //  同一个命令两个入口行为不同：
+                        //  用户在对话页（主界面）敲 /compact，长会话压不动
+                        //  （对话本体一条没动，照样撞 400）；切到首页再敲
+                        //  才真的摘要。用户完全无法预期。
+                        //
+                        //  现在统一用 compactNowSuspend()（挂起版，含摘要 +
+                        //  PreCompact hook），与首页一致。
+                        // ══════════════════════════════════════════════════
+                        val sc = com.ccm.app.AppGraph.appScope
+                        if (sc != null) {
+                            sc.launch {
+                                val msg = try { session.compactNowSuspend() } catch (t: Throwable) {
+                                    "压缩失败：${t.message}"
+                                }
+                                session.injectNotice("**/compact**\n\n$msg")
+                            }
+                        } else {
+                            session.injectNotice("**/compact**\n\n应用作用域未就绪。")
+                        }
                     }
                     // ── 2026-09-30 扩充：能在 APK 环境合理实现的命令 ──────
                     text == "/stop" -> {
