@@ -296,10 +296,6 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
     // 重建时 route 重置为 HOME，但 activeSession 由 AppGraph 恢复，
     // 表现为「显示首页样式，发消息却进的是原对话」。改用 rememberSaveable。
     var route by rememberSaveable { mutableStateOf(CcmRoute.HOME) }
-    // 【2026-10-06 问题21 诊断】打 route 变化（排查「切页回来变首页」）
-    LaunchedEffect(route) {
-        android.util.Log.i("CcmApp", "route → $route | activeSession=${activeSession?.let { "有" } ?: "null"} | showSettings=$showSettings")
-    }
     // 设置是**覆盖层不是路由**（对齐 Web：showSettings 状态，location 不变）
     var showSettings by remember { mutableStateOf(false) }
 
@@ -344,6 +340,13 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         if (g != null && activeSession == null) {
             activeSession = g
         }
+    }
+    // 【2026-10-06 问题21 诊断】打状态变化（排查「切页回来变首页」）
+    LaunchedEffect(route, activeSession) {
+        android.util.Log.i(
+            "CcmApp",
+            "route=$route | activeSession=${if (activeSession != null) "有" else "null"}",
+        )
     }
     // 会话列表（侧栏最近 + 列表页共用一个数据源）
     var sessions by remember { mutableStateOf<List<SessionSummary>>(emptyList()) }
