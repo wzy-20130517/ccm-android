@@ -104,7 +104,7 @@ class QqTools(
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
             val fn = pusher
                 ?: return ToolResult.Error(
-                    "QQPush 未接入（需要 App 层注入推送器；也请确认 /qq 已开启）。",
+                    "QQPush 未接入（APK 尚未接入 QQ 桥 —— 等 App 层注入推送器；/qq 是 CLI 命令，APK 没有）。",
                     ToolResult.INTERNAL,
                 )
 
@@ -157,7 +157,7 @@ class QqTools(
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
             val fn = recaller
                 ?: return ToolResult.Error(
-                    "QQRecall 未接入（需要 App 层注入群消息缓存；也请确认 /qq 已开启）。",
+                    "QQRecall 未接入（APK 尚未接入 QQ 群消息缓存 —— 等 App 层注入；/qq 是 CLI 命令，APK 没有）。",
                     ToolResult.INTERNAL,
                 )
 

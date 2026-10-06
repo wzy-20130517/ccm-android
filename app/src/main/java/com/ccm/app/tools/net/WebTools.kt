@@ -120,7 +120,12 @@ class WebTools(private val settings: ToolSettings?) {
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
             val apiKey = tavilyKey()
                 ?: return ToolResult.Error(
-                    "Tavily API key 未配置。请用 /config 设置 tavilyApiKey（或用 /key 命令）。",
+                    // ⚠️ 原文案「请用 /config 设置 tavilyApiKey（或用 /key 命令）」两个都是错的
+                    // （/config 是切 Provider、/key 是 LLM 的 key）—— 模型照着错误文案教用户，
+                    // 用户就问出了「taly key 怎么设」。2026-10-06 已加 /tvly，指向它。
+                    "Tavily API key 未配置。用 /tvly <tvly-...> 设置（key 形如 tvly-xxxxxxxx，" +
+                        "注册 https://app.tavily.com/；也可在设置页填「Tavily 密钥」）。" +
+                        "没 key 时改用 SearchInfo（国内源，不需要 key）。",
                     ToolResult.PERMISSION_DENIED,
                 )
 

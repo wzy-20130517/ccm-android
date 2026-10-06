@@ -235,7 +235,10 @@ class ImageTools(
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
             val baseUrl = settings?.imageGenBaseUrl?.takeIf { it.isNotBlank() }
                 ?: return ToolResult.Error(
-                    "生图未配置。用 /imagegen setup 配置（需要 OpenAI images 兼容端点）。",
+                    // /imagegen 是 CLI 命令，APK 没有（handler 里无此分支）——
+                    // 别引导幽灵命令，指向真实可操作的路径。
+                    "生图未配置。APK 没有 /imagegen 命令 —— 用 Edit 工具改应用私有目录 " +
+                        "config.json 的 imageGen 字段（url/key/model，OpenAI images 兼容端点）。",
                     ToolResult.PERMISSION_DENIED,
                 )
             val apiKey = settings.imageGenApiKey.orEmpty()

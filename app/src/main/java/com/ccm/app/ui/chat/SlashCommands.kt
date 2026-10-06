@@ -66,7 +66,6 @@ val COMMON_SLASH_COMMANDS: List<Pair<String, String>> = listOf(
     "/plan" to "计划模式（/plan on|off）",
     "/deep" to "deep 模式（/deep on|off，提高轮次上限）",
     "/watch" to "持续模式（/watch on|off）",
-    "/imagegen" to "生图配置（/imagegen url|key|model 值）",
     "/web" to "Web 服务说明",
     "/backup" to "备份说明",
     // ── 工具 ──
