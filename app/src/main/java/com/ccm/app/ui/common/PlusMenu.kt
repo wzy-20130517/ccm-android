@@ -137,10 +137,17 @@ fun PlusMenu(
             iconRes = R.drawable.ic_pm_project,
             label = "添加到项目",
             trailingChevron = true,
-            onEnter = { submenu = SubmenuKind.PROJECTS },
+            // 【2026-10-06 修 P0】原来 onEnter = { submenu = PROJECTS } 且
+            // onClick 里做 toggle —— 而 PlusMenuItem 的点击是
+            // `.clickable { onEnter(); onClick() }`（串联），onEnter 先把它
+            // 设成 PROJECTS，onClick 立刻读到 PROJECTS → toggle 走 null 分支。
+            // Compose 的 MutableState 同线程读写即时可见，于是**每次点击都
+            // 净设成 null**，子菜单永远打不开（首页/对话页两个入口都是）。
+            //
+            // 修：onEnter 只负责「收起别的子菜单」（触屏没有 hover，
+            // 不需要"划过即展开"），展开/收起完全交给 onClick 的 toggle。
+            onEnter = { if (submenu != SubmenuKind.PROJECTS) submenu = null },
             onClick = {
-                // Web：hover 展开子菜单，点击是**新建项目**（chevron 只是指示）
-                // 这里改为：点击展开/收起子菜单（触屏没有 hover）
                 submenu = if (submenu == SubmenuKind.PROJECTS) null else SubmenuKind.PROJECTS
             },
         )
@@ -168,7 +175,8 @@ fun PlusMenu(
             iconRes = R.drawable.ic_pm_skills,
             label = "技能",
             trailingChevron = true,
-            onEnter = { submenu = SubmenuKind.SKILLS },
+            // 【2026-10-06 修】同「添加到项目」—— onEnter 不再抢占 onClick 的 toggle
+            onEnter = { if (submenu != SubmenuKind.SKILLS) submenu = null },
             onClick = {
                 submenu = if (submenu == SubmenuKind.SKILLS) null else SubmenuKind.SKILLS
             },

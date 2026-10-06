@@ -951,6 +951,8 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         // ★ 接线：首页输入框真的能发消息了（第18批带图）
                         onSend = { t, imgs -> sendAndOpen(t, imgs) },
                         onModelClick = { showModelPicker = true },
+                        // 加号菜单的「管理技能」「添加连接器」→ 定制页
+                        onNavigateCustomize = { navigate(CcmRoute.CUSTOMIZE) },
                         modelPickerContent = {
                             if (showModelPicker) ModelPickerMenu(
                                 expanded = true,
@@ -1416,6 +1418,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     else -> LandingScreen(
                         greeting = greetingFor(profileName),
                         onSend = { t, imgs -> sendAndOpen(t, imgs) },
+                        onNavigateCustomize = { navigate(CcmRoute.CUSTOMIZE) },
                         onModelClick = { showModelPicker = true },
                         modelPickerContent = {
                             if (showModelPicker) ModelPickerMenu(

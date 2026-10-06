@@ -111,6 +111,14 @@ fun LandingScreen(
     /** 点首页模型 chip → 打开模型选择器（第22批接通，原 TODO 空转）。 */
     onModelClick: () -> Unit = {},
     modelPickerContent: (@Composable () -> Unit)? = null,
+    /**
+     * 跳「定制」页（2026-10-06 加）。
+     *
+     * 【为什么需要】加号菜单里的「管理技能」「添加连接器」原来没接回调
+     * （PlusMenu 的这几个参数有默认空实现 `= {}`）—— 点了毫无反应。
+     * 这两个功能都在定制页，所以要一个能跳过去的口子。
+     */
+    onNavigateCustomize: () -> Unit = {},
 ) {
     val colors = CCMTheme.colors
 
@@ -333,6 +341,16 @@ fun LandingScreen(
                         },
                         onPickSkill = { id ->
                             input = if (input.isBlank()) "/$id" else "$input /$id"
+                        },
+                        // 【2026-10-06 补】这三个原来没传 → 落 PlusMenu 的默认
+                        // 空实现 → 点了完全没反应（用户报「点了没反应」）。
+                        onManageSkills = { showPlusMenu = false; onNavigateCustomize() },
+                        onConnectors = { showPlusMenu = false; onNavigateCustomize() },
+                        onCreateProject = {
+                            showPlusMenu = false
+                            // 复用「添加到项目」子菜单的新建入口 —— 没现成的对话框，
+                            // 先给个明确提示（比静默无反应好）。
+                            input = if (input.isBlank()) "新建项目：" else "$input\n新建项目："
                         },
                     )
                 },

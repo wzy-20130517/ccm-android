@@ -1,5 +1,7 @@
 package com.ccm.app.ui.pages
 
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -69,6 +71,11 @@ fun ProjectsScreen(
         modifier = modifier
             .fillMaxSize()
             .background(colors.bgMain)
+            // 【2026-10-06 修】补 verticalScroll —— 原来没有，项目建到十几个
+            // 以后底部项目被挤出屏幕、滚不动也点不到。
+            // 同目录其它页（ChatsScreen/ArtifactsScreen/CustomizeScreen/
+            // ScheduledScreen）都有这一行，只这里漏了。
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 37.94.dp),
     ) {
         Spacer(Modifier.height(43.09.dp))       // h1 y=87.09 − 顶栏 44

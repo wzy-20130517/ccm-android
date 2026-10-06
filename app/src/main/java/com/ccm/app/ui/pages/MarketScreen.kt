@@ -221,7 +221,12 @@ fun MarketScreen(
                                         scope.launch {
                                             log = "正在下载 ${item.name}…"
                                             val ok = com.ccm.app.core.market.MarketClient.install(ctx, item) { s -> log = s }
-                                            log = if (ok) "✅ ${item.name} 安装完成" else "❌ ${item.name} 安装失败"
+                                            // 【2026-10-06 修】失败时**保留详情** ——
+                                            // 原来直接覆盖成「安装失败」四个字，用户看不到
+                                            // 是下载失败/解压失败/Node 装不上（onLog 逐条
+                                            // 回传的 ❌ 原因全被这一行盖掉）。
+                                            log = if (ok) "✅ ${item.name} 安装完成"
+                                            else "❌ ${item.name} 安装失败（原因见上方日志）\n$log"
                                             busy = null
                                             refresh++
                                         }
@@ -270,7 +275,8 @@ fun MarketScreen(
                 scope.launch {
                     log = "正在下载 ${item.name}…"
                     val ok = com.ccm.app.core.market.MarketClient.install(ctx, item, env) { s -> log = s }
-                    log = if (ok) "✅ ${item.name} 安装完成（重启 App 后可用）" else "❌ 安装失败"
+                    log = if (ok) "✅ ${item.name} 安装完成（重启 App 后可用）"
+                    else "❌ 安装失败（原因见上方日志）\n$log"
                     busy = null
                     refresh++
                 }
