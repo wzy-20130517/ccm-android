@@ -608,10 +608,19 @@ private fun InputCard(
                         // → 屏幕 **36.8 × 29.44**、圆角 **7.36**、底色 `#EFCBC0`。
                         // （原来是 29.44 见方的橙色方块 + 文字箭头，比 Web 小一圈、
                         //   颜色也不是 Web 的浅陶土色。）
-                        // 【2026-10-06 问题22 修复】原来写死亮色 #EFCBC0 ——
-                        // 暗色主题下那是**浅粉灰**，在深色背景上看着像「禁用」。
-                        // Web 有暗色覆盖：`dark:bg-[#34312E] dark:text-[#F5D7CA]`。
-                        val sendBg = if (CCMTheme.isDark) Color(0xFF34312E) else Color(0xFFEFCBC0)
+                        // 【2026-10-06 问题22 修复·第三版】
+                        //
+                        // Web 原色 `#efcbc0` 是**浅陶土粉**，在桌面端有 hover
+                        // （变 `#e7bcaf`）+ 手型光标，所以不觉得弱。
+                        // 手机上两者都没有 → 用户报「颜色不对」。
+                        //
+                        // 用户实测截图确认：对话页用 `#C6613F`（深），首页用
+                        // `#EFCBC0`（浅）—— 这是 Web 的设计差异，但**首页那个
+                        // 在手机上就是看着像禁用**。
+                        //
+                        // 改为 Web 自己的 hover 色 `#e7bcaf`（比原色深一档，
+                        // 仍是同一色系，不算偏离设计）。
+                        val sendBg = if (CCMTheme.isDark) Color(0xFF34312E) else Color(0xFFE7BCAF)
                         val sendTint = if (CCMTheme.isDark) Color(0xFFF5D7CA) else Color.White
                         Box(
                             modifier = Modifier

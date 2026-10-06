@@ -282,16 +282,31 @@ private fun CodeBlockView(block: MdBlock.CodeBlock) {
                 style = CCMText.body11.copy(fontSize = 11.04.sp),
                 color = colors.textSecondary,
                 modifier = Modifier
+                    // 【2026-10-06 问题34 真根因】点击区太小 —— 原来
+                    // `padding(horizontal = 4.dp, vertical = 2.dp)` 加在
+                    // clickable 之后（**这是对的**：padding 参与热区），
+                    // 但 4dp 太小 → 热区仅 30×18dp，手指点不中。
+                    //
+                    // 加大到 10×7dp → 热区 **42×28dp**（接近 Material 建议的
+                    // 48dp 最小触控目标，代码块头部空间有限，这是折中）。
                     .clip(RoundedCornerShape(4.dp))
                     .clickable {
+                        // 【2026-10-06 问题34】失败不再静默 —— 用户报「复制无效」，
+                        // 但原来的 `catch (_: Throwable) {}` 把原因全吞了。
                         try {
                             val cm = copyCtx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
                                 as android.content.ClipboardManager
                             cm.setPrimaryClip(android.content.ClipData.newPlainText("CCM", block.code))
-                            android.widget.Toast.makeText(copyCtx, "已复制", android.widget.Toast.LENGTH_SHORT).show()
-                        } catch (_: Throwable) {}
+                            android.widget.Toast.makeText(copyCtx, "已复制 ${block.code.length} 字符", android.widget.Toast.LENGTH_SHORT).show()
+                        } catch (t: Throwable) {
+                            android.widget.Toast.makeText(
+                                copyCtx,
+                                "复制失败：${t.javaClass.simpleName}: ${t.message}",
+                                android.widget.Toast.LENGTH_LONG,
+                            ).show()
+                        }
                     }
-                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
             )
         }
         Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(colors.border))

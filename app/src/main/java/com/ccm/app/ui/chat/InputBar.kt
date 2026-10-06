@@ -234,11 +234,50 @@ fun InputBar(
                                 pct >= 70 -> Color(0xFFF59E0B)
                                 else -> colors.textSecondary
                             }
-                            Text(
-                                text = "${fmtTokens(tokenCount)} / ${fmtTokens(maxCtx)} · $pct%",
-                                style = CCMText.body12,
-                                color = tint,
-                            )
+                            // 【2026-10-06 问题30 修复】用户报「输入框内的上下文组件
+                            // 不是圆环」—— Web 有个 SVG 圆环（`MainContent.tsx:5137`）：
+                            //   <circle r=7 stroke=#d4d4d4 />   ← 底环
+                            //   <circle r=7 strokeDasharray={dash} rotate(-90) />  ← 进度
+                            // 现在用 Canvas 画同款（18×18、r=7、strokeWidth=2）。
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                val ringColor = tint
+                                androidx.compose.foundation.Canvas(
+                                    modifier = Modifier.size(16.56.dp),   // 18px × 0.92
+                                ) {
+                                        val r = size.minDimension * 7f / 18f
+                                        val stroke = size.minDimension * 2f / 18f
+                                        val c = 2 * Math.PI * r
+                                        // 底环 #d4d4d4
+                                        drawCircle(
+                                            color = Color(0xFFD4D4D4),
+                                            radius = r,
+                                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke),
+                                        )
+                                        // 进度环（从 12 点方向顺时针）
+                                        drawArc(
+                                            color = ringColor,
+                                            startAngle = -90f,
+                                            sweepAngle = (pct.coerceIn(0, 100) / 100f) * 360f,
+                                            useCenter = false,
+                                            style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                                width = stroke,
+                                                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                                            ),
+                                            topLeft = androidx.compose.ui.geometry.Offset(
+                                                center.x - r, center.y - r,
+                                            ),
+                                            size = androidx.compose.ui.geometry.Size(r * 2, r * 2),
+                                        )
+                                }
+                                Text(
+                                    text = "${fmtTokens(tokenCount)} / ${fmtTokens(maxCtx)} · $pct%",
+                                    style = CCMText.body12,
+                                    color = tint,
+                                )
+                            }
                         }
                     }
 
