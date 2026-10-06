@@ -135,6 +135,20 @@ fun ChatScreen(
                 onSwitchClick = onSwitchClick,
             )
 
+            // 【2026-10-06「开不开都挡 + 进消息流不常驻」】看板定稿：
+            //   · 浮动浮层 → 开不开都盖正文（否）
+            //   · 进消息流文档流 → 滚上去就不常驻（否）
+            //   · **常驻条**：标题栏下方的独立区域，消息区 Box(weight 1f)
+            //     自动让位 —— 既一直看得见，也不遮挡任何内容。
+            // 默认折叠（TodoPanel.kt 改的），折叠态只占一行进度。
+            if (todos.isNotEmpty()) {
+                com.ccm.app.ui.common.TodoPanel(
+                    todos = todos,
+                    running = running,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
             // ── 消息区（可滚动 + 自动跟底，底部留出输入栏高度）────────
             //
             // 【2026-10-06 问题45 修复·第二版】上一版只在底部 Spacer 加了
@@ -311,8 +325,18 @@ fun ChatScreen(
                 // ══════════════════════════════════════════════════════════
                 LaunchedEffect(imeVisible) {
                     if (imeVisible && followBottom) {
-                        // 等布局稳定（键盘动画约 200ms）
-                        repeat(5) {
+                        // 【2026-10-06 用户反馈·修】上一版 repeat(5) 只滚 5 帧
+                        // （≈80ms），而键盘动画要 200~300ms —— 滚动发生在
+                        // 消息区 weight(1f) 还没被键盘压矮的时刻，maxValue 是
+                        // 旧值，滚完视口停在原地；动画结束后**底部多出一段
+                        // 留白但没有内容**（用户原话「正文底部多了空间，
+                        // 你没让它自动翻到那个空间」）。
+                        //
+                        // 改成覆盖整个键盘动画期持续跟底：每帧都滚，
+                        // 滚到位后 scrollTo 是幂等的（maxValue 不变 = no-op），
+                        // 动画结束（约 30 帧后）自然停 —— 之后由常规
+                        // followBottom 逻辑接管（用户主动上翻即停跟）。
+                        repeat(40) {
                             withFrameNanos {}
                             scrollState.scrollTo(scrollState.maxValue)
                         }
@@ -359,14 +383,10 @@ fun ChatScreen(
                     Spacer(Modifier.height(12.dp))
                 }
 
-                if (todos.isNotEmpty()) {
-                    com.ccm.app.ui.common.TodoPanel(
-                        todos = todos,
-                        running = running,
-                        modifier = Modifier.align(Alignment.BottomEnd)
-                            .padding(end = 16.dp, bottom = 154.dp),
-                    )
-                }
+                // 【2026-10-06「开不开都挡」】浮动看板已删 —— 它浮在右下角
+                // （bottom 154dp），展开折叠都盖正文。看板改由上面
+                // MessageList 顶部渲染（文档流，不遮挡）。
+                // TodoPanel 默认也改为折叠（TodoPanel.kt），头部一行 + 进度不丢。
             }
             Column(
                 modifier = Modifier

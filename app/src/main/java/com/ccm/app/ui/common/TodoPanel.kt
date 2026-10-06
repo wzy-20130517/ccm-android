@@ -79,7 +79,11 @@ fun TodoPanel(
     running: Boolean = false,
 ) {
     val colors = CCMTheme.colors
-    var collapsed by remember { mutableStateOf(false) }
+    // 【2026-10-06 用户反馈「看板太挡」】默认**折叠**。
+    // 浮在右下角 + 276dp 宽 + 展开时 239dp 高，把正文盖掉一大块。
+    // 折叠态只占一行头部（进度 3/5 + chevron），底部「正在进行：…」
+    // 状态条不受 collapsed 控制照常显示 —— 信息不丢，想要细节点一下展开。
+    var collapsed by remember { mutableStateOf(true) }
 
     if (todos.isEmpty()) return
 
