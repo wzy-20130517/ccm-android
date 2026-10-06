@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
@@ -190,8 +189,14 @@ fun ToolCallGroup(
                     .padding(start = 3.68.dp + 14.72.dp),    // ml-1 + pl-4
                 verticalArrangement = Arrangement.spacedBy(7.36.dp),   // space-y-2
             ) {
+                // 【2026-10-06】逐卡传「上一张已消费的 textBefore 长度」——
+                // textBefore 是**累计值**（到此刻为止的全部正文），直接渲染
+                // 会每张卡重复前面所有正文。Web 也是这么处理的
+                // （MainContent.tsx:1164 的 consumedLen 累加）。
+                var consumedLen = 0
                 visible.forEach { card ->
-                    ToolCallItem(card = card, isStale = isStale)
+                    ToolCallItem(card = card, isStale = isStale, previousConsumed = consumedLen)
+                    if (card.textBefore.isNotEmpty()) consumedLen += card.textBefore.length
                 }
 
                 // 组尾：全跑完且不在流式中 → Check + Done
@@ -311,6 +316,15 @@ private fun ToolCallItem(
     card: ChatToolCard,
     isStale: Boolean,
     modifier: Modifier = Modifier,
+    /**
+     * 上一张卡已消费的 textBefore 长度（2026-10-06 加）。
+     *
+     * 【为什么是「增量」而不是整段】AgentLoop 每个工具都带「到此刻累积的
+     * 全部正文」，直接渲染会重复（卡1显示 A，卡2显示 A+B —— A 出现两次）。
+     * Web 的做法（MainContent.tsx:1164）也是累加 consumedLen 后取差集：
+     *   本卡要显示的正文 = card.textBefore.drop(previousConsumed)
+     */
+    previousConsumed: Int = 0,
 ) {
     val colors = CCMTheme.colors
     // realStatus：running 且整轮已停 → canceled（不再显示 Running 动效）
@@ -334,6 +348,10 @@ private fun ToolCallItem(
     val cardBg = if (CCMTheme.isDark) Color.Black.copy(alpha = 0.20f) else Color.Black.copy(alpha = 0.05f)
     val cardBorder = if (CCMTheme.isDark) Color.White.copy(alpha = 0.05f) else Color.Black.copy(alpha = 0.05f)
 
+    // 工具前的正文（对齐 Web 的 textBefore 渲染，MainContent.tsx:1237）：
+    // 只显示「比上一张卡多出来的那段」—— 否则同一段正文会在每张卡上重复。
+    val textBefore = card.textBefore.drop(previousConsumed).trim()
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -342,6 +360,22 @@ private fun ToolCallItem(
             .background(cardBg)
             .border(0.92.dp, cardBorder, RoundedCornerShape(7.36.dp)),
     ) {
+        // 工具前的正文段（有才显示）—— 「正文1→工具→正文2」时序的载体。
+        // 对齐 Web `MainContent.tsx:1237` 的 tc.textBefore 渲染：
+        // 只显示比上一张卡多出来的那段（textBefore 是累计值，直接渲染会重复）。
+        if (textBefore.isNotBlank()) {
+            androidx.compose.foundation.text.selection.SelectionContainer {
+                Text(
+                    text = textBefore,
+                    style = CCMText.body14,
+                    color = colors.textMain,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 5.52.dp),
+                )
+            }
+        }
+
         // ── 头部（可点折叠）px-3 py-2 ────────────────────────────
         Row(
             modifier = Modifier

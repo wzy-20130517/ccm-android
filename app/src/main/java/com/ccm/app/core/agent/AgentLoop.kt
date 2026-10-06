@@ -807,9 +807,13 @@ class AgentLoop(
                 "tool_calls" to toolCalls.size,
             ),
         )
+        // 到此刻为止累积的正文 —— 作为每个工具的 textBefore（对齐 Web
+        // web/server.mjs:2526 的 `textSoFar`）。UI 据此把正文与工具
+        // 按真实顺序交错渲染，而不是把整轮文字堆到最后。
+        val textSoFar = textSb.toString()
         toolCalls.forEach { tc ->
             val parsed = parseArgs(tc.arguments)
-            emit(AgentEvent.ToolStart(tc.id, tc.name, parsed, formatInputPreview(tc.name, parsed)))
+            emit(AgentEvent.ToolStart(tc.id, tc.name, parsed, formatInputPreview(tc.name, parsed), textSoFar))
         }
 
         return AssistantTurn(textSb.toString(), reasoningSb.toString(), toolCalls, doneFinishReason)

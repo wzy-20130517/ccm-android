@@ -449,7 +449,18 @@ fun MessageList(
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                     )
                 }
-                AssistantBubble(text = bubble.text)
+                // 【2026-10-06】正文区只显示**最后一个工具之后**的那段 ——
+                // 工具期间的正文已由各工具卡的 textBefore 显示，不切的话
+                // 同一段文字出现两遍（工具区一遍、正文区一遍）。
+                // 对齐 Web `MainContent.tsx:1136` 的 workText/finalText 切分。
+                // offset 为 0 或越界 = 显示全文（兜底：没有工具，或旧数据）。
+                val offset = bubble.toolTextEndOffset
+                val finalBody = if (offset in 1 until bubble.text.length) {
+                    bubble.text.substring(offset).trim()
+                } else {
+                    bubble.text
+                }
+                if (finalBody.isNotBlank()) AssistantBubble(text = finalBody)
             }
         }
 
@@ -516,7 +527,18 @@ fun MessageList(
             // Web `MainContent.tsx:1186` 把一条消息的所有 toolCalls 包进一个
             // `<div className="mb-4">`，组头显示去重后的工具名摘要，展开后左竖线内列。
             if (streaming.isNotBlank()) {
-                AssistantBubble(text = streaming)
+                // 【2026-10-06】流式期间同样只显示「最后一个工具之后」的正文 ——
+                // 工具前的正文已由工具卡渲染（textBefore），不切会重复。
+                // 与 Web `MainContent.tsx:1164` 的 pendingWorkText 逻辑一致：
+                //   consumedLen = 各工具 textBefore 之和（= 最后一个的，因为累计）
+                //   正文区 = fullText.drop(consumedLen)
+                val consumed = toolCards.lastOrNull()?.textBefore?.length ?: 0
+                val pendingBody = if (consumed in 1 until streaming.length) {
+                    streaming.substring(consumed).trim()
+                } else {
+                    streaming
+                }
+                if (pendingBody.isNotBlank()) AssistantBubble(text = pendingBody)
             }
         } else if (toolCards.isNotEmpty()) {
             // 没有流式文本但工具在跑（例如纯工具轮次）

@@ -846,6 +846,9 @@ class ChatSession(
                     is AgentEvent.ToolStart -> {
                         toolCards += ToolCard(
                             id = ev.id, name = ev.name, preview = ev.inputPreview,
+                            // 工具前的正文（对齐 Web 的 textBefore）——
+                            // UI 渲染在工具卡上方，还原正文/工具的交错顺序
+                            textBefore = ev.textBefore,
                             running = true,
                             // 完整入参（ToolDiffView 展开渲染用；原来只存 preview）
                             input = ev.input.toString(),
@@ -924,12 +927,18 @@ class ChatSession(
                             val finalText = (accumulatedText + streaming).trim()
                             val finalThinking = thinkingBuf
                             val finalTools = toolCards.toList()
+                            // 【2026-10-06】工具后的正文起点（对齐 Web 的 toolTextEndOffset）：
+                            // 最后一个工具的 textBefore 长度 = 工具区显示的正文总量，
+                            // 正文区从这里往后显示 —— 否则工具前的正文会显示两遍。
+                            // 没有工具 → 0（正文区显示全文，兜底）。
+                            val textEndOffset = finalTools.lastOrNull()?.textBefore?.length ?: 0
                             val nextState = _state.value.copy(
                                 bubbles = if (finalText.isNotBlank() || finalThinking.isNotBlank() || finalTools.isNotEmpty()) {
                                     _state.value.bubbles + Bubble(
                                         role = Message.ROLE_ASSISTANT,
                                         text = finalText,
                                         messageId = currentMessageId.ifBlank { "turn-${System.currentTimeMillis()}" },
+                                        toolTextEndOffset = textEndOffset,
                                         thinking = finalThinking,
                                         toolCards = finalTools,
                                     )
@@ -1103,6 +1112,19 @@ class ChatSession(
         val role: String,
         val text: String,
         val messageId: String,
+        /**
+         * 最后一个工具结束时的正文长度（2026-10-06 加，对齐 Web 的
+         * `toolTextEndOffset`）。
+         *
+         * 【为什么需要】工具期间的正文已经在各工具卡的 textBefore 里显示过了，
+         * 正文区只能显示**最后一个工具之后**的那段 —— 否则同一段正文
+         * 出现两遍（工具卡里一遍、正文区一遍）。
+         * Web 的判据（MainContent.tsx:1136）：
+         *   workText  = fullText.slice(0, offset)   ← 工具区
+         *   finalText = fullText.slice(offset)      ← 正文区
+         * 0 或 ≥ text.length = 没有「工具后正文」，正文区显示全文（兜底）。
+         */
+        val toolTextEndOffset: Int = 0,
         /** 该消息的思考过程（TurnEnd 时从 State.thinking 定型过来；历史恢复无此项）。 */
         val thinking: String = "",
         val toolCards: List<ToolCard> = emptyList(),
@@ -1123,6 +1145,13 @@ class ChatSession(
         val name: String,
         /** 折叠态一行参数预览（由 agent 层格式化，见 `AgentEvent.ToolStart`）。 */
         val preview: String = "",
+        /**
+         * 这个工具调用**之前**累积的正文（2026-10-06 加，对齐 Web）。
+         *
+         * UI 把它渲染在工具卡**上方** —— 还原「正文1→工具→正文2→工具」
+         * 的真实输出顺序（Web `web/server.mjs:2520` 同款机制）。
+         */
+        val textBefore: String = "",
         /** 完整入参 JSON（ToolDiffView 展开渲染时按字段取；空 = 非 ToolStart 来源）。 */
         val input: String = "",
         /** 是否还在跑。 */

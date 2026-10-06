@@ -93,6 +93,19 @@ sealed class AgentEvent {
         val name: String,
         val input: JsonObject,
         val inputPreview: String,
+        /**
+         * 到这个工具调用**之前**累积的正文（2026-10-06 加，对齐 Web）。
+         *
+         * 【为什么需要】正文与工具的时序靠它还原：模型说一句 → 调工具 →
+         * 再说 → 再调。UI 层把「工具前的正文」显示在工具卡上方，
+         * 就还原了真实输出顺序（Web `web/server.mjs:2520` 同款机制：
+         * `emit(runtime, 'tool_start', { ..., textBefore: textSoFar })`）。
+         *
+         * 没有它的话，所有正文堆到最后、所有工具堆在中间 ——
+         * 用户看到「调用工具/调用工具/正文1正文2」而非
+         * 「正文1→工具→正文2→工具」。
+         */
+        val textBefore: String = "",
     ) : AgentEvent()
 
     /** 工具执行中的进度（覆盖式显示，不进历史）。 */
