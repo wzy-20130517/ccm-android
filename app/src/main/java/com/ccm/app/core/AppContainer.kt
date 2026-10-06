@@ -1,6 +1,8 @@
 package com.ccm.app.core
 
 import com.ccm.app.core.agent.AgentLoop
+import com.ccm.app.core.agent.ModeState
+import com.ccm.app.core.agent.AgentEvent
 import com.ccm.app.core.agent.SubAgentManager
 import com.ccm.app.core.api.ApiClient
 import com.ccm.app.core.compact.AutoCompact
@@ -14,6 +16,7 @@ import com.ccm.app.core.tool.AppBackedToolStorage
 import com.ccm.app.core.tool.MapToolSettings
 import com.ccm.app.core.tool.ToolRegistry
 import com.ccm.app.core.tool.ToolRunner
+import com.ccm.app.core.tool.SubAgentResult
 import com.ccm.app.core.tool.ToolSettings
 
 /**
@@ -174,7 +177,7 @@ class AppContainer private constructor(
                 settings = settingsForSubAgent,
                 sessionId = "sub-" + System.currentTimeMillis(),
                 // 关键：不传 spawnSubAgent（子 Agent 不能再派）
-                toolRunner = toolRunnerForSubAgent,
+                toolRunner = toolRunnerForSubAgent ?: throw IllegalStateException("子 Agent 依赖未就绪（toolRunner）"),
                 imageScaler = null,
                 modes = modes,
                 traceDir = traceDirForSubAgent,

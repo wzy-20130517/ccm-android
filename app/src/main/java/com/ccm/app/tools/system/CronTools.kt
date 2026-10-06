@@ -414,6 +414,15 @@ class CronTools(private val store: CronStore) {
     /** 列全部任务（durable + session）—— ScheduledScreen 展示用（第34批）。 */
     fun list(): List<CronStore.Task> = store.list()
 
+    /**
+     * 创建任务（问题32：ScheduledScreen 的「新建任务」对话框用）。
+     *
+     * 原来只有 CronCreateTool（Agent 调），UI 层没有创建入口 ——
+     * 「新建任务」按钮跳去了协作页。现在 UI 能直接建。
+     */
+    fun create(cron: String, prompt: String, recurring: Boolean, durable: Boolean): CronStore.Task =
+        store.create(cron, prompt, recurring, durable)
+
     inner class CronCreateTool : Tool() {
         override val name = "CronCreate"
         override val description =

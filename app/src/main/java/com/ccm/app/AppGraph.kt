@@ -241,6 +241,15 @@ object AppGraph {
     /** 供 Compose 观察的 State（问题12：MainActivity 读它才会在变更时重组）。 */
     val sessionState: androidx.compose.runtime.State<ChatSession?> get() = _sessionState
 
+    /**
+     * 子 Agent 管理器（问题40）。
+     *
+     * 时序：ToolsBootstrap 先构造（拿不到 container），
+     * SubAgentManager 后创建（需要 container）—— 所以 observer 事后注入。
+     */
+    @Volatile
+    var pendingSubAgentManager: com.ccm.app.core.agent.SubAgentManager? = null
+
     // ══════════════════════════════════════════════════════════════
     //  【2026-10-06 问题40】AskUserQuestion 的 UI 桥
     // ══════════════════════════════════════════════════════════════
