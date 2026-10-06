@@ -487,24 +487,6 @@ private suspend fun runInstall(
 ): Boolean = kotlinx.coroutines.coroutineScope {
     val sink = ProgressSink()
 
-    // ══════════════════════════════════════════════════════════════
-    //  Termux 模式：不装 rootfs（2026-10-06）
-    // ══════════════════════════════════════════════════════════════
-    //
-    // 用户已有 Termux 环境，命令通过 RUN_COMMAND Intent 跑在那边。
-    // 这里只做一次连通性自检（Intent 发出去了、Termux 接住了），
-    // 失败时**不阻断** —— allow-external-apps 的提示在 Termux 侧，
-    // 我们只能告诉用户去哪看。
-    if (envMode == "termux") {
-        sink.progress = 0.5f
-        sink.log = "已选择外接 Termux —— 跳过内置环境安装。"
-        sink.log = "提示：需在 Termux 里执行 echo 'allow-external-apps=true' >> ~/.termux/termux.properties 并重启 Termux，否则命令会静默失败。"
-        sink.finished = true
-        pump.join()
-        emit(1f, "外接 Termux 模式：无需安装内置环境。")
-        return@coroutineScope true
-    }
-
     // 推送协程：每 120ms 把最新进度刷进 UI。
     // 为什么要节流：install 的回调在复制 28MB 时会调几百次，
     // 每次都推 UI 会让主线程忙于重组，反而更卡。
@@ -518,6 +500,26 @@ private suspend fun runInstall(
         val tail = sink.log
         sink.log = ""
         emit(sink.progress, tail)   // 收尾再推一次，别漏最后一行
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  Termux 模式：不装 rootfs（2026-10-06）
+    // ══════════════════════════════════════════════════════════════
+    //
+    // 用户已有 Termux 环境，命令通过 RUN_COMMAND Intent 跑在那边。
+    // 这里只提示一次 allow-external-apps 配置（我们探测不到 Termux 私有
+    // 目录里的 termux.properties），**不阻断**。
+    //
+    // ⚠️ 必须放在 pump 定义**之后** —— 里面要 pump.join() 收尾，
+    // 放前面编译报 Unresolved reference 'pump'（CI 实测抓到的）。
+    if (envMode == "termux") {
+        sink.progress = 0.5f
+        sink.log = "已选择外接 Termux —— 跳过内置环境安装。"
+        sink.log = "提示：需在 Termux 里执行 echo 'allow-external-apps=true' >> ~/.termux/termux.properties 并重启 Termux，否则命令会静默失败。"
+        sink.finished = true
+        pump.join()
+        emit(1f, "外接 Termux 模式：无需安装内置环境。")
+        return@coroutineScope true
     }
 
     val result = withContext(Dispatchers.IO) {
