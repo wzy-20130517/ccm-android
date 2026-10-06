@@ -238,7 +238,12 @@ fun InputBar(
                             // ★ webgap #7（2026-09-29）：原来只有裸 tokens 数 ——
                             //   看不出离上限多远。显示 `N / 上限 (xx%)` 并分档变色：
                             //   ≥90% 红（该 /compact 了）、≥70% 橙、其余灰。
-                            val maxCtx = remember(Unit) {
+                            // 【2026-10-06 修】原来是 remember(Unit) —— 永不失效，
+                            // 用户改了 maxContextTokens（/context 或设置页）后
+                            // 百分比和颜色档仍按旧上限算。
+                            // 现在按 tokenCount 做 key：每次有新 token 数时重读
+                            // （低频 —— 一轮才变一次，不是每帧；读盘开销可接受）。
+                            val maxCtx = remember(tokenCount) {
                                 com.ccm.app.AppGraph.storage?.let {
                                     com.ccm.app.core.provider.AppConfig
                                         .load(it.configFile).config.maxContextTokens
