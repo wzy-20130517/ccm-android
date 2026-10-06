@@ -581,8 +581,16 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                             ),
                             color = colors.textMain,
                         )
+                        // 【2026-10-06 核实修正】原文案「此开关已保存、暂未接入
+                        // （audit-core #4）」是**旧状态** —— 实际早就接好了。
+                        //
+                        // 开关语义（对齐 CLI index.mjs:785）：
+                        //   开 → **当前模型自己看图**（本 Provider 有视觉能力）
+                        //   关 → 用备用识图 Provider（/config vision set 指定）
+                        //        转述图片后交主模型；没配备用则直接带图
                         Text(
-                            text = "识图路由由 visionProvider 决定；此开关已保存、暂未接入（audit-core #4）",
+                            text = "本模型能否直接看图；关闭时用备用识图 Provider" +
+                                "（/config vision set 指定）",
                             style = CCMText.body11.copy(fontSize = 9.48.sp),
                             color = colors.textSecondary.copy(alpha = 0.7f),
                         )

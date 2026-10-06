@@ -121,13 +121,15 @@ class AgentLoop(
     /** 派生子 Agent 的能力（由上层注入）。 */
     private val spawnSubAgent: (suspend (SubAgentSpec) -> SubAgentResult)? = null,
     /**
-     * 识图专用客户端（2026-09-29 图片识别接线）。
+     * 识图专用客户端（2026-09-29 接线；2026-10-06 修正语义）。
      *
-     * 语义：config.vision=true 且配置了 visionProviderId 且**不是当前
-     * 主 provider** 时由 AppContainer 构造传入 —— 用户发图时先让识图模型
-     * 生成文字描述，再把描述（而非原图）交给主模型。主模型不支持视觉时
-     * 就不会 400；识图失败回退直接带图（保持原行为）。
-     * null = 不路由（开关关 / 没配 / vision 就是当前 provider）。
+     * 语义（对齐 CLI index.mjs:785）：**当前 Provider 没有视觉能力**
+     * （vision 未开）且配了备用识图 Provider 时由 AppContainer 传入 ——
+     * 用户发图时先让备用模型生成文字描述，再把描述交给主模型，
+     * 主模型不支持视觉也不会 400。识图失败回退直接带图。
+     *
+     * null = 不路由，此时按原行为把图直接交给当前模型
+     * （当前模型有视觉时这是正确路径）。
      */
     private var visionClient: ApiClient? = null,
     /**

@@ -874,8 +874,23 @@ class AppContainer private constructor(
          * 同样由 build() 与 refreshApi() 共用。
          */
         fun buildVisionClient(config: AppConfig): ApiClient? {
+            // ══════════════════════════════════════════════════════════════
+            //  【2026-10-06 修·语义反了】
+            //
+            //  CLI 的语义（index.mjs:785 / 3880）：
+            //    · vision=true  → **当前模型**自己看图（visionApi = api）
+            //    · vision=false → 用**备用识图 Provider**（把图发给它）
+            //  即开关表示「当前 Provider 有没有视觉能力」。
+            //
+            //  APK 原来是反的：vision=true 才建备用客户端去转述 ——
+            //  用户开这个开关（本意「我要识图」）实际得到的是
+            //  「图被发给另一个模型转述」，而不是「当前模型看图」。
+            //
+            //  正确条件：**vision 没开**（当前模型不能看图）**且**配了
+            //  备用 Provider → 才需要备用客户端。
+            // ══════════════════════════════════════════════════════════════
             val vp = config.visionProvider
-            val need = config.vision == true && vp != null &&
+            val need = config.vision != true && vp != null &&
                 config.visionProviderId != null &&
                 config.visionProviderId != config.current &&
                 vp.url.isNotBlank() && vp.allKeys().isNotEmpty()
