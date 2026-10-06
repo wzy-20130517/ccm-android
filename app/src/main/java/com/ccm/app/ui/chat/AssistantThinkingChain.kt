@@ -1174,12 +1174,29 @@ internal fun buildReasoningTimelineEvents(
     isThinking: Boolean = false,
 ): List<AssistantThinkingEvent> {
     val normalized = thinking.replace("\r\n", "\n").trim()
-    if (normalized.isEmpty()) return emptyList()
+    if (normalized.isEmpty() && toolCards.isEmpty()) return emptyList()
 
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-06 改用精确排序】工具卡自带 thinkingBefore 时，
+    //  直接按它还原顺序，不再用启发式猜。
+    // ══════════════════════════════════════════════════════════════
+    //
+    //  旧算法（空行切段 + 找英文交接句 + 交替排列）在中文思考时
+    //  全不匹配 → 交替排列 → **顺序错乱**（用户截图反馈）。
+    //
+    //  现在：每个工具卡携带「它之前的思考快照」，据此把思考切成
+    //  N+1 段（工具之间），按真实顺序输出：
+    //    思考1 → 工具1 → 思考2 → 工具2 → … → 思考N+1
+    //
+    //  只有当工具卡**没有** thinkingBefore 时（历史会话、旧数据）
+    //  才回退到旧的启发式算法。
+    if (toolCards.isNotEmpty() && toolCards.any { it.thinkingBefore.isNotBlank() }) {
+        return buildTimelineFromSnapshots(toolCards, isThinking, normalized)
+    }
+
+    if (normalized.isEmpty()) return emptyList()
     val blocks = splitReasoningBlocks(normalized)
     if (blocks.isEmpty()) return emptyList()
-
-
 
     val toolEvents = buildToolEvents(toolCards)
 
@@ -1204,7 +1221,19 @@ internal fun buildReasoningTimelineEvents(
 
         // 没有交接句时，工具事件与思考段交替出现
         // （源码 `handoffBlocks.length === 0` 分支）
-        if (handoffBlocks.isEmpty() && toolIndex < toolEvents.size) {
+        //
+        // 【2026-10-06 加守卫】只在「工具数 ≥ 思考段数」时交替 ——
+        // 否则交替会把工具卡塞到错误的位置。
+        //
+        // 用户截图的问题：3 段思考 + 4 个工具，硬交替后变成
+        // 「思考1 工具1 思考2 工具2 思考3 工具3 ... 工具4」——
+        // 但真实的执行顺序是「思考1 工具1 思考2 工具2 思考3 工具3 思考4」，
+        // 段数与工具数不匹配时交替必然错位。
+        // 数量不匹配说明模型输出与工具调用的对应关系无法推断，
+        // 此时**保持原顺序**（思考段在前、工具事件按序追加在末尾）比瞎猜好。
+        if (handoffBlocks.isEmpty() && toolIndex < toolEvents.size &&
+            toolEvents.size >= blocks.size
+        ) {
             out.add(toolEvents[toolIndex])
             toolIndex++
         }
@@ -1219,6 +1248,86 @@ internal fun buildReasoningTimelineEvents(
         out.add(AssistantThinkingEvent(ThinkingEventKind.DONE, "Done"))
     }
 
+    return out
+}
+
+/**
+ * 用工具卡自带的思考快照**精确**还原时间线（2026-10-06 加）。
+ *
+ * ## 为什么需要
+ * 旧算法拿「整轮思考拼接串」去猜每段对应哪个工具 —— 靠空行切段 +
+ * 匹配英文交接句（let me / i should）。中文思考（「让我」「我来」
+ * 「试试」）一个都不匹配 → 走交替排列 → 段数与工具数不匹配时**必然错位**。
+ *
+ * 现在每个工具卡携带 `thinkingBefore`（它被调用前的思考快照），
+ * 直接切分即可，零猜测：
+ *
+ * ```
+ * 思考1 → 工具1 → 思考2 → 工具2 → … → 思考N+1
+ * ```
+ *
+ * @param toolCards 工具卡（**必须都带 thinkingBefore**，调用方已检查）
+ */
+private fun buildTimelineFromSnapshots(
+    toolCards: List<ChatToolCard>,
+    isThinking: Boolean,
+    fullThinking: String = "",
+): List<AssistantThinkingEvent> {
+    val out = mutableListOf<AssistantThinkingEvent>()
+    var prevThinking = ""
+
+    fun emitThinking(text: String) {
+        if (text.isBlank()) return
+        splitReasoningBlocks(text).forEach { block ->
+            out.add(
+                AssistantThinkingEvent(
+                    kind = ThinkingEventKind.FOCUS,
+                    label = summarizeThinkingBlock(block, 140).ifBlank { "Thinking" },
+                    detail = block,
+                ),
+            )
+        }
+    }
+
+    toolCards.forEach { card ->
+        val now = card.thinkingBefore
+        // 这一轮新增的思考 = 当前快照 - 上一轮快照（前缀）
+        val delta = if (now.length > prevThinking.length && now.startsWith(prevThinking)) {
+            now.substring(prevThinking.length).trim()
+        } else {
+            // 快照不是前缀（历史回放/重试）→ 整段当新增
+            now.trim()
+        }
+        emitThinking(delta)
+        out.add(
+            AssistantThinkingEvent(
+                kind = ThinkingEventKind.TOOL,
+                label = buildToolStepLabel(card),
+                meta = card.progress.takeIf { it.isNotBlank() },
+            ),
+        )
+        prevThinking = now
+    }
+
+    // 【2026-10-06 补】最后一个工具**之后**的思考 ——
+    // 模型跑完工具还会继续想（比如「命令失败了，换个办法」），
+    // 那段思考还没进任何工具卡（要等下一个工具才记），
+    // 不补的话会丢（用户只看到工具，看不到后续判断）。
+    //
+    // ⚠️ 前提：thinkingBefore 与 fullThinking 是**同一套累积语义**。
+    // ChatSession 在 ToolStart 时填的是它自己的 thinkingBuf（跨轮累积），
+    // 与 UI 收到的 thinking 同源 —— 所以前缀匹配成立。
+    // （若将来有人改回 AgentLoop 的单轮快照，这里会算错：单轮值不是
+    //   累积串的前缀，末段会被整段重复输出。）
+    if (fullThinking.isNotBlank() && fullThinking.length > prevThinking.length &&
+        fullThinking.startsWith(prevThinking)
+    ) {
+        emitThinking(fullThinking.substring(prevThinking.length).trim())
+    }
+
+    if (!isThinking) {
+        out.add(AssistantThinkingEvent(ThinkingEventKind.DONE, "Done"))
+    }
     return out
 }
 
@@ -1453,7 +1562,11 @@ private val RE_THINKING_STARTERS = Regex(
 
 /** 工具交接句（`isToolHandoffBlock`）。 */
 private val RE_HANDOFF = Regex(
-    "^(let me|i should|first,\\s*i should|next,\\s*i should|next,\\s*i'll|i'll|now i'?ll)",
+    // 【2026-10-06 加中文】原来只匹配英文交接句 —— 用户用中文思考时
+    // （「让我」「我来」「试试」「先看」「接下来」）一个都不匹配，
+    // 导致时间线走「交替排列」分支，思考段与工具卡**对不上号**（顺序错乱）。
+    "^(let me|i should|first,\\s*i should|next,\\s*i should|next,\\s*i'll|i'll|now i'?ll" +
+        "|让我|我来|我先|试试|先看|先检查|接下来|下面|现在看|再试|查一下|跑一下|执行一下|调用)",
     RegexOption.IGNORE_CASE,
 )
 

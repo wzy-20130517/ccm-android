@@ -639,4 +639,11 @@ data class ChatToolCard(
     val input: String = "",
     /** 这个工具调用**之前**累积的正文（对齐 Web 的 textBefore）。 */
     val textBefore: String = "",
+    /**
+     * 这个工具调用**之前**累积的思考（2026-10-06 加）。
+     *
+     * 思维链时间线用它精确排序：思考1 → 工具1 → 思考2 → 工具2 …
+     * （没有它时只能用启发式猜，中文思考必然错乱）。
+     */
+    val thinkingBefore: String = "",
 )

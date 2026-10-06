@@ -279,12 +279,26 @@ class TermuxChannel(private val context: Context) : BashChannel {
         }
 
         // Android 13+ 要求显式声明 receiver 可见性；低版本没有这个 API
+        //
+        // ══════════════════════════════════════════════════════════════
+        //  【2026-10-06 修】必须用 RECEIVER_EXPORTED，不能用 NOT_EXPORTED
+        // ══════════════════════════════════════════════════════════════
+        //
+        // 这个 PendingIntent 是给 **Termux 进程**用的 —— 命令跑完由
+        // Termux 发广播回来。NOT_EXPORTED 会拒绝**跨应用**投递，于是
+        // 广播永远收不到 → poll 超时 → exit=-1。
+        //
+        // 用户现象：「bash 工具走 termux 外接时 exit=-1」。
+        //
+        // 安全性：Intent 里 setPackage(自己包名) 已把投递范围限制到本包，
+        // 外部应用无法伪造（他们发不到我们的包）。RECEIVER_EXPORTED 只是
+        // 允许「由系统代理投递的、目标为本包」的广播进来。
         val registered = try {
             if (android.os.Build.VERSION.SDK_INT >= 33) {
                 context.registerReceiver(
                     receiver,
                     android.content.IntentFilter(ACTION_RESULT),
-                    Context.RECEIVER_NOT_EXPORTED,
+                    Context.RECEIVER_EXPORTED,
                 )
             } else {
                 @Suppress("UnspecifiedRegisterReceiverFlag")
@@ -468,16 +482,64 @@ class BashTool(
             return ToolResult.Error("执行失败：${e.message}", ToolResult.INTERNAL)
         }
 
-        // 仅启动级故障回退。普通非零退出码/超时绝不重跑，避免写命令执行两次。
-        val launchFailure = result.exitCode < 0 || result.stderr.startsWith("proot 执行异常：")
+        // ══════════════════════════════════════════════════════════════
+        //  仅「启动级故障」回退。普通非零退出码/超时绝不重跑，
+        //  避免写命令执行两次。
+        //
+        //  【2026-10-06 修】回退条件收窄 + 保留原错误
+        //
+        //  原来 `result.exitCode < 0` 一个条件就触发回退 —— 但
+        //  **Termux 超时也返回 -1**，于是：
+        //    1. 用户在 Termux 模式下敲命令
+        //    2. Termux 那边超时（或 allow-external-apps 没配好）
+        //    3. 代码把它当「启动失败」，默默改用 proot 重跑
+        //    4. proot 里也没有这个命令/环境不对 → 又一次失败
+        //    5. 最终返回 proot 的结果，用户看到的是**风马牛不相及**的
+        //       「proot error: xxx not found」，完全不知道是 Termux 的问题
+        //
+        //  用户现象：「bash 工具走 termux 外接时 exit=-1」+ 报错像 proot。
+        //
+        //  现在：
+        //   · timedOut 明确排除（超时不是启动失败，重跑只会浪费时间）
+        //   · 回退时**保留原始错误**，最终输出里两段都显示
+        // ══════════════════════════════════════════════════════════════
+        val primaryFailureText = buildString {
+            if (result.stderr.isNotBlank()) append(result.stderr)
+            if (result.stdout.isNotBlank()) {
+                if (isNotEmpty()) append('\n')
+                append(result.stdout)
+            }
+        }.trim()
+
+        val launchFailure = !result.timedOut && (
+            result.stderr.startsWith("proot 执行异常：") ||
+                (result.exitCode < 0 && result.stderr.isBlank())
+            )
         if (launchFailure && ch === channel && fallbackChannel != null && fallbackChannel.isAvailable()) {
-            ctx.ui.onProgress("内置 proot 启动失败，改用 ${fallbackChannel.label} 重试一次")
+            ctx.ui.onProgress("${ch.label} 启动失败，改用 ${fallbackChannel.label} 重试一次")
             lines.clear()
+            val failedLabel = ch.label
             ch = fallbackChannel
             result = try {
                 ch.execute(command, ctx.cwd, timeout.toLong()) { line -> lines += line }
             } catch (e: Throwable) {
-                return ToolResult.Error("主通道启动失败，备用通道也失败：${e.message}", ToolResult.INTERNAL)
+                return ToolResult.Error(
+                    "主通道（$failedLabel）启动失败，备用通道（${fallbackChannel.label}）也失败：${e.message}" +
+                        if (primaryFailureText.isNotBlank()) "\n\n主通道原始错误：\n$primaryFailureText" else "",
+                    ToolResult.INTERNAL,
+                )
+            }
+            // 备用通道也失败 → 把主通道的错误一并带出来（否则用户只看到
+            // 备用通道的报错，完全不知道主通道发生了什么）
+            if (result.exitCode != 0 && primaryFailureText.isNotBlank()) {
+                result = result.copy(
+                    stderr = buildString {
+                        append("【主通道 $failedLabel 的错误】\n")
+                        append(primaryFailureText)
+                        append("\n\n【备用通道 ${fallbackChannel.label} 的错误】\n")
+                        append(result.stderr.ifBlank { "(无输出)" })
+                    },
+                )
             }
         }
 

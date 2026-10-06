@@ -813,9 +813,20 @@ class AgentLoop(
         // web/server.mjs:2526 的 `textSoFar`）。UI 据此把正文与工具
         // 按真实顺序交错渲染，而不是把整轮文字堆到最后。
         val textSoFar = textSb.toString()
+        // 同理带上思考（**本轮**的 reasoningSb）——
+        // ⚠️ 注意这是单轮值：AgentLoop 每次 callModel 都新建 reasoningSb。
+        // UI 侧要的是**跨轮累积**串（能跟前缀匹配），所以 ChatSession
+        // 在存 ToolCard 时用的是它自己的 thinkingBuf，**不是**这个字段。
+        // 这里保留是因为事件本身该携带完整信息（未来别处可能要用）。
+        val thinkingSoFar = reasoningSb.toString()
         toolCalls.forEach { tc ->
             val parsed = parseArgs(tc.arguments)
-            emit(AgentEvent.ToolStart(tc.id, tc.name, parsed, formatInputPreview(tc.name, parsed), textSoFar))
+            emit(
+                AgentEvent.ToolStart(
+                    tc.id, tc.name, parsed, formatInputPreview(tc.name, parsed),
+                    textSoFar, thinkingSoFar,
+                ),
+            )
         }
 
         return AssistantTurn(textSb.toString(), reasoningSb.toString(), toolCalls, doneFinishReason)

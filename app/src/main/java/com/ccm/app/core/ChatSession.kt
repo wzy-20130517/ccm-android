@@ -928,6 +928,14 @@ class ChatSession(
                             // 工具前的正文（对齐 Web 的 textBefore）——
                             // UI 渲染在工具卡上方，还原正文/工具的交错顺序
                             textBefore = ev.textBefore,
+                            // 同理带上思考 —— 思维链的时间线靠它排序。
+                            //
+                            // ⚠️ 用**本类的 thinkingBuf**（跨轮累积），不是
+                            // ev.thinkingBefore（AgentLoop 的单轮快照）——
+                            // 只有累积值才能跟 UI 拿到的 thinking 串做前缀匹配。
+                            // AgentLoop 每轮新建 reasoningSb，它的快照是「本轮思考」，
+                            // 与累积串对不上（前缀匹配必失败 → 每段都当新增 → 重复）。
+                            thinkingBefore = thinkingBuf,
                             running = true,
                             // 完整入参（ToolDiffView 展开渲染用；原来只存 preview）
                             input = ev.input.toString(),
@@ -1231,6 +1239,14 @@ class ChatSession(
          * 的真实输出顺序（Web `web/server.mjs:2520` 同款机制）。
          */
         val textBefore: String = "",
+        /**
+         * 这个工具调用**之前**累积的思考（2026-10-06 加）。
+         *
+         * UI 用它还原「思考→工具」的真实交错顺序。没有它时只能拿整轮
+         * 思考拼接串去猜（按空行切段 + 找英文交接句），中文思考全不匹配
+         * → 交替排列 → 顺序错乱（用户截图反馈的问题）。
+         */
+        val thinkingBefore: String = "",
         /** 完整入参 JSON（ToolDiffView 展开渲染时按字段取；空 = 非 ToolStart 来源）。 */
         val input: String = "",
         /** 是否还在跑。 */

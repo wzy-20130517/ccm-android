@@ -58,6 +58,8 @@ object ChatAdapter {
         result = card.result,
         // 2026-10-06：工具前的正文（渲染在工具卡上方，还原时序）
         textBefore = card.textBefore,
+        // 同理：工具前的思考（思维链时间线排序用）
+        thinkingBefore = card.thinkingBefore,
     )
 
     /** 整个 State 一次性转换（UI 主路径用这个） */
