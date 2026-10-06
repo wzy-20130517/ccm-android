@@ -72,28 +72,21 @@ fun AssistantBubble(
 ) {
     val colors = CCMTheme.colors
 
-    // ★ webgap #1：长按复制（连复制 AI 回复都做不到是最低门槛的缺口）
-    val copyCtx = androidx.compose.ui.platform.LocalContext.current
-    val copyText: (String) -> Unit = { txt ->
-        if (txt.isNotBlank()) {
-            try {
-                val cm = copyCtx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                    as android.content.ClipboardManager
-                cm.setPrimaryClip(android.content.ClipData.newPlainText("CCM", txt))
-                android.widget.Toast.makeText(copyCtx, "已复制", android.widget.Toast.LENGTH_SHORT).show()
-            } catch (_: Throwable) {}
-        }
-    }
-
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-06 用户反馈】长按 Agent 消息会「先全文复制一次，
+    //  再出选取框」—— 两个长按处理同时触发：
+    //    · 外层 combinedClickable 的 onLongClick = 复制全文
+    //    · 内层 SelectionContainer 的文本选择
+    //
+    //  去掉外层的长按复制（SelectionContainer 本身就能选+复制，
+    //  且是 Android 原生的选取体验 —— 用户要的就是「选取复制」）。
+    //  onClick 也一起去掉（空 lambda 没意义，还会拦截点击）。
+    // ══════════════════════════════════════════════════════════════
     Box(
         modifier = modifier
             .fillMaxWidth()
             // 实测 pad: 15.72px 16px
-            .padding(horizontal = 16.dp, vertical = 15.72.dp)
-            .combinedClickable(
-                onClick = {},
-                onLongClick = { copyText(text) },
-            ),   // combinedClickable = 实验 API（OptIn 见函数注解）
+            .padding(horizontal = 16.dp, vertical = 15.72.dp),
     ) {
         // ★ 2026-09-27：死 Text → MarkdownRenderer（690 行组件首秀）。
         // ★ 第37批：超长折叠（助手长回复同理，Web 有 Show more/less）。
