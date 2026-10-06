@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -235,7 +236,8 @@ private fun McpMarketSection() {
     val colors = CCMTheme.colors
     val ctx = androidx.compose.ui.platform.LocalContext.current
     var refresh by remember { mutableStateOf(0) }
-    var editing by remember { mutableStateOf<McpTemplate?>(null) }
+    var installing by remember { mutableStateOf<String?>(null) }
+    var log by remember { mutableStateOf("") }
 
     val installed = remember(refresh) {
         try {
@@ -249,99 +251,198 @@ private fun McpMarketSection() {
         } catch (_: Throwable) { emptySet() }
     }
 
-    val templates = remember {
+    // 内置可下载的 MCP（server 代码在 assets/mcp/<名字>/）
+    val catalog = remember {
         listOf(
-            McpTemplate(
-                name = "mail-qq",
-                description = "QQ 邮箱收发（IMAP + SMTP）—— 支持接码、读邮件、发邮件",
-                requiredEnv = mapOf(
-                    "MAIL_USER" to "邮箱地址（如 xxx@qq.com）",
-                    "MAIL_PASS" to "授权码（不是 QQ 密码）",
+            Triple(
+                "mail-qq",
+                "QQ 邮箱收发（IMAP + SMTP）—— 接码、读邮件、发邮件",
+                mapOf(
+                    "MAIL_USER" to "邮箱地址",
+                    "MAIL_PASS" to "授权码",
                     "MAIL_HOST" to "imap.qq.com",
                     "MAIL_PORT" to "993",
                 ),
-                buildConfig = { env ->
-                    """{"command":"node","args":["/path/to/mcp-mail/server.mjs"],"env":${org.json.JSONObject(env).toString()}}"""
-                },
             ),
         )
     }
 
-    SectionHeader("已装 MCP（${installed.size} 个）")
-    if (installed.isEmpty()) {
-        EmptyHint("还没有配置 MCP 服务器。")
-    } else {
-        installed.forEach { name ->
-            MarketCard(
-                title = name,
-                subtitle = "已配置（在 files/mcp.json）",
-                badge = "已装",
-                actions = listOf(
-                    "删除" to {
-                        try {
-                            val f = java.io.File(ctx.filesDir, "mcp.json")
-                            if (f.exists()) {
-                                val o = org.json.JSONObject(f.readText())
-                                o.optJSONObject("mcpServers")?.remove(name)
-                                f.writeText(o.toString(2))
-                                refresh++
-                            }
-                        } catch (_: Throwable) {}
-                    },
-                ),
-            )
-        }
-    }
-
-    Spacer(Modifier.height(8.dp))
-    SectionHeader("可安装")
-    templates.filter { it.name !in installed }.forEach { t ->
+    SectionHeader("可下载（${catalog.size} 个）")
+    catalog.forEach { (name, desc, envHints) ->
+        val isInstalled = name in installed
         MarketCard(
-            title = t.name,
-            subtitle = t.description,
-            badge = "模板",
-            actions = listOf("安装" to { editing = t }),
+            title = name,
+            subtitle = if (isInstalled) "已安装" else desc,
+            badge = if (isInstalled) "已装" else "可装",
+            actions = if (isInstalled) {
+                listOf("卸载" to {
+                    try {
+                        val f = java.io.File(ctx.filesDir, "mcp.json")
+                        if (f.exists()) {
+                            val o = org.json.JSONObject(f.readText())
+                            o.optJSONObject("mcpServers")?.remove(name)
+                            f.writeText(o.toString(2))
+                            refresh++
+                        }
+                    } catch (_: Throwable) {}
+                })
+            } else {
+                listOf("安装" to {
+                    installing = name
+                    log = "准备安装…"
+                })
+            },
         )
     }
 
-    if (templates.all { it.name in installed }) {
-        EmptyHint("所有内置模板都已安装。\\n\\n_自定义 MCP：直接编辑 `files/mcp.json`_")
+    // 安装流程（两阶段）：
+    //   1. 检查有没有配置（env）—— 没有就弹对话框
+    //   2. 有配置 → 自动装（部署 server + 装 node + 写 mcp.json）
+    var needConfig by remember { mutableStateOf(false) }
+    val installScope = androidx.compose.runtime.rememberCoroutineScope()
+
+    if (installing != null) {
+        val name = installing!!
+        Spacer(Modifier.height(8.dp))
+        HintCard(log)
     }
 
-    // 安装对话框（填 env）
-    editing?.let { t ->
-        McpInstallDialog(
-            template = t,
-            onDismiss = { editing = null },
+    if (needConfig && installing != null) {
+        val name = installing!!
+        val hints = catalog.firstOrNull { it.first == name }?.third ?: emptyMap()
+        McpConfigDialog(
+            name = name,
+            hints = hints,
+            onDismiss = { installing = null; needConfig = false; log = "" },
             onConfirm = { env ->
+                needConfig = false
+                // 保存配置到 mcp.json（保留已有字段）
                 try {
                     val f = java.io.File(ctx.filesDir, "mcp.json")
                     val o = if (f.exists()) org.json.JSONObject(f.readText()) else org.json.JSONObject()
                     val servers = o.optJSONObject("mcpServers") ?: org.json.JSONObject()
-                    servers.put(t.name, org.json.JSONObject(t.buildConfig(env)))
+                    val cfg = servers.optJSONObject(name) ?: org.json.JSONObject()
+                    cfg.put("env", org.json.JSONObject(env as Map<*, *>))
+                    servers.put(name, cfg)
                     o.put("mcpServers", servers)
                     f.writeText(o.toString(2))
-                    refresh++
-                    editing = null
-                    android.widget.Toast.makeText(ctx, "已安装 ${t.name}", android.widget.Toast.LENGTH_SHORT).show()
-                } catch (e: Throwable) {
-                    android.widget.Toast.makeText(ctx, "安装失败：${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                } catch (_: Throwable) {}
+
+                // 继续安装
+                installScope.launch {
+                    log = "正在安装…"
+                    val ok = installMcp(ctx, name, env) { s -> log = s }
+                    if (ok) {
+                        log = "✅ 安装完成（重启 App 后可用）"
+                        refresh++
+                    } else {
+                        log = "❌ 安装失败"
+                    }
+                    installing = null
                 }
             },
         )
     }
+
+    // 点「安装」时：读已有配置 → 有就直接装，没有就弹对话框
+    androidx.compose.runtime.LaunchedEffect(installing) {
+        val name = installing ?: return@LaunchedEffect
+        val env = mutableMapOf<String, String>()
+        try {
+            val f = java.io.File(ctx.filesDir, "mcp.json")
+            if (f.exists()) {
+                val o = org.json.JSONObject(f.readText())
+                o.optJSONObject("mcpServers")?.optJSONObject(name)?.optJSONObject("env")?.let { e ->
+                    e.keys().forEach { k -> env[k] = e.optString(k, "") }
+                }
+            }
+        } catch (_: Throwable) {}
+
+        if (env.values.none { it.isNotBlank() }) {
+            // 没配过 → 弹对话框
+            log = "需要先填写配置"
+            needConfig = true
+        } else {
+            // 配过 → 直接装
+            log = "正在安装…"
+            val ok = installMcp(ctx, name, env) { s -> log = s }
+            log = if (ok) "✅ 安装完成（重启 App 后可用）" else "❌ 安装失败"
+            if (ok) refresh++
+            installing = null
+        }
+    }
+
+    Spacer(Modifier.height(8.dp))
+    SectionHeader("怎么加自定义 MCP")
+    HintCard(
+        "直接编辑 `files/mcp.json`：\n\n" +
+            "```json\n{\n  \"mcpServers\": {\n    \"my-server\": {\n" +
+            "      \"url\": \"http://127.0.0.1:3001/mcp\"\n    },\n" +
+            "    \"my-stdio\": {\n      \"command\": \"node\",\n" +
+            "      \"args\": [\"/path/to/server.mjs\"]\n    }\n  }\n}\n```\n\n" +
+            "支持 HTTP/SSE（`url`）和 stdio（`command`+`args`）两种。"
+    )
 }
 
+/** 装一个 MCP：部署 server + 确保 node + 写 mcp.json。 */
+private suspend fun installMcp(
+    ctx: android.content.Context,
+    name: String,
+    env: Map<String, String>,
+    onLog: (String) -> Unit,
+): Boolean {
+    return try {
+        val app = com.ccm.app.AppGraph
+        // 需要 ProotRuntime —— 从 AppGraph 拿不到就新建
+        val runtime = com.ccm.app.runtime.ProotRuntime(ctx)
+        val installer = com.ccm.app.core.mcp.McpInstaller(ctx, runtime)
+
+        // 1. 部署 server（assets → rootfs）
+        onLog("正在部署 server…")
+        val serverPath = installer.deployServer(name) { s -> onLog(s) }
+            ?: return false
+
+        // 2. 确保 node（没有就装）
+        onLog("检查 Node 运行时…")
+        if (!installer.ensureNode { s -> onLog(s) }) {
+            onLog("❌ Node 安装失败（检查网络）")
+            return false
+        }
+
+        // 3. 写 mcp.json（command = proot 包装）
+        onLog("写入配置…")
+        val cmd = installer.buildProotCommand(serverPath, env)
+        val f = java.io.File(ctx.filesDir, "mcp.json")
+        val o = if (f.exists()) org.json.JSONObject(f.readText()) else org.json.JSONObject()
+        val servers = o.optJSONObject("mcpServers") ?: org.json.JSONObject()
+        servers.put(name, org.json.JSONObject().apply {
+            put("command", cmd[0])
+            put("args", org.json.JSONArray(cmd.drop(1)))
+            put("env", org.json.JSONObject(env as Map<*, *>))
+        })
+        o.put("mcpServers", servers)
+        f.writeText(o.toString(2))
+
+        onLog("✅ 完成（重启 App 后可用）")
+        true
+    } catch (t: Throwable) {
+        onLog("❌ ${t.message}")
+        false
+    }
+}
+
+/** MCP 配置对话框（填 env）。 */
 @Composable
-private fun McpInstallDialog(
-    template: McpTemplate,
+private fun McpConfigDialog(
+    name: String,
+    hints: Map<String, String>,
     onDismiss: () -> Unit,
     onConfirm: (Map<String, String>) -> Unit,
 ) {
     val colors = CCMTheme.colors
     val values = remember {
         androidx.compose.runtime.mutableStateMapOf<String, String>().apply {
-            template.requiredEnv.forEach { (k, v) -> put(k, v) }
+            hints.forEach { (k, v) -> put(k, v) }
         }
     }
 
@@ -356,16 +457,11 @@ private fun McpInstallDialog(
             verticalArrangement = Arrangement.spacedBy(9.2.dp),
         ) {
             Text(
-                "安装 ${template.name}",
+                "配置 $name",
                 style = CCMText.body16.copy(fontWeight = FontWeight.SemiBold),
                 color = colors.textMain,
             )
-            Text(
-                template.description,
-                style = CCMText.body12.copy(fontSize = 11.sp),
-                color = colors.textSecondary,
-            )
-            template.requiredEnv.forEach { (k, hint) ->
+            hints.forEach { (k, hint) ->
                 Column {
                     Text(k, style = CCMText.body12.copy(fontSize = 10.48.sp), color = colors.textSecondary)
                     androidx.compose.foundation.text.BasicTextField(
@@ -395,7 +491,7 @@ private fun McpInstallDialog(
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                 )
                 Text(
-                    "安装",
+                    "保存",
                     style = CCMText.body13.copy(fontWeight = FontWeight.Medium),
                     color = Color(0xFFD97757),
                     modifier = Modifier
