@@ -337,6 +337,54 @@ object AppGraph {
         answerDeferred?.complete(answer)
     }
 
+    // ══════════════════════════════════════════════════════════════
+    //  手机操作模式选择（2026-10-06 加，对齐 CLI 的 modePrompter）
+    // ══════════════════════════════════════════════════════════════
+    //
+    // 与 AskUserQuestion 同款桥：工具侧挂起等 → UI 弹框 → 用户选 → 唤醒。
+    // 区别是这里选项固定三项（前台/后台/不操作），且**不超时**
+    // —— 用户可能离开手机，超时会让「选了后台」变成「静默不操作」。
+
+    private var modeDeferred: kotlinx.coroutines.CompletableDeferred<String?>? = null
+
+    /** 待选模式的可见状态（UI 读它决定要不要弹框）。 */
+    val pendingPhoneMode = androidx.compose.runtime.mutableStateOf<Boolean>(false)
+
+    /**
+     * 工具侧调用：请求用户选模式并挂起等待。
+     *
+     * @return 'foreground' | 'background' | 'idle'；null = 无法弹（无 UI）
+     */
+    suspend fun requestPhoneModeBlocking(): String? {
+        if (pendingPhoneMode.value) return null   // 已在问 → 不嵌套
+        val d = kotlinx.coroutines.CompletableDeferred<String?>()
+        modeDeferred = d
+        pendingPhoneMode.value = true
+        return try {
+            kotlinx.coroutines.withTimeoutOrNull(600_000L) { d.await() }
+        } finally {
+            pendingPhoneMode.value = false
+            modeDeferred = null
+        }
+    }
+
+    /** UI 侧调用：用户选了模式（取消传 null → 按 idle 处理）。 */
+    fun answerPhoneMode(mode: String?) {
+        modeDeferred?.complete(mode)
+    }
+
+    /**
+     * 工具侧调用的简化入口（PhoneTools.modeGate 用）。
+     *
+     * 返回非 suspend 的取值 —— 因为 PhoneTools 的 modeGate 是同步函数。
+     * 实现：起协程跑 requestPhoneModeBlocking 并阻塞等结果。
+     *
+     * ⚠️ 必须在**非主线程**调用（阻塞主线程会死锁 —— UI 弹框要主线程）。
+     * PhoneTools 的工具执行都在 Dispatchers.IO 上，安全。
+     */
+    @Volatile
+    var phoneModePrompter: (() -> String?)? = null
+
     /** 已注册工具名清单（供设置页展示与自检）。 */
     @Volatile
     var toolNames: List<String> = emptyList()
@@ -482,6 +530,15 @@ object AppGraph {
             // 再报「没 key」。这是 ToolsBootstrap 的既定设计。
             val settings: ToolSettings? = provider?.let {
                 AppContainer.buildSettings(cfg, it)
+            }
+
+            // ── 3.9 手机操作模式的 UI 桥（2026-10-06）──────────────
+            // 工具侧（PhoneTools.modeGate）会调它请求用户选模式。
+            // 用 runBlocking 起协程等 UI —— 调用方在 IO 线程，不会死锁主线程。
+            phoneModePrompter = {
+                try {
+                    kotlinx.coroutines.runBlocking { requestPhoneModeBlocking() }
+                } catch (_: Throwable) { null }
             }
 
             // ── 4. 工具注册（★ 这一步以前从没被调用过）──────────────

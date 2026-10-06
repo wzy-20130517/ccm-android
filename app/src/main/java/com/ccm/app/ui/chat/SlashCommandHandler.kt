@@ -516,6 +516,66 @@ private fun handleQueryCommands(cmd: String, arg: String, ctx: SlashContext): Sl
         // 思路：工作区目录是 storage.root 下的 WORKSPACE_DIR 子目录（与 AppGraph
         // 装配时的 cwd 一致）。AppGraph 没有公开 cwd getter，这里按同样规则拼。
         // 读不到或为空就提示。
+        // ── /device —— 手机操作模式与设备状态（2026-10-06 加）──────────
+        //
+        // 对齐 CLI 的 /device mode 主屏|副屏|选择|off（cmd-device.mjs）。
+        // APK 侧的三个模式值：foreground（主屏）/ background（副屏）/
+        // ask（每次都问）；off 清掉偏好（回到「从没设过」）。
+        "/device" -> {
+            val ctx2 = com.ccm.app.AppGraph.appContext
+            if (ctx2 == null) {
+                SlashResult.Notice("应用上下文未就绪。")
+            } else {
+                val parts = arg.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+                val sub = parts.firstOrNull()?.lowercase() ?: ""
+
+                if (sub == "mode") {
+                    val v = parts.getOrNull(1)?.lowercase() ?: ""
+                    when (v) {
+                        "主屏", "前台", "foreground" -> {
+                            com.ccm.app.tools.phone.PhoneMode.setPreference(ctx2, com.ccm.app.tools.phone.PhoneMode.FOREGROUND)
+                            SlashResult.Notice("手机操作模式已设为**前台**（操作主屏，你能看到）—— 以后不再询问。")
+                        }
+                        "副屏", "后台", "background" -> {
+                            com.ccm.app.tools.phone.PhoneMode.setPreference(ctx2, com.ccm.app.tools.phone.PhoneMode.BACKGROUND)
+                            SlashResult.Notice("手机操作模式已设为**后台**（虚拟副屏，静默）—— 以后不再询问。")
+                        }
+                        "选择", "每次", "ask" -> {
+                            com.ccm.app.tools.phone.PhoneMode.setPreference(ctx2, com.ccm.app.tools.phone.PhoneMode.ASK)
+                            SlashResult.Notice("手机操作模式已设为**每次询问**。")
+                        }
+                        "off", "清空", "reset" -> {
+                            com.ccm.app.tools.phone.PhoneMode.setPreference(ctx2, null)
+                            SlashResult.Notice("手机操作模式偏好已清空 —— 下次用手机工具时重新询问。")
+                        }
+                        else -> {
+                            val cur = com.ccm.app.tools.phone.PhoneMode.preference(ctx2)
+                            SlashResult.Notice(
+                                "**手机操作模式**\n\n" +
+                                    "- 偏好：${cur ?: "(从没设过，首次用时询问)"}\n" +
+                                    "- 本次会话：${com.ccm.app.tools.phone.PhoneMode.label()}\n\n" +
+                                    "用法：`/device mode 主屏|后台|选择|off`\n" +
+                                    "- 主屏 = 前台，你能看到它在点什么\n" +
+                                    "- 后台 = 虚拟副屏，静默运行\n" +
+                                    "- 选择 = 每次用手机工具都问\n" +
+                                    "- off = 清掉偏好，下次重新问"
+                            )
+                        }
+                    }
+                } else {
+                    // 状态总览
+                    val cur = com.ccm.app.tools.phone.PhoneMode.preference(ctx2)
+                    SlashResult.Notice(
+                        "**设备状态**\n\n" +
+                            "- 手机操作模式：${com.ccm.app.tools.phone.PhoneMode.label()}\n" +
+                            "- 偏好：${cur ?: "(从没设过)"}\n" +
+                            "- Shizuku：${com.ccm.app.bridge.ShizukuBridge.unavailableReason() ?: "已授权"}\n\n" +
+                            "用法：`/device mode 主屏|后台|选择|off`"
+                    )
+                }
+            }
+        }
+
         "/files" -> {
             // ══════════════════════════════════════════════════════════════
             //  【2026-10-06 对齐 CLI】语义修正

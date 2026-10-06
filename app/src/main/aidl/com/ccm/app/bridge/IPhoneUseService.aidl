@@ -82,6 +82,19 @@ interface IPhoneUseService {
     /** 副屏当前尺寸 [宽, 高, dpi]，副屏未就绪时返回 [0,0,0]。 */
     int[] displayMetrics() = 13;
 
+    /**
+     * 设置操作目标屏（2026-10-06 加，对齐 CLI 的 phoneMode）。
+     *
+     *   0  = 主屏（前台模式 —— 用户看得见你在点什么）
+     *  -1  = 副屏（后台模式 —— 用虚拟屏，默认）
+     *
+     * 所有操作（dump/tap/swipe/type/app）都读这个值决定目标。
+     */
+    void setTargetDisplay(int target) = 16;
+
+    /** 当前操作目标屏（0=主屏，>0=副屏 displayId，-1=副屏未建）。 */
+    int targetDisplayId() = 17;
+
     /** 副屏状态 JSON：{running, display_id, width, height, dpi, frame_age_ms, frame_bytes} */
     String status() = 14;
 }

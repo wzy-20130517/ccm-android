@@ -6,7 +6,6 @@ import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
-import android.view.KeyEvent
 import android.graphics.PixelFormat
 import androidx.annotation.Keep
 import java.io.ByteArrayOutputStream
@@ -122,6 +121,49 @@ class PhoneUseService : IPhoneUseService.Stub {
         return try { display?.display?.displayId ?: -1 } catch (_: Throwable) { -1 }
     }
 
+    // ══════════════════════════════════════════════════════════════
+    //  操作目标屏（2026-10-06 加，对齐 CLI 的 phoneMode）
+    // ══════════════════════════════════════════════════════════════
+    //
+    // CLI 有两层模式语义（core/tools/tools-phone.mjs:55）：
+    //   偏好（持久）: 'foreground' | 'background' | 'ask' | null
+    //   本次生效值 : 'foreground' | 'background' | 'idle'
+    //
+    // APK 侧对应关系：
+    //   foreground → 目标屏 = 0（主屏，用户看得见）
+    //   background → 目标屏 = 副屏 displayId（默认，静默）
+    //
+    // 所有操作点（dump/tap/swipe/type/app/scroll）都改读 targetDisplayId()。
+    // 副屏没建时 background 会报明确错误（而不是悄悄操作主屏）。
+
+    /** 0 = 主屏；-1 = 副屏（默认）。 */
+    @Volatile private var targetDisplay: Int = -1
+
+    override fun setTargetDisplay(target: Int) {
+        targetDisplay = if (target == 0) 0 else -1
+    }
+
+    override fun targetDisplayId(): Int {
+        return if (targetDisplay == 0) 0 else displayId()
+    }
+
+    /**
+     * 目标屏的尺寸（宽, 高）。
+     *
+     * 主屏模式从 WindowManager 现取（用户可能改过显示设置/旋转）；
+     * 副屏模式用建屏时记下的 dispW/dispH（那是权威值）。
+     */
+    private fun targetScreenSize(): Pair<Int, Int> {
+        if (targetDisplay != 0) return dispW to dispH
+        return try {
+            val wm = context.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
+            val bounds = wm.currentWindowMetrics.bounds
+            bounds.width() to bounds.height()
+        } catch (_: Throwable) {
+            dispW to dispH   // 兜底：至少不比原来差
+        }
+    }
+
     override fun displayMetrics(): IntArray {
         return intArrayOf(dispW, dispH, dispDpi)
     }
@@ -160,10 +202,14 @@ class PhoneUseService : IPhoneUseService.Stub {
         input("swipe", x1.toString(), y1.toString(), x2.toString(), y2.toString(), durationMs.toString())
 
     override fun swipeDir(direction: String, durationMs: Int): Boolean {
-        if (dispW <= 0 || dispH <= 0) return false
-        val cx = dispW / 2
-        val cy = dispH / 2
-        val d = dispH / 4
+        // 【2026-10-06】尺寸要按**目标屏**取 —— 主屏和副屏分辨率可能不同
+        // （副屏是建屏时按主屏尺寸建的，但用户可能改过显示设置）。
+        // 原来写死 dispW/dispH（副屏尺寸），前台模式下算出的坐标会偏。
+        val (w, h) = targetScreenSize()
+        if (w <= 0 || h <= 0) return false
+        val cx = w / 2
+        val cy = h / 2
+        val d = h / 4
         // 不用解构声明：IntArray.component1()..component4() 要 Kotlin 1.9+，
         // 而 CI 的 Kotlin 版本由 AGP 决定，不能想当然（这里踩过一次）。
         val pts: IntArray = when (direction.lowercase()) {
@@ -449,8 +495,9 @@ class PhoneUseService : IPhoneUseService.Stub {
      * 注意不要用 monkey：不支持 --display（会在主屏起），且不主动退出会挂住。
      */
     private fun launchOnDisplay(pkg: String): String {
-        val id = displayId()
-        if (id < 0) return errJson("副屏未就绪")
+        // 目标屏（前台=主屏 0 / 后台=副屏）—— 见 setTargetDisplay 注释
+        val id = targetDisplayId()
+        if (id < 0) return errJson("副屏未就绪（后台模式下需要虚拟屏；切前台模式用 /device mode 主屏）")
 
         // 查这个包在哪个 display 的 stack 里（RootTask 列表）
         val stack = findStackOfPackage(pkg)
@@ -556,9 +603,46 @@ class PhoneUseService : IPhoneUseService.Stub {
             // 含糊提示，真正的异常（比如 SecurityException: packageName
             // must match the calling uid）完全看不到。
             // 现在记下来，dumpTree 会把它带出去。
-            lastUiError = "${t.javaClass.simpleName}: ${t.message}"
+            // 【2026-10-06 修】反射调用的异常要**解包** ——
+            // InvocationTargetException 的 message 恒为 null，
+            // 真正的原因在 cause 里。原来直接取 t.message，用户只看到
+            // 「InvocationTargetException: null」这种无信息量的提示。
+            lastUiError = describeReflectError(t)
             null
         }
+    }
+
+    /**
+     * 把反射异常翻译成人能看的话。
+     *
+     * 层层解包（InvocationTargetException → cause → cause），
+     * 一直到有 message 的那层。同时给常见根因加一句人话解释 ——
+     * 这个函数的输出会直接展示给用户，不能只给类名。
+     */
+    private fun describeReflectError(t: Throwable): String {
+        val chain = StringBuilder()
+        var cur: Throwable? = t
+        var depth = 0
+        while (cur != null && depth < 6) {
+            val msg = cur.message?.takeIf { it.isNotBlank() } ?: "(无消息)"
+            if (chain.isNotEmpty()) chain.append(" ← ")
+            chain.append("${cur.javaClass.simpleName}: $msg")
+            cur = cur.cause
+            depth++
+        }
+        // 常见根因的人话注解（看到就补一句，方便用户直接照做）
+        val hint = when {
+            chain.contains("SecurityException") && chain.contains("packageName") ->
+                "\n→ 包名与调用 uid 不匹配（Shizuku 服务跑在 shell uid，需用 shell 包名）"
+            chain.contains("hidden") || chain.contains("NoSuchMethod") ->
+                "\n→ 反射的目标 API 在当前 Android 版本上不可用（hidden API 限制或签名变化）"
+            chain.contains("Looper") || chain.contains("main handler") ->
+                "\n→ UiAutomation 必须用主 Looper 构造"
+            chain.contains("connect") || chain.contains("Timeout") ->
+                "\n→ UiAutomation 连接超时（Shizuku 服务可能未就绪）"
+            else -> ""
+        }
+        return chain.toString() + hint
     }
 
     /** 最近一次 UiAutomation 构造失败的原因（null = 没失败过）。 */
@@ -569,9 +653,9 @@ class PhoneUseService : IPhoneUseService.Stub {
             lastWindowError = "ui() 返回 null（UiAutomation 构造失败：${lastUiError ?: "未知"}）"
             return null
         }
-        val id = displayId()
+        val id = targetDisplayId()
         if (id < 0) {
-            lastWindowError = "displayId() = $id（副屏未建）"
+            lastWindowError = "targetDisplayId() = $id（副屏未建；后台模式需要虚拟屏）"
             return null
         }
 
@@ -639,8 +723,8 @@ class PhoneUseService : IPhoneUseService.Stub {
      *   之后：一行一元素，最可用的排前面
      */
     private fun collectTreeFlat(interactiveOnly: Boolean, maxNodes: Int, noSystemUi: Boolean): String {
-        val id = displayId()
-        if (id < 0) return "错误：副屏未就绪（display_id=$id）"
+        val id = targetDisplayId()
+        if (id < 0) return "错误：副屏未就绪（display_id=$id；后台模式需要虚拟屏，或切前台模式）"
 
         var windows: List<*>? = null
         // ⚠️ 不能用 repeat(3) { ... return@repeat }：那是 continue 不是 break，
@@ -874,7 +958,7 @@ class PhoneUseService : IPhoneUseService.Stub {
 
     /** 输入注入（input -d <displayId>）。 */
     private fun input(vararg args: String): Boolean {
-        val id = displayId()
+        val id = targetDisplayId()
         if (id < 0) return false
         return try {
             val cmd = mutableListOf("/system/bin/input", "-d", id.toString())

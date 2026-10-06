@@ -230,7 +230,9 @@ class ToolsBootstrap(
         // ── 工具实例 ──────────────────────────────────────────────
         val fileTools = FileTools(trashStore, undoStore)
         val searchTools = SearchTools()
-        val webTools = settings?.let { WebTools(it) }
+        // 始终创建（见下方注册处注释：WebSearch 没 key 时内部报明确错误，
+        // 不该让工具从清单里静默消失）
+        val webTools = WebTools(settings)
         // ImageTools 始终创建 —— ReverseImage 不需要任何 key，
         // 若跟 FindImage/ImageGen 一起挂在 settings 下面会被误伤（没配 key 就整个消失）
         val imageTools = ImageTools(settings, defaultCwd)
@@ -344,11 +346,22 @@ class ToolsBootstrap(
             add(gitTools.GitAddTool())
             add(gitTools.GitCommitTool())
 
-            // 批 3：网络（需要 settings，没配就不注册 —— 免得模型调了才发现没 key）
-            webTools?.let {
-                add(it.WebSearchTool())
-                add(it.WebFetchTool())
-            }
+            // 批 3：网络
+            //
+            // 【2026-10-06 修】原来 `webTools?.let { ... }` —— settings 为 null
+            // （没配 Provider）时 WebSearch/WebFetch **整个从工具清单消失**。
+            // 用户现象：「函数清单内没有 websearch」—— 模型连它能做什么都不知道，
+            // 自然也不会告诉用户「key 没配」。
+            //
+            // 正确做法：**始终注册**（WebFetch 根本不需要 key；WebSearch 没 key 时
+            // 内部会返回明确的「Tavily API key 未配置，用 /tvly 设置」错误）。
+            // 工具在清单里 → 模型能调 → 用户能看到真实原因，比静默消失强得多。
+            //
+            // 真正的「没配就别注册」只适用于**完全无法降级**的工具
+            // （FindImage/ImageGen：没 key 时没有任何有意义的行为）。
+            val wt = webTools ?: WebTools(null)
+            add(wt.WebSearchTool())
+            add(wt.WebFetchTool())
             // 需要 key 的两个：没配就不注册 —— 免得模型调了才发现没 key
             if (settings != null) {
                 add(imageTools.FindImageTool())

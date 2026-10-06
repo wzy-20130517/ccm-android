@@ -1349,9 +1349,11 @@ internal fun normalizePreviewText(value: String, maxLength: Int = 64): String {
  */
 private fun buildToolEvents(toolCards: List<ChatToolCard>): List<AssistantThinkingEvent> =
     toolCards
-        // Web：WebFetch 直接丢弃；WebSearch 走 web_search 分支（APK 无搜索过程流，
-        // 这里也丢弃，与 Web 的「不进工具组」保持一致）
-        .filter { it.name != "WebFetch" && it.name != "WebSearch" }
+        // 【2026-10-06 修】原来在这里丢弃 WebSearch/WebFetch ——
+        // 用户报「函数清单内没有 websearch」，而且思维链里完全看不到
+        // 搜索发生过。Web 那边是因为有独立的「搜索过程条」承载它们，
+        // APK 没有那条 UI —— 丢弃等于信息消失。
+        // 现在保留（buildToolStepLabel 会给它们合适的标签）。
         .map { card ->
             AssistantThinkingEvent(
                 kind = ThinkingEventKind.TOOL,
@@ -1391,9 +1393,36 @@ private fun buildToolStepLabel(card: ChatToolCard): String {
             val pattern = normalizePreviewText(toolInputField(input, "pattern"))
             if (pattern.isNotEmpty()) "Find files: $pattern" else "Find files"
         }
+        // 【2026-10-06 加】搜索类工具原来落在 else 分支（显示原始参数）。
+        "WebSearch" -> {
+            val q = normalizePreviewText(toolInputField(input, "query"))
+            if (q.isNotEmpty()) "Search: $q" else "Web search"
+        }
+        "WebFetch" -> {
+            val url = normalizePreviewText(toolInputField(input, "url"))
+            if (url.isNotEmpty()) "Fetch: ${url.take(60)}" else "Fetch page"
+        }
+        "SearchInfo" -> {
+            val kw = normalizePreviewText(toolInputField(input, "keywords"))
+            if (kw.isNotEmpty()) "SearchInfo: $kw" else "SearchInfo"
+        }
+        "Lookup" -> {
+            val card = normalizePreviewText(toolInputField(input, "card"))
+            if (card.isNotEmpty()) "Lookup: $card" else "Lookup"
+        }
         else -> {
-            // 兜底：用卡上已有的预览（dev-core 格式化的），再退到工具名
-            card.preview.takeIf { it.isNotBlank() } ?: toolDisplayName(card.name)
+            // 【2026-10-06 修】原来直接返回 card.preview —— 那是**参数预览**
+            // （比如子 Agent 调用的 prompt、或某个参数值），用户看到的
+            // 只有一串参数，**不知道这是什么工具**。
+            // 现在统一加工具名前缀：`工具名: 参数`。
+            // 参数太长时截断（思维链是概览，不该被长 prompt 撑爆）。
+            val name = toolDisplayName(card.name)
+            val preview = card.preview.trim()
+            when {
+                preview.isBlank() -> name
+                preview.length > 60 -> "$name: ${preview.take(60)}…"
+                else -> "$name: $preview"
+            }
         }
     }
 }

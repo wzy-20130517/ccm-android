@@ -17,10 +17,15 @@ package com.ccm.app.ui.chat
  * - 加命令：先在 SlashCommandHandler 里写分支，再往本表加一行
  * - 本表列了但 handler 没有分支 = 用户敲了没反应（面板骗人），
  *   所以两者必须一致。自检脚本见 `tools/check_slash_consistency.py`
- * - 纯 CLI 专属（/rewind /doctor /x11 /device /font /statusline /palette
+ * - 纯 CLI 专属（/rewind /doctor /x11 /font /statusline /palette
  *   /editor /exit /quit /bg-*）不进本表
+ *   （/device 2026-10-06 移出：APK 现在支持模式切换，见下方）
  */
 val COMMON_SLASH_COMMANDS: List<Pair<String, String>> = listOf(
+    // ── 设备（2026-10-06 加，对齐 CLI /device mode）──
+    "/device" to "手机操作模式与设备状态（/device mode 主屏|后台|选择|off）",
+    // ── 生图（handler 早有分支，命令表漏了 —— 自检脚本抓到）──
+    "/imagegen" to "生图配置（/imagegen setup|url|key|model|size|dir）",
     // ── 基础 ──
     "/clear" to "清空当前对话",
     "/new" to "新建会话",

@@ -69,9 +69,20 @@ class PhoneTools(
         private const val DEFAULT_MAX_NODES = 120
     }
 
-    /** 拿服务，拿不到就返回带原因的错误 */
+    /**
+     * 拿服务，拿不到就返回带原因的错误。
+     *
+     * 【2026-10-06 加】拿服务时同步「本次会话的模式」给 Service ——
+     * 它据此决定操作主屏（前台）还是副屏（后台）。
+     */
     private suspend fun service(): Result<com.ccm.app.bridge.IPhoneUseService> =
         withContext(Dispatchers.IO) {
+            // ① 模式闸门（2026-10-06）—— 放在最前：还没定模式就先问用户。
+            //    放这里的理由：**一处覆盖全部 14 个调用点**，
+            //    以后新增手机工具也不会漏（跟 agent 侧 service() 同思路）。
+            modeGate()?.let {
+                return@withContext Result.failure(IllegalStateException(it))
+            }
             val reason = ShizukuBridge.unavailableReason()
             if (reason != null) {
                 return@withContext Result.failure(IllegalStateException("手机操作不可用：$reason"))
@@ -82,8 +93,59 @@ class PhoneTools(
                         "手机操作服务未就绪：${ShizukuBridge.lastPhoneError ?: "未知原因"}"
                     ),
                 )
+            // 把模式同步给 Service（失败不影响——Service 默认副屏）
+            try {
+                svc.setTargetDisplay(PhoneMode.targetDisplayArg(PhoneMode.sessionMode))
+            } catch (_: Throwable) {}
             Result.success(svc)
         }
+
+    /**
+     * 模式闸门（2026-10-06 加，对齐 CLI 的 ensurePhoneMode）。
+     *
+     * 规则：
+     *   · 本次会话已有生效值 → 放行
+     *   · 偏好是 foreground/background → 直接用它，不弹
+     *   · 偏好是 ask 或从没设过 → **需要弹选择**
+     *   · idle → 明确拒绝（不是错误，是用户的选择）
+     *
+     * @return null = 放行；非 null = 给模型的拒绝说明
+     */
+    private fun modeGate(): String? {
+        val session = PhoneMode.sessionMode
+        if (session == PhoneMode.IDLE) {
+            return "本次会话选择「不操作手机」（idle）—— 手机工具不会执行。\n" +
+                "这是用户在会话开始时的选择。要操作手机，请用户用 /device mode 主屏|后台 切换，或新开一轮会话。"
+        }
+        if (session != null) return null   // 已定 → 放行
+
+        val pref = PhoneMode.preference(context)
+        when (pref) {
+            PhoneMode.FOREGROUND, PhoneMode.BACKGROUND -> {
+                PhoneMode.setSession(pref)   // 偏好即生效值，不弹
+                return null
+            }
+            else -> {
+                // 'ask' 或从没设过 → 需要 UI 弹选择
+                val picked = com.ccm.app.AppGraph.phoneModePrompter?.invoke()
+                if (picked == null) {
+                    // 非交互环境（子 agent / 无 UI）→ idle，不动手机
+                    PhoneMode.setSession(PhoneMode.IDLE)
+                    return "当前环境无法弹出模式选择（子 Agent 或界面未就绪）—— " +
+                        "本次会话按 idle 处理，手机工具不会执行。\n" +
+                        "请在主对话里操作手机，或用 /device mode 主屏|后台 预设模式。"
+                }
+                PhoneMode.setSession(picked)
+                // 选了前台/后台/每次都问 → 记住（idle 不记，那是一次性的）
+                if (picked == PhoneMode.FOREGROUND || picked == PhoneMode.BACKGROUND) {
+                    PhoneMode.setPreference(context, picked)
+                }
+                return if (picked == PhoneMode.IDLE) {
+                    "用户选择「这次不操作手机」—— 手机工具不执行。"
+                } else null
+            }
+        }
+    }
 
     private fun screenshotDir(): File = File(saveDir, "phone-shots").apply { if (!exists()) mkdirs() }
 

@@ -590,15 +590,64 @@ private val HiddenToolNames = setOf("WebSearch", "WebFetch")
  * 用于**组头 summary**（去重逗号拼接）与思考链事件标签，不是单卡预览。
  */
 private val ToolLabels = mapOf(
+    // 文件
     "Read" to "Read file",
     "Write" to "Write file",
     "Edit" to "Edit file",
     "MultiEdit" to "Edit files",
-    "Bash" to "Run command",
+    "ApplyPatch" to "Apply patch",
+    "SafeRename" to "Rename",
     "ListDir" to "List directory",
+    // 搜索
     "Search" to "Search",
     "Grep" to "Search",
     "Glob" to "Find files",
+    "CodeSearch" to "Search code",
+    "Symbols" to "List symbols",
+    "RepoMap" to "Repo map",
+    // Bash
+    "Bash" to "Run command",
+    "BashOutput" to "Read output",
+    "KillShell" to "Kill task",
+    // 网络
+    "WebSearch" to "Web search",
+    "WebFetch" to "Fetch page",
+    "SearchInfo" to "Search info",
+    "Lookup" to "Lookup",
+    "FindImage" to "Find image",
+    "ImageGen" to "Generate image",
+    "ReverseImage" to "Reverse image",
+    // 视觉
+    "ViewImage" to "View image",
+    "ViewVideo" to "View video",
+    "Screencap" to "Screenshot",
+    // 手机
+    "phone_snapshot" to "看屏幕",
+    "phone_click" to "点击",
+    "phone_tap_xy" to "点击坐标",
+    "phone_type" to "输入文字",
+    "phone_swipe" to "滑动",
+    "phone_key" to "按键",
+    "phone_scroll" to "滚动",
+    "phone_screenshot" to "截图",
+    "phone_wait" to "等界面",
+    "phone_app" to "启动应用",
+    "phone_shell" to "手机 shell",
+    "phone_vd" to "副屏管理",
+    "phone_device" to "设备状态",
+    "phone_handoff" to "跨屏接力",
+    // 系统
+    "ClipboardGet" to "读剪贴板",
+    "ClipboardSet" to "写剪贴板",
+    "Toast" to "提示",
+    "Notify" to "通知",
+    "Vibrate" to "震动",
+    "Battery" to "电量",
+    "Location" to "定位",
+    "OpenUrl" to "打开链接",
+    "Share" to "分享",
+    "TTS" to "朗读",
+    "say" to "语音播报",
     // 持久化 Task（多 Agent 共享待办）
     "TaskCreate" to "建任务",
     "TaskList" to "看任务清单",
@@ -614,6 +663,59 @@ private val ToolLabels = mapOf(
     "TeamStatus" to "看团队状态",
     "TeamLeave" to "退出团队",
     "TeamDisband" to "解散团队",
+    // 目标
+    "GetGoal" to "看目标",
+    "GoalStatus" to "目标状态",
+    "SetGoalBudget" to "改目标预算",
+    // Agent
+    "Agent" to "派子 Agent",
+    "AgentStatus" to "看子 Agent",
+    "AgentOutput" to "取子 Agent 输出",
+    "AgentStop" to "中止子 Agent",
+    "AgentMemory" to "Agent 记忆",
+    "ExtendTurns" to "加轮次",
+    "AgentWorkflow" to "Agent 工作流",
+    // 杂项
+    "TodoWrite" to "更新待办",
+    "Sleep" to "等待",
+    "Memory" to "记忆",
+    "UserInputHistory" to "输入历史",
+    "AskUserQuestion" to "问用户",
+    "Skill" to "调用技能",
+    // 模式
+    "EnterPlanMode" to "进计划模式",
+    "ExitPlanMode" to "出计划模式",
+    "EnterDeepMode" to "进 deep 模式",
+    "ExitDeepMode" to "出 deep 模式",
+    "EnterWatch" to "进持续模式",
+    "ExitWatch" to "出持续模式",
+    // 开发辅助
+    "Test" to "跑测试",
+    "Diagnostics" to "代码诊断",
+    "CommandExec" to "执行命令",
+    "LSP" to "LSP",
+    // 定时任务
+    "CronCreate" to "建定时任务",
+    "CronList" to "看定时任务",
+    "CronDelete" to "删定时任务",
+    // QQ
+    "QQPush" to "推 QQ",
+    "QQRecall" to "查 QQ 消息",
+    // Hashline
+    "HashlineRead" to "读文件(锚点)",
+    "HashlineEdit" to "编辑(锚点)",
+    "HashlineGrep" to "搜索(锚点)",
+    // GitHub
+    "GitHubRepo" to "看仓库",
+    "GitHubIssues" to "看 issue 列表",
+    "GitHubIssueView" to "读 issue",
+    "GitHubPRs" to "看 PR 列表",
+    "GitHubPRComments" to "读 PR 评论",
+    "GitHubFile" to "读仓库文件",
+    "GitHubComment" to "发评论",
+    "GitHubCreateIssue" to "建 issue",
+    // 模式工具（手机操作模式）
+    "Present" to "展示内容",
 )
 
 /** 工具显示名（未知工具回退到原名，空名回退 `Tool`） */

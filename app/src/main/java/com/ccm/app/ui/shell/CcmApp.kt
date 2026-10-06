@@ -782,6 +782,69 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         }
     }
 
+    // ══════════════════════════════════════════════════════════════
+    //  手机操作模式选择（2026-10-06 加，对齐 CLI 的 modePrompter）
+    // ══════════════════════════════════════════════════════════════
+    // 工具侧（PhoneTools.modeGate）调 AppGraph.requestPhoneModeBlocking()
+    // → 这里弹框 → 用户选 → AppGraph.answerPhoneMode(mode)。
+    //
+    // 三种选项语义（CLI tools-phone.mjs:55）：
+    //   前台 —— 操作主屏，用户看得见；记偏好，以后不再问
+    //   后台 —— 虚拟副屏，静默；记偏好，以后不再问
+    //   这次不操作 —— idle，**不记偏好**（一次性的「别动」）
+    if (com.ccm.app.AppGraph.pendingPhoneMode.value) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { com.ccm.app.AppGraph.answerPhoneMode(null) },
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .shadow(8.dp, RoundedCornerShape(14.72.dp))
+                    .clip(RoundedCornerShape(14.72.dp))
+                    .background(colors.bgMain)
+                    .border(1.dp, colors.border, RoundedCornerShape(14.72.dp))
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(9.2.dp),
+            ) {
+                Text(
+                    "手机操作模式",
+                    style = CCMText.body16.copy(fontWeight = FontWeight.SemiBold),
+                    color = colors.textMain,
+                )
+                Text(
+                    "Agent 要用手机工具，选择这次怎么操作（选前两项会记住，以后不再问）",
+                    style = CCMText.body12,
+                    color = colors.textSecondary,
+                )
+                listOf(
+                    Triple("foreground", "前台", "操作主屏 —— 你能看到它在点什么"),
+                    Triple("background", "后台", "虚拟副屏 —— 静默运行，不占你屏幕"),
+                    Triple("idle", "这次不操作", "仅本次会话有效，下次还会问"),
+                ).forEach { (value, title, desc) ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(7.36.dp))
+                            .clickable { com.ccm.app.AppGraph.answerPhoneMode(value) }
+                            .background(colors.input)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                    ) {
+                        Text(
+                            title,
+                            style = CCMText.body14.copy(fontWeight = FontWeight.Medium),
+                            color = colors.textMain,
+                        )
+                        Text(
+                            desc,
+                            style = CCMText.body11,
+                            color = colors.textSecondary,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
