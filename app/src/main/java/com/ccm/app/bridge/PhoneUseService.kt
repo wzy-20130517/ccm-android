@@ -548,29 +548,87 @@ class PhoneUseService : IPhoneUseService.Stub {
             cls.getMethod("setServiceInfo", info::class.java).invoke(inst, info)
             uiCls = cls
             uiAutomation = inst
+            lastUiError = null
             cls to inst
-        } catch (_: Throwable) { null }
+        } catch (t: Throwable) {
+            // 【2026-10-06 问题28 修复】原来静默吞掉 —— 用户报「phone use
+            // 几乎无法使用」，但拿到的只是「UiAutomation 可能没连上」这种
+            // 含糊提示，真正的异常（比如 SecurityException: packageName
+            // must match the calling uid）完全看不到。
+            // 现在记下来，dumpTree 会把它带出去。
+            lastUiError = "${t.javaClass.simpleName}: ${t.message}"
+            null
+        }
     }
 
+    /** 最近一次 UiAutomation 构造失败的原因（null = 没失败过）。 */
+    private var lastUiError: String? = null
+
     private fun windowsOnDisplay(): List<*>? {
-        val pair = ui() ?: return null
+        val pair = ui() ?: run {
+            lastWindowError = "ui() 返回 null（UiAutomation 构造失败：${lastUiError ?: "未知"}）"
+            return null
+        }
         val id = displayId()
-        if (id < 0) return null
-        return try {
-            val map = pair.first.getMethod("getWindowsOnAllDisplays").invoke(pair.second) ?: return null
-            val size = map.javaClass.getMethod("size").invoke(map) as Int
-            val keyAt = map.javaClass.getMethod("keyAt", Int::class.javaPrimitiveType)
-            val valueAt = map.javaClass.getMethod("valueAt", Int::class.javaPrimitiveType)
-            for (i in 0 until size) {
-                if (keyAt.invoke(map, i) as Int != id) continue
-                val list = valueAt.invoke(map, i) ?: return null
-                val n = list.javaClass.getMethod("size").invoke(list) as Int
-                val get = list.javaClass.getMethod("get", Int::class.javaPrimitiveType)
-                return (0 until n).map { get.invoke(list, it) }
+        if (id < 0) {
+            lastWindowError = "displayId() = $id（副屏未建）"
+            return null
+        }
+
+        // ── 主路径：getWindowsOnAllDisplays() ────────────────────────
+        // 返回 SparseArray<displayId, List<AccessibilityWindowInfo>>。
+        // 【2026-10-06 问题28】加诊断：原来整个 catch 吞异常 + 找不到 key
+        // 也返回 null，外面只看到「UiAutomation 可能没连上」——
+        // 实际可能是「map 里压根没有 display 130 这个 key」。
+        try {
+            val map = pair.first.getMethod("getWindowsOnAllDisplays").invoke(pair.second)
+            if (map != null) {
+                val size = map.javaClass.getMethod("size").invoke(map) as Int
+                val keyAt = map.javaClass.getMethod("keyAt", Int::class.javaPrimitiveType)
+                val valueAt = map.javaClass.getMethod("valueAt", Int::class.javaPrimitiveType)
+                val keys = ArrayList<Int>()
+                for (i in 0 until size) {
+                    val k = keyAt.invoke(map, i) as Int
+                    keys.add(k)
+                    if (k != id) continue
+                    val list = valueAt.invoke(map, i) ?: continue
+                    val n = list.javaClass.getMethod("size").invoke(list) as Int
+                    val get = list.javaClass.getMethod("get", Int::class.javaPrimitiveType)
+                    return (0 until n).map { get.invoke(list, it) }
+                }
+                lastWindowError = "getWindowsOnAllDisplays 里没有 display $id（现有 keys=$keys）"
+            } else {
+                lastWindowError = "getWindowsOnAllDisplays 返回 null"
             }
-            null
-        } catch (_: Throwable) { null }
+        } catch (t: Throwable) {
+            lastWindowError = "getWindowsOnAllDisplays 抛异常：${t.javaClass.simpleName}: ${t.message}"
+        }
+
+        // ── 兜底路径：getWindows() ───────────────────────────────────
+        // 部分机型/ROM 的 getWindowsOnAllDisplays 只返回主屏，
+        // 这时用 getWindows()（返回当前 display 的窗口，不按 display 分组）。
+        try {
+            val list = pair.first.getMethod("getWindows").invoke(pair.second)
+            if (list != null) {
+                val n = list.javaClass.getMethod("size").invoke(list) as Int
+                if (n > 0) {
+                    val get = list.javaClass.getMethod("get", Int::class.javaPrimitiveType)
+                    lastWindowError = null
+                    return (0 until n).map { get.invoke(list, it) }
+                }
+                lastWindowError = (lastWindowError ?: "") + "；getWindows() 返回空列表"
+            } else {
+                lastWindowError = (lastWindowError ?: "") + "；getWindows() 返回 null"
+            }
+        } catch (t: Throwable) {
+            lastWindowError = (lastWindowError ?: "") + "；getWindows() 抛异常：${t.message}"
+        }
+
+        return null
     }
+
+    /** 最近一次窗口枚举失败的原因（问题28：不再只给含糊提示）。 */
+    private var lastWindowError: String? = null
 
     /**
      * 平铺式元素树。
@@ -593,7 +651,12 @@ class PhoneUseService : IPhoneUseService.Stub {
             if (!windows.isNullOrEmpty()) break
             Thread.sleep(350)
         }
-        val ws = windows ?: return "错误：拿不到窗口列表（UiAutomation 可能没连上）"
+        val ws = windows ?: return buildString {
+            append("错误：拿不到窗口列表（display_id=$id）")
+            append("\n原因：")
+            append(lastWindowError ?: lastUiError ?: "UiAutomation 可能没连上")
+            append("\n排查：1) Shizuku 是否在运行 2) CCM 是否已授权 3) 副屏是否就绪")
+        }
         if (ws.isEmpty()) return "display=$id 副屏上没有窗口（应用还没起来）"
 
         val rows = ArrayList<NodeRow>()

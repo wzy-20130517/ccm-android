@@ -807,6 +807,14 @@ private fun AddProviderDialog(
                     placeholder = "https://api.example.com/v1",
                 )
             }
+            // 【2026-10-06 用户反馈修正】「API 密钥」原来排在**最后**（协议之前）——
+            // 但下面的「获取模型列表」按钮 enabled 条件是 `url && key`，
+            // 用户填完地址想点获取时 key 还没填 → 按钮是灰的 →
+            // **看起来就是「这功能没用」**。
+            // 挪到地址后面（获取按钮之前），顺序才对。
+            ProviderField(label = "API 密钥") {
+                SettingsTextField(value = key, onValueChange = { key = it }, placeholder = "sk-...")
+            }
             ProviderField(label = "模型") {
                 SettingsTextField(
                     value = model, onValueChange = { model = it },
@@ -823,6 +831,9 @@ private fun AddProviderDialog(
             val addScope = rememberCoroutineScope()
             var addFetching by remember { mutableStateOf(false) }
             var addFetchError by remember { mutableStateOf("") }
+            // 【2026-10-06】拉到的候选列表 + 内联列表展开开关
+            var addCandidates by remember { mutableStateOf<List<String>>(emptyList()) }
+            var addListExpanded by remember { mutableStateOf(false) }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -844,10 +855,16 @@ private fun AddProviderDialog(
                                     if (r.isSuccess) {
                                         val list = r.getOrThrow()
                                         if (list.isNotEmpty()) {
-                                            // 拉到了 → 弹窗勾选（复用 ModelPickerDialog，
-                                            // 但这里只单选填入 —— 用第一个/或让用户点）
-                                            model = list.first()
-                                            addFetchError = "已获取 ${list.size} 个，默认填第一个：${list.first()}"
+                                            // 【2026-10-06 用户反馈修正·第二版】
+                                            // 第一版是 `model = list.first()`（默认填第一个）
+                                            // → 用户骂「他妈干啥让它默认填第一个」。
+                                            // 第二版想弹选择框 → 用户指出「添加供应商本来就是
+                                            // 弹窗了，你又叠个弹窗」。
+                                            // 现在：**内联列表** —— 直接在这个对话框里
+                                            // 展开可滚动列表，点一个就选中并收起。
+                                            addCandidates = list
+                                            addListExpanded = true
+                                            addFetchError = ""
                                         } else addFetchError = "接口没返回任何模型"
                                     } else {
                                         addFetchError = "获取失败：${r.exceptionOrNull()?.message ?: "未知错误"}"
@@ -866,8 +883,60 @@ private fun AddProviderDialog(
                     )
                 }
             }
-            ProviderField(label = "API 密钥") {
-                SettingsTextField(value = key, onValueChange = { key = it }, placeholder = "sk-...")
+            // ── 内联候选列表（不叠弹窗）────────────────────────────────
+            // 点一个 → 填进 model 输入框 + 收起列表。
+            if (addListExpanded && addCandidates.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 180.dp)
+                        .clip(RoundedCornerShape(7.36.dp))
+                        .background(colors.hover.copy(alpha = 0.4f))
+                        .verticalScroll(rememberScrollState())
+                        .padding(vertical = 3.68.dp),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 11.04.dp, vertical = 3.68.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "共 ${addCandidates.size} 个 · 点选一个",
+                            style = CCMText.body12.copy(fontSize = 10.48.sp),
+                            color = colors.textSecondary,
+                        )
+                        Text(
+                            "收起",
+                            style = CCMText.body12.copy(fontSize = 10.48.sp),
+                            color = colors.accent,
+                            modifier = Modifier.clickable { addListExpanded = false },
+                        )
+                    }
+                    addCandidates.forEach { m ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(29.44.dp)
+                                .clip(RoundedCornerShape(5.52.dp))
+                                .clickable {
+                                    model = m
+                                    addListExpanded = false
+                                }
+                                .padding(horizontal = 11.04.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                m,
+                                style = CCMText.body13.copy(fontSize = 12.sp),
+                                color = colors.textMain,
+                                maxLines = 1,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
             }
             ProviderField(label = "协议") {
                 Row(horizontalArrangement = Arrangement.spacedBy(7.36.dp)) {
@@ -1333,17 +1402,57 @@ private fun GlobeIcon(color: Color, size: androidx.compose.ui.unit.Dp) {
 private fun fetchProviderModels(baseUrl: String, apiKey: String, protocol: String): Result<List<String>> = runCatching {
     require(baseUrl.isNotBlank()) { "API 地址为空" }
     require(apiKey.isNotBlank()) { "API Key 为空" }
-    val base = baseUrl.trimEnd('/').removeSuffix("/chat/completions").removeSuffix("/responses")
-    val url = if (protocol.equals("anthropic", ignoreCase = true)) "$base/v1/models" else "$base/models"
-    val builder = Request.Builder().url(url).get()
-    if (protocol.equals("anthropic", ignoreCase = true)) builder.header("x-api-key", apiKey).header("anthropic-version", "2023-06-01")
-    else builder.header("Authorization", "Bearer $apiKey")
-    val request = builder.build()
-    OkHttpClient().newCall(request).execute().use { response ->
+
+    // 【2026-10-06 用户反馈修正】原来的 URL 拼接有 bug：
+    //   `val url = if (anthropic) "$base/v1/models" else "$base/models"`
+    // —— 用户填 `https://xxx/v1` 时变成 `https://xxx/v1/models` ✓
+    //    但填 `https://xxx` 时变成 `https://xxx/models` ✗（缺 /v1）
+    //    填 `https://xxx/v1/chat/completions` 时只 removeSuffix 了 /responses，
+    //    漏了 /chat/completions → `https://xxx/v1/chat/completions/models` ✗
+    //
+    // 照抄 Web server.mjs:2716 的正确做法：
+    //   1. 去尾部斜杠
+    //   2. 去掉 /chat/completions 或 /messages 后缀
+    //   3. 没有 /vN 结尾就补 /v1
+    //   4. 拼 /models
+    var endpoint = baseUrl.trim().trimEnd('/')
+        .removeSuffix("/chat/completions")
+        .removeSuffix("/messages")
+        .trimEnd('/')
+    if (!Regex("/v\\d+$").containsMatchIn(endpoint)) endpoint += "/v1"
+    endpoint += "/models"
+
+    val isAnthropic = protocol.equals("anthropic", ignoreCase = true)
+    val builder = Request.Builder().url(endpoint).get()
+    if (isAnthropic) {
+        builder.header("x-api-key", apiKey)
+        builder.header("anthropic-version", "2023-06-01")
+    } else {
+        builder.header("Authorization", "Bearer $apiKey")
+    }
+
+    OkHttpClient().newCall(builder.build()).execute().use { response ->
         val body = response.body?.string().orEmpty()
-        if (!response.isSuccessful) error("HTTP ${response.code}")
-        val data = Json.parseToJsonElement(body).jsonObject["data"]?.jsonArray.orEmpty()
-        data.mapNotNull { it.jsonObject["id"]?.jsonPrimitive?.content?.takeIf(String::isNotBlank) }.distinct()
+        if (!response.isSuccessful) {
+            // 明确的错误提示（原来只有 "HTTP 401" 看不出原因）
+            val hint = when (response.code) {
+                401 -> "（API Key 无效）"
+                403 -> "（无权访问，可能是 IP 限制）"
+                404 -> "（该地址没有 /models 接口）"
+                else -> ""
+            }
+            error("HTTP ${response.code}$hint · $endpoint")
+        }
+        val root = Json.parseToJsonElement(body).jsonObject
+        // data 数组（OpenAI）或 models 数组（部分中转站）都要认
+        val arr = root["data"]?.jsonArray ?: root["models"]?.jsonArray
+        if (arr == null) error("响应里没有 data/models 数组 · $endpoint")
+        // id 或 name 字段都要认（有的站用 name）
+        arr.mapNotNull {
+            val o = it.jsonObject
+            (o["id"]?.jsonPrimitive?.content ?: o["name"]?.jsonPrimitive?.content)
+                ?.trim()?.takeIf(String::isNotBlank)
+        }.distinct().sorted()
     }
 }
 

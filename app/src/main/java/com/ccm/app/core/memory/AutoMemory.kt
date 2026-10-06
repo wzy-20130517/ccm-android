@@ -165,9 +165,39 @@ class AutoMemory(
             State()
         } else {
             val o = JSONObject(stateFile.readText())
+            // 【2026-10-06 问题19 修复·第二版】只改默认值**不够** ——
+            // 老用户的 automem.json 里已经存着 `"enabled": true`，
+            // 读出来还是开着（实测设备上就是 true）。
+            //
+            // 用户的要求是「自动记忆默认关闭」，这是**产品决策变更**，
+            // 不是「新用户默认值」。所以做一次性迁移：
+            // 存量文件里的 true 一律视为旧默认，强制改 false。
+            // 迁移后写标记，之后用户手动开的 true 会被尊重。
+            //
+            // ⚠️ 迁移必须**在这里就地写盘** —— 不能只返回 false 等下次 save。
+            //    否则用户 `/automem on` 后，saveState 写的是 enabled=true
+            //    但没写 _migratedOff（因为 State 里没这个字段），
+            //    下次 loadState 又判定「未迁移」→ 又强制 false。
+            //    表现为「开了立刻又被关掉」。
+            val migrated = o.optBoolean("_migratedOff", false)
+            val enabled = if (migrated) {
+                o.optBoolean("enabled", false)      // 已迁移：尊重用户选择
+            } else {
+                // 首次读旧文件 → 迁移：关掉 + 立即落盘标记
+                try {
+                    saveState(
+                        State(
+                            cursor = o.optInt("cursor", 0),
+                            enabled = false,
+                            runs = o.optInt("runs", 0),
+                        )
+                    )
+                } catch (_: Throwable) {}
+                false
+            }
             State(
                 cursor = o.optInt("cursor", 0),
-                enabled = o.optBoolean("enabled", false),  // 【2026-10-06 问题19】默认关闭
+                enabled = enabled,
                 runs = o.optInt("runs", 0),
             )
         }
@@ -183,6 +213,9 @@ class AutoMemory(
                     .put("cursor", s.cursor)
                     .put("enabled", s.enabled)
                     .put("runs", s.runs)
+                    // 【2026-10-06 问题19】迁移标记：写过一次就说明
+                    // 旧默认值已作废，之后用户的 true/false 都照存照读。
+                    .put("_migratedOff", true)
                     .toString(2),
             )
         } catch (_: Throwable) {
