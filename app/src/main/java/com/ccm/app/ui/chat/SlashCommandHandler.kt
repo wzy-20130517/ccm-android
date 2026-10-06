@@ -1549,6 +1549,625 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
             )
         }
 
+        // ══════════════════════════════════════════════════════════════
+        //  【2026-10-06 问题40】Provider 配置系列命令
+        // ══════════════════════════════════════════════════════════════
+        //
+        // APK 原来这些命令只给「去设置页」的提示 —— 但 ProviderStore
+        // 有完整接口（setCurrent/setUrl/setKey/setModel/setProtocol），
+        // 命令能直接改。对齐 CLI 的 /config 系列。
+        //
+        // ⚠️ 改完需重启 App 或切 Provider 才生效（ApiClient 是快照）。
+
+        // ── /config —— 切 Provider ────────────────────────────────────────
+        "/config" -> {
+            val st = com.ccm.app.AppGraph.storage
+            if (st == null) {
+                SlashResult.Notice("存储未初始化。")
+            } else {
+                val store = com.ccm.app.core.provider.ProviderStore(st)
+                val a = arg.trim()
+                if (a.isBlank() || a == "list") {
+                    val items = store.list()
+                    val cur = store.load().current
+                    if (items.isEmpty()) {
+                        SlashResult.Notice("还没有配置 Provider。\n\n_去「设置 → 模型」添加，或用 `/config provider add`_")
+                    } else {
+                        val body = buildString {
+                            appendLine("**Provider 列表（${items.size} 个）**")
+                            appendLine()
+                            items.forEach { p ->
+                                val mark = if (p.id == cur) " ← 当前" else ""
+                                val keyInfo = when {
+                                    p.keyCount > 1 -> "（${p.keyCount} 个 key 轮换）"
+                                    p.keyCount == 1 -> "（有 key）"
+                                    else -> "（无 key）"
+                                }
+                                appendLine("- `/${p.id}` **${p.name}** — ${p.model} $keyInfo$mark")
+                            }
+                            appendLine()
+                            append("切：`/config <编号>` · 改字段：`/model` `/url` `/key` `/name` `/protocol`")
+                        }
+                        SlashResult.Notice(body)
+                    }
+                } else {
+                    // 切到指定 Provider
+                    val ok = store.setCurrent(a)
+                    if (ok) {
+                        SlashResult.Notice("已切到 Provider `$a`。\n\n⚠ **需重启 App**（或切会话）才生效 —— ApiClient 是快照。")
+                    } else {
+                        SlashResult.Notice("找不到 Provider `$a`。用 `/config` 看列表。")
+                    }
+                }
+            }
+        }
+
+        // ── /url —— 改 API 地址 ──────────────────────────────────────────
+        "/url" -> {
+            val st = com.ccm.app.AppGraph.storage
+            val a = arg.trim()
+            if (st == null || a.isBlank()) {
+                SlashResult.Notice("用法：`/url <新地址>`（改当前 Provider）\n例：`/url https://api.example.com/v1`")
+            } else {
+                val store = com.ccm.app.core.provider.ProviderStore(st)
+                val cur = store.load().current
+                if (cur.isBlank()) {
+                    SlashResult.Notice("没有当前 Provider。")
+                } else if (store.setUrl(cur, a)) {
+                    SlashResult.Notice("已改 URL → `$a`（Provider `$cur`）\n\n⚠ 需重启生效。")
+                } else {
+                    SlashResult.Notice("改 URL 失败。")
+                }
+            }
+        }
+
+        // ── /key —— 看/改密钥 ────────────────────────────────────────────
+        "/key" -> {
+            val st = com.ccm.app.AppGraph.storage
+            if (st == null) {
+                SlashResult.Notice("存储未初始化。")
+            } else {
+                val store = com.ccm.app.core.provider.ProviderStore(st)
+                val cur = store.load().current
+                val p = store.get(cur)
+                val a = arg.trim()
+                when {
+                    a.isBlank() -> {
+                        if (p == null) {
+                            SlashResult.Notice("没有当前 Provider。")
+                        } else {
+                            val keys = p.allKeys()
+                            SlashResult.Notice(
+                                "**Provider `${p.name}` 的密钥**\n\n" +
+                                    (if (keys.isEmpty()) "❌ 未配置" else "✅ ${keys.size} 个：" +
+                                        keys.joinToString("\n") { "  `" + it.take(8) + "…" + it.takeLast(4) + "`" }) +
+                                    "\n\n用法：\n" +
+                                    "- `/key <sk-...>` 设单个\n" +
+                                    "- `/key pool <k1> <k2> ...` 设轮换池\n" +
+                                    "- `/key clear` 清空"
+                            )
+                        }
+                    }
+                    a == "clear" -> {
+                        if (store.setKey(cur, "")) SlashResult.Notice("已清空 key（Provider `$cur`）。")
+                        else SlashResult.Notice("清空失败。")
+                    }
+                    a.startsWith("pool ") -> {
+                        val keys = a.removePrefix("pool ").trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+                        if (keys.isEmpty()) {
+                            SlashResult.Notice("用法：`/key pool <k1> <k2> ...`")
+                        } else if (store.setKeyPool(cur, keys)) {
+                            SlashResult.Notice("已设 ${keys.size} 个 key 的轮换池（Provider `$cur`）。\n\n⚠ 需重启生效。")
+                        } else {
+                            SlashResult.Notice("设置失败。")
+                        }
+                    }
+                    else -> {
+                        if (store.setKey(cur, a)) {
+                            SlashResult.Notice("已设 key（Provider `$cur`，`${a.take(8)}…`）。\n\n⚠ 需重启生效。")
+                        } else {
+                            SlashResult.Notice("设置失败。")
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── /name —— 改显示名 ────────────────────────────────────────────
+        "/name" -> {
+            val st = com.ccm.app.AppGraph.storage
+            val a = arg.trim()
+            if (st == null || a.isBlank()) {
+                SlashResult.Notice("用法：`/name <新显示名>`（改当前 Provider 的显示名）")
+            } else {
+                val store = com.ccm.app.core.provider.ProviderStore(st)
+                val cur = store.load().current
+                if (store.setDisplayName(cur, a)) {
+                    SlashResult.Notice("显示名已改为 **$a**。")
+                } else {
+                    SlashResult.Notice("改名失败。")
+                }
+            }
+        }
+
+        // ── /protocol —— 改 API 协议 ─────────────────────────────────────
+        "/protocol" -> {
+            val st = com.ccm.app.AppGraph.storage
+            if (st == null) {
+                SlashResult.Notice("存储未初始化。")
+            } else {
+                val store = com.ccm.app.core.provider.ProviderStore(st)
+                val cur = store.load().current
+                val p = store.get(cur)
+                val a = arg.trim().lowercase()
+                if (a.isBlank()) {
+                    SlashResult.Notice(
+                        "**当前协议**：`${p?.protocol ?: "openai"}`\n\n" +
+                            "用法：`/protocol <openai|anthropic|responses>`\n" +
+                            "- openai → `/chat/completions`（兼容性最好）\n" +
+                            "- anthropic → `/v1/messages`（Claude 原生）\n" +
+                            "- responses → `/responses`（OpenAI 新协议）"
+                    )
+                } else if (a !in listOf("openai", "anthropic", "responses")) {
+                    SlashResult.Notice("协议必须是 openai / anthropic / responses 之一。")
+                } else if (store.setProtocol(cur, a)) {
+                    SlashResult.Notice("协议已改为 `$a`。\n\n⚠ 需重启生效。")
+                } else {
+                    SlashResult.Notice("改协议失败。")
+                }
+            }
+        }
+
+        // ── /workspace —— 查看/设置工作区 ────────────────────────────────
+        "/workspace" -> {
+            val st = com.ccm.app.AppGraph.storage
+            if (st == null) {
+                SlashResult.Notice("存储未初始化。")
+            } else {
+                val a = arg.trim()
+                if (a.isBlank()) {
+                    SlashResult.Notice(
+                        "**当前工作区**：`${com.ccm.app.AppGraph.workspacePath()}`\n\n" +
+                            "用法：`/workspace <路径>` 设置（空 = 用应用私有目录）\n" +
+                            "⚠ 需「所有文件访问」权限才能用 `/sdcard` 路径"
+                    )
+                } else {
+                    val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                    if (loadR.error != null) {
+                        SlashResult.Notice("配置损坏：${loadR.error}")
+                    } else {
+                        val dir = java.io.File(a)
+                        if (!dir.isDirectory && !dir.mkdirs()) {
+                            SlashResult.Notice("目录不存在且无法创建：$a\n\n_检查权限（/sdcard 需「所有文件访问」）_")
+                        } else {
+                            com.ccm.app.core.provider.AppConfig.save(
+                                loadR.config.copy(workspacePath = a), st.configFile,
+                            )
+                            SlashResult.Notice("工作区已设为 `$a`。\n\n⚠ 需重启（或新会话）生效。")
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── /doctor —— 环境自检 ──────────────────────────────────────────
+        "/doctor" -> {
+            val st = com.ccm.app.AppGraph.storage
+            val sb = StringBuilder("**环境自检**\n\n")
+            if (st == null) {
+                sb.append("- ❌ 存储未初始化\n")
+            } else {
+                // 1. 配置
+                val cfgR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                if (cfgR.error != null) {
+                    sb.append("- ❌ 配置解析失败：${cfgR.error}\n")
+                } else {
+                    val prov = cfgR.config.currentProvider
+                    sb.append("- ${if (prov != null) "✅" else "❌"} Provider：${prov?.name ?: "未配置"}\n")
+                    if (prov != null) {
+                        sb.append("  · URL：${prov.url.ifBlank { "(空)" }}\n")
+                        sb.append("  · 模型：${prov.model.ifBlank { "(空)" }}\n")
+                        sb.append("  · Key：${if (prov.allKeys().isEmpty()) "❌ 无" else "✅ ${prov.allKeys().size} 个"}\n")
+                    }
+                }
+                // 2. 工具
+                val tr = com.ccm.app.AppGraph.toolsResult
+                sb.append("- ${if (tr != null) "✅" else "❌"} 工具注册：${tr?.registered?.size ?: 0} 个\n")
+                tr?.rejected?.takeIf { it.isNotEmpty() }?.let {
+                    sb.append("  · ⚠ 被拒：${it.joinToString(", ")}\n")
+                }
+                // 3. 会话
+                sb.append("- ${if (com.ccm.app.AppGraph.session != null) "✅" else "❌"} 会话：${com.ccm.app.AppGraph.sessionId.take(12)}\n")
+                // 4. 权限
+                val perms = tr?.permissions
+                sb.append("- ℹ️ 权限模式：${perms?.mode ?: "?"}\n")
+                // 5. 工作区
+                sb.append("- ℹ️ 工作区：${com.ccm.app.AppGraph.workspacePath()}\n")
+                // 6. 版本
+                sb.append("- ℹ️ 版本：${com.ccm.app.AppGraph.appVersion()}\n")
+            }
+            SlashResult.Notice(sb.toString())
+        }
+
+        // ── /bg-list /bg-status —— 后台任务 ──────────────────────────────
+        //
+        // 【2026-10-06 问题40】BackgroundShells 早就实现了（工具用），
+        // 但没有查询命令。用户看不到后台跑了什么。
+        "/bg-list" -> {
+            val tasks = com.ccm.app.tools.bash.BackgroundShells.list()
+            if (tasks.isEmpty()) {
+                SlashResult.Notice("没有后台任务。")
+            } else {
+                val sb = StringBuilder("**后台任务（${tasks.size} 个）**\n\n")
+                tasks.forEach { t ->
+                    val sec = t.elapsedMs() / 1000
+                    sb.append("- `${t.id}` [${t.status}] ${t.command.take(50)}\n")
+                    sb.append("  ${sec}s · ${t.channelLabel}\n")
+                }
+                sb.append("\n看详情：`/bg-status <id>`")
+                SlashResult.Notice(sb.toString())
+            }
+        }
+        "/bg-status" -> {
+            val id = arg.trim()
+            if (id.isBlank()) {
+                SlashResult.Notice("用法：`/bg-status <id>`（id 从 `/bg-list` 拿）")
+            } else {
+                val t = com.ccm.app.tools.bash.BackgroundShells.get(id)
+                if (t == null) {
+                    SlashResult.Notice("找不到任务 `$id`。")
+                } else {
+                    val sec = t.elapsedMs() / 1000
+                    SlashResult.Notice(
+                        "**任务 `${t.id}`**\n\n" +
+                            "- 状态：${t.status}${if (t.exitCode >= 0) "（exit ${t.exitCode}）" else ""}\n" +
+                            "- 耗时：${sec}s\n" +
+                            "- 命令：`${t.command.take(100)}`\n" +
+                            "- 通道：${t.channelLabel}\n\n" +
+                            "**输出尾部**：\n```\n${t.tail(2000)}\n```"
+                    )
+                }
+            }
+        }
+
+        // ── /team —— 团队全景 ────────────────────────────────────────────
+        //
+        // 【2026-10-06 问题40】TeamStore 早就实现（Team 工具用），
+        // 但没有查询命令。
+        "/team" -> {
+            val st = com.ccm.app.AppGraph.storage
+            if (st == null) {
+                SlashResult.Notice("存储未初始化。")
+            } else {
+                val store = com.ccm.app.tools.task.TeamStore(java.io.File(st.root, "teams"))
+                val teams = store.list()
+                if (teams.isEmpty()) {
+                    SlashResult.Notice("没有活跃的团队。\n\n_团队由 Agent 用 TeamCreate 工具创建。_")
+                } else {
+                    val sb = StringBuilder("**团队（${teams.size} 个）**\n\n")
+                    teams.forEach { t ->
+                        sb.append("- **${t.name}**")
+                        if (t.description.isNotBlank()) sb.append(" — ${t.description}")
+                        sb.append("\n")
+                        t.members.forEach { m ->
+                            sb.append("  · ${m.agent}（${m.role.ifBlank { "无角色" }}）[${m.status}]\n")
+                        }
+                    }
+                    SlashResult.Notice(sb.toString())
+                }
+            }
+        }
+
+        // ── /keys —— 快捷键速查 ──────────────────────────────────────────
+        //
+        // APK 的快捷键与 CLI 不同（触摸屏）—— 列 APK 实际支持的。
+        "/keys" -> SlashResult.Notice(
+            "**APK 快捷键**\n\n" +
+                "- 输入栏麦克风：语音输入\n" +
+                "- 输入栏 + ：附件菜单\n" +
+                "- 模型 chip：切模型/Provider\n" +
+                "- 标题栏 ☰：侧栏\n" +
+                "- 消息长按：复制/选取\n" +
+                "- 代码块「复制」：复制代码\n\n" +
+                "_APK 是触摸屏，没有 CLI 的 Ctrl+X/Ctrl+C 等终端快捷键。_"
+        )
+
+        // ── /palette —— 命令面板 ─────────────────────────────────────────
+        //
+        // APK 的输入 `/` 就有候选面板 —— 这里给完整清单。
+        "/palette" -> {
+            val cmds = com.ccm.app.ui.chat.COMMON_SLASH_COMMANDS
+            val sb = StringBuilder("**全部命令（${cmds.size} 个）**\n\n")
+            cmds.forEach { (c, d) -> sb.append("- `$c` — $d\n") }
+            sb.append("\n_输入 `/` 会弹出候选面板（边打边筛）。_")
+            SlashResult.Notice(sb.toString())
+        }
+
+        // ── /image —— 识图 ───────────────────────────────────────────────
+        //
+        // 【2026-10-06 问题40】APK 支持发图（输入栏 + 按钮），
+        // 但没有 `/image <路径>` 命令。
+        "/image" -> {
+            val a = arg.trim()
+            if (a.isBlank()) {
+                SlashResult.Notice(
+                    "用法：`/image <图片路径> [说明]`\n\n" +
+                        "例：`/image /sdcard/DCIM/xxx.jpg 这是什么`\n\n" +
+                        "_也可以直接点输入栏的 + 按钮选图。_"
+                )
+            } else {
+                // 路径 + 可选说明
+                val path = a.substringBefore(" ").trim()
+                val note = a.substringAfter(" ", "").trim()
+                val f = java.io.File(path)
+                if (!f.exists()) {
+                    SlashResult.Notice("文件不存在：$path")
+                } else {
+                    // 通过 session 发送（带图）
+                    val s = ctx.session
+                    if (s == null) {
+                        SlashResult.Notice("无会话，无法发图。")
+                    } else {
+                        s.send(note.ifBlank { "看看这张图" }, listOf(path))
+                        SlashResult.Notice("已发送图片：`${f.name}`")
+                    }
+                }
+            }
+        }
+
+        // ── /compact-threshold —— 自动压缩阈值 ───────────────────────────
+        "/compact-threshold" -> {
+            val st = com.ccm.app.AppGraph.storage
+            if (st == null) {
+                SlashResult.Notice("存储未初始化。")
+            } else {
+                val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                if (loadR.error != null) {
+                    SlashResult.Notice("配置损坏：${loadR.error}")
+                } else {
+                    val a = arg.trim().removeSuffix("%")
+                    val cur = loadR.config.compactThreshold
+                    if (a.isBlank()) {
+                        SlashResult.Notice(
+                            "**自动压缩阈值**：${if (cur <= 0) "关闭" else "$cur%"}\n\n" +
+                                "用法：`/compact-threshold <百分比>`（0 = 关闭）\n" +
+                                "例：`/compact-threshold 80` —— 上下文用到 80% 时自动压缩\n\n" +
+                                "_注意：压缩会摘要历史，可能丢细节。默认关闭。_"
+                        )
+                    } else {
+                        val v = a.toIntOrNull()
+                        if (v == null || v < 0 || v > 100) {
+                            SlashResult.Notice("阈值必须是 0-100 的数字（0 = 关闭）。")
+                        } else {
+                            com.ccm.app.core.provider.AppConfig.save(
+                                loadR.config.copy(compactThreshold = v), st.configFile,
+                            )
+                            SlashResult.Notice(if (v == 0) "自动压缩已**关闭**。" else "自动压缩阈值已设为 **$v%**。")
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── /replay —— 进会话时是否显示历史正文 ──────────────────────────
+        "/replay" -> {
+            val st = com.ccm.app.AppGraph.storage
+            if (st == null) {
+                SlashResult.Notice("存储未初始化。")
+            } else {
+                val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                if (loadR.error != null) {
+                    SlashResult.Notice("配置损坏：${loadR.error}")
+                } else {
+                    val a = arg.trim().lowercase()
+                    val cur = loadR.config.replayHistory
+                    when (a) {
+                        "" -> SlashResult.Notice(
+                            "**历史回放**：${if (cur) "✅ 开启（进会话显示历史正文）" else "❌ 关闭（静默进入）"}\n\n" +
+                                "用法：`/replay on` 开 · `/replay off` 关\n\n" +
+                                "_影响：Ctrl+X 重启续接、/resume 进会话时是否铺历史正文。_"
+                        )
+                        "on", "开" -> {
+                            com.ccm.app.core.provider.AppConfig.save(
+                                loadR.config.copy(replayHistory = true), st.configFile,
+                            )
+                            SlashResult.Notice("历史回放已**开启**。")
+                        }
+                        "off", "关" -> {
+                            com.ccm.app.core.provider.AppConfig.save(
+                                loadR.config.copy(replayHistory = false), st.configFile,
+                            )
+                            SlashResult.Notice("历史回放已**关闭**（进会话静默）。")
+                        }
+                        else -> SlashResult.Notice("用法：`/replay on|off`")
+                    }
+                }
+            }
+        }
+
+        // ── /cache —— Prompt Cache 开关 ──────────────────────────────────
+        "/cache" -> {
+            val st = com.ccm.app.AppGraph.storage
+            if (st == null) {
+                SlashResult.Notice("存储未初始化。")
+            } else {
+                val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                if (loadR.error != null) {
+                    SlashResult.Notice("配置损坏：${loadR.error}")
+                } else {
+                    val a = arg.trim().lowercase()
+                    val cur = loadR.config.promptCache
+                    when (a) {
+                        "" -> SlashResult.Notice(
+                            "**Prompt Cache**：${if (cur) "✅ 开启" else "❌ 关闭"}\n\n" +
+                                "用法：`/cache on` 开 · `/cache off` 关\n\n" +
+                                "_控制是否发 `prompt_cache_key` 字段。\n" +
+                                "⚠ 未知兼容网关不要盲开 —— 部分中转站会因未知字段报错。_"
+                        )
+                        "on", "开" -> {
+                            com.ccm.app.core.provider.AppConfig.save(
+                                loadR.config.copy(promptCache = true), st.configFile,
+                            )
+                            SlashResult.Notice("Prompt Cache 已**开启**。\n\n⚠ 需重启生效。")
+                        }
+                        "off", "关" -> {
+                            com.ccm.app.core.provider.AppConfig.save(
+                                loadR.config.copy(promptCache = false), st.configFile,
+                            )
+                            SlashResult.Notice("Prompt Cache 已**关闭**。")
+                        }
+                        else -> SlashResult.Notice("用法：`/cache on|off`")
+                    }
+                }
+            }
+        }
+
+        // ── /font —— 字体（APK 只支持查看和恢复默认）────────────────────
+        "/font" -> {
+            val a = arg.trim().lowercase()
+            val cur = com.ccm.app.ui.theme.UiPrefs.chatFont.value
+            if (a == "reset") {
+                com.ccm.app.ui.theme.UiPrefs.setChatFont("default")
+                SlashResult.Notice("字体已恢复默认。")
+            } else {
+                SlashResult.Notice(
+                    "**当前字体**：`$cur`\n\n" +
+                        "APK 的字体在「设置 → 通用 → 聊天字体」切换。\n" +
+                        "`/font reset` 恢复默认。"
+                )
+            }
+        }
+
+        // ── /statusline —— 状态栏（APK 是固定的）───────────────────────
+        "/statusline" -> SlashResult.Notice(
+            "APK 的底部状态行是**固定布局**（模型名 + token 数 + 连接状态），\n" +
+                "不像 CLI 那样可自定义命令。\n\n" +
+                "_CLI 的 `/statusline set <命令>` 在 APK 不适用（没有 shell 环境）。_"
+        )
+
+        // ── /mem —— 结构化记忆库 ───────────────────────────────────────────
+        //
+        // 【2026-10-06 问题40 新建】CLI 的 /mem 管 `memory/` 目录下的
+        // **结构化记忆条目**（frontmatter + 正文），与 CLAUDE.md 分开。
+        //
+        // 用法（对齐 CLI）：
+        //   /mem                  列全部
+        //   /mem list             同
+        //   /mem find <关键词>    按相关性检索
+        //   /mem show <路径>      看某一条
+        //   /mem save <类型> <路径> <说明> :: <正文>
+        //   /mem rm <路径>        删除
+        //   /mem dir              看目录
+        "/mem" -> {
+            val root = com.ccm.app.AppGraph.storage?.root
+            if (root == null) {
+                SlashResult.Notice("存储未初始化。")
+            } else {
+                val dir = java.io.File(root, "memory")
+                val parts = arg.trim().split(Regex("\s+")).filter { it.isNotEmpty() }
+                val sub = parts.firstOrNull()?.lowercase() ?: "list"
+                val rest = parts.drop(1)
+
+                when (sub) {
+                    "list", "ls", "" -> {
+                        val list = com.ccm.app.core.memory.MemoryDir.listMemories(dir)
+                        SlashResult.Notice(com.ccm.app.core.memory.MemoryDir.formatMemoryList(list, dir))
+                    }
+                    "find", "search" -> {
+                        val q = rest.joinToString(" ").trim()
+                        if (q.isBlank()) {
+                            SlashResult.Notice("用法：`/mem find <关键词>`")
+                        } else {
+                            val hits = com.ccm.app.core.memory.MemoryDir.findRelevantMemories(dir, q)
+                            if (hits.isEmpty()) {
+                                SlashResult.Notice("没有匹配「$q」的记忆")
+                            } else {
+                                SlashResult.Notice(com.ccm.app.core.memory.MemoryDir.formatMemoryList(hits, dir))
+                            }
+                        }
+                    }
+                    "show", "cat" -> {
+                        val rel = rest.firstOrNull().orEmpty()
+                        if (rel.isBlank()) {
+                            SlashResult.Notice("用法：`/mem show <相对路径>`")
+                        } else {
+                            val hit = com.ccm.app.core.memory.MemoryDir.listMemories(dir)
+                                .firstOrNull { it.rel == rel || it.rel == "$rel.md" }
+                            if (hit == null) {
+                                SlashResult.Notice("找不到记忆：$rel")
+                            } else {
+                                SlashResult.Notice(
+                                    "${hit.rel}\ntype: ${hit.type}\n" +
+                                        (if (hit.description.isNotBlank()) "${hit.description}\n" else "") +
+                                        "\n${hit.body}"
+                                )
+                            }
+                        }
+                    }
+                    "save", "add" -> {
+                        // /mem save <类型> <路径> <说明> :: <正文>
+                        val type = rest.getOrNull(0)?.lowercase().orEmpty()
+                        if (type !in com.ccm.app.core.memory.MemoryDir.MEMORY_TYPES) {
+                            SlashResult.Notice(
+                                "用法：`/mem save <${com.ccm.app.core.memory.MemoryDir.MEMORY_TYPES.joinToString("|")}> <路径> <说明> :: <正文>`\n" +
+                                    "例：`/mem save feedback style/tone 用户要求直接 :: 不要客套话`"
+                            )
+                        } else {
+                            val restStr = rest.drop(1).joinToString(" ")
+                            val bodyPart = restStr.substringAfter("::", "")
+                            val headPart = restStr.substringBefore("::").trim()
+                            val bits = headPart.split(Regex("\s+")).filter { it.isNotEmpty() }
+                            val rel = bits.firstOrNull().orEmpty()
+                            val desc = bits.drop(1).joinToString(" ")
+                            if (rel.isBlank()) {
+                                SlashResult.Notice("缺少路径")
+                            } else if (bodyPart.trim().isEmpty() && desc.isEmpty()) {
+                                SlashResult.Notice("至少要有说明或正文")
+                            } else {
+                                try {
+                                    val (_, savedRel) = com.ccm.app.core.memory.MemoryDir.saveMemory(
+                                        dir = dir,
+                                        rel = rel,
+                                        name = rel.split("/").last(),
+                                        description = desc,
+                                        type = type,
+                                        body = bodyPart.trim().ifEmpty { desc },
+                                    )
+                                    SlashResult.Notice("已保存：`$savedRel`\n\n_目录：${dir.absolutePath}_")
+                                } catch (t: Throwable) {
+                                    SlashResult.Notice("保存失败：${t.message}")
+                                }
+                            }
+                        }
+                    }
+                    "rm", "delete" -> {
+                        val rel = rest.firstOrNull().orEmpty()
+                        if (rel.isBlank()) {
+                            SlashResult.Notice("用法：`/mem rm <相对路径>`")
+                        } else {
+                            try {
+                                val ok = com.ccm.app.core.memory.MemoryDir.deleteMemory(dir, rel)
+                                SlashResult.Notice(if (ok) "已删除：$rel" else "找不到：$rel")
+                            } catch (t: Throwable) {
+                                SlashResult.Notice("删除失败：${t.message}")
+                            }
+                        }
+                    }
+                    "dir" -> SlashResult.Notice(dir.absolutePath)
+                    else -> SlashResult.Notice(
+                        "**结构化记忆**（按需检索，不像 CLAUDE.md 每轮都注入）\n\n" +
+                            "- `/mem` 或 `/mem list` 查看全部\n" +
+                            "- `/mem find <关键词>` 按相关性检索\n" +
+                            "- `/mem show <路径>` 看某一条\n" +
+                            "- `/mem save <类型> <路径> <说明> :: <正文>`\n" +
+                            "- `/mem rm <路径>` 删除\n" +
+                            "- `/mem dir` 看目录\n\n" +
+                            "_类型：user | feedback | project | reference_"
+                    )
+                }
+            }
+        }
+
         // ── /goal —— 目标模式（完成契约）──────────────────────────────────
         //
         // 【2026-10-06 问题40 修复】原来报「APK 暂未接入」——
@@ -1606,7 +2225,12 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
         //   /mem init                 创建空的记忆文件
         // CLI 的 list/find/save/rm 是「分文件记忆库」机制（memories/ 目录），
         // APK 只有单个 CLAUDE.md，所以那四个子命令无对应实现（如实说明）。
-        "/mem", "/memory" -> {
+        // 【2026-10-06 问题40 修复】原来 `/mem` 和 `/memory` 是**同一个分支**
+        // （都管 CLAUDE.md）—— 但 CLI 里它们是**两个不同的东西**：
+        //   · `/memory` 管 CLAUDE.md（项目总纲，每轮全量注入）
+        //   · `/mem` 管结构化记忆库（files/memory/，按需检索）
+        // 混为一谈是功能缺失。这里拆开：本分支只管 CLAUDE.md。
+        "/memory" -> {
             val root = com.ccm.app.AppGraph.storage?.root
             if (root == null) {
                 SlashResult.Notice("无法读取项目记忆：存储尚未初始化。")
@@ -1837,8 +2461,10 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                                 "  }\n" +
                                 "}\n" +
                                 "```\n\n" +
-                                "**当前只支持 HTTP/SSE 类型**（`url` 字段）——\n" +
-                                "stdio 类型（`command` + `args`）需要 proot 常驻进程支持，暂未实现。\n\n" +
+                                "**支持两种类型**：\n" +
+                                "- **HTTP/SSE**：配 `url` 字段\n" +
+                                "- **stdio**：配 `command` + `args`（+可选 `env`）\n" +
+                                "  ⚠️ 需要 `command` 在**系统 PATH 或绝对路径**可执行\n\n" +
                                 "_放好配置后重启 App，工具会以 `mcp_<服务器名>` 的形式出现。_"
                         )
                     } else {
@@ -1853,13 +2479,15 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                                 servers.forEach { s ->
                                     val status = when {
                                         s.disabled -> "⏸ 已禁用"
-                                        s.url != null -> "✅ HTTP/SSE（可用）"
-                                        s.command != null -> "⚠ stdio（暂不支持）"
+                                        s.url != null -> "✅ HTTP/SSE"
+                                        s.command != null -> "✅ stdio"
                                         else -> "❓ 配置不完整"
                                     }
                                     appendLine("- **${s.name}** — $status")
                                     s.url?.let { appendLine("  `$it`") }
-                                    s.command?.let { appendLine("  `$it`（需 proot 常驻进程支持）") }
+                                    s.commandLine.takeIf { it.isNotEmpty() }?.let {
+                                        appendLine("  `" + it.joinToString(" ") + "`")
+                                    }
                                 }
                                 appendLine()
                                 append("_工具名：`mcp_<服务器名>`（用 action:list 看具体工具）_")

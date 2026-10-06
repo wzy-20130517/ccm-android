@@ -33,13 +33,45 @@ class McpManager(private val configFile: File) {
         /** HTTP/SSE 的地址（null = stdio 类型，当前不支持）。 */
         val url: String?,
         val headers: Map<String, String>,
-        /** stdio 类型的 command（仅用于展示「为什么不支持」）。 */
+        /** stdio 类型的 command（单个字符串，仅用于展示）。 */
         val command: String?,
+        /** stdio 的完整命令行（command + args）。 */
+        val commandLine: List<String> = emptyList(),
+        /** 环境变量。 */
+        val env: Map<String, String> = emptyMap(),
         /** 是否被禁用。 */
         val disabled: Boolean,
     )
 
     private val clients = mutableMapOf<String, McpClient>()
+
+    /**
+     * stdio 传输（问题40）—— 与 HTTP 的 McpClient 并存。
+     *
+     * 用 `Transport` 统一两种类型，避免调用方判断。
+     */
+    private sealed interface Transport {
+        suspend fun connect(): Boolean
+        suspend fun listTools(): List<McpClient.McpTool>
+        suspend fun callTool(name: String, args: Map<String, Any?>): McpClient.CallResult
+        suspend fun close()
+    }
+
+    private class HttpTransport(val c: McpClient) : Transport {
+        override suspend fun connect() = c.connect()
+        override suspend fun listTools() = c.listTools()
+        override suspend fun callTool(name: String, args: Map<String, Any?>) = c.callTool(name, args)
+        override suspend fun close() { c.close() }
+    }
+
+    private class StdioTransport(val t: McpStdioTransport) : Transport {
+        override suspend fun connect() = t.connect()
+        override suspend fun listTools() = t.listTools()
+        override suspend fun callTool(name: String, args: Map<String, Any?>) = t.callTool(name, args)
+        override suspend fun close() { t.close() }
+    }
+
+    private val transports = mutableMapOf<String, Transport>()
 
     /** 读配置。 */
     fun loadServers(): List<ServerConfig> = try {
@@ -53,11 +85,32 @@ class McpManager(private val configFile: File) {
                 o.optJSONObject("headers")?.let { h ->
                     h.keys().forEach { k -> headers[k] = h.optString(k, "") }
                 }
+                // stdio 的完整命令行 = command + args
+                val cmd = o.optString("command", "").takeIf { it.isNotBlank() }
+                val argsArr = o.optJSONArray("args")
+                val cmdLine = if (cmd != null) {
+                    val list = mutableListOf(cmd)
+                    if (argsArr != null) {
+                        for (i in 0 until argsArr.length()) {
+                            argsArr.optString(i, "")?.let { if (it.isNotEmpty()) list += it }
+                        }
+                    }
+                    list
+                } else emptyList()
+
+                // env 环境变量
+                val envMap = mutableMapOf<String, String>()
+                o.optJSONObject("env")?.let { e ->
+                    e.keys().forEach { k -> envMap[k] = e.optString(k, "") }
+                }
+
                 ServerConfig(
                     name = name,
                     url = o.optString("url", "").takeIf { it.isNotBlank() },
                     headers = headers,
-                    command = o.optString("command", "").takeIf { it.isNotBlank() },
+                    command = cmd,
+                    commandLine = cmdLine,
+                    env = envMap,
                     disabled = o.optBoolean("disabled", false),
                 )
             }.toList()
@@ -76,11 +129,24 @@ class McpManager(private val configFile: File) {
         val out = mutableMapOf<String, List<McpClient.McpTool>>()
         for (cfg in loadServers()) {
             if (cfg.disabled) continue
-            val url = cfg.url ?: continue   // stdio 跳过
             try {
-                val c = clients.getOrPut(cfg.name) { McpClient(cfg.name, url, cfg.headers) }
-                if (c.connect()) {
-                    out[cfg.name] = c.listTools()
+                val t = transports.getOrPut(cfg.name) {
+                    when {
+                        // HTTP/SSE 类型
+                        cfg.url != null -> HttpTransport(McpClient(cfg.name, cfg.url, cfg.headers))
+                        // stdio 类型（问题40：新增支持）
+                        cfg.command != null -> StdioTransport(
+                            McpStdioTransport(
+                                serverName = cfg.name,
+                                command = cfg.commandLine,
+                                env = cfg.env,
+                            )
+                        )
+                        else -> return@getOrPut null!!
+                    }
+                }
+                if (t.connect()) {
+                    out[cfg.name] = t.listTools()
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "[${cfg.name}] 连接异常：${t.message}", t)
@@ -91,13 +157,13 @@ class McpManager(private val configFile: File) {
 
     /** 调一个 MCP 工具。 */
     suspend fun call(server: String, tool: String, args: Map<String, Any?>): McpClient.CallResult {
-        val c = clients[server] ?: return McpClient.CallResult(false, null, "服务器未连接：$server")
-        return c.callTool(tool, args)
+        val t = transports[server] ?: return McpClient.CallResult(false, null, "服务器未连接：$server")
+        return t.callTool(tool, args)
     }
 
     /** 关全部。 */
     suspend fun closeAll() = withContext(Dispatchers.IO) {
-        clients.values.forEach { try { it.close() } catch (_: Throwable) {} }
-        clients.clear()
+        transports.values.forEach { try { it.close() } catch (_: Throwable) {} }
+        transports.clear()
     }
 }

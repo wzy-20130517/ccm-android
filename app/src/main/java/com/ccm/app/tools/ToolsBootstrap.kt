@@ -255,6 +255,39 @@ class ToolsBootstrap(
         // AgentWorkflow：Explore → Plan → Implement → Review 四阶段串行
         val workflowTools = AgentWorkflowTools()
         // Skill：项目 skills/（按运行时 cwd）优先，用户级兜底
+        // 【2026-10-06 问题40】首次启动时把**内置 skill**（assets/skills/）
+        // 解压到 files/skills/ —— 项目自带的 5 个 skill 装完就能用。
+        //
+        // 为什么要解压而不是直接读 assets：
+        //   SkillTools 按**文件路径**查找（File API），assets 里的东西
+        //   不是真实文件（要 AssetManager 读）—— 改 SkillTools 支持 assets
+        //   会让它的查找逻辑复杂化（两套路径体系）。解压一次更简单。
+        //
+        // 只做一次：用标记文件（files/skills/.unpacked）判断。
+        try {
+            val skillsDir = File(context.filesDir, "skills")
+            val marker = File(skillsDir, ".unpacked")
+            if (!marker.exists()) {
+                skillsDir.mkdirs()
+                val am = context.assets
+                val builtin = am.list("skills") ?: emptyArray()
+                for (name in builtin) {
+                    val files = am.list("skills/$name") ?: continue
+                    val target = File(skillsDir, name).apply { mkdirs() }
+                    for (f in files) {
+                        try {
+                            am.open("skills/$name/$f").use { input ->
+                                File(target, f).outputStream().use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                        } catch (_: Throwable) {}
+                    }
+                }
+                marker.writeText("1")
+            }
+        } catch (_: Throwable) {}
+
         val skillTools = SkillTools(
             globalDir = File(context.filesDir, "skills"),
         )

@@ -122,6 +122,32 @@ data class AppConfig(
     @SerialName("workspacePath")
     val workspacePath: String? = null,
 
+    /**
+     * 自动压缩阈值（问题40：/compact-threshold）。
+     *
+     * 0 = 关闭（默认）。>0 = 上下文用掉这么多百分比时自动压缩。
+     * 对齐 CLI 的 /compact-threshold。
+     */
+    @SerialName("compactThreshold")
+    val compactThreshold: Int = 0,
+
+    /**
+     * 进会话时是否显示历史正文（问题40：/replay）。
+     *
+     * 默认 false（2026-10-03 拍板：不想被历史刷屏）。
+     */
+    @SerialName("replayHistory")
+    val replayHistory: Boolean = false,
+
+    /**
+     * Prompt Cache 开关（问题40：/cache）。
+     *
+     * 控制是否发 prompt_cache_key / retention 字段。
+     * 默认 false（未知兼容网关不要盲开）。
+     */
+    @SerialName("promptCache")
+    val promptCache: Boolean = false,
+
     /** 其他未建模的字段原样保留（防保存时丢失用户的手工配置）。 */
     @SerialName("_extra")
     val extra: JsonObject? = null,
@@ -149,6 +175,7 @@ data class AppConfig(
             "providers", "current", "greeting", "stream", "temperature",
             "maxContextTokens", "permissionMode", "vision", "visionProviderId",
             "keyRotateEvery", "imageGen", "effort", "tavilyKey", "webSearch", "pexelsKey",
+            "compactThreshold", "replayHistory", "promptCache",
             "outputStyle", "workspacePath",
             "_extra",
         )

@@ -113,6 +113,16 @@ object AppGraph {
     }
 
     /**
+     * App 版本号（问题40：/doctor 用）。
+     *
+     * 从 PackageManager 读（build.gradle 的 versionName）。
+     */
+    fun appVersion(): String = try {
+        val ctx = appContext ?: return "unknown"
+        ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "unknown"
+    } catch (_: Throwable) { "unknown" }
+
+    /**
      * 读 GitHub 配置（问题40）。
      *
      * 格式对齐 CLI 的 `~/.claude-code-mobile/github.json`：

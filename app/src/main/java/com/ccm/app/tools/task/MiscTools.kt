@@ -252,6 +252,32 @@ class MiscTools(
     //  Memory
     // ══════════════════════════════════════════════════════════════
 
+    /**
+     * 提取 markdown 标题行（跳过代码块内的假标题）。
+     *
+     * 【为什么必须跳过代码块】CLAUDE.md 里的 shell 片段注释
+     * （`# 1) 换 token`、`# 常用操作`）会被当成标题 —— 实测混进 7 条假标题。
+     * 对齐 CLI 的 extractHeadingLines。
+     */
+    private fun extractHeadingLines(content: String): List<String> {
+        val out = mutableListOf<String>()
+        var inFence = false
+        var fenceChar = ""
+        content.split("\n").forEach { line ->
+            val t = line.trim()
+            val fm = Regex("^(`{3,}|~{3,})").find(t)
+            if (fm != null) {
+                val ch = fm.groupValues[1][0].toString()
+                if (!inFence) { inFence = true; fenceChar = ch }
+                else if (ch == fenceChar) { inFence = false; fenceChar = "" }
+                return@forEach
+            }
+            if (inFence) return@forEach
+            if (Regex("^#{1,6}\\s+").containsMatchIn(t)) out += t
+        }
+        return out
+    }
+
     inner class MemoryTool : Tool() {
         override val name = "Memory"
         override val description =
@@ -263,20 +289,28 @@ class MiscTools(
                 "记的时候写清「根因」和「为什么会踩」，不要只写「修了 X」——后者对未来的自己没用。"
         override val maxResultSizeChars = 500
 
+        // 【2026-10-06 问题40 修复】原来只有 append/show/init ——
+        // CLI 还有 toc（列标题目录）和 section（按标题取一节）。
+        // 文件很大时（系统提示词只注入"开头正文 + 标题目录"），
+        // 没有 toc/section 就只能 Read 整个文件（爆上下文）。
         override val inputSchema: JsonObject = ToolSchema.objectSchema(
             "action" to ToolSchema.string(
-                "append=追加内容到记忆文件 · show=查看当前内容 · init=如果不存在则创建",
-                enum = listOf("append", "show", "init"),
+                "append=追加内容 · show=看全文 · init=创建 · toc=列标题目录 · section=按标题取一节",
+                enum = listOf("append", "show", "init", "toc", "section"),
             ),
             "text" to ToolSchema.string("要追加的文本（action=append 时必填）。会被原样写入文件末尾。"),
+            "title" to ToolSchema.string("action=section 时必填：标题关键词（模糊匹配，取第一个命中的 ## 小节）"),
             required = listOf("action"),
         )
 
         override fun validateInput(input: JsonObject): String? {
             val action = input.str("action") ?: return "action is required"
-            if (action !in listOf("append", "show", "init")) return "action 非法：$action"
+            if (action !in listOf("append", "show", "init", "toc", "section")) return "action 非法：$action"
             if (action == "append" && input.str("text").isNullOrBlank()) {
                 return "action=append 时 text 必填"
+            }
+            if (action == "section" && input.str("title").isNullOrBlank()) {
+                return "action=section 时 title 必填"
             }
             return null
         }
@@ -302,6 +336,86 @@ class MiscTools(
                             memoryFile.parentFile?.mkdirs()
                             AtomicFile.writeText(memoryFile, "# 项目记忆\n\n", createParent = true)
                             ToolResult.ok("已创建记忆文件：${memoryFile.absolutePath}")
+                        }
+                    }
+
+                    // 【2026-10-06 问题40】toc —— 列标题目录
+                    "toc" -> {
+                        if (!memoryFile.exists()) {
+                            ToolResult.ok("（记忆文件不存在）")
+                        } else {
+                            val full = memoryFile.readText()
+                            val heads = extractHeadingLines(full)
+                            if (heads.isEmpty()) {
+                                ToolResult.ok("记忆文件没有 ## 标题（共 ${full.length} 字符）")
+                            } else {
+                                val sb = StringBuilder()
+                                sb.append("记忆标题目录（共 ${heads.size} 节，文件 ${full.length} 字符）：\n\n")
+                                heads.forEachIndexed { i, h -> sb.append("${i + 1}. $h\n") }
+                                sb.append("\n用 action=section + title 取某一节完整正文。")
+                                ToolResult.ok(sb.toString())
+                            }
+                        }
+                    }
+
+                    // 【2026-10-06 问题40】section —— 按标题取一节
+                    "section" -> {
+                        if (!memoryFile.exists()) {
+                            ToolResult.ok("（记忆文件不存在）")
+                        } else {
+                            val kw = input.str("title")?.trim().orEmpty()
+                            if (kw.isBlank()) {
+                                ToolResult.invalidInput("action=section 需要 title 参数")
+                            } else {
+                                val full = memoryFile.readText()
+                                val lines = full.split("\n")
+                                val headTexts = extractHeadingLines(full).toSet()
+                                // 找标题行位置（跳过代码块内的假标题）
+                                data class H(val line: Int, val text: String)
+                                val heads = mutableListOf<H>()
+                                var inFence = false
+                                var fenceChar = ""
+                                lines.forEachIndexed { i, ln ->
+                                    val t = ln.trim()
+                                    val fm = Regex("^(`{3,}|~{3,})").find(t)
+                                    if (fm != null) {
+                                        val ch = fm.groupValues[1][0].toString()
+                                        if (!inFence) { inFence = true; fenceChar = ch }
+                                        else if (ch == fenceChar) { inFence = false; fenceChar = "" }
+                                        return@forEachIndexed
+                                    }
+                                    if (inFence) return@forEachIndexed
+                                    if (headTexts.contains(t)) heads += H(i, t)
+                                }
+                                // 模糊匹配：完整包含 → 去 # 后包含 → 大小写不敏感
+                                val kwLower = kw.lowercase()
+                                var hit = heads.firstOrNull { it.text.contains(kw) }
+                                if (hit == null) hit = heads.firstOrNull {
+                                    it.text.replace(Regex("^#+\\s*"), "").lowercase().contains(kwLower)
+                                }
+                                if (hit == null) {
+                                    val near = heads.filter {
+                                        it.text.lowercase().contains(kwLower.take(4))
+                                    }.take(5)
+                                    ToolResult.ok(
+                                        "未找到含「$kw」的小节。" +
+                                            (if (near.isNotEmpty()) "\n相近的：\n" + near.joinToString("\n") { "  ${it.text}" } else "") +
+                                            "\n用 action=toc 看完整目录。"
+                                    )
+                                } else {
+                                    val startLine = hit.line
+                                    val startLevel = (Regex("^#+").find(hit.text)?.value ?: "#").length
+                                    var endLine = lines.size
+                                    for (h in heads) {
+                                        if (h.line <= startLine) continue
+                                        val lvl = (Regex("^#+").find(h.text)?.value ?: "#").length
+                                        if (lvl <= startLevel) { endLine = h.line; break }
+                                    }
+                                    val body = lines.subList(startLine, endLine).joinToString("\n").trimEnd()
+                                    val more = if (endLine < lines.size) "\n\n（下一节：${lines[endLine]}）" else ""
+                                    ToolResult.ok(body + more)
+                                }
+                            }
                         }
                     }
 
