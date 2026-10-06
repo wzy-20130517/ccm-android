@@ -570,6 +570,18 @@ object AppGraph {
                         val result = com.ccm.app.ui.chat.handleSlashCommand(
                             full,
                             com.ccm.app.ui.chat.SlashContext(
+                                session = sess
+            // ══════════════════════════════════════════════════════════
+            //  【2026-10-06 修 P0】把 container 存下来
+            // ══════════════════════════════════════════════════════════
+            //
+            // 这个属性（声明在文件顶部）设计意图是「装配完成后持有当前
+            // AppContainer」，但**从未被赋过非 null 值**（唯一的赋值是
+            // shutdown() 里的 = null）。后果是三条功能链静默全废：
+            //   1. 子 Agent 观察窗：init 里 `if (container != null)` 守卫
+            //      永远不成立 → attachSubAgents 不执行 → AgentStatus/
+            //      AgentOutput/AgentStop 永远报「观察器未接入」
+            //   2. /btw 永远失败（container == null 判断恒真）
                                 session = session,
                                 appContext = app,
                                 // 这三个依赖 UI —— 传空实现（命令会返回提示）
@@ -642,6 +654,21 @@ object AppGraph {
             }
 
             session = sess
+            // ══════════════════════════════════════════════════════════
+            //  【2026-10-06 修 P0】把 container 存下来
+            // ══════════════════════════════════════════════════════════
+            //
+            // 这个属性（声明在文件顶部）设计意图是「装配完成后持有当前
+            // AppContainer」，但**从未被赋过非 null 值**（唯一的赋值是
+            // shutdown() 里的 = null）。后果是三条功能链静默全废：
+            //   1. 子 Agent 观察窗：init 里 `if (container != null)` 守卫
+            //      永远不成立 → attachSubAgents 不执行 → AgentStatus/
+            //      AgentOutput/AgentStop 永远报「观察器未接入」
+            //   2. /btw 永远失败（container == null 判断恒真）
+            //   3. 热更新永远报失败（container?.refreshApi() 短路成 null）
+            //
+            // 现在：每次创建 session 时把它的 container 存下来。
+            container = sess?.appContainer
             initError = null
             // 待办看板恢复（audit-core #3）
             try { sess.restoreTodos(tools.loadTodos()) } catch (_: Throwable) {}
@@ -772,6 +799,21 @@ object AppGraph {
             }
 
             session = sess
+            // ══════════════════════════════════════════════════════════
+            //  【2026-10-06 修 P0】把 container 存下来
+            // ══════════════════════════════════════════════════════════
+            //
+            // 这个属性（声明在文件顶部）设计意图是「装配完成后持有当前
+            // AppContainer」，但**从未被赋过非 null 值**（唯一的赋值是
+            // shutdown() 里的 = null）。后果是三条功能链静默全废：
+            //   1. 子 Agent 观察窗：init 里 `if (container != null)` 守卫
+            //      永远不成立 → attachSubAgents 不执行 → AgentStatus/
+            //      AgentOutput/AgentStop 永远报「观察器未接入」
+            //   2. /btw 永远失败（container == null 判断恒真）
+            //   3. 热更新永远报失败（container?.refreshApi() 短路成 null）
+            //
+            // 现在：每次创建 session 时把它的 container 存下来。
+            container = sess?.appContainer
             try { sess.restoreTodos(tools.loadTodos()) } catch (_: Throwable) {}
             initError = null
             sess
@@ -935,6 +977,18 @@ object AppGraph {
                         val result = com.ccm.app.ui.chat.handleSlashCommand(
                             full,
                             com.ccm.app.ui.chat.SlashContext(
+                                session = sess
+            // ══════════════════════════════════════════════════════════
+            //  【2026-10-06 修 P0】把 container 存下来
+            // ══════════════════════════════════════════════════════════
+            //
+            // 这个属性（声明在文件顶部）设计意图是「装配完成后持有当前
+            // AppContainer」，但**从未被赋过非 null 值**（唯一的赋值是
+            // shutdown() 里的 = null）。后果是三条功能链静默全废：
+            //   1. 子 Agent 观察窗：init 里 `if (container != null)` 守卫
+            //      永远不成立 → attachSubAgents 不执行 → AgentStatus/
+            //      AgentOutput/AgentStop 永远报「观察器未接入」
+            //   2. /btw 永远失败（container == null 判断恒真）
                                 session = session,
                                 appContext = app,
                                 navigate = {},
@@ -1010,7 +1064,16 @@ object AppGraph {
             val previousHistory = previousSession?.historySnapshot().orEmpty()
             val previousTitle = container?.sessionAuto?.title
             try { previousSession?.flush() } catch (_: Throwable) {}
-            try { previousSession?.stop() } catch (_: Throwable) {}
+            // 【2026-10-06 修 P0】用 dispose() 替代 stop() ——
+            // stop() 只做 agentLoop.abort() + runningJob.cancel()，**不碰
+            // SessionAuto**（那个 appScope 里的 while 循环会永远跑下去，
+            // 还会跟新 session 抢同一个落盘文件）。
+            // dispose() 内部调 container.shutdown()（含 SessionAuto 停止）。
+            //
+            // 原来指望 `container?.shutdown()` 兜底，但那时 container 恒为
+            // null（见文件顶部那个 P0），是 no-op —— 于是每次 rebuild
+            // 泄漏一个协程 + 整个旧会话对象图。
+            try { previousSession?.dispose() } catch (_: Throwable) {}
             try { container?.shutdown() } catch (_: Throwable) {}
 
             // ★ 2026-10-01：优先用配置的 workspacePath（与 CLI /workspace 同语义），
@@ -1036,6 +1099,21 @@ object AppGraph {
                 try { sess.restoreTodos(toolsResult?.loadTodos?.invoke().orEmpty()) } catch (_: Throwable) {}
             }
             session = sess
+            // ══════════════════════════════════════════════════════════
+            //  【2026-10-06 修 P0】把 container 存下来
+            // ══════════════════════════════════════════════════════════
+            //
+            // 这个属性（声明在文件顶部）设计意图是「装配完成后持有当前
+            // AppContainer」，但**从未被赋过非 null 值**（唯一的赋值是
+            // shutdown() 里的 = null）。后果是三条功能链静默全废：
+            //   1. 子 Agent 观察窗：init 里 `if (container != null)` 守卫
+            //      永远不成立 → attachSubAgents 不执行 → AgentStatus/
+            //      AgentOutput/AgentStop 永远报「观察器未接入」
+            //   2. /btw 永远失败（container == null 判断恒真）
+            //   3. 热更新永远报失败（container?.refreshApi() 短路成 null）
+            //
+            // 现在：每次创建 session 时把它的 container 存下来。
+            container = sess?.appContainer
             initError = if (sess == null) "尚未配置 API —— 请到「设置 → 模型」里添加一个 Provider" else null
             sess
         } catch (t: Throwable) {

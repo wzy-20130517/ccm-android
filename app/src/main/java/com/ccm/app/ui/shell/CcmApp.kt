@@ -339,8 +339,15 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
     var activeSession by remember { mutableStateOf(session) }
     LaunchedEffect(session) {
         val g = com.ccm.app.AppGraph.session
-        // 只在 activeSession 还是空、而 AppGraph 已有会话时补上
-        if (g != null && activeSession == null) {
+        // 【2026-10-06 修 P0】原来是「只在 activeSession 为空时补上」——
+        // 但 rebuild（设置页改配置 / 加 Provider / 换环境）会创建**新实例**
+        // 并设为 AppGraph.session，此时 activeSession 非空、不更新 →
+        // UI 继续用旧实例（旧 ApiClient）→「改了配置要重启才生效」。
+        //
+        // 现在：实例变化即同步（`!==` 判同一性，不是 equals）。
+        // 为什么安全：AppGraph.session 是**权威**（rebuild/openSession 都更新它），
+        // 用户手动切会话也走 openSession → 同样反映在 AppGraph.session 上。
+        if (g != null && activeSession !== g) {
             activeSession = g
         }
     }
@@ -1538,7 +1545,17 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                 profileRefreshKey++
                 try {
                     com.ccm.app.AppGraph.appScope?.let { scope ->
-                        com.ccm.app.AppGraph.rebuild(appCtx, scope)
+                        // 【2026-10-06 修 P0】接住 rebuild 的返回值并更新
+                        // activeSession —— 原来丢弃返回值，于是：
+                        //   ① AppGraph.session 换成新实例，但 UI 的
+                        //      activeSession 还是旧的 → 对话页继续用旧
+                        //      ApiClient → 「改了 key 要重启才生效」
+                        //   ② 旧 session 的 SessionAuto 协程永不停止
+                        //      （rebuild 只调 stop() 不碰 SessionAuto，
+                        //      而兜底的 container?.shutdown() 当时是 no-op）
+                        //   ③ 历史分叉：旧会话继续聊、新会话不知道 →
+                        //      切换会话后最近一段对话消失
+                        com.ccm.app.AppGraph.rebuild(appCtx, scope)?.let { activeSession = it }
                     }
                 } catch (_: Throwable) {}
             }

@@ -54,6 +54,22 @@ import kotlinx.coroutines.launch
  */
 class ChatSession(
     private val container: AppContainer,
+
+    /**
+     * 暴露 AppContainer（2026-10-06 加）。
+     *
+     * 【为什么需要】`AppGraph.container` 是个长期为 null 的属性 —— 它的
+     * 设计意图是「装配完成后持有当前 AppContainer」，但 ChatSession 的
+     * container 是 private，AppGraph 拿不到、赋值代码从未写出。
+     * 后果（三条功能链静默全废）：
+     *   1. 子 Agent 观察窗：AgentStatus/AgentOutput/AgentStop 永远报
+     *      「观察器未接入」（attachSubAgents 那块因 container==null 不执行）
+     *   2. /btw 永远失败（container==null 判断恒真）
+     *   3. 热更新永远报失败（container?.refreshApi() 短路成 null）
+     *
+     * 加这个 getter 后，AppGraph 能在创建 session 时把 container 存下来。
+     */
+    val appContainer: AppContainer get() = container
     private val scope: CoroutineScope,
 ) {
 
