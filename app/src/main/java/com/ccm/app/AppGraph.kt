@@ -831,6 +831,95 @@ object AppGraph {
      * 污染新的 —— Node 版踩过「端点 A 的结论连坐到端点 B」。
      */
     @Synchronized
+    /**
+     * 重建**工具注册表**（含 Bash 通道）—— 环境模式切换后调。
+     *
+     * ══════════════════════════════════════════════════════════════
+     *  【2026-10-06 加】为什么需要它
+     * ══════════════════════════════════════════════════════════════
+     *
+     * [rebuild] 只重建会话，**工具注册表整个复用**（runner = toolsResult?.executor）
+     * —— 于是用户在设置里把环境从 proot 切到「外接 Termux」后，
+     * BashTool 手里还是那个 ProotChannel，命令照样往 proot 里跑。
+     * 用户现象：「我选了 termux 外接，bash 还是报 proot error」。
+     *
+     * 通道是在 ToolsBootstrap.install() 时按 cfg.envMode 定的，所以切换
+     * 环境必须重跑工具装配。这个方法就是干这个的。
+     *
+     * 重建后需要重新装配会话（新 executor 要注入 AgentLoop）—— 调用方
+     * 接着调 [rebuild] 即可（它会用新的 toolsResult.executor）。
+     *
+     * @return 是否成功重建（false = 尚未 init 过，调用方应先 init）
+     */
+    @Synchronized
+    fun rebuildTools(context: Context, scope: CoroutineScope): Boolean {
+        val st = storage ?: return false
+        val app = context.applicationContext
+        return try {
+            val cfg = AppConfig.load(st.configFile).config
+            val provider = cfg.currentProvider
+
+            val settings: ToolSettings? = provider?.let {
+                AppContainer.buildSettings(cfg, it)
+            }
+
+            val reg = ToolRegistry()
+            val tools = ToolsBootstrap(
+                context = app,
+                storage = AppBackedToolStorage(st),
+                settings = settings,
+                bridge = NativeBridge(app),
+                askUser = { q, opts -> askUserBlocking(q, opts) },
+                githubToken = readGithubConfig()?.first,
+                githubRepo = readGithubConfig()?.second,
+                commandExec = { cmd ->
+                    try {
+                        val full = if (cmd.startsWith("/")) cmd else "/$cmd"
+                        val result = com.ccm.app.ui.chat.handleSlashCommand(
+                            full,
+                            com.ccm.app.ui.chat.SlashContext(
+                                session = session,
+                                appContext = app,
+                                navigate = {},
+                                newChat = {},
+                                openPanel = {},
+                            ),
+                        )
+                        when (result) {
+                            null -> "命令 `$full` 不被识别（或需要界面操作）。可用：/clear /compact /cost /context /help"
+                            is com.ccm.app.ui.chat.SlashResult.Notice -> result.markdown
+                            is com.ccm.app.ui.chat.SlashResult.Toast -> result.text
+                            is com.ccm.app.ui.chat.SlashResult.Navigate -> "（命令要求跳转到 ${result.route} —— 请在界面上操作）"
+                            is com.ccm.app.ui.chat.SlashResult.OpenPanel -> "（命令要求打开面板 ${result.panel} —— 请在界面上操作）"
+                            else -> "命令已执行（无输出）"
+                        }
+                    } catch (t: Throwable) {
+                        "命令执行失败：${t.message}"
+                    }
+                },
+                getSessionId = { sessionId },
+                modes = modes,
+                autoMemory = autoMemory,
+            ).install(
+                reg,
+                // ★ 这里就是「环境模式 → 通道」的唯一定义点 ——
+                //   与 init() 里那段必须保持一致（改一处要同步另一处）。
+                bashChannel = if (cfg.envMode == "termux") {
+                    com.ccm.app.tools.bash.TermuxChannel(app)
+                } else null,
+            )
+
+            toolsResult = tools
+            toolSettings = settings
+            registry = reg
+            toolNames = tools.registered
+            true
+        } catch (t: Throwable) {
+            initError = "工具重建失败：${t::class.java.simpleName}: ${t.message}"
+            false
+        }
+    }
+
     fun rebuild(context: Context, scope: CoroutineScope): ChatSession? {
         val st = storage ?: return init(context, scope)
         val reg = registry ?: return init(context, scope)

@@ -204,7 +204,31 @@ fun CcmRoot() {
             when (installed) {
                 null -> CenterBox { CircularProgressIndicator() }
                 false -> OnboardingScreen(
-                    onReady = { installed = true },
+                    onReady = {
+                        // ══════════════════════════════════════════════════
+                        //  【2026-10-06 修·「选了不生效」】
+                        //
+                        //  装配顺序 bug：MainActivity.onCreate 里先
+                        //  `AppGraph.init()`（那时读 envMode 还是空 → 建
+                        //  ProotChannel），**之后**才 setContent 显示引导页
+                        //  —— 用户在引导页选「外接 Termux」，配置写进去了，
+                        //  但工具早已按 proot 装配完毕。
+                        //
+                        //  用户现象：「明明是首次进入就让人设置的东西，
+                        //  选了还不生效」—— bash 照样报 proot error。
+                        //
+                        //  修：引导页完成时**重建工具**（按新 envMode 选通道）
+                        //  再重建会话（把新 executor 注入 AgentLoop）。
+                        // ══════════════════════════════════════════════════
+                        try {
+                            val app = ctx.applicationContext
+                            AppGraph.rebuildTools(app, appScope)
+                            AppGraph.rebuild(app, appScope)
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "引导页完成后重建失败：${t.message}")
+                        }
+                        installed = true
+                    },
                 )
                 // 【2026-10-06 问题12】AppGraph.session 现在是 Compose State，
                 // 加 Provider 后这里会自动重组（之前是普通 var，不重组）。
