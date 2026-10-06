@@ -296,7 +296,13 @@ class ToolsBootstrap(
             storageRoot = storage.rootDir,
             memoryFile = File(storage.rootDir, "CLAUDE.md"),
             todoFile = { File(storage.rootDir, "todos/${getSessionId()}.json") },
-            onMemoryWritten = { autoMemory?.markMainWroteMemory() },
+            onMemoryWritten = {
+                autoMemory?.markMainWroteMemory()
+                // 【2026-10-06 P1-4】写完记忆让系统提示词缓存失效 ——
+                // 下次调模型时重算，新写的 CLAUDE.md 内容立即进提示词。
+                // 不失效的话：写了记忆，模型本会话内看不到（白写）。
+                try { com.ccm.app.core.AppContainer.invalidateSystemPrompt() } catch (_: Throwable) {}
+            },
         )
 
         // 模式工具（EnterPlanMode/ExitPlanMode/EnterDeepMode/ExitDeepMode/EnterWatch/ExitWatch）

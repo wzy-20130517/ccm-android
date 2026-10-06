@@ -659,6 +659,11 @@ class ApiClient(
      */
     private fun pruneOldImages(messages: List<JsonObject>): List<JsonObject> {
         if (messages.isEmpty()) return messages
+        // 【2026-10-06 P1-3 修】端点已知不支持图片时**全剥离**（对齐 CLI
+        // stripImagesFromHistory）—— 否则历史里的图每轮照发 → 每轮 400，
+        // 对话死局（只有 /compact 能救）。原来只加了个「图片已省略」的
+        // 提示文本，图片块本身还在。
+        if (isVisionUnsupported) return stripAllImages(messages)
         var lastImageIdx = -1
         for (i in messages.indices.reversed()) {
             val content = messages[i]["content"] as? kotlinx.serialization.json.JsonArray ?: continue
@@ -681,6 +686,39 @@ class ApiClient(
                         kotlinx.serialization.json.buildJsonObject {
                             put("type", kotlinx.serialization.json.JsonPrimitive("text"))
                             put("text", kotlinx.serialization.json.JsonPrimitive("（图片已省略）"))
+                        }
+                    } else block
+                }
+            )
+            changed = true
+            kotlinx.serialization.json.buildJsonObject {
+                m.forEach { (k, v) -> if (k != "content") put(k, v) }
+                put("content", newContent)
+            }
+        }
+        return if (changed) out else messages
+    }
+
+    /**
+     * 剥离历史里**所有**图片块（对齐 CLI `stripImagesFromHistory`）。
+     *
+     * 场景：非 vision 模型收到历史里的图片 → 400 MODEL_CAPABILITY_NOT_SUPPORTED。
+     * 不剥的话每轮都 400，对话彻底卡死（用户只能 /compact 才能恢复）。
+     * 剥离后对话能继续 —— 模型看到的是「（图片已省略）」占位文本。
+     */
+    private fun stripAllImages(messages: List<JsonObject>): List<JsonObject> {
+        var changed = false
+        val out = messages.map { m ->
+            val content = m["content"] as? kotlinx.serialization.json.JsonArray ?: return@map m
+            if (content.none { it is JsonObject && prim(it["type"]) in setOf("image_url", "image") }) {
+                return@map m
+            }
+            val newContent = kotlinx.serialization.json.JsonArray(
+                content.map { block ->
+                    if (block is JsonObject && prim(block["type"]) in setOf("image_url", "image")) {
+                        kotlinx.serialization.json.buildJsonObject {
+                            put("type", kotlinx.serialization.json.JsonPrimitive("text"))
+                            put("text", kotlinx.serialization.json.JsonPrimitive("（图片已省略：当前模型不支持读图）"))
                         }
                     } else block
                 }

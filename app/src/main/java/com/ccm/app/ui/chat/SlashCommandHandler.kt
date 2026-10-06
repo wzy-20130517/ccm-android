@@ -1067,6 +1067,9 @@ private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): S
                     } else {
                         try {
                             store.setField(field, value)
+                            // 【2026-10-06 P1-4】资料变了 → 提示词缓存失效
+                            // （否则模型本会话内看不到新资料，要重启才生效）
+                            com.ccm.app.core.AppContainer.invalidateSystemPrompt()
                             SlashResult.Notice(
                                 if (value.isBlank()) "已清除 `$field`。"
                                 else "已设置 `$field` = $value",
@@ -1079,6 +1082,7 @@ private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): S
                 // /me clear-all
                 sub == "clear-all" || sub == "clear" -> {
                     store.clear()
+                    com.ccm.app.core.AppContainer.invalidateSystemPrompt()   // P1-4
                     SlashResult.Notice("用户资料已清空。")
                 }
                 else -> SlashResult.Notice(

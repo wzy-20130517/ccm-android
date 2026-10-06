@@ -200,6 +200,8 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                                     st.configFile,
                                 )
                             }
+                            // 【2026-10-06 P1-4】换风格 → 提示词缓存失效
+                            com.ccm.app.core.AppContainer.invalidateSystemPrompt()
                             styleRefresh++
                         },
                         title = "输出风格",

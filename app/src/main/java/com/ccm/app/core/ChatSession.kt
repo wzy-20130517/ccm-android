@@ -488,6 +488,10 @@ class ChatSession(
             .flatMap { it.content.filterIsInstance<ContentBlock.ToolResult>() }
             .associateBy { it.id }
         val restored = messages.mapNotNull { message ->
+            // 【2026-10-06】hidden 消息（轮次提醒/空响应提示/队友注入等
+            // 系统内部消息）不进气泡 —— 它们不是用户说的话，显示出来会
+            // 让人困惑（「我什么时候发过这个？」）。
+            if (message.hidden) return@mapNotNull null
             when (message.role) {
                 Message.ROLE_ASSISTANT -> {
                     val cards = message.content.filterIsInstance<ContentBlock.ToolUse>().map { use ->

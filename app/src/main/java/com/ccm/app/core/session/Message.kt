@@ -30,6 +30,16 @@ data class Message(
     val role: String,
     val content: List<ContentBlock> = emptyList(),
     val timestamp: Long = 0,
+    /**
+     * 内部消息（不显示给用户）—— 2026-10-06 加，对齐 CLI 的 `hidden: true`。
+     *
+     * 用于：空响应提示、轮次上限提醒、watch 继续提示、队友消息注入等
+     * **系统自己塞进历史的**消息。不带这个标记的话：
+     *   · 用户会看到「（系统提示）你上一条回复是空的…」冒充自己发的
+     *   · 这些噪音被存进会话文件、回放时再现
+     *   · watch 模式每轮一条「继续执行」刷屏
+     */
+    val hidden: Boolean = false,
 ) {
 
     /** 便捷构造：纯文本用户消息。 */
@@ -39,8 +49,13 @@ data class Message(
         const val ROLE_SYSTEM = "system"
         const val ROLE_TOOL = "tool"
 
-        fun user(text: String, timestamp: Long = System.currentTimeMillis()): Message =
-            Message(ROLE_USER, listOf(ContentBlock.Text(text)), timestamp)
+        fun user(
+            text: String,
+            timestamp: Long = System.currentTimeMillis(),
+            /** true = 系统内部消息（不显示给用户，见 [Message.hidden]）。 */
+            hidden: Boolean = false,
+        ): Message =
+            Message(ROLE_USER, listOf(ContentBlock.Text(text)), timestamp, hidden)
 
         fun assistant(text: String, timestamp: Long = System.currentTimeMillis()): Message =
             Message(ROLE_ASSISTANT, listOf(ContentBlock.Text(text)), timestamp)

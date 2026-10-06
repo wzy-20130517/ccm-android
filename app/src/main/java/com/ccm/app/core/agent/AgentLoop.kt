@@ -77,8 +77,19 @@ import kotlinx.serialization.json.put
  */
 class AgentLoop(
     private var api: ApiClient,
-    /** 系统提示词。 */
-    private val systemPrompt: String,
+    /**
+     * 系统提示词。
+     *
+     * 【2026-10-06 P1-4 修】原来传的是**字符串快照** —— 装配时算一次就固定。
+     * 后果：Memory 工具写了 CLAUDE.md、/me 改了用户资料、/style 换了风格，
+     * 模型**本会话内永远看不见**（要么重启要么切会话才刷新）。
+     * 用户报「写了记忆但 Agent 像没看见」就是这个。
+     *
+     * 现在支持传**提供者函数**（对齐 CLI 的 `systemPrompt: () => getCurrentSystemPrompt()`）
+     * —— 每次调用模型前现算，改动立即生效。
+     * 传字符串时包装成常量提供者（向后兼容，单测/子 Agent 场景）。
+     */
+    private val systemPromptProvider: () -> String,
     /**
      * 工具列表**提供者**（不是快照！见类注释规则 1）。
      *
@@ -159,6 +170,51 @@ class AgentLoop(
      */
     private val teamInboxProvider: (() -> Pair<String, List<String>>?)? = null,
 ) {
+    /**
+     * 兼容构造：直接传字符串提示词（旧签名）。
+     *
+     * 内部包成常量提供者 —— 老调用点（单测、子 Agent、EngineSetup）不用改。
+     */
+    constructor(
+        api: ApiClient,
+        systemPrompt: String,
+        toolsProvider: () -> List<Tool>,
+        maxTurnsInit: Int = ModeState.NORMAL_MAX_TURNS,
+        cwd: String = "/",
+        extraDirs: List<String> = emptyList(),
+        permissionModeInit: String = "default",
+        modes: ModeState = ModeState(),
+        storage: ToolStorage? = null,
+        settings: com.ccm.app.core.tool.ToolSettings? = null,
+        sessionId: String = "",
+        spawnSubAgent: (suspend (SubAgentSpec) -> SubAgentResult)? = null,
+        visionClient: ApiClient? = null,
+        traceDir: java.io.File? = null,
+        imageScaler: ImageScaler? = null,
+        toolRunner: ToolRunner = ToolRunner.Unset,
+        useStream: Boolean = true,
+        teamInboxProvider: (() -> Pair<String, List<String>>?)? = null,
+    ) : this(
+        api = api,
+        systemPromptProvider = { systemPrompt },
+        toolsProvider = toolsProvider,
+        maxTurnsInit = maxTurnsInit,
+        cwd = cwd,
+        extraDirs = extraDirs,
+        permissionModeInit = permissionModeInit,
+        modes = modes,
+        storage = storage,
+        settings = settings,
+        sessionId = sessionId,
+        spawnSubAgent = spawnSubAgent,
+        visionClient = visionClient,
+        traceDir = traceDir,
+        imageScaler = imageScaler,
+        toolRunner = toolRunner,
+        useStream = useStream,
+        teamInboxProvider = teamInboxProvider,
+    )
+
 
     /**
      * 当前最大轮次。
@@ -406,9 +462,42 @@ class AgentLoop(
             // - 关着 → 正常的「轮次上限」语义
             // - 开着 → 不受 maxTurns 限制，直到 ExitWatch 或用户打断
             //   （对齐 CLI `while (this.watchMode || this.turnCount < this.maxTurns)`）
+            // 轮次提醒只发一次（对齐 CLI 的 _turnLimitWarned）
+            var turnLimitWarned = false
+
             while (modes.watchMode || turnCount < maxTurns) {
                 if (aborted) throw CancellationException("用户中断")
                 turnCount++
+
+                // ── 轮次上限提醒（2026-10-06 补，对齐 CLI agent.mjs:236-252）──
+                //
+                // 子 Agent 提示词写着「快到上限时会收到系统提示，用 ExtendTurns
+                // 续轮」、ExtendTurns 工具描述写着「收到『距上限只剩不到 10 轮』
+                // 提醒时」—— 但 APK **从不发送这个提醒**，子 Agent 永远等不到
+                // 触发时机，200 轮被砍断时毫无预警，交半成品。
+                // deep/watch 模式不提醒（上限本来就大/无限制）。
+                if (!modes.watchMode && !modes.deepMode && !turnLimitWarned) {
+                    val remaining = maxTurns - turnCount + 1
+                    if (remaining in 1..10) {
+                        turnLimitWarned = true
+                        messages += Message(
+                            role = Message.ROLE_USER,
+                            hidden = true,
+                            content = listOf(ContentBlock.Text(
+                                "（系统提示：本轮任务已执行 $turnCount 轮，距 maxTurns 上限（$maxTurns）" +
+                                    "只剩不到 10 轮。先自查最近几轮是不是在**空转**：" +
+                                    "反复调用同一个工具却拿不到新信息、同一处改了又改、" +
+                                    "同一个错误反复出现而没有实质推进。" +
+                                    "① 不是空转、任务确实还需要更多轮才能做完 —— 立即调用 " +
+                                    "EnterDeepMode（主 Agent）或 ExtendTurns（子 Agent）续轮，" +
+                                    "然后继续干；不要因为快到上限就草草收尾。" +
+                                    "② 是空转 —— 停下来如实收尾：卡在哪、已完成什么、还剩什么，" +
+                                    "不要无声中断。不要明知在原地打转还硬撑，" +
+                                    "也不要为了省轮数交未验证的半成品。）"
+                            )),
+                        )
+                    }
+                }
 
                 // ── 队友消息自动送达（2026-10-06）────────────────────────
                 // 每轮开头拉一次未读；有就作为 user 消息注入历史。
@@ -456,7 +545,7 @@ class AgentLoop(
                                     "text_preview" to assistant.text.take(80),
                                 ),
                             )
-                            messages += Message.user(EMPTY_RESPONSE_HINT)
+                            messages += Message.user(EMPTY_RESPONSE_HINT, hidden = true)
                             continue
                         }
                         // 重试耗尽：如实告诉用户，不要静默结束（静默 = 用户以为程序卡了）
@@ -486,7 +575,7 @@ class AgentLoop(
                     // 发 TurnEnd 让 UI 把这一轮的流式内容定型成气泡：
                     // 不切的话十轮的正文会攒成一个巨型气泡。
                     if (modes.watchMode) {
-                        messages += Message.user(ModeState.WATCH_CONTINUE_PROMPT)
+                        messages += Message.user(ModeState.WATCH_CONTINUE_PROMPT, hidden = true)
                         emit(AgentEvent.TurnEnd(turnCount))
                         continue
                     }
@@ -922,8 +1011,10 @@ class AgentLoop(
      * （它们的 `getSystemPromptAddition()` 恒返回空串）。
      */
     private fun effectiveSystemPrompt(): String {
+        // 现算基座（含 CLAUDE.md / 用户资料 / 输出风格的最新值）
+        val base = try { systemPromptProvider() } catch (_: Throwable) { "" }
         val add = modes.planPromptAddition()
-        return if (add.isEmpty()) systemPrompt else systemPrompt + add
+        return if (add.isEmpty()) base else base + add
     }
 
     // ═════════════════════════ 历史维护 ═════════════════════════

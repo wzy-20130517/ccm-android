@@ -396,6 +396,16 @@ class AppContainer private constructor(
          */
         private var cachedPrompt: String? = null
 
+        /**
+         * 让缓存的系统提示词失效（下次取时重算）。
+         *
+         * 【2026-10-06 P1-4】Memory 工具写 CLAUDE.md、/me 改资料、
+         * /style 换风格之后调它 —— 否则模型本会话内永远用旧的。
+         */
+        fun invalidateSystemPrompt() {
+            cachedPrompt = null
+        }
+
         private fun loadSystemPrompt(context: android.content.Context): String {
             cachedPrompt?.let { return it }
             val text = try {
@@ -618,7 +628,11 @@ class AppContainer private constructor(
                 api = apiClient,
                 visionClient = visionClient,
                 teamInboxProvider = teamInboxProvider,
-                systemPrompt = systemPrompt,
+                // 传**提供者**而非快照：每次调模型前现算，Memory 写完
+                // CLAUDE.md / /me 改资料后立即生效（P1-4）。
+                systemPromptProvider = {
+                    assembleSystemPrompt(storage, context)
+                },
                 // 惰性取（不是快照）—— 后注册的工具（如 Agent 自己）也要能看见
                 toolsProvider = { registry.list },
                 maxTurnsInit = DEFAULT_MAX_TURNS,
