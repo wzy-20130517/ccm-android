@@ -252,31 +252,6 @@ class MiscTools(
     //  Memory
     // ══════════════════════════════════════════════════════════════
 
-    /**
-     * 提取 markdown 标题行（跳过代码块内的假标题）。
-     *
-     * 【为什么必须跳过代码块】CLAUDE.md 里的 shell 片段注释
-     * （`# 1) 换 token`、`# 常用操作`）会被当成标题 —— 实测混进 7 条假标题。
-     * 对齐 CLI 的 extractHeadingLines。
-     */
-    private fun extractHeadingLines(content: String): List<String> {
-        val out = mutableListOf<String>()
-        var inFence = false
-        var fenceChar = ""
-        content.split("\n").forEach { line ->
-            val t = line.trim()
-            val fm = Regex("^(`{3,}|~{3,})").find(t)
-            if (fm != null) {
-                val ch = fm.groupValues[1][0].toString()
-                if (!inFence) { inFence = true; fenceChar = ch }
-                else if (ch == fenceChar) { inFence = false; fenceChar = "" }
-                return@forEach
-            }
-            if (inFence) return@forEach
-            if (Regex("^#{1,6}\\s+").containsMatchIn(t)) out += t
-        }
-        return out
-    }
 
     inner class MemoryTool : Tool() {
         override val name = "Memory"
@@ -583,4 +558,33 @@ class MiscTools(
     } catch (_: Throwable) {
         emptyList()
     }
+}
+
+/**
+ * 提取 markdown 标题行（跳过代码块内的假标题）。
+ *
+ * 【为什么必须跳过代码块】CLAUDE.md 里的 shell 片段注释
+ * （`# 1) 换 token`、`# 常用操作`）会被当成标题 —— 实测混进 7 条假标题。
+ * 对齐 CLI 的 extractHeadingLines。
+ *
+ * 【为什么提到文件级】原来在 MiscTools 类内（private），
+ * AppContainer 装配提示词时要用却够不着 —— 提到包级 internal 供两处共用。
+ */
+internal fun extractHeadingLines(content: String): List<String> {
+    val out = mutableListOf<String>()
+    var inFence = false
+    var fenceChar = ""
+    content.split("\n").forEach { line ->
+        val t = line.trim()
+        val fm = Regex("^(`{3,}|~{3,})").find(t)
+        if (fm != null) {
+            val ch = fm.groupValues[1][0].toString()
+            if (!inFence) { inFence = true; fenceChar = ch }
+            else if (ch == fenceChar) { inFence = false; fenceChar = "" }
+            return@forEach
+        }
+        if (inFence) return@forEach
+        if (Regex("^#{1,6}\\s+").containsMatchIn(t)) out += t
+    }
+    return out
 }

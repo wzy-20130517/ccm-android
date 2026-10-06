@@ -425,6 +425,9 @@ class AppContainer private constructor(
          * 这里拼进去 —— 改了资料后需重建会话（切会话/重启）才生效，
          * 设置页关闭时会自动重建（AppScaffold 的 showSettings 监听）。
          */
+        /** CLAUDE.md 全文注入上限（对齐 CLI persistence.mjs 的 35000）。 */
+        private const val CLAUDE_MD_LIMIT = 35000
+
         private fun assembleSystemPrompt(
             storage: AppStorage,
             context: android.content.Context? = null,
@@ -444,6 +447,41 @@ class AppContainer private constructor(
             if (lines.isNotEmpty()) {
                 sb.append("\n\n## 关于用户\n")
                 lines.forEach { sb.append("- ").append(it).append('\n') }
+            }
+            // ── CLAUDE.md 项目记忆注入（2026-10-06 补）──────────────────
+            //
+            // 【原来完全没有】APK 的提示词装配只拼了 assets 模板 + 用户资料，
+            // **CLAUDE.md 从不注入** —— Memory 工具写了半天，模型每轮都看不见，
+            // 等于白写（用户要求检查「35000 截断和标题行逻辑是否一样」时发现）。
+            //
+            // 照搬 CLI `persistence.mjs` 的 readWithToc：
+            //   · ≤ 35000 字符：全文注入
+            //   · 超出：保留前 35000 + 尾部标题行目录（Agent 知道有什么、能去翻）
+            //   · 目录排除代码块内的假标题（shell 注释 `# xxx`）
+            val memFile = java.io.File(storage.rootDir, "CLAUDE.md")
+            if (memFile.exists()) {
+                try {
+                    val full = memFile.readText()
+                    val toc = buildString {
+                        append("\n\n# 项目上下文 (CLAUDE.md)\n\n")
+                        if (full.length <= CLAUDE_MD_LIMIT) {
+                            append(full)
+                        } else {
+                            append(full.take(CLAUDE_MD_LIMIT))
+                            val titles = com.ccm.app.tools.task.extractHeadingLines(full.drop(CLAUDE_MD_LIMIT))
+                            append("\n\n---\n\n")
+                            if (titles.isNotEmpty()) {
+                                append("【以下内容因超长未完整注入，这里是标题目录（共 ${titles.size} 条）。")
+                                append("需要看某节正文时，用 Memory 工具的 section action 取该节")
+                                append("（Memory({action:'section', title:'关键词'})），不要 Read 整个文件。】\n\n")
+                                append(titles.joinToString("\n"))
+                            } else {
+                                append("【文件超长（${full.length} 字符），超出部分未注入且无标题可列】")
+                            }
+                        }
+                    }
+                    sb.append(toc)
+                } catch (_: Throwable) {}
             }
             // 输出风格（与 CLI/Web 的 outputStyle 同字段互通）
             try {
@@ -568,12 +606,59 @@ class AppContainer private constructor(
                 //   · 系统提示词用主提示词 + 一段「你是子 Agent」的说明
                 spawnSubAgent = spawn@{ spec ->
                     try {
-                        val subPrompt = assembleSystemPrompt(storage, context) +
-                            "\n\n## 你是子 Agent\n" +
-                            "你被主 Agent 派来独立完成一个子任务。\n" +
-                            "· 你没有派生子 Agent 的能力（不要尝试调用 Agent 工具）\n" +
-                            "· 你无法与用户交互（不要调用 AskUserQuestion）\n" +
-                            "· 完成后用一段清晰的文字总结你的结论/产出\n"
+                        // ══════════════════════════════════════════════════
+                        //  子 Agent 提示词（2026-10-06 对照 CLI plan.mjs 补齐）
+                        //
+                        // CLI 的结构：systemPromptBase（主提示词全文，**含
+                        // 「你的正文输出其他 Agent 看不见」那句**）+ 角色卡
+                        // + 工具清单 + 轮次预算段。
+                        //
+                        // APK 原来只有 5 条硬编码约束、没有角色卡、没有轮次
+                        // 预算说明 —— 子 Agent 不知道自己能续轮，快到上限就
+                        // 交半成品；也不知道「正文没人看得见」，白写一堆给
+                        // 用户看的话（队友收不到）。
+                        // ══════════════════════════════════════════════════
+                        val roleCard = when (spec.subagentType) {
+                            "Explore" ->
+                                "\n# 你的角色：探索子 Agent (Explore)\n" +
+                                    "你是一个只读的探索子 Agent，用于调研代码库结构、查找文件、理解实现。\n" +
+                                    "**禁止**修改任何文件、执行任何写入操作、提交 git 等。\n" +
+                                    "完成后返回你的发现摘要：相关文件路径（用 file_path:line_number 格式）、" +
+                                    "关键实现位置、以及简短的代码结构说明。"
+                            "Plan" ->
+                                "\n# 你的角色：计划子 Agent (Plan)\n" +
+                                    "你是一个用于制定计划的子 Agent。先探索代码库现状，然后产出一份清晰的执行计划。\n" +
+                                    "**禁止**执行任何修改操作。\n" +
+                                    "返回格式：\n1. 任务概述\n2. 步骤列表（带 progress 标记）\n" +
+                                    "3. 涉及的文件路径列表\n4. 潜在风险与注意事项"
+                            "Coordinator" ->
+                                "\n# 你的角色：协调者子 Agent (Coordinator)\n" +
+                                    "你是一个多 Agent 编排者。你不直接执行任务，只做编排。\n" +
+                                    "你的责任：\n1. 分析任务，拆分为可并行的子任务\n" +
+                                    "2. 用 Agent 工具 spawn 多个 worker\n" +
+                                    "3. 只读子任务可以并行，写同一批文件的必须串行\n" +
+                                    "4. 汇总各 worker 的结果，做交叉验证（别直接采信）"
+                            else ->
+                                "\n# 你的角色：通用子 Agent\n" +
+                                    "你是一个被主 Agent 委派的子 Agent，拥有全部工具权限。\n" +
+                                    "你的任务会由主 Agent 在 prompt 中描述，请自行规划步骤、调用工具、完成任务。\n" +
+                                    "完成后返回简洁的结果摘要给主 Agent，不要返回无意义的空话。"
+                        }
+                        val subPrompt = assembleSystemPrompt(storage, context) + "\n" + roleCard +
+                            "\n\n## 你是子 Agent（通用约束）\n" +
+                            "你被主 Agent 派来独立完成一个子任务，运行在**后台**。\n" +
+                            "· **你的正文输出其他 Agent 看不见** —— 想让主 Agent 知道任何事，" +
+                            "必须写进最终总结里（那段文字会原样返回）\n" +
+                            "· 你没有派生子 Agent 的能力（不要调用 Agent 工具，会报错）\n" +
+                            "· 你无法与用户交互（**永远不要**调用 AskUserQuestion，会永久阻塞）\n" +
+                            "· 不要问「要我做吗」，直接做；信息不足时基于合理假设推进，并说明假设\n" +
+                            "· 完成后用一段清晰的文字总结结论/产出（含关键文件路径与代码位置）\n" +
+                            "\n## 轮次预算\n" +
+                            "你的工具轮次有上限。快到上限时会收到系统提示，届时：\n" +
+                            "任务确实没做完 → 用 **ExtendTurns** 续轮（最多续 4 次、每次最多 +60、硬上限 400）；\n" +
+                            "已基本完成或发现自己在原地打转 → 立刻收尾，如实交代未完成部分。\n" +
+                            "**不要交「函数写好了但没接线」这类半成品**：要么做完并自测通过，" +
+                            "要么在报告里写清「未完成的是什么、下一步该怎么做、有哪些已查明的前置结论」。\n"
                         val subLoop = AgentLoop(
                             api = apiClient,
                             systemPrompt = subPrompt,
