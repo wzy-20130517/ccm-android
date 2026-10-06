@@ -305,7 +305,22 @@ fun ChatScreenConnected(
     ChatScreen(
         bubbles = uiState.bubbles,
         modifier = modifier,
-        streaming = stableStreaming.ifBlank { uiState.streaming },
+        // ══════════════════════════════════════════════════════════════
+        //  【2026-10-06 用户反馈】Agent 输出时画面一抽一抽（一帧空白一帧有内容）
+        //
+        //  根因链：
+        //  1. StreamingMarkdown.feed() 里 `reset()`（全文变短/前缀不匹配时触发）
+        //     会把 stable 清空 → stableStreaming = ""
+        //  2. 这里 `stableStreaming.ifBlank { uiState.streaming }` 于是 fallback
+        //     到**全文**，下一帧 stable 又被 feed 算出来 → 两套文本来回跳
+        //  3. MessageList 据此在「等待态指示器 / 正文」两个分支间切换
+        //     → 用户看到一帧空白、一帧有内容
+        //
+        //  修法：**不 fallback**。流式渲染只认 stableStreaming（记账器的
+        //  稳定前缀），它为空就渲染空 —— 而 reset 之后 feed 会立刻重新累积，
+        //  这期间最多空 1~2 帧，比「整段全文和前缀来回跳」稳定得多。
+        // ══════════════════════════════════════════════════════════════
+        streaming = stableStreaming,
         streamingThinking = uiState.streamingThinking,
         todos = uiState.todos,
         presentItems = uiState.presentItems,
@@ -328,6 +343,9 @@ fun ChatScreenConnected(
                 //   四大分区），认得的在这里执行副作用；不认的才落到下面的老
                 //   when（/clear /help 等基础命令 + 兜底提示）。
                 if (text.startsWith("/")) {
+                    // 【2026-10-06 用户反馈】slash 命令无用户气泡 ——
+                    // 执行前先把命令文本作为用户气泡上屏。
+                    session.injectUserEcho(text)
                     val res = handleSlashCommand(text, buildSlashCtx())
                     if (res != null && res !is SlashResult.NotHandled) {
                         applySlashResult(res)

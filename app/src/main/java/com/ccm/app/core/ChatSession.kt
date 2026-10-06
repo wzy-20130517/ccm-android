@@ -87,6 +87,27 @@ class ChatSession(
     }
 
     /**
+     * 注入一条**用户气泡**（问题：slash 命令无用户气泡）。
+     *
+     * 【2026-10-06 用户反馈】发送 slash 命令（如 `/help`）后，
+     * 屏幕上只有命令的输出（assistant 气泡），**看不到自己敲了什么** ——
+     * 用户不知道哪条命令产生了哪个结果。
+     *
+     * 现在 slash 命令执行前会先调这个，把命令文本作为用户气泡上屏。
+     */
+    fun injectUserEcho(text: String) {
+        if (text.isBlank()) return
+        markDirty()
+        _state.value = _state.value.copy(
+            bubbles = _state.value.bubbles + Bubble(
+                role = Message.ROLE_USER,
+                text = text,
+                messageId = "echo-${System.currentTimeMillis()}",
+            ),
+        )
+    }
+
+    /**
      * 从 todos.json 恢复待办看板（audit-core #3，2026-09-28）。
      *
      * TodoWriteTool 写盘齐全但**没人读** —— 进程重启后看板清空，

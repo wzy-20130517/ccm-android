@@ -438,6 +438,9 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         //   （模型回一句「我不是这样用的」）。提到唯一入口，两端一致。
         val t = text.trim()
         if (t.startsWith("/") && images.isEmpty()) {
+            // 【2026-10-06 用户反馈】slash 命令无用户气泡 ——
+            // 执行前先把命令文本作为用户气泡上屏（让用户看到自己敲了什么）。
+            activeSession?.injectUserEcho(t)
             // ★ 2026-09-30 统一 handler：四大分区（会话/查询/配置/工具）先过一遍，
             //   认得的直接执行；不认的才落下面的老 when（基础命令 + 兜底）。
             val hres = com.ccm.app.ui.chat.handleSlashCommand(
