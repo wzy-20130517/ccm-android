@@ -63,7 +63,8 @@ object MarketClient {
     suspend fun fetchRegistry(): List<MarketItem>? = withContext(Dispatchers.IO) {
         val own = fetchOwnRegistry()
         val external = try { MarketSources.fetchAll() } catch (_: Throwable) { emptyList() }
-        val merged = own + external
+        // own 可空（自有源挂了）→ 用 orEmpty 兜底，别让整个市场跟着失败
+        val merged = own.orEmpty() + external
         // 按 id 去重（理论上不会重，但外部源 id 前缀不同，防御性去重）
         val seen = mutableSetOf<String>()
         val deduped = merged.filter { seen.add(it.id) }
