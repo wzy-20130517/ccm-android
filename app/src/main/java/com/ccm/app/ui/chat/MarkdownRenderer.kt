@@ -91,11 +91,23 @@ fun MarkdownRenderer(
     // 解析结果缓存 —— 流式渲染时每帧都会重算，不做缓存会卡
     val blocks = remember(content) { parseMarkdown(content) }
 
-    Column(modifier = modifier.fillMaxWidth()) {
-        blocks.forEach { block -> MarkdownBlockView(block) }
+    // 【2026-10-06 问题15 修复】原来裸 Column —— Text 默认**不可选取**，
+    // 长按只能触发外层 combinedClickable 的「全部复制」。
+    // 用户要「选取复制」（选一段，不是复制整条）。
+    // SelectionContainer 让所有子 Text 进入可选取模式：
+    // 长按 → 系统选择手柄 + 复制菜单（Android 原生体验）。
+    //
+    // ⚠️ 与外层 combinedClickable(onLongClick=复制全部) 的关系：
+    //   SelectionContainer 内部的长按会被它优先消费（文本选择优先），
+    //   外层长按只在「长按非文本区」（如列表空白）时触发。
+    //   两个入口共存，不冲突。
+    androidx.compose.foundation.text.selection.SelectionContainer {
+        Column(modifier = modifier.fillMaxWidth()) {
+            blocks.forEach { block -> MarkdownBlockView(block) }
 
-        if (showSourcesList && sources.isNotEmpty()) {
-            MarkdownSourcesList(sources = sources)
+            if (showSourcesList && sources.isNotEmpty()) {
+                MarkdownSourcesList(sources = sources)
+            }
         }
     }
 }
@@ -137,7 +149,11 @@ private fun MarkdownBlockView(block: MdBlock) {
                     lineHeight = 25.81.sp,          // leading-[1.7]
                 ),
                 color = bodyColor,
-                modifier = Modifier.padding(bottom = 2.3.dp),   // mb-2.5
+                // 【2026-10-06 问题25 修复】原来是 2.3dp（mb-2.5 的近似）——
+                // 但 Web 的 `.markdown-body p { margin-bottom: 0.6em }`，
+                // 字号 15.18px → **9.1px**。2.3 太小，段落全挤在一起，
+                // 这是「markdown 丑陋」的第一来源。
+                modifier = Modifier.padding(bottom = 9.1.dp),
             )
         }
 
@@ -149,7 +165,10 @@ private fun MarkdownBlockView(block: MdBlock) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 22.08.dp, bottom = 1.84.dp),   // pl-1.5em
+                            // 【2026-10-06 问题25】原来 bottom = 1.84dp —— 列表项
+                            // 挤在一起。Web 的 li 有 `line-height: 1.5` 的行高
+                            // 自然撑开，这里补 4.6dp（半个行高）更接近 Web 观感。
+                            .padding(start = 22.08.dp, bottom = 4.6.dp),
                     ) {
                         // 项目符号：无序 `•`；有序 `1.`；任务列表用方框
                         val bullet = when {
@@ -253,10 +272,25 @@ private fun CodeBlockView(block: MdBlock.CodeBlock) {
                 style = CCMText.body11.copy(fontSize = 11.04.sp),
                 color = colors.textSecondary,
             )
+            // 【2026-10-06 问题25 修复】原来是个**假按钮** —— 只有文字没有
+            // clickable，点了毫无反应（用户报「markdown 丑陋」的一部分）。
+            // 现在真的能复制代码。
+            val copyCtx = androidx.compose.ui.platform.LocalContext.current
             Text(
                 text = "复制",
                 style = CCMText.body11.copy(fontSize = 11.04.sp),
                 color = colors.textSecondary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable {
+                        try {
+                            val cm = copyCtx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("CCM", block.code))
+                            android.widget.Toast.makeText(copyCtx, "已复制", android.widget.Toast.LENGTH_SHORT).show()
+                        } catch (_: Throwable) {}
+                    }
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
             )
         }
         Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(colors.border))

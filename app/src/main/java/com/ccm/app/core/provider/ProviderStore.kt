@@ -114,9 +114,16 @@ class ProviderStore(private val storage: AppStorage) {
         return AppConfig.save(cfg.copy(effort = v), file)
     }
 
-    /** 改当前 Provider 的扩展思考强度。 */
+    /**
+     * 改当前 Provider 的扩展思考强度。
+     *
+     * ⚠️ "none" 必须显式存为字符串，不能转成 null：
+     * null 的语义是「继承全局」，而全局 effort 可能是 "max" ——
+     * 用户点关闭后读回来仍是开启，表现为「开关关不掉」。
+     * 只有显式传 null（设置页选「继承全局」）才清空字段。
+     */
     fun setEffort(id: String, level: String?): Boolean =
-        update(id) { it.copy(effort = level?.takeIf { value -> value.isNotBlank() && value != "none" }) }
+        update(id) { it.copy(effort = level?.takeIf { value -> value.isNotBlank() }) }
 
     /** 改模型池（设置页「模型清单」写回，第24批）。 */
     fun setModels(id: String, models: List<String>?): Boolean =

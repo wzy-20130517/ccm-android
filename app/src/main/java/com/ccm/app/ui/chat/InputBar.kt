@@ -89,7 +89,7 @@ fun InputBar(
     modifier: Modifier = Modifier,
     onStop: () -> Unit = {},
     running: Boolean = false,
-    modelName: String = "Sonnet 4.6",
+    modelName: String = "",  // 【2026-10-06 问题2】不再硬编码 Sonnet 4.6，由调用方传真实模型名
     tokenCount: Int = 0,
     /** 点模型选择器（2026-09-27 接通 —— 原来是写死的 TODO 空转） */
     onModelClick: () -> Unit = {},

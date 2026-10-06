@@ -134,7 +134,10 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(11.04.dp),
                         ) {
-                            CcmAvatarSmall(fullName.take(1).uppercase())
+                            // 【2026-10-06 问题5 修复】原来 fullName 空 → 传空串 →
+                            // 头像是个空白圆（用户报「无默认头像」）。
+                            // Web 有兜底：`(fullName || nickname || 'U').charAt(0)`
+                            CcmAvatarSmall(fullName.ifBlank { "U" }.take(1).uppercase())
                             SettingsTextField(
                                 value = fullName,
                                 onValueChange = {
@@ -213,90 +216,6 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                         placeholder = "例如：回答尽量简洁，使用中文，代码注释用英文",
                     )
                 }
-
-                // ── 工作区（2026-10-01 用户要求：与 CLI /workspace 一致）────
-                //   与 CLI 同一语义、同一字段（config.json 的 workspacePath）。
-                Column {
-                    SettingsLabel("工作区")
-                    Spacer(Modifier.height(SettingsLabelGap))
-                    Text(
-                        text = "工具读写文件的根目录。空 = 默认（应用私有 workspace 目录）。",
-                        style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
-                        color = CCMTheme.colors.textSecondary,
-                    )
-                    Spacer(Modifier.height(7.36.dp))
-                    var wsInput by remember { mutableStateOf(currentWorkspace()) }
-                    var wsError by remember { mutableStateOf("") }
-                    SettingsTextField(
-                        value = wsInput,
-                        onValueChange = { wsInput = it; wsError = "" },
-                        placeholder = "/sdcard/Download/claude-workspace",
-                    )
-                    if (wsError.isNotEmpty()) {
-                        Spacer(Modifier.height(3.68.dp))
-                        Text(
-                            text = wsError,
-                            style = CCMText.body12.copy(fontSize = 10.48.sp),
-                            color = Color(0xFFB91C1C),
-                        )
-                    }
-                    Spacer(Modifier.height(7.36.dp))
-                    androidx.compose.material3.TextButton(onClick = {
-                        val v = wsInput.trim()
-                        when {
-                            v.isEmpty() -> {
-                                // 空 = 恢复默认（清掉字段）
-                                com.ccm.app.AppGraph.storage?.let { st ->
-                                    val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
-                                    if (loadR.error != null) {
-                                        wsError = "配置损坏：${loadR.error}"
-                                    } else {
-                                        com.ccm.app.core.provider.AppConfig.save(
-                                            loadR.config.copy(workspacePath = null), st.configFile,
-                                        )
-                                        wsInput = ""
-                                        android.widget.Toast.makeText(
-                                            ctx,
-                                            "已恢复默认工作区（重启或新会话生效）",
-                                            android.widget.Toast.LENGTH_SHORT,
-                                        ).show()
-                                    }
-                                }
-                            }
-                            !v.startsWith("/") -> wsError = "必须是绝对路径（以 / 开头）"
-                            else -> {
-                                com.ccm.app.AppGraph.storage?.let { st ->
-                                    val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
-                                    if (loadR.error != null) {
-                                        wsError = "配置损坏：${loadR.error}"
-                                    } else {
-                                        // 校验目录可建（不可建则拒绝，不写坏配置）
-                                        val dir = java.io.File(v)
-                                        if (!dir.isDirectory && !dir.mkdirs()) {
-                                            wsError = "目录不存在且无法创建（检查权限）"
-                                        } else {
-                                            com.ccm.app.core.provider.AppConfig.save(
-                                                loadR.config.copy(workspacePath = v), st.configFile,
-                                            )
-                                            android.widget.Toast.makeText(
-                                                ctx,
-                                                "已保存（新会话生效）",
-                                                android.widget.Toast.LENGTH_SHORT,
-                                            ).show()
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }) {
-                        Text("保存工作区", style = CCMText.body13)
-                    }
-                    Text(
-                        text = "与 CLI 的 /workspace、Web 设置页同一份配置。改完对**新会话**生效。",
-                        style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
-                        color = CCMTheme.colors.textSecondary,
-                    )
-                }
             }
         }
 
@@ -351,7 +270,9 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                     SettingsLabel("扩展思考")
                     Spacer(Modifier.height(3.68.dp))
                     Text(
-                        text = "开启后模型先深度思考再回答（对应 effort=high；关闭 = none）。",
+                        // 【2026-10-06 问题8】说明三处入口的关系（同一份配置）
+                        text = "开启后模型先深度思考再回答（对应 effort=high；关闭 = none）。" +
+                            "与对话页模型选择器里的「扩展思考」是同一份配置，在哪调都一样。",
                         style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
                         color = CCMTheme.colors.textSecondary,
                     )
@@ -371,6 +292,120 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
         Spacer(Modifier.height(SettingsHrGap))
         SettingsDivider()
         Spacer(Modifier.height(SettingsHrGap))
+
+        // ── 工作区（2026-10-06 问题20：从「个人资料」里提出来独立成章）──
+        // 对齐 Web 的章节顺序：个人资料 → 默认模型 → **工作区** → 发送消息。
+        // 原来嵌在个人资料里，用户报「设置页杂乱不堪」。
+        SettingsSection(title = "工作区") {
+            // ── 工作区 ────
+            // 字段名与 CLI 一致（config.json 的 workspacePath），
+            // 但**配置文件是各自独立的**（APK 在应用私有目录）。
+            Column {
+                SettingsLabel("工作区")
+                Spacer(Modifier.height(SettingsLabelGap))
+                Text(
+                    text = "工具读写文件的根目录。空 = 默认（应用私有 workspace 目录）。",
+                    style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                    color = CCMTheme.colors.textSecondary,
+                )
+                Spacer(Modifier.height(7.36.dp))
+                // 输入框显示**实际生效路径**（问题18：不再让用户猜）
+                val actualWs = currentWorkspace()
+                var wsInput by remember(actualWs) { mutableStateOf(actualWs) }
+                var wsError by remember { mutableStateOf("") }
+                SettingsTextField(
+                    value = wsInput,
+                    onValueChange = { wsInput = it; wsError = "" },
+                    placeholder = "/sdcard/Download/claude-workspace",
+                )
+                Spacer(Modifier.height(3.68.dp))
+                // 显示 Agent 实际在用的目录（问题18：消除「设置与实际不符」）
+                if (actualWs.isNotEmpty()) {
+                    Text(
+                        text = "当前生效：$actualWs",
+                        style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                        color = CCMTheme.colors.textSecondary,
+                    )
+                }
+                if (wsError.isNotEmpty()) {
+                    Spacer(Modifier.height(3.68.dp))
+                    Text(
+                        text = wsError,
+                        style = CCMText.body12.copy(fontSize = 10.48.sp),
+                        color = Color(0xFFB91C1C),
+                    )
+                }
+                Spacer(Modifier.height(7.36.dp))
+                androidx.compose.material3.TextButton(onClick = {
+                    val v = wsInput.trim()
+                    when {
+                        v.isEmpty() -> {
+                            // 空 = 恢复默认（清掉字段）
+                            com.ccm.app.AppGraph.storage?.let { st ->
+                                val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                                if (loadR.error != null) {
+                                    wsError = "配置损坏：${loadR.error}"
+                                } else {
+                                    com.ccm.app.core.provider.AppConfig.save(
+                                        loadR.config.copy(workspacePath = null), st.configFile,
+                                    )
+                                    wsInput = ""
+                                    android.widget.Toast.makeText(
+                                        ctx,
+                                        "已恢复默认工作区（重启或新会话生效）",
+                                        android.widget.Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
+                            }
+                        }
+                        !v.startsWith("/") -> wsError = "必须是绝对路径（以 / 开头）"
+                        else -> {
+                            com.ccm.app.AppGraph.storage?.let { st ->
+                                val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                                if (loadR.error != null) {
+                                    wsError = "配置损坏：${loadR.error}"
+                                } else {
+                                    // 校验目录可建（不可建则拒绝，不写坏配置）
+                                    val dir = java.io.File(v)
+                                    if (!dir.isDirectory && !dir.mkdirs()) {
+                                        wsError = "目录不存在且无法创建（检查权限）"
+                                    } else {
+                                        // 【2026-10-06 问题18 配套】如果填的就是
+                                        // 默认路径（files/workspace），存空串 ——
+                                        // 保持「未配置」语义，避免把默认值固化进配置
+                                        // （输入框现在显示实际生效路径，用户不动直接
+                                        //   点保存时会走到这）。
+                                        val defaultWs = java.io.File(st.root, "workspace").absolutePath
+                                        val toSave = if (v == defaultWs) null else v
+                                        com.ccm.app.core.provider.AppConfig.save(
+                                            loadR.config.copy(workspacePath = toSave), st.configFile,
+                                        )
+                                        android.widget.Toast.makeText(
+                                            ctx,
+                                            "已保存（新会话生效）",
+                                            android.widget.Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }) {
+                    Text("保存工作区", style = CCMText.body13)
+                }
+                // 【2026-10-06 问题4 修复】原文案「与 CLI 的 /workspace、
+                // Web 设置页同一份配置」是**错的** —— APK 的 config.json 在
+                // 应用私有目录（filesDir/config.json），与 CLI
+                // （~/.claude-code-mobile/config.json）完全隔离，互不影响。
+                // 误导用户以为改这里会同步到 CLI。
+                Text(
+                    text = "APK 独立配置（与 CLI / Web 的配置互不影响）。" +
+                        "留空 = 用应用私有目录。改完对**新会话**生效。",
+                    style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                    color = CCMTheme.colors.textSecondary,
+                )
+            }
+        }
 
         // ── 2. 发送消息 ──────────────────────────────────────────
         SettingsSection(title = "发送消息") {
@@ -815,9 +850,18 @@ private fun appVersion(): String {
 
 
 /** 读当前工作区路径（空 = 默认私有目录）。 */
+/**
+ * 当前工作区 —— 返回**实际生效**的路径。
+ *
+ * 【2026-10-06 问题18 修复】原来返回 config.workspacePath 原始值
+ * （没配置时 = 空串），但 Agent 实际用的是 resolveWorkspaceDir()
+ * 解析后的路径（空配置时落回 files/workspace）。
+ * 用户报「Agent 认为的工作区与用户设置的不同」—— 就是这个：
+ * 输入框空着，实际却在 files/workspace 里读写文件。
+ *
+ * 现在：有配置返回配置值；没配置返回实际默认路径，并在 UI 标注。
+ */
 private fun currentWorkspace(): String =
     try {
-        com.ccm.app.AppGraph.storage
-            ?.let { com.ccm.app.core.provider.AppConfig.load(it.configFile).config.workspacePath }
-            .orEmpty()
+        com.ccm.app.AppGraph.workspacePath()
     } catch (_: Throwable) { "" }

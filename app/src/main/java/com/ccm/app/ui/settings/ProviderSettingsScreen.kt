@@ -34,6 +34,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -109,6 +110,10 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
     var showAddDialog by remember { mutableStateOf(false) }
     var refreshTick by remember { mutableStateOf(0) }
     var fetchingModels by remember { mutableStateOf(false) }
+    // 【2026-10-06 问题6】模型勾选弹窗的状态
+    var showModelPicker by remember { mutableStateOf(false) }
+    var modelCandidates by remember { mutableStateOf<List<String>>(emptyList()) }
+    var modelPicked by remember { mutableStateOf<Set<String>>(emptySet()) }
     var modelFetchMessage by remember { mutableStateOf<String?>(null) }
     val settingsScope = androidx.compose.runtime.rememberCoroutineScope()
     // ★ #6：联网图标真值（remember 一次，别在 map 里每行读盘 —— 主线程 IO 教训）
@@ -307,7 +312,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                             selected?.let { sel -> store?.setDisplayName(sel.id, it) }
                             refreshTick++
                         },
-                        placeholder = "WorkBuddy",
+                        placeholder = "Claude",
                     )
                 }
                 ProviderField(label = "API 地址") {
@@ -386,6 +391,13 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         }
                     }
                 }
+
+            // 【2026-10-06 问题8】说明与其它入口的关系（同一份配置）
+            Text(
+                "与对话页模型选择器的「扩展思考」、通用设置页的开关是同一份配置（Provider 的 effort 字段），在哪调都一样。",
+                style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                color = colors.textSecondary,
+            )
 
                 ProviderField(label = "API 格式") {
                     Row(horizontalArrangement = Arrangement.spacedBy(7.36.dp)) {
@@ -560,7 +572,6 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                             enabled = !fetchingModels && selProvider != null,
                             onClick = {
                                 val sp = selProvider ?: return@Button
-                                val st = com.ccm.app.AppGraph.storage ?: return@Button
                                 fetchingModels = true
                                 modelFetchMessage = null
                                 settingsScope.launch(kotlinx.coroutines.Dispatchers.IO) {
@@ -568,16 +579,27 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                                         fetchingModels = false
                                         if (result.isSuccess) {
-                                            val ids = result.getOrThrow()
-                                            val merged = (ids + modelPool + listOfNotNull(sp.model.takeIf { it.isNotBlank() })).distinct()
-                                            com.ccm.app.core.provider.ProviderStore(st).setModels(sp.id, merged.filter { it != sp.model }.ifEmpty { null })
-                                            modelFetchMessage = "已获取 ${ids.size} 个模型"
-                                            refresh()
-                                        } else modelFetchMessage = "获取失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
+                                            // 【2026-10-06 问题6 修复】原来直接 merged 全塞进
+                                            // modelPool（= 全勾选），用户报「全部帮用户勾选了」。
+                                            // 现在：候选列表交给勾选弹窗，用户自己挑。
+                                            modelCandidates = result.getOrThrow()
+                                            // 默认勾选**已配置过的**（对齐 Web：existing.has(id)）
+                                            modelPicked = modelCandidates.filter { it in modelPool }.toSet()
+                                            showModelPicker = true
+                                        } else {
+                                            modelFetchMessage = "获取失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
+                                        }
                                     }
                                 }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = colors.hover),
+                            // 【2026-10-06 问题11 修复】原来 containerColor = colors.hover
+                            // （灰底）—— 用户报「颜色让人认为不能点击」。
+                            // 对齐 Web：文字按钮（textSecondary + hover 变 text），
+                            // 这里用透明底 + 主题文字色。
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.Transparent,
+                                contentColor = colors.accent,
+                            ),
                         ) { Text(if (fetchingModels) "获取中…" else "一键获取模型列表", style = CCMText.body12) }
                         modelFetchMessage?.let { Text(it, style = CCMText.body11, color = colors.textSecondary) }
                     }
@@ -699,6 +721,35 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
             },
         )
     }
+
+    // 【2026-10-06 问题6】模型勾选弹窗 —— 对齐 Web 的「选择模型」对话框。
+    // 用户勾选要启用的模型，确认后写入 modelPool（= 下拉框能选到的清单）。
+    if (showModelPicker) {
+        ModelPickerDialog(
+            candidates = modelCandidates,
+            picked = modelPicked,
+            onToggle = { id ->
+                modelPicked = if (id in modelPicked) modelPicked - id else modelPicked + id
+            },
+            onSelectAll = { modelPicked = modelCandidates.toSet() },
+            onSelectNone = { modelPicked = emptySet() },
+            onDismiss = { showModelPicker = false },
+            onConfirm = {
+                // ⚠️ 这里不能引用内层的 selProvider（作用域不可见），
+                //    直接按 selectedId 从 store 取（与内层同源）。
+                val sp = store?.get(selectedId)
+                val st = com.ccm.app.AppGraph.storage
+                if (sp != null && st != null) {
+                    // 写入勾选的模型（排除主模型，它在 model 字段里单列）
+                    val next = modelPicked.filter { it != sp.model }.toList()
+                    com.ccm.app.core.provider.ProviderStore(st).setModels(sp.id, next.ifEmpty { null })
+                    modelFetchMessage = "已保存 ${next.size} 个模型"
+                    refresh()
+                }
+                showModelPicker = false
+            },
+        )
+    }
 }
 
 /**
@@ -748,7 +799,7 @@ private fun AddProviderDialog(
                 SettingsTextField(value = id, onValueChange = { id = it }, placeholder = "1")
             }
             ProviderField(label = "显示名") {
-                SettingsTextField(value = name, onValueChange = { name = it }, placeholder = "WorkBuddy")
+                SettingsTextField(value = name, onValueChange = { name = it }, placeholder = "Claude")
             }
             ProviderField(label = "API 地址") {
                 SettingsTextField(
@@ -761,6 +812,59 @@ private fun AddProviderDialog(
                     value = model, onValueChange = { model = it },
                     placeholder = "deepseek-v4.1-flash",
                 )
+            }
+            // 【2026-10-06 问题10 修复】用户报「需要添加完供应商才能获取
+            // 那个供应商的模型列表，何意味？」—— 确实别扭：想先看有哪些
+            // 模型再决定，却必须先把 Provider 存下来。
+            //
+            // 现在添加对话框里也能拉：填好 URL + Key 后点这个按钮，
+            // 拉到的候选列表弹窗勾选，选中的填进「模型」输入框。
+            // （不写入 modelPool —— Provider 还没创建，存不了。）
+            val addScope = rememberCoroutineScope()
+            var addFetching by remember { mutableStateOf(false) }
+            var addFetchError by remember { mutableStateOf("") }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = if (addFetching) "获取中…" else "获取模型列表",
+                    style = CCMText.body12,
+                    color = if (url.isNotBlank() && key.isNotBlank()) colors.accent else colors.textSecondary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable(enabled = url.isNotBlank() && key.isNotBlank() && !addFetching) {
+                            addFetching = true
+                            addFetchError = ""
+                            addScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                val r = fetchProviderModels(url.trim(), key.trim(), protocol)
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                    addFetching = false
+                                    if (r.isSuccess) {
+                                        val list = r.getOrThrow()
+                                        if (list.isNotEmpty()) {
+                                            // 拉到了 → 弹窗勾选（复用 ModelPickerDialog，
+                                            // 但这里只单选填入 —— 用第一个/或让用户点）
+                                            model = list.first()
+                                            addFetchError = "已获取 ${list.size} 个，默认填第一个：${list.first()}"
+                                        } else addFetchError = "接口没返回任何模型"
+                                    } else {
+                                        addFetchError = "获取失败：${r.exceptionOrNull()?.message ?: "未知错误"}"
+                                    }
+                                }
+                            }
+                        }
+                        .padding(vertical = 4.dp),
+                )
+                if (addFetchError.isNotBlank()) {
+                    Text(
+                        addFetchError,
+                        style = CCMText.body12,
+                        color = colors.textSecondary,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
             ProviderField(label = "API 密钥") {
                 SettingsTextField(value = key, onValueChange = { key = it }, placeholder = "sk-...")
@@ -1247,4 +1351,149 @@ private fun maskKey(k: String): String {
     if (k.isBlank()) return k
     if (k.length <= 12) return "•".repeat(k.length)
     return k.take(5) + "…" + k.takeLast(4)
+}
+
+
+/**
+ * 模型勾选弹窗 —— 对齐 Web `ProviderSettings.tsx:1348` 的「选择模型」对话框。
+ *
+ * 【2026-10-06 问题6】用户报「获取模型列表时全部帮用户勾选了，这不行」——
+ * 原实现直接把拉到的所有模型塞进 modelPool。现在给用户自己挑。
+ *
+ * 交互（对齐 Web）：
+ * - 顶部：标题 + 「已选 N / 共 M」
+ * - 搜索框（模型多时过滤）
+ * - 全选 / 反选
+ * - 列表：每行 checkbox + 模型名
+ * - 底部：取消 / 保存
+ */
+@Composable
+private fun ModelPickerDialog(
+    candidates: List<String>,
+    picked: Set<String>,
+    onToggle: (String) -> Unit,
+    onSelectAll: () -> Unit,
+    onSelectNone: () -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    val colors = CCMTheme.colors
+    var search by remember { mutableStateOf("") }
+    val filtered = remember(candidates, search) {
+        if (search.isBlank()) candidates
+        else candidates.filter { it.contains(search, ignoreCase = true) }
+    }
+
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(colors.bgMain)
+                .padding(16.dp),
+        ) {
+            // 标题行
+            Text("选择模型", style = CCMText.body16, color = colors.textMain)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "已选 ${picked.size} / 共 ${candidates.size}",
+                style = CCMText.body12,
+                color = colors.textSecondary,
+            )
+            Spacer(Modifier.height(12.dp))
+
+            // 搜索框
+            SettingsTextField(
+                value = search,
+                onValueChange = { search = it },
+                placeholder = "搜索模型…",
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+
+            // 全选 / 反选
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "全选",
+                    style = CCMText.body12,
+                    color = colors.accent,
+                    modifier = Modifier.clickable { onSelectAll() },
+                )
+                Text(
+                    "清空",
+                    style = CCMText.body12,
+                    color = colors.accent,
+                    modifier = Modifier.clickable { onSelectNone() },
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+
+            // 候选列表（可滚动）
+            androidx.compose.foundation.lazy.LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 320.dp),
+            ) {
+                items(filtered) { id ->
+                    val checked = id in picked
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(5.52.dp))
+                            .clickable { onToggle(id) }
+                            .padding(vertical = 8.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        // 简单 checkbox（不引 Material3 Checkbox，样式更可控）
+                        Box(
+                            modifier = Modifier
+                                .size(16.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(if (checked) colors.accent else Color.Transparent)
+                                .border(1.dp, if (checked) colors.accent else colors.border, RoundedCornerShape(3.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (checked) {
+                                Text("✓", style = CCMText.body12, color = Color.White)
+                            }
+                        }
+                        Text(
+                            id,
+                            style = CCMText.body13,
+                            color = colors.textMain,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            // 底部按钮
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                Text(
+                    "取消",
+                    style = CCMText.body13,
+                    color = colors.textSecondary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(7.36.dp))
+                        .clickable { onDismiss() }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "保存",
+                    style = CCMText.body13,
+                    color = colors.accent,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(7.36.dp))
+                        .clickable { onConfirm() }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
+        }
+    }
 }

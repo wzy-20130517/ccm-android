@@ -193,7 +193,11 @@ fun CcmRoot() {
                 false -> OnboardingScreen(
                     onReady = { installed = true },
                 )
-                true -> CcmApp(session = AppGraph.session)
+                // 【2026-10-06 问题12】AppGraph.session 现在是 Compose State，
+                // 加 Provider 后这里会自动重组（之前是普通 var，不重组）。
+                // 【2026-10-06 问题12】读 sessionState（Compose State）——
+                // 加 Provider 后 session 变化会触发重组，横幅随之消失。
+                true -> CcmApp(session = AppGraph.sessionState.value)
             }
         }
     }

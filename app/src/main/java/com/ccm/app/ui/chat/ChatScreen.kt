@@ -93,7 +93,7 @@ fun ChatScreen(
     running: Boolean = false,
     title: String = "新对话",
     sessionKey: String = "",
-    modelName: String = "Sonnet 4.6",
+    modelName: String = "",  // 【2026-10-06 问题2】不再硬编码 Sonnet 4.6，由调用方传真实模型名
     tokenCount: Int = 0,
     errorMessage: String? = null,
     onInputChange: (String) -> Unit = {},
@@ -117,6 +117,8 @@ fun ChatScreen(
     val colors = CCMTheme.colors
     val density = androidx.compose.ui.platform.LocalDensity.current
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
+    // 【2026-10-06 问题24】键盘高度（dp），消息区留白要加上它
+    val imeBottomDp = with(density) { WindowInsets.ime.getBottom(this).toDp() }
 
     Box(
         modifier = modifier
@@ -152,9 +154,17 @@ fun ChatScreen(
                 // 不等这一帧会滚到旧底部（看起来像没滚）。
                 // 用瞬时 scrollTo 而非 animate：流式每个 chunk 都会触发，
                 // 动画叠加会抖。
+                //
+                // 【2026-10-06 问题23 修复】原来只滚**一帧** —— 但 markdown
+                // 渲染是异步撑高的：代码块、表格、图片的行高在后续帧才确定，
+                // 一帧滚完内容又长高了 → 停在中间（用户报「Sticky Scroll 未做好」）。
+                // 对齐 Web 的 scheduleScrollToBottomAfterRender：
+                // 连续 6 帧重试，每帧都检查用户是否还在底部（上翻即中止）。
                 LaunchedEffect(bubbles.size, streaming.length, toolCards.size) {
-                    if (followBottom) {
+                    if (!followBottom) return@LaunchedEffect
+                    repeat(6) {
                         withFrameNanos {}
+                        if (!followBottom) return@repeat   // 用户中途上翻 → 停
                         scrollState.scrollTo(scrollState.maxValue)
                     }
                 }
@@ -170,6 +180,11 @@ fun ChatScreen(
                         withFrameNanos {}
                         scrollState.scrollTo(scrollState.maxValue)
                         followBottom = true
+                        // 多补几帧 —— 历史消息里的 markdown 撑高也要跟上
+                        repeat(4) {
+                            withFrameNanos {}
+                            scrollState.scrollTo(scrollState.maxValue)
+                        }
                     }
                 }
 
@@ -189,8 +204,14 @@ fun ChatScreen(
                         presentItems = presentItems,
                     )
                     // 底部留白 —— 实测滚动容器 pad: `0px 0px 154px`（pb-154）
-                    // 给浮动输入栏 + 底部状态行让位
-                    Spacer(Modifier.height(154.dp))
+                    // 给浮动输入栏 + 底部状态行让位。
+                    //
+                    // 【2026-10-06 问题24 修复】原来固定 154dp —— 键盘弹出时
+                    // 输入栏被 ime padding 顶上去了（约 300dp），但消息区留白
+                    // 还是 154dp → **正文下半部分被输入栏+键盘盖住**，
+                    // 用户报「拉起输入框时正文不会往上移动」。
+                    // 现在留白 = 154dp + 键盘高度，正文随之上移。
+                    Spacer(Modifier.height(154.dp + imeBottomDp))
                 }
 
                 if (todos.isNotEmpty()) {

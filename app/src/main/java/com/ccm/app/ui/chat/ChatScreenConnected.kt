@@ -61,7 +61,7 @@ fun ChatScreenConnected(
     modifier: Modifier = Modifier,
     title: String = "新对话",
     onAutoTitle: (String) -> Unit = {},
-    modelName: String = "Sonnet 4.6",
+    modelName: String = "",  // 【2026-10-06 问题2】不再硬编码 Sonnet 4.6，由调用方传真实模型名
     onExport: () -> Unit = {},
     onRename: () -> Unit = {},
     onModelClick: () -> Unit = {},

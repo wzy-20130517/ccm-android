@@ -161,11 +161,17 @@ fun AssistantActivityIndicator(
         label = "frame",
     )
 
-    // 流式/完成阶段不播 sprite：
-    //   Web 在这两个阶段用 typing lottie，形态与 sprite 不同（见类注释）。
-    //   与其拿形态不对的动画硬顶，不如不显示 —— 此时正文已在流式输出，
-    //   指示器本就该退场（DONE 后 Web 也只是让打字动画定格，不抢注意力）。
-    val active = phase == ActivityPhase.WAITING || dissolving
+    // 【2026-10-06 问题16 修复】原来只有 WAITING / dissolving 才播：
+    //   `val active = phase == ActivityPhase.WAITING || dissolving`
+    // 而 AssistantThinkingCompactStatus 传的是 **STREAMING**（思考中）——
+    // 于是「正在深度思考」旁边的星芒**永远不显示**，用户报
+    // 「Agent 输出没有像 web 一样的星芒旋转」。
+    //
+    // 现在 STREAMING 也播主循环：sprite 本身就是「旋转形变」序列，
+    // 思考中持续转 = 用户要的效果。DONE 仍不显示（已完成不该抢注意力）。
+    val active = phase == ActivityPhase.WAITING ||
+        phase == ActivityPhase.STREAMING ||
+        dissolving
     if (!active) return
 
     Canvas(modifier = modifier.size(size)) {

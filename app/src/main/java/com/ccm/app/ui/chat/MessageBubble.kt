@@ -408,6 +408,15 @@ fun MessageList(
             //   Web 的对应物是 AssistantThinkingCompactStatus（星芒 28px +
             //   斜体衬线状态文字 + 打字机逐词显现），这才是「思维链」的观感。
             //   组件早就写好了（739 行），一直零调用 —— 又是「写好了没接线」。
+            // 【2026-10-06 问题17 修复】原来这里加了
+            //   `.padding(horizontal = 16.dp, vertical = 12.dp)`
+            // —— 但 AssistantThinkingCompactStatus 组件**内部已有**
+            //   `padding(start = 10.12.dp, top = 12.88.dp)`（对齐 Web 的
+            //   pl-[11px] / mt-[14px]）。两者叠加 → 左边距 26.12dp、
+            //   上边距 24.88dp，比其他消息明显偏右偏下，
+            //   用户报「那句正在深度思考的位置有点奇怪」。
+            //
+            // 现在只留外层 16dp 水平边距（与正文对齐），垂直交给组件自己。
             AssistantThinkingCompactStatus(
                 event = AssistantThinkingEvent(
                     kind = ThinkingEventKind.FOCUS,
@@ -416,7 +425,7 @@ fun MessageList(
                 isThinking = true,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .padding(horizontal = 16.dp),
             )
         }
 

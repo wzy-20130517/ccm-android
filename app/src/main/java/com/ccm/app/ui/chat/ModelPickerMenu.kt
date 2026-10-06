@@ -135,6 +135,61 @@ fun ModelPickerMenu(
             }
 
             MenuDivider()
+            // ★ 2026-10-03：档位列表原来追加在「扩展思考」行**下方** ——
+            //   菜单贴着输入栏向上弹（dropUp），下方就是屏幕边缘，
+            //   列表被 heightIn 截断，用户不下滑根本看不到。
+            //   改为渲染在行的**上方**（对齐 Web 的 bottom-full 向上弹浮层），
+            //   展开时把菜单往上撑，永远可见。
+            if (showEffortOptions) {
+                Text(
+                    "思考强度",
+                    style = CCMText.body11.copy(fontSize = 10.12.sp, fontWeight = FontWeight.Medium),
+                    color = colors.textSecondary,
+                    modifier = Modifier.padding(horizontal = 14.72.dp, vertical = 3.68.dp),
+                )
+                listOf(
+                    Triple("low", "低", "快速响应"),
+                    Triple("medium", "中", "日常任务"),
+                    Triple("high", "高", "复杂问题"),
+                    Triple("xhigh", "极高", "深度分析"),
+                    Triple("max", "最大", "尽可能深入"),
+                ).forEach { (key, label, hint) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 5.52.dp)
+                            .clip(RoundedCornerShape(7.36.dp))
+                            .background(if (effort == key) colors.hover else Color.Transparent)
+                            .clickable { onEffortChange(key); showEffortOptions = false }
+                            .padding(horizontal = 9.2.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(7.36.dp),
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(5.52.dp)
+                                    .clip(CircleShape)
+                                    .background(if (effort == key) colors.accent else colors.border),
+                            )
+                            Text(
+                                label,
+                                style = CCMText.body12.copy(fontSize = 11.5.sp),
+                                color = if (effort == key) colors.textMain else colors.textSecondary,
+                            )
+                        }
+                        Text(
+                            hint,
+                            style = CCMText.body11.copy(fontSize = 9.2.sp),
+                            color = colors.textSecondary,
+                        )
+                    }
+                }
+                MenuDivider()
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -145,7 +200,14 @@ fun ModelPickerMenu(
                 Column(Modifier.weight(1f)) {
                     Text("扩展思考", style = CCMText.body14.copy(fontSize = 13.34.sp, fontWeight = FontWeight.Medium), color = colors.textMain)
                     Spacer(Modifier.height(1.dp))
-                    Text("为复杂任务进行更深入的思考", style = CCMText.body12.copy(fontSize = 11.5.sp), color = colors.textSecondary)
+                    // 【2026-10-06 问题8】用户报「多处地方都能调节思考强度，
+                    // 不知道调哪个」。这里加一句说明：三个入口改的是**同一份**
+                    // 配置（Provider 的 effort 字段），在哪调都一样。
+                    Text(
+                        "为复杂任务进行更深入的思考 · 与设置页同一份配置",
+                        style = CCMText.body12.copy(fontSize = 11.5.sp),
+                        color = colors.textSecondary,
+                    )
                 }
                 Text(
                     text = effortLabel(effort),
@@ -166,18 +228,6 @@ fun ModelPickerMenu(
                     contentAlignment = if (thinkingEnabled) Alignment.CenterEnd else Alignment.CenterStart,
                 ) {
                     Box(Modifier.size(16.56.dp).shadow(1.dp, CircleShape).background(Color.White, CircleShape))
-                }
-            }
-            if (showEffortOptions) {
-                listOf("low" to "低", "medium" to "中", "high" to "高", "xhigh" to "极高", "max" to "最大").forEach { (key, label) ->
-                    Row(
-                        Modifier.fillMaxWidth().clickable { onEffortChange(key); showEffortOptions = false }
-                            .padding(horizontal = 23.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(if (effort == key) "●" else "○", color = if (effort == key) colors.accent else colors.border, fontSize = 9.sp)
-                        Text(label, style = CCMText.body12.copy(fontSize = 11.5.sp), color = colors.textSecondary, modifier = Modifier.padding(start = 7.dp))
-                    }
                 }
             }
         }

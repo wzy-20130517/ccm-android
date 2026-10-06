@@ -2,6 +2,7 @@ package com.ccm.app.ui.common
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -93,7 +94,11 @@ fun SidebarDrawer(
     // 展开进度：0 = 完全滑出，1 = 完全展开
     val progress = animateFloatAsState(
         targetValue = if (open) 1f else 0f,
-        animationSpec = tween(durationMillis = 200),   // Web: duration-200
+        // 【2026-10-06 问题9】用户反馈「滑入时动画过快」。
+        // Web 是 duration-200（200ms），但 Web 上侧栏是**常驻可见**的
+        // 折叠展开，而 Android 是**全屏抽屉**——同样的时长在手机上
+        // 感觉「唰一下就没了」。放慢到 320ms 更从容。
+        animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
         label = "sidebarProgress",
     ).value
 

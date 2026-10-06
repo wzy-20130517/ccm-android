@@ -19,6 +19,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -141,7 +142,14 @@ fun CcmApp(
     // 兜底：调用方没传 initError 时从全局装配结果读。
     // 之所以要兜底：AppGraph.initError 早就存好了，但 UI 一直没显示它，
     // 于是「没配 API」表现为「点什么都没反应」—— 用户以为界面坏了。
-    val effectiveError = initError ?: com.ccm.app.AppGraph.initError
+    //
+    // 【2026-10-06 问题12 修复】原来直接读 AppGraph.initError（静态值）——
+    // 用户在设置页加了 Provider 后，这个值还是「尚未配置 API」，
+    // 顶部横幅**不消失**（用户报「添加一个供应商后顶部横幅仍显示尚未配置API」）。
+    // 现在：initError 也随 AppGraph.session 的变化重算 ——
+    // session 非 null 说明装配成功，无论 initError 说什么都不该再报警。
+    val effectiveError = initError
+        ?: if (com.ccm.app.AppGraph.session != null) null else com.ccm.app.AppGraph.initError
 
     CCMTheme(darkTheme = darkTheme) {
         AppScaffold(session = session, initError = effectiveError)
@@ -271,7 +279,10 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
             ?.takeIf { it.isNotBlank() }
             ?: "未配置模型"
     }
-    var route by remember { mutableStateOf(CcmRoute.HOME) }
+    // 【2026-10-06 问题21 修复】原来用 remember —— Activity 被系统回收后
+    // 重建时 route 重置为 HOME，但 activeSession 由 AppGraph 恢复，
+    // 表现为「显示首页样式，发消息却进的是原对话」。改用 rememberSaveable。
+    var route by rememberSaveable { mutableStateOf(CcmRoute.HOME) }
     // 设置是**覆盖层不是路由**（对齐 Web：showSettings 状态，location 不变）
     var showSettings by remember { mutableStateOf(false) }
 
@@ -335,13 +346,19 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         navigate(CcmRoute.CHAT)
     }
     // 新建会话：openSession 对「不存在的 id」= 建空会话，天然复用
+    //
+    // 【2026-10-06 问题3 修复】原来跳 CHAT（对话页）—— 但新会话是空的，
+    // 对话页看起来就是「一片空白 + 输入框在底部」，用户困惑。
+    // 现在跳 HOME（首页）：有大标题问候语 + 居中的输入卡，
+    // 语义就是「开始一个新对话」。用户发第一条消息后自动进对话页
+    // （sendAndOpen 里 navigate(CHAT)）。
     val newChat: () -> Unit = {
         val st = AppGraph.storage
         if (st != null) {
             AppGraph.openSession(SessionStore(st).newSessionId())?.let { activeSession = it }
         }
         refreshSessions()
-        navigate(CcmRoute.CHAT)
+        navigate(CcmRoute.HOME)
     }
 
     /**
@@ -514,6 +531,19 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     return
                 }
             }
+        }
+        // 【2026-10-06 问题1 修复】原来直接 `activeSession?.send(...)` ——
+        // session 为 null（未配置 Provider）时**静默什么都不做**，
+        // 用户按了发送毫无反应，以为 App 坏了。
+        // 现在明确提示：Toast 说明原因 + 引导去设置页。
+        if (activeSession == null) {
+            android.widget.Toast.makeText(
+                appCtx,
+                "尚未配置模型 —— 请到「设置 → 模型」里添加一个 Provider",
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+            // 不跳页（跳设置页会让用户觉得「点了乱跳」，见下方旧注释）
+            return
         }
         activeSession?.send(text, images)
         // ★ 不管有没有 session 都切到对话页 —— 用户按了发送/点了胶囊，

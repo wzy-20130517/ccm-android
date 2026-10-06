@@ -55,7 +55,7 @@ class AutoMemory(
     /** 持久化状态。 */
     private data class State(
         val cursor: Int = 0,
-        val enabled: Boolean = true,
+        val enabled: Boolean = false,  // 【2026-10-06 问题19】默认关闭
         val runs: Int = 0,
     )
 
@@ -167,7 +167,7 @@ class AutoMemory(
             val o = JSONObject(stateFile.readText())
             State(
                 cursor = o.optInt("cursor", 0),
-                enabled = o.optBoolean("enabled", true),
+                enabled = o.optBoolean("enabled", false),  // 【2026-10-06 问题19】默认关闭
                 runs = o.optInt("runs", 0),
             )
         }

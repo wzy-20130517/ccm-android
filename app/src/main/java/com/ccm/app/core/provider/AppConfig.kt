@@ -59,8 +59,12 @@ data class AppConfig(
     val maxContextTokens: Int = 1_000_000,
 
     /** 权限模式：default / acceptEdits / plan / bypassPermissions。 */
+    // 【2026-10-06 问题13 修复】默认值原来是 "default"（拦截装饰性工具），
+    // 而 CLI 侧用户配置的是 "bypassPermissions"（全放行）。
+    // 用户报「默认权限与 CLI 不同」—— APK 里工具调用老被拦，行为不一致。
+    // 对齐 CLI：默认全放行（用户可去设置页改）。
     @SerialName("permissionMode")
-    val permissionMode: String = "default",
+    val permissionMode: String = "bypassPermissions",
 
     /** 是否启用识图路由。 */
     val vision: Boolean = false,

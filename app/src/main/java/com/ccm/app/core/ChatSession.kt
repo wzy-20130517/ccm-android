@@ -667,7 +667,15 @@ class ChatSession(
                             thinkingBuf = ""
                         }
                         saveForced()   // 每轮完成即落盘，避免切页/进程回收丢失最近一轮
-                        _state.value = _state.value.copy(running = false, toolCards = toolCards.toList())
+                        // 【2026-10-06 问题14 修复】原来这里是
+                        //   `copy(running = false, toolCards = toolCards.toList())`
+                        // —— 把刚清空的 toolCards **又设回去了**。
+                        // 后果：MessageList 里
+                        //   · bubbles 的定型消息渲染一遍工具组（正文上方）
+                        //   · state.toolCards 非空触发 `else if` 分支又渲染一遍（下方）
+                        // → 用户看到「工具栏重复两排」。
+                        // 工具卡已随 Bubble 定型，这里必须保持空。
+                        _state.value = _state.value.copy(running = false)
 
                         // ★ automem（2026-10-01）：每轮正常结束后触发一次记忆提取。
                         //

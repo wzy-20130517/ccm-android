@@ -196,7 +196,21 @@ object AppGraph {
 
     /** 对话门面 —— **UI 接入 Agent 的唯一入口**。 */
     @Volatile
-    var session: ChatSession? = null
+    // 【2026-10-06 问题12 修复】原来是普通 var —— MainActivity 里
+    // `CcmApp(session = AppGraph.session)` 只在**重组时**读一次，
+    // 用户在设置页加了 Provider 后 session 变了但 UI 不重组，
+    // 顶部「尚未配置 API」横幅不消失（用户报的问题12）。
+    //
+    // 改用一个 Compose State 承载（显式 API，不用 by 委托 —— 委托要额外
+    // import getValue/setValue，这个文件是纯逻辑层，不想引 Compose 依赖）。
+    // 属性本身仍是普通 var，读写点不变；Compose 侧读 [sessionState] 即可。
+    private val _sessionState = androidx.compose.runtime.mutableStateOf<ChatSession?>(null)
+    var session: ChatSession?
+        get() = _sessionState.value
+        set(value) { _sessionState.value = value }
+
+    /** 供 Compose 观察的 State（问题12：MainActivity 读它才会在变更时重组）。 */
+    val sessionState: androidx.compose.runtime.State<ChatSession?> get() = _sessionState
         private set
 
     /** 已注册工具名清单（供设置页展示与自检）。 */

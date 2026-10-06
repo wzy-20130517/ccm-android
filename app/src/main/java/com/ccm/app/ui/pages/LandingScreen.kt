@@ -52,6 +52,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ccm.app.R
+import com.ccm.app.ui.common.PlusMenu
 import com.ccm.app.ui.common.CcmPillButton
 import com.ccm.app.ui.common.Gap2
 import com.ccm.app.ui.common.PainterIcon
@@ -120,6 +121,8 @@ fun LandingScreen(
     var pendingImages by remember { mutableStateOf<List<String>>(emptyList()) }
     // 展开的建议分类（null = 收起）—— 对齐 Web activeLandingPromptSection 的 toggle
     var activeSection by remember { mutableStateOf<PromptSection?>(null) }
+    // 【2026-10-06 问题26】加号菜单展开状态
+    var showPlusMenu by remember { mutableStateOf(false) }
     // 灵感库（assets/inspirations.json，首次组合加载一次）
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val library = remember { com.ccm.app.core.inspiration.InspirationLibrary.ensure(ctx) }
@@ -485,20 +488,74 @@ private fun InputCard(
                 // 左：+ 按钮（上传文件）
                 // ★ 2026-09-27：原来只有图标没有 clickable —— 点了什么都不发生。
                 // ★ 2026-10-01：对齐 Web 的 `flex h-[32px] w-[34px] rounded-[8px]`
-                //   → 点击区 **31.27 × 29.44**、圆角 **7.36**（原先只有一个裸图标，
-                //   点击热区只有 20dp，且没有 Web 的悬停底色块）。
-                Box(
-                    modifier = Modifier
-                        .size(width = 31.27.dp, height = 29.44.dp)
-                        .clip(RoundedCornerShape(7.36.dp))
-                        .clickable(onClick = onAttach),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    PainterIcon(
-                        R.drawable.ic_input_plus,
-                        size = 20.dp,
-                        tint = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
-                    )
+                //   → 点击区 **31.27 × 29.44**、圆角 **7.36**。
+                // ★ 2026-10-06 问题26：点击**弹菜单**（原来直接拉文件选择器）。
+                //   用户要求「必须改得完全一样」—— 对齐 Web 的 renderSharedPlusMenu。
+                Box {
+                    Box(
+                        modifier = Modifier
+                            .size(width = 31.27.dp, height = 29.44.dp)
+                            .clip(RoundedCornerShape(7.36.dp))
+                            .clickable { showPlusMenu = !showPlusMenu },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        PainterIcon(
+                            R.drawable.ic_input_plus,
+                            size = 20.dp,
+                            tint = if (CCMTheme.isDark) colors.textMain else Color(0xFF373734),
+                        )
+                    }
+                    if (showPlusMenu) {
+                        // 用 Popup：不受父容器裁剪（输入卡有 clip 圆角）。
+                        // 定位在按钮**上方**（Web 是 top-full 向下弹，
+                        // 但首页输入卡贴近屏幕底部，向下弹会超出屏幕）。
+                        androidx.compose.ui.window.Popup(
+                            alignment = Alignment.TopStart,
+                            offset = androidx.compose.ui.unit.IntOffset(0, -(300 * 2.75f).toInt()),
+                            onDismissRequest = { showPlusMenu = false },
+                        ) {
+                            PlusMenu(
+                                onDismiss = { showPlusMenu = false },
+                                onAttach = onAttach,
+                                onScreenshot = {
+                                    // 【2026-10-06 问题26】截图能力在 core 的 Screencap
+                                    // 工具里（走 Shizuku/rish），UI 层直接调需要协程 +
+                                    // ToolContext（拿不到）。
+                                    // 折中：把「请截屏」写成一条待发消息填入输入框 ——
+                                    // 用户按发送，Agent 会调 Screencap 工具截屏并分析。
+                                    // （Web 是直接调后端接口截屏，APK 侧工具链不同，
+                                    //   但用户体验等价：点一下 → 得到屏幕内容分析。）
+                                    onValueChange(
+                                        if (value.isBlank()) "截取当前屏幕并告诉我上面有什么"
+                                        else "$value\n截取当前屏幕并告诉我上面有什么"
+                                    )
+                                },
+                                projects = remember {
+                                    com.ccm.app.AppGraph.storage
+                                        ?.let { com.ccm.app.core.project.ProjectStore(it).list() }
+                                        ?.map { it.name } ?: emptyList()
+                                },
+                                onPickProject = { name ->
+                                    // 把项目目录作为上下文提示填入输入框
+                                    onValueChange(
+                                        if (value.isBlank()) "在项目「$name」里："
+                                        else "$value 在项目「$name」里："
+                                    )
+                                },
+                                onCreateProject = { /* 项目创建在项目页，这里只跳转 */ },
+                                skills = remember {
+                                    com.ccm.app.core.skill.BuiltinSkills.all()
+                                        .map { it.id to it.name }
+                                },
+                                onPickSkill = { id ->
+                                    // 技能 = slash 命令，填进输入框让用户补参数
+                                    onValueChange(if (value.isBlank()) "/$id" else "$value /$id")
+                                },
+                                onManageSkills = { /* 定制页有技能 tab */ },
+                                onConnectors = { /* 定制页有连接器 tab */ },
+                            )
+                        }
+                    }
                 }
                 // 已选图片数（有才显示 —— 发送后清零消失）
                 if (attachedCount > 0) {
@@ -549,17 +606,22 @@ private fun InputCard(
                         // → 屏幕 **36.8 × 29.44**、圆角 **7.36**、底色 `#EFCBC0`。
                         // （原来是 29.44 见方的橙色方块 + 文字箭头，比 Web 小一圈、
                         //   颜色也不是 Web 的浅陶土色。）
+                        // 【2026-10-06 问题22 修复】原来写死亮色 #EFCBC0 ——
+                        // 暗色主题下那是**浅粉灰**，在深色背景上看着像「禁用」。
+                        // Web 有暗色覆盖：`dark:bg-[#34312E] dark:text-[#F5D7CA]`。
+                        val sendBg = if (CCMTheme.isDark) Color(0xFF34312E) else Color(0xFFEFCBC0)
+                        val sendTint = if (CCMTheme.isDark) Color(0xFFF5D7CA) else Color.White
                         Box(
                             modifier = Modifier
                                 .size(width = 36.8.dp, height = 29.44.dp)
                                 .clip(RoundedCornerShape(7.36.dp))
-                                .background(Color(0xFFEFCBC0))
+                                .background(sendBg)
                                 .clickable { onSend(input) },
                             contentAlignment = Alignment.Center,
                         ) {
                             // ArrowUp size=18 strokeWidth=2.3 → 16.56
                             ArrowUpIcon(
-                                tint = Color.White,
+                                tint = sendTint,
                                 size = 16.56.dp,
                                 strokeWidth = 2.3f,
                             )

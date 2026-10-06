@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- lucide Copy（14px，复制按钮）— ISC License -->
+<!-- lucide Copy（14px，复制按钮）— ISC License
+     ⚠️ 原实现用了 <rect> 标签 —— Android VectorDrawable **不支持** rect/circle/line
+     等 SVG 基本图形，只认 <path>/<group>，导致该图标只渲染出后半条 path，
+     看起来是残缺的半个框。已把 rect 转成等价 path（rx=2 圆角矩形）。 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="14dp" android:height="14dp"
     android:viewportWidth="24" android:viewportHeight="24">
-    <rect x="8" y="8" width="14" height="14" rx="2" ry="2"
+    <path android:pathData="M10,8 H20 A2,2 0 0 1 22,10 V20 A2,2 0 0 1 20,22 H10 A2,2 0 0 1 8,20 V10 A2,2 0 0 1 10,8 Z"
         android:strokeWidth="2" android:strokeColor="#000000"
         android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" />
     <path android:pathData="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"
