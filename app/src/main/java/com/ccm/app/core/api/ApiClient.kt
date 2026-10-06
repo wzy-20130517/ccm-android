@@ -3,12 +3,9 @@ package com.ccm.app.core.api
 import com.ccm.app.core.provider.KeyPool
 import com.ccm.app.core.provider.Protocol
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -148,8 +145,10 @@ class ApiClient(
         system: String,
         messages: List<JsonObject>,
         tools: List<ApiTypes.ToolDefinition> = emptyList(),
+        /** 思考档位覆盖（摘要请求传 "medium"，见 buildRequestBody 注释）。 */
+        effortOverride: String? = null,
     ): ApiTypes.ChatResponse {
-        val body = buildRequestBody(system, messages, tools, stream = false)
+        val body = buildRequestBody(system, messages, tools, stream = false, effortOverride = effortOverride)
         val raw = executeWithRetry(body, stream = false)
         return parseResponse(raw)
     }
@@ -436,6 +435,16 @@ class ApiClient(
         messages: List<JsonObject>,
         tools: List<ApiTypes.ToolDefinition>,
         stream: Boolean,
+        /**
+         * 本次请求的思考档位覆盖（null = 用构造时的 [effort]）。
+         *
+         * 【2026-10-06 为什么需要】摘要请求（/compact /summary）必须固定
+         * medium —— 高 effort 下模型的思考会把输出预算吃光，返回空摘要
+         * （CLI 侧 SUMMARY_MAX_TOKENS 的演化史记着这个教训：
+         * 4096→32768→65536 一路加预算，最后还是靠「固定 medium」才稳）。
+         * APK 原来没有这个覆盖点，摘要只能吃 provider 的全局 effort。
+         */
+        effortOverride: String? = null,
     ): JsonObject {
         val effectiveTools = if (noTools) emptyList() else tools
         val maxTok = maxOutputTokens
@@ -759,7 +768,7 @@ class ApiClient(
         if (systemTopLevel && system.isNotEmpty()) put("system", system)
         // 深度思考（audit-core #2）：none 不发（等价默认关）；
         // xhigh/max 是 CLI 扩展档，OpenAI 官方只认到 high → 归一到 high。
-        effort?.takeIf { it.isNotBlank() && it != "none" }?.let { e ->
+        (effortOverride ?: effort)?.takeIf { it.isNotBlank() && it != "none" }?.let { e ->
             put("reasoning_effort", if (e in setOf("minimal", "low", "medium", "high")) e else "high")
         }
         if (tools.isNotEmpty()) {

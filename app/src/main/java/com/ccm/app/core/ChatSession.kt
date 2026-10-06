@@ -152,15 +152,22 @@ class ChatSession(
         return try {
             val input = container.compactor.buildSummaryInput(history)
             val sys = container.compactor.summarySystemPrompt()
+            // 【2026-10-06 修】原来直接把 buildSummaryInput 当 user message ——
+            // **九部分结构提示词整个没用上**（buildSummaryPrompt 从未被调用）。
+            // 现在拼完整指令：禁工具前言 + 九部分正文 + 对话原料。
+            val prompt = container.compactor.buildSummaryPrompt(input)
             // ⚠️ apiClient.chat 要 **kotlinx.serialization** 的 JsonObject
             // （不是 org.json 的）—— 编译期类型检查抓到的。
             val userMsg = kotlinx.serialization.json.buildJsonObject {
                 put("role", kotlinx.serialization.json.JsonPrimitive("user"))
-                put("content", kotlinx.serialization.json.JsonPrimitive(input))
+                put("content", kotlinx.serialization.json.JsonPrimitive(prompt))
             }
             val resp = container.apiClient.chat(
                 system = sys,
                 messages = listOf(userMsg),
+                // 摘要固定 medium（CLI 同款）：高 effort 下思考会把输出预算
+                // 吃光，返回空摘要（CLI 的 SUMMARY_MAX_TOKENS 演化史是教训）。
+                effortOverride = "medium",
             )
             val raw = resp.text
             val summary = container.compactor.extractSummary(raw)
@@ -191,7 +198,63 @@ class ChatSession(
         // PostCompact hook（观察类）
         try { triggerHook("PostCompact") } catch (_: Throwable) {}
 
+        // ── 【2026-10-06】micro 之后仍不够 → 走**真摘要压缩** ────────────
+        //
+        // microCompact 只截断可再生工具输出（零 API 调用，无损）。
+        // 但长会话真正的问题是**对话本体太长** —— 只有摘要能救。
+        // CLI 的 compact() 就是干这个的；APK 原来只有 micro 一半。
+        //
+        // 判据：micro 没能回收多少（说明大头在对话本体）或用户明确要摘要。
+        val needSummary = result.contains("无可回收") || result.contains("回收约 0")
+        if (needSummary) {
+            val extra = summarizeAndReplace()
+            if (extra != null) return extra
+        }
+
         return result
+    }
+
+    /**
+     * 真摘要压缩：把稳定前缀压成 [历史摘要]，保留尾部。**挂起**（要发 API）。
+     *
+     * 对照 CLI `compact()`：splitForSummary → 摘要请求（medium）→
+     * assembleCompacted → setHistory。
+     *
+     * @return 给用户看的报告；null = 无可压缩内容（消息太少）
+     */
+    suspend fun summarizeAndReplace(): String? {
+        val history = container.agentLoop.getHistory()
+        val split = container.compactor.splitForSummary(history) ?: return null
+
+        val input = container.compactor.buildSummaryInput(split.toSummarize)
+        val prompt = container.compactor.buildSummaryPrompt(input)
+        val sys = container.compactor.summarySystemPrompt()
+
+        val userMsg = kotlinx.serialization.json.buildJsonObject {
+            put("role", kotlinx.serialization.json.JsonPrimitive("user"))
+            put("content", kotlinx.serialization.json.JsonPrimitive(prompt))
+        }
+        val raw = try {
+            container.apiClient.chat(
+                system = sys,
+                messages = listOf(userMsg),
+                effortOverride = "medium",   // 摘要固定 medium（防思考吃光预算）
+            ).text
+        } catch (t: Throwable) {
+            return "摘要请求失败：${t.message}\n\n_（microCompact 的结果已保留）_"
+        }
+
+        val summary = container.compactor.formatSummary(container.compactor.extractSummary(raw))
+        if (summary.isBlank()) return "摘要为空（模型未按格式返回）—— 已保留 microCompact 结果。"
+
+        val newHistory = container.compactor.assembleCompacted(split, summary)
+        container.agentLoop.setHistory(newHistory)
+        return buildString {
+            append("已压缩：${split.toSummarize.size} 条 → 1 段摘要，保留最近 ${split.toKeep.size} 条。")
+            if (split.lostPaths.isNotEmpty()) {
+                append("\n\n_已记录 ${split.lostPaths.size} 个读过的文件路径（摘要里，不用重读）。_")
+            }
+        }
     }
 
     fun compactNow(): String {

@@ -190,7 +190,93 @@ class Compactor(
      * 它会去调 Read/Bash 而把摘要预算烧光，返回一个空摘要。
      * Node 版为此专门写了 `NO_TOOLS_PREAMBLE`。
      */
-    fun buildSummaryPrompt(): String = SUMMARY_PREAMBLE
+    fun buildSummaryPrompt(text: String = ""): String =
+        SUMMARY_PREAMBLE + SUMMARY_INSTRUCTION + if (text.isBlank()) "" else "\n\n$text"
+
+    /**
+     * 摘要式压缩 —— **把稳定前缀压成一段 [历史摘要]，保留新鲜尾部**。
+     *
+     * 对照 CLI `core/session/compact.mjs` 的 `compact()`：
+     *   toSummarize = messages.dropLast(keepLast)
+     *   toKeep      = messages.takeLast(keepLast)
+     *   结果        = [摘要段] + toKeep
+     *
+     * ⚠️ 与 [microCompact] 的区别（两者互补，不是替代）：
+     *   · microCompact：零 API 调用，只截断可再生工具输出，对话本体不动
+     *   · 本方法：花一次 API 调用，把旧对话整体浓缩成摘要 —— 信息损失更大，
+     *     但压缩比高得多（长会话必撞 400 时只有它能救）
+     *
+     * 本方法**只负责切分与组装**（纯本地），API 调用由调用方做 ——
+     * 这样 Compactor 不依赖 ApiClient（保持可单测），调用方也能决定
+     * effort/重试策略。
+     *
+     * @param keepLast 保留尾部条数（CLI 默认 10）
+     * @return null = 无可压缩内容（消息数 ≤ keepLast）
+     */
+    fun splitForSummary(
+        messages: List<Message>,
+        keepLast: Int = DEFAULT_KEEP_LAST,
+    ): SummarySplit? {
+        if (messages.size <= keepLast) return null
+        val toSummarize = messages.dropLast(keepLast)
+        val toKeep = messages.takeLast(keepLast)
+        if (toSummarize.isEmpty()) return null
+
+        // compact 差集重注入（照搬 CLI）：列出被摘要的消息里 Read/Grep/Glob 读过的
+        // 文件路径，减去尾部已读的 —— 接手后引用这些路径时直接引摘要，不重复读。
+        // 对照官方 context-collapse：默认省 ~25K tokens/次。
+        val readPaths = toSummarize.flatMap { it.content }
+            .filterIsInstance<ContentBlock.ToolUse>()
+            .filter { it.name in PATH_READ_TOOLS }
+            .mapNotNull { extractPath(it.input.toString()) }
+            .distinct()
+        val keepPaths = toKeep.flatMap { it.content }
+            .filterIsInstance<ContentBlock.ToolUse>()
+            .mapNotNull { extractPath(it.input.toString()) }
+            .toSet()
+        val lostPaths = readPaths.filter { it !in keepPaths }.take(60)
+
+        return SummarySplit(toSummarize, toKeep, lostPaths)
+    }
+
+    /** [splitForSummary] 的结果。 */
+    data class SummarySplit(
+        val toSummarize: List<Message>,
+        val toKeep: List<Message>,
+        /** 被摘要消息里读过、尾部没再读的文件路径（差集重注入用）。 */
+        val lostPaths: List<String>,
+    )
+
+    /**
+     * 组装压缩结果：`[历史摘要段] + 保留尾部`。
+     *
+     * @param summary 模型返回的摘要（已过 [extractSummary] / [formatSummary]）
+     */
+    fun assembleCompacted(split: SummarySplit, summary: String): List<Message> {
+        val body = buildString {
+            append("[历史摘要]\n")
+            append(formatSummary(summary))
+            if (split.lostPaths.isNotEmpty()) {
+                append("\n\n【compact 前已读过的文件，以下内容已在摘要中，直接引用即可：】\n")
+                append(split.lostPaths.joinToString(", "))
+            }
+        }
+        return listOf(Message(role = Message.ROLE_USER, content = listOf(ContentBlock.Text(body)))) + split.toKeep
+    }
+
+    /**
+     * 对齐官方 `formatCompactSummary`：剥离 <analysis> 草稿、<summary> 标签换成可读标题。
+     */
+    fun formatSummary(raw: String): String {
+        var s = raw
+        s = ANALYSIS_RE.replace(s, "")
+        val m = Regex("<summary>([\\s\\S]*?)</summary>", RegexOption.IGNORE_CASE).find(s)
+        if (m != null) {
+            s = s.replace(m.value, "Summary:\n${m.groupValues[1].trim()}")
+        }
+        s = Regex("\\n{3,}").replace(s, "\n\n")
+        return s.trim()
+    }
 
     /**
      * 把消息列表压成纯文本（送去摘要的原料）。
@@ -306,6 +392,72 @@ class Compactor(
             - Your entire response must be plain text: an <analysis> block followed by a <summary> block.
 
         """.trimIndent() + "\n\n"
+
+        /**
+         * 摘要任务正文（照搬 CLI `core/session/compact.mjs` 的 instruction）。
+         *
+         * ══════════════════════════════════════════════════════════════
+         *  ⚠️ 2026-10-06 修复：原来 APK 只有 [SUMMARY_PREAMBLE]（四行禁工具），
+         *  **九部分结构整个缺失** —— 摘要质量差一大截（用户要求检查
+         *  「CLI 精心设计过的提示词，APK 是否差不多」时发现）。
+         * ══════════════════════════════════════════════════════════════
+         *
+         * 为什么九部分都重要（不是凑数）：
+         * · 6. All user messages —— 用户意图变化的唯一原始记录
+         * · 7/8. Pending/Current —— 接手者靠这个知道「干到哪了」
+         * · 9. Optional Next Step 要求**引用原文**证明接续点 —— 防任务漂移
+         * · 4. Errors and fixes 特别强调「用户纠正过的地方」—— 防重犯
+         */
+        val SUMMARY_INSTRUCTION: String = """
+你的任务：为接下来的对话生成一份详细的交接摘要，让另一个 LLM 能无缝继续工作。摘要要完整保留继续开发所需的技术细节、代码模式和架构决策。
+
+在给出最终摘要前，先用 <analysis> 标签组织你的分析（这份草稿会在使用前被剥离，不影响上下文）：
+1. 按时间顺序逐条分析每条消息：用户的明确请求与意图；采取的方案；关键决策、技术概念、代码模式；具体细节（文件名、代码片段、函数签名、文件编辑）；遇到的错误及修复方式；特别注意用户纠正过的地方。
+2. 核对技术准确性和完整性。
+
+然后用 <summary> 标签输出摘要，包含以下九个部分：
+
+1. Primary Request and Intent：详细记录用户的所有明确请求和意图
+2. Key Technical Concepts：列出重要的技术概念、技术栈和框架
+3. Files and Code Sections：枚举查看/修改/创建的文件和代码段，附关键代码片段，说明该文件为何重要
+4. Errors and fixes：列出的所有错误及修复方式，特别是用户纠正过的地方
+5. Problem Solving：已解决的问题和进行中的排查
+6. All user messages：列出全部非工具结果的用户消息原文（这对理解用户反馈和意图变化至关重要）
+7. Pending Tasks：用户明确要求但尚未完成的任务
+8. Current Work：精确描述摘要请求前正在做什么（含文件名和代码片段）
+9. Optional Next Step：与最近工作直接相关的下一步。必须引用最近对话的原文证明任务接续点，防止任务漂移。若上一任务已结束，不要自作主张列新步骤
+
+输出格式：
+<analysis>
+[你的逐条分析过程]
+</analysis>
+<summary>
+1. Primary Request and Intent: ...
+...
+9. Optional Next Step: ...
+</summary>
+
+如果有额外的摘要指令（如用户自定义关注点），优先遵循这些指令。
+        """.trimIndent()
+
+        /** 摘要式压缩保留的尾部条数（对齐 CLI `compact()` 的默认 10）。 */
+        const val DEFAULT_KEEP_LAST = 10
+
+        /**
+         * 「读过文件」的工具名 —— 差集重注入用（照搬 CLI compact.mjs 的列表）。
+         * 这些工具的入参里有 file_path / pattern / path，摘要后把路径列出来，
+         * 接手者引用时不必重读。
+         */
+        private val PATH_READ_TOOLS = setOf("Read", "Grep", "Glob", "LS", "HashlineGrep", "HashlineRead")
+
+        /** 从工具入参 JSON 里抠出路径类字段（CLI 同款：file_path → pattern → path）。 */
+        private fun extractPath(inputJson: String): String? {
+            for (key in listOf("file_path", "pattern", "path")) {
+                val m = Regex("\"" + key + "\"\\s*:\\s*\"([^\"]+)\"").find(inputJson)
+                if (m != null) return m.groupValues[1]
+            }
+            return null
+        }
 
         /** 单个摘要正文上限（字符）。 */
         const val SUMMARY_CHAR_LIMIT = 16000
