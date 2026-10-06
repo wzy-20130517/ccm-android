@@ -117,6 +117,18 @@
             android:exported="false" />
 
         <!--
+          Termux RUN_COMMAND 结果接收（2026-10-06 加）。
+
+          官方 wiki 的声明是裸的 `<service android:name=".PluginResultsService" />`
+          —— **不需要 exported="true"**：PendingIntent 投递走的是系统通道
+          （PendingIntent 里封装了目标身份），不是普通 startService，
+          外部应用无法直接调它。exported=true 反而多余且扩大攻击面。
+        -->
+        <service
+            android:name=".tools.bash.TermuxResultService"
+            android:exported="false" />
+
+        <!--
           Shizuku 的 binder 接收点。
 
           【为什么必须声明】

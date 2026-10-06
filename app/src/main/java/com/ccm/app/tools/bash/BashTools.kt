@@ -208,8 +208,17 @@ class TermuxChannel(private val context: Context) : BashChannel {
         const val EXTRA_COMMAND_LABEL = "com.termux.RUN_COMMAND_COMMAND_LABEL"
         const val EXTRA_PENDING_INTENT = "com.termux.RUN_COMMAND_PENDING_INTENT"
 
-        /** 结果回传用的广播 action（自定义，只有我们自己监听） */
-        const val ACTION_RESULT = "com.ccm.app.TERMUX_COMMAND_RESULT"
+        /**
+         * PendingIntent 的 requestCode 计数器（2026-10-06 加）。
+         *
+         * ⚠️ **必须每次唯一** —— 官方文档明确警告：requestCode 相同时
+         * PendingIntent 会在首次投递后被系统取消，之后收不到任何结果。
+         * 原来固定用 0，这正是「exit=-1 且无输出」的根因之一。
+         */
+        private val NEXT_EXECUTION_ID = java.util.concurrent.atomic.AtomicInteger(1000)
+
+        /** Termux 结果 Intent 里的 executionId 键（与 TermuxResultService 一致）。 */
+        private const val EXTRA_EXECUTION_ID = "ccm_execution_id"
 
         /** Termux 里的 bash 路径 */
         private const val TERMUX_BASH = "/data/data/com.termux/files/usr/bin/bash"
@@ -262,59 +271,49 @@ class TermuxChannel(private val context: Context) : BashChannel {
             )
         }
 
-        // ⚠️ Termux 的 Intent 是**异步**的：startService 立即返回，命令在 Termux 进程跑。
-        // 拿结果必须靠 PendingIntent 回传（官方推荐方式）。
+        // ══════════════════════════════════════════════════════════════
+        //  结果回传（2026-10-06 重写 —— 照官方 RUN_COMMAND-Intent wiki）
+        // ══════════════════════════════════════════════════════════════
         //
-        // 【为什么用 PendingIntent 而不是自己注册 BroadcastReceiver】
-        // ① 官方 API 就是这个：`com.termux.RUN_COMMAND_PENDING_INTENT`
-        // ② 自己注册 receiver 在 Android 13+ 要显式指定 exported 标志，
-        //    在 Android 14+ 对隐式广播限制更多 —— 而 PendingIntent 由系统投递，无此问题
-        // ③ Termux 会在命令**结束**时才回传，天然是「等结果」的语义
+        // 【原来为什么完全不工作】三个错叠加：
+        //
+        //  1. **requestCode 固定为 0** —— 官方文档明确警告：
+        //     「requestCode must be unique for each pending intent...
+        //      otherwise only the result of the **first** execution will be
+        //      returned since pending intent will be cancelled by android
+        //      after the first result has been sent back」
+        //     → 第一次调用后 PendingIntent 被系统取消，之后全部收不到。
+        //
+        //  2. **用了 getBroadcast** —— 官方示例用 getService（投给
+        //     IntentService）。广播形式对隐式/显式、exported 标志都敏感，
+        //     且 Android 14 对动态注册的 receiver 限制更多。
+        //
+        //  3. **FLAG_UPDATE_CURRENT** —— 官方用 FLAG_ONE_SHOT：
+        //     一次性投递后即失效（配合唯一 requestCode 使用）。
+        //
+        // 现在的做法：**照搬官方示例** ——
+        //   · 每次调用生成唯一 executionId 作为 requestCode
+        //   · PendingIntent.getService 投给一个 IntentService
+        //   · FLAG_ONE_SHOT | FLAG_MUTABLE
+        //
+        // 用 CountDownLatch 等待（IntentService 在独立线程收到结果）。
         val resultHolder = java.util.concurrent.ArrayBlockingQueue<android.os.Bundle>(1)
+        val executionId = NEXT_EXECUTION_ID.getAndIncrement()
 
-        val receiver = object : android.content.BroadcastReceiver() {
-            override fun onReceive(c: Context?, intent: android.content.Intent?) {
-                resultHolder.offer(intent?.extras ?: android.os.Bundle())
-            }
+        val resultIntent = android.content.Intent(context, TermuxResultService::class.java).apply {
+            // 带上 executionId，Service 侧据此把结果投进对应队列
+            putExtra(EXTRA_EXECUTION_ID, executionId)
         }
+        TermuxResultService.register(executionId, resultHolder)
 
-        // Android 13+ 要求显式声明 receiver 可见性；低版本没有这个 API
-        //
-        // ══════════════════════════════════════════════════════════════
-        //  【2026-10-06 修】必须用 RECEIVER_EXPORTED，不能用 NOT_EXPORTED
-        // ══════════════════════════════════════════════════════════════
-        //
-        // 这个 PendingIntent 是给 **Termux 进程**用的 —— 命令跑完由
-        // Termux 发广播回来。NOT_EXPORTED 会拒绝**跨应用**投递，于是
-        // 广播永远收不到 → poll 超时 → exit=-1。
-        //
-        // 用户现象：「bash 工具走 termux 外接时 exit=-1」。
-        //
-        // 安全性：Intent 里 setPackage(自己包名) 已把投递范围限制到本包，
-        // 外部应用无法伪造（他们发不到我们的包）。RECEIVER_EXPORTED 只是
-        // 允许「由系统代理投递的、目标为本包」的广播进来。
-        val registered = try {
-            if (android.os.Build.VERSION.SDK_INT >= 33) {
-                context.registerReceiver(
-                    receiver,
-                    android.content.IntentFilter(ACTION_RESULT),
-                    Context.RECEIVER_EXPORTED,
-                )
-            } else {
-                @Suppress("UnspecifiedRegisterReceiverFlag")
-                context.registerReceiver(receiver, android.content.IntentFilter(ACTION_RESULT))
-            }
-            true
-        } catch (_: Throwable) {
-            false
-        }
-
-        val pendingIntent = android.app.PendingIntent.getBroadcast(
+        val pendingIntent = android.app.PendingIntent.getService(
             context,
-            0,
-            android.content.Intent(ACTION_RESULT).setPackage(context.packageName),
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT or
-                (if (android.os.Build.VERSION.SDK_INT >= 31) android.app.PendingIntent.FLAG_MUTABLE else 0),
+            executionId,           // ★ 唯一 —— 官方要求的硬性条件
+            resultIntent,
+            android.app.PendingIntent.FLAG_ONE_SHOT or
+                (if (android.os.Build.VERSION.SDK_INT >= 31) {
+                    android.app.PendingIntent.FLAG_MUTABLE
+                } else 0),
         )
 
         val intent = android.content.Intent().apply {
@@ -332,7 +331,7 @@ class TermuxChannel(private val context: Context) : BashChannel {
         try {
             context.startService(intent)
         } catch (e: Throwable) {
-            if (registered) runCatching { context.unregisterReceiver(receiver) }
+            TermuxResultService.unregister(executionId)
             return@withContext BashChannel.ExecResult(
                 exitCode = -1,
                 stdout = "",
@@ -349,20 +348,24 @@ class TermuxChannel(private val context: Context) : BashChannel {
             )
         }
 
-        // 等结果（带超时）
+        // 等结果（带超时）—— 结果由 TermuxResultService 投进这个队列
         var result: android.os.Bundle? = null
         try {
             result = resultHolder.poll(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
         } catch (_: InterruptedException) {
         }
-        if (registered) runCatching { context.unregisterReceiver(receiver) }
+        TermuxResultService.unregister(executionId)
 
         if (result == null) {
             return@withContext BashChannel.ExecResult(
                 exitCode = -1,
                 stdout = "",
                 stderr = "Termux 命令超时（${timeoutMs}ms）或结果回传失败。\n" +
-                    "提示：Termux 通道的结果回传依赖 PendingIntent，" +
+                    "排查：\n" +
+                    "① Termux 是否在前台/后台正常运行（Android 12+ 的 phantom process " +
+                    "killer 可能杀掉它，去 Termux 里随便跑个命令确认它还活着）\n" +
+                    "② Termux 电池优化是否已关闭（设置 → 应用 → Termux → 电池 → 无限制）\n" +
+                    "③ 命令本身是否卡住（换 echo test 试）\n" +
                     "若持续失败请改用内置 proot 通道。",
                 timedOut = true,
             )
