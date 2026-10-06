@@ -8,3 +8,4 @@ captures/
 .cxx/
 
 tools/__pycache__/
+rootfs-dist/
