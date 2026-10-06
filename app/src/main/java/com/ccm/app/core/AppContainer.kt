@@ -715,7 +715,10 @@ class AppContainer private constructor(
                                     "你的任务会由主 Agent 在 prompt 中描述，请自行规划步骤、调用工具、完成任务。\n" +
                                     "完成后返回简洁的结果摘要给主 Agent，不要返回无意义的空话。"
                         }
-                        val subPrompt = assembleSystemPrompt(storage, context, cwdForSubAgent) + "\n" + roleCard +
+                        // ⚠️ 用 build 的局部 cwd（cwdForSubAgent 是实例字段，
+                        //    build 是 companion 静态方法，够不着 —— CI 报
+                        //    Unresolved reference）
+                        val subPrompt = assembleSystemPrompt(storage, context, cwd) + "\n" + roleCard +
                             "\n\n## 你是子 Agent（通用约束）\n" +
                             "你被主 Agent 派来独立完成一个子任务，运行在**后台**。\n" +
                             "· **你的正文输出其他 Agent 看不见** —— 想让主 Agent 知道任何事，" +
