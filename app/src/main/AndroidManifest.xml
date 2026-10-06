@@ -1,7 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 【2026-10-06 问题44】用户设的工作区在 /sdcard（如
+         /sdcard/Download/claude-workspace），但 App 没这个权限 →
+         `ls /sdcard/...` 报 Permission denied → Agent 只能退回
+         files/workspace（应用私有）→ 表现为「Agent 的工作区和设置的不一样」。
+         声明后需用户在系统设置里手动授权「所有文件访问」。 -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
     <!-- 语音输入（SpeechToText，系统识别服务） -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- 拍照（+ 菜单）需要临时共享输出文件给相机 App -->

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
@@ -135,7 +136,25 @@ fun ChatScreen(
             )
 
             // ── 消息区（可滚动 + 自动跟底，底部留出输入栏高度）────────
-            Box(modifier = Modifier.weight(1f)) {
+            //
+            // 【2026-10-06 问题45 修复·第二版】上一版只在底部 Spacer 加了
+            // imeBottomDp（154 + 键盘高）—— 那只解决「能滚到底看到内容」，
+            // **用户没滚动时正文仍被输入栏+键盘盖住**（用户报「拉起输入框时
+            // 正文仍不向上」）。
+            //
+            // 真正的原因：输入栏是 `align(BottomCenter)` 浮动层 + 自己吃
+            // ime padding 上推；而消息区 Box 是 `weight(1f)` **高度不变** ——
+            // 输入栏往上顶多少，就盖住消息区多少。
+            //
+            // 修法：消息区也吃同样的 ime padding（union navigationBars），
+            // 这样它的**可用高度**随键盘缩小，内容自然上移。
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .windowInsetsPadding(
+                        WindowInsets.ime.union(WindowInsets.navigationBars),
+                    ),
+            ) {
                 val scrollState = rememberScrollState()
 
                 // ★ 2026-09-27：原来没有自动滚动 —— 新消息只画在
@@ -143,10 +162,35 @@ fun ChatScreen(
                 //   行为对齐 Web（跟底；用户上翻即停止跟随）。
                 var followBottom by remember { mutableStateOf(true) }
 
-                // 判据：离底部 120px 内算「在底部」→ 继续跟；上翻则停
+                // 【2026-10-06 问题46 修复·第二版】上一版只加「6 帧重试」，
+                // 但真正卡住跟随的是这个判定本身：
+                //
+                //   snapshotFlow { value to maxValue }.collect {
+                //       followBottom = v >= max - 120      ← 有陷阱
+                //   }
+                //
+                // 内容增长时 maxValue 先变大（value 还没跟上），这一拍算出
+                // followBottom=false → 上面的 LaunchedEffect 立刻 return →
+                // **永远停止跟随**。用户报「还是没有 Sticky Scroll」。
+                //
+                // 正确判据（对齐 Web 的 handleScroll）：
+                //   只在**用户主动滚动**时才更新 followBottom，
+                //   内容增长导致的 maxValue 变化不算。
+                //   用 `scrollState.isScrollInProgress` 区分。
                 LaunchedEffect(scrollState) {
-                    snapshotFlow { scrollState.value to scrollState.maxValue }
-                        .collect { (v, max) -> followBottom = v >= max - 120 }
+                    snapshotFlow {
+                        Triple(
+                            scrollState.value,
+                            scrollState.maxValue,
+                            scrollState.isScrollInProgress,
+                        )
+                    }.collect { (v, max, scrolling) ->
+                        // 只在用户手指按着滚（scrolling=true）时才改判定；
+                        // 程序滚动 / 内容增长时不碰 followBottom。
+                        if (scrolling) {
+                            followBottom = v >= max - 120
+                        }
+                    }
                 }
 
                 // 内容变化 → 跟到底。
@@ -315,25 +359,35 @@ fun ChatScreen(
                         .border(1.dp, colors.border, RoundedCornerShape(11.04.dp))
                         .padding(vertical = 4.dp),
                 ) {
-                    slashCandidates.forEach { (cmd, desc) ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onInputChange(cmd) }
-                                .padding(horizontal = 12.88.dp, vertical = 9.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Text(
-                                text = cmd,
-                                style = CCMText.body13.copy(fontWeight = FontWeight.Medium),
-                                color = colors.textMain,
-                            )
-                            Text(
-                                text = desc,
-                                style = CCMText.body12,
-                                color = colors.textSecondary,
-                            )
+                    // 【2026-10-06 问题39 修复】原来 forEach 直接铺开所有候选 ——
+                    // 输入一个 `/` 匹配全部 94 个命令，**撑满整屏**（用户报
+                    // 「命令面板无截断，打一个/会吃满屏幕」）。
+                    // 对齐 Web SlashCommandMenu：容器 max-h 240dp + 滚动。
+                    androidx.compose.foundation.layout.Column(
+                        modifier = Modifier
+                            .heightIn(max = 240.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        slashCandidates.forEach { (cmd, desc) ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onInputChange(cmd) }
+                                    .padding(horizontal = 12.88.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    text = cmd,
+                                    style = CCMText.body13.copy(fontWeight = FontWeight.Medium),
+                                    color = colors.textMain,
+                                )
+                                Text(
+                                    text = desc,
+                                    style = CCMText.body12,
+                                    color = colors.textSecondary,
+                                )
+                            }
                         }
                     }
                 }

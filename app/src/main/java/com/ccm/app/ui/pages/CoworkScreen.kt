@@ -145,10 +145,16 @@ fun CoworkScreen(
             )
             Text(
                 text = "完成清单上的一件事吧",
-                // 实测 36 / 41.4 / fw600 / Inter 族 / #313131
+                // 【2026-10-06 问题33 修复】用户报「协作模式页很多字是竖着的」。
+                // 根因：36sp 字号 + 星芒图标挤占宽度 → 每行只放得下 2~3 个字，
+                // 视觉上就是「竖排」。36sp 是**桌面 Web 的值**，手机 393dp 宽放不下
+                // （36 × 9 字 = 324dp + 星芒 32dp + 边距 44dp = 400dp > 393dp）。
+                //
+                // 对齐 Web 的移动端 clamp：`font-size: clamp(19px, 4.8vw, 40px)`
+                // → 393px 下 4.8vw = 18.86px → **17.36sp**（×0.92）
                 style = CCMText.body32.copy(
-                    fontSize = 36.sp,
-                    lineHeight = 41.4.sp,
+                    fontSize = 17.36.sp,
+                    lineHeight = 22.sp,
                     fontWeight = FontWeight.SemiBold,
                 ),
                 color = Color(0xFF313131),

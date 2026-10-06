@@ -404,6 +404,59 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                     style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
                     color = CCMTheme.colors.textSecondary,
                 )
+                Spacer(Modifier.height(5.52.dp))
+                // 【2026-10-06 问题44 修复】用户设 /sdcard/... 但 App 没权限
+                // （实测 `ls /sdcard/...` → Permission denied）→ 只能退回
+                // 私有目录 → 表现为「Agent 工作区和设置的不一样」。
+                // 这里给「授权所有文件访问」的入口（Android 11+ 需手动授权）。
+                val wsCtx = androidx.compose.ui.platform.LocalContext.current
+                var hasAllFiles by remember {
+                    mutableStateOf(
+                        if (android.os.Build.VERSION.SDK_INT >= 30)
+                            android.os.Environment.isExternalStorageManager()
+                        else true
+                    )
+                }
+                if (!hasAllFiles && android.os.Build.VERSION.SDK_INT >= 30) {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(7.36.dp))
+                            .background(Color(0x1AD97757))
+                            .clickable {
+                                try {
+                                    wsCtx.startActivity(
+                                        android.content.Intent(
+                                            android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                            android.net.Uri.parse("package:${wsCtx.packageName}"),
+                                        )
+                                    )
+                                } catch (_: Throwable) {
+                                    try {
+                                        wsCtx.startActivity(
+                                            android.content.Intent(
+                                                android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION,
+                                            )
+                                        )
+                                    } catch (_: Throwable) {}
+                                }
+                            }
+                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            "⚠ 未授权「所有文件访问」—— 填 /sdcard 路径会读写失败",
+                            style = CCMText.body12.copy(fontSize = 10.48.sp),
+                            color = Color(0xFFD97757),
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "去授权",
+                            style = CCMText.body12.copy(fontSize = 10.48.sp, fontWeight = FontWeight.Medium),
+                            color = Color(0xFFD97757),
+                        )
+                    }
+                }
             }
         }
 

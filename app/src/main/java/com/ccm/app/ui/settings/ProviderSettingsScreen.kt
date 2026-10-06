@@ -2,6 +2,7 @@ package com.ccm.app.ui.settings
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -743,7 +744,11 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                     // 写入勾选的模型（排除主模型，它在 model 字段里单列）
                     val next = modelPicked.filter { it != sp.model }.toList()
                     com.ccm.app.core.provider.ProviderStore(st).setModels(sp.id, next.ifEmpty { null })
-                    modelFetchMessage = "已保存 ${next.size} 个模型"
+                    // 【2026-10-06 问题41 修复】计数原来是 `next.size`（排除主模型后的
+                    // 数量），但用户在弹窗里看到的是**勾选总数**（含主模型）——
+                    // 勾了 5 个显示「已保存 4 个」，用户报「计数错误」。
+                    // 现在报总数（= 用户实际勾的数量），与弹窗的「已选 N」一致。
+                    modelFetchMessage = "已保存 ${modelPicked.size} 个模型（含当前模型）"
                     refresh()
                 }
                 showModelPicker = false
@@ -781,11 +786,16 @@ private fun AddProviderDialog(
     var protocol by remember { mutableStateOf("openai") }
 
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        // 【2026-10-06 问题31 修复】原来缺 border + shadow，圆角 12dp 也不对。
+        // 对齐 Web：`rounded-[16px] border border-claude-border bg-claude-bg shadow-2xl`
+        // → 16px × 0.92 = 14.72dp 圆角 + 1dp 边框 + 阴影。
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
+                .shadow(8.dp, RoundedCornerShape(14.72.dp))
+                .clip(RoundedCornerShape(14.72.dp))
                 .background(colors.bgMain)
+                .border(1.dp, colors.border, RoundedCornerShape(14.72.dp))
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(9.2.dp),
         ) {
@@ -1494,11 +1504,14 @@ private fun ModelPickerDialog(
     }
 
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        // 【2026-10-06 问题31】同上：加 shadow + border + 圆角对齐
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
+                .shadow(8.dp, RoundedCornerShape(14.72.dp))
+                .clip(RoundedCornerShape(14.72.dp))
                 .background(colors.bgMain)
+                .border(1.dp, colors.border, RoundedCornerShape(14.72.dp))
                 .padding(16.dp),
         ) {
             // 标题行

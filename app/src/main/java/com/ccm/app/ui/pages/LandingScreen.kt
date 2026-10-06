@@ -255,6 +255,12 @@ fun LandingScreen(
                             .border(1.dp, colors.border, RoundedCornerShape(11.04.dp))
                             .padding(vertical = 4.dp),
                     ) {
+                        // 【2026-10-06 问题39】加 max-h + 滚动（对齐 Web SlashCommandMenu）
+                        androidx.compose.foundation.layout.Column(
+                            modifier = Modifier
+                                .heightIn(max = 240.dp)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
                         slashCandidates.forEach { (cmd, desc) ->
                             androidx.compose.foundation.layout.Row(
                                 modifier = Modifier
@@ -279,6 +285,7 @@ fun LandingScreen(
                                     overflow = TextOverflow.Ellipsis,
                                 )
                             }
+                        }
                         }
                     }
                     Spacer(Modifier.height(8.dp))

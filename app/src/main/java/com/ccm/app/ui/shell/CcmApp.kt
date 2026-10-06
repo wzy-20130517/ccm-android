@@ -148,8 +148,17 @@ fun CcmApp(
     // 顶部横幅**不消失**（用户报「添加一个供应商后顶部横幅仍显示尚未配置API」）。
     // 现在：initError 也随 AppGraph.session 的变化重算 ——
     // session 非 null 说明装配成功，无论 initError 说什么都不该再报警。
-    val effectiveError = initError
-        ?: if (com.ccm.app.AppGraph.session != null) null else com.ccm.app.AppGraph.initError
+    // 【2026-10-06 问题42 修复·第二版】上一版写的是
+    //   `initError ?: if (session != null) null else AppGraph.initError`
+    // —— **`initError` 参数优先，导致修复完全失效**：
+    //   MainActivity 传的是 `AppGraph.initError` 的**静态快照**（永远非 null），
+    //   加完 Provider 后 session 变非空，但 initError 还在 → 横幅不消失。
+    //   用户报「设置完配置后顶部横幅还是不消失，需要重启APP」。
+    //
+    // 正确逻辑：**session 是否存在是唯一权威** ——
+    // session 非空说明装配成功，无论 initError 说什么都不该再报警。
+    val effectiveError = if (com.ccm.app.AppGraph.session != null) null
+        else (initError ?: com.ccm.app.AppGraph.initError)
 
     CCMTheme(darkTheme = darkTheme) {
         AppScaffold(session = session, initError = effectiveError)
@@ -297,7 +306,25 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
     // ══════════════════════════════════════════════════════════════
     // activeSession：当前打开的会话。init 结果是它，侧栏/列表点进来后
     // 被 AppGraph.openSession(id) 换掉。原参数 session 只当初始值。
-    var activeSession by remember { mutableStateOf(session) }
+    //
+    // 【2026-10-06 问题21 修复】原来是裸 `remember { mutableStateOf(session) }` ——
+    // **只在首次组合时取 session 的值**。场景：
+    //   用户在设置页加了 Provider → AppGraph.session 变非空 →
+    //   MainActivity 重组（session 参数变了）→ **但 activeSession 还是 null**。
+    //   此时 route 若在 CHAT，会走 `else` 分支渲染空态 ChatScreen
+    //   （看起来就是「首页样式」）；发消息却走 AppGraph.session（原对话）——
+    //   与用户报的「本该是对话页，却显示成了首页的样式，发条消息过去
+    //   还是那个对话页」完全吻合。
+    //
+    // 修法：用 session 作 key —— 参数变化时同步跟上（前提是用户没手动切过会话）。
+    // 手动切过的（activeSession 与 AppGraph.session 不同源）不动。
+    var activeSession by remember(session) { mutableStateOf(session) }
+    // 兜底：AppGraph.session 比参数更新（比如设置页加的），也跟上。
+    // 只在 activeSession 为 null 或与 AppGraph 当前 id 不一致时同步。
+    LaunchedEffect(session) {
+        val g = com.ccm.app.AppGraph.session
+        if (g != null && activeSession == null) activeSession = g
+    }
     // 会话列表（侧栏最近 + 列表页共用一个数据源）
     var sessions by remember { mutableStateOf<List<SessionSummary>>(emptyList()) }
     // 列表页搜索词（受控，路由切走再回来保留）
@@ -1065,10 +1092,9 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     )
 
                     CcmRoute.SCHEDULED -> {
-                        // ★ 第34批：接 cron 真数据（CronStore.list —— durable 任务
-                        //   在构造时已从盘加载）。原来 tasks 不传 = 永远空态。
-                        //   remember(route)：每次进页重读（新建后回来能看到）。
-                        val cronTasks = remember(route) {
+                        // 【2026-10-06 问题32】加刷新 key —— 创建任务后要重读列表
+                        var cronRefresh by remember { mutableStateOf(0) }
+                        val cronTasks = remember(route, cronRefresh) {
                             com.ccm.app.AppGraph.toolsResult?.cron?.list()
                                 ?.map { t ->
                                     com.ccm.app.ui.pages.ScheduledTaskUi(
@@ -1082,9 +1108,23 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         }
                         ScheduledScreen(
                             tasks = cronTasks,
-                            // KDoc 承诺「新建任务 → 跳协作页」（ScheduledScreen.kt:41），
-                            // 但调用侧一直没接 → 页面上两个「新建任务」是死按钮（H5）
-                            onNewTask = { navigate(CcmRoute.COWORK) },
+                            // 【2026-10-06 问题32 修复】原来 onNewTask 跳协作页 ——
+                            // 用户报「计划任务中新建任务直接跳转协作模式页」。
+                            // 现在 ScheduledScreen 内部弹创建对话框（onNewTask 不再用），
+                            // 这里只接 onCreateTask：真建任务 + 刷新列表。
+                            onNewTask = {},
+                            onCreateTask = onCreate@{ cronExpr, promptText, durable ->
+                                val store = com.ccm.app.AppGraph.toolsResult?.cron ?: return@onCreate false
+                                try {
+                                    store.create(cronExpr, promptText, recurring = true, durable = durable)
+                                    cronRefresh++   // 触发列表重读
+                                    android.widget.Toast.makeText(appCtx, "已创建", android.widget.Toast.LENGTH_SHORT).show()
+                                    true
+                                } catch (t: Throwable) {
+                                    android.widget.Toast.makeText(appCtx, "创建失败：${t.message}", android.widget.Toast.LENGTH_LONG).show()
+                                    false
+                                }
+                            },
                         )
                     }
 

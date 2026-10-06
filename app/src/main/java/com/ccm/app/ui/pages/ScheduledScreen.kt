@@ -1,12 +1,15 @@
 package com.ccm.app.ui.pages
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -16,6 +19,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -53,9 +60,21 @@ import com.ccm.app.ui.theme.CCMTheme
 fun ScheduledScreen(
     modifier: Modifier = Modifier,
     tasks: List<ScheduledTaskUi> = emptyList(),
+    /**
+     * 点「新建任务」。
+     *
+     * 【2026-10-06 问题32 修复】原来是 `navigate(CcmRoute.COWORK)` ——
+     * 用户报「计划任务中新建任务直接跳转协作模式页」，莫名其妙。
+     * 现在：弹创建对话框（cron 表达式 + prompt），创建后刷新列表。
+     * 参数保留（调用方可覆盖），默认行为改为弹对话框。
+     */
     onNewTask: () -> Unit = {},
+    /** 创建任务（cron + prompt + durable）→ 成功返回 true。 */
+    onCreateTask: (cron: String, prompt: String, durable: Boolean) -> Boolean = { _, _, _ -> false },
 ) {
     val colors = CCMTheme.colors
+    // 【2026-10-06 问题32】创建对话框开关
+    var showCreate by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -86,7 +105,7 @@ fun ScheduledScreen(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
                     .background(colors.textMain)
-                    .clickable(onClick = onNewTask)
+                    .clickable { showCreate = true }
                     .padding(horizontal = 14.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -138,7 +157,7 @@ fun ScheduledScreen(
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
-                        .clickable(onClick = onNewTask)
+                        .clickable { showCreate = true }
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -162,6 +181,159 @@ fun ScheduledScreen(
                 tasks.forEach { task ->
                     ScheduledTaskRow(task = task)
                 }
+            }
+        }
+    }
+
+    // ── 创建任务对话框（问题32）──────────────────────────────────
+    if (showCreate) {
+        CreateCronDialog(
+            onDismiss = { showCreate = false },
+            onCreate = { cron, prompt, durable ->
+                val ok = onCreateTask(cron, prompt, durable)
+                if (ok) showCreate = false
+                ok
+            },
+        )
+    }
+}
+
+/**
+ * 创建计划任务对话框 —— 对齐 CLI 的 `CronCreate` 工具语义。
+ *
+ * 【2026-10-06 问题32】原来「新建任务」直接 `navigate(CcmRoute.COWORK)` ——
+ * 用户报「计划任务中新建任务直接跳转协作模式页」，莫名其妙。
+ * 现在弹这个对话框，创建后刷新列表。
+ */
+@Composable
+private fun CreateCronDialog(
+    onDismiss: () -> Unit,
+    onCreate: (cron: String, prompt: String, durable: Boolean) -> Boolean,
+) {
+    val colors = CCMTheme.colors
+    var cron by remember { mutableStateOf("0 9 * * *") }
+    var prompt by remember { mutableStateOf("") }
+    var durable by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(8.dp, RoundedCornerShape(14.72.dp))
+                .clip(RoundedCornerShape(14.72.dp))
+                .background(colors.bgMain)
+                .border(1.dp, colors.border, RoundedCornerShape(14.72.dp))
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(9.2.dp),
+        ) {
+            Text(
+                "新建计划任务",
+                style = CCMText.body16.copy(fontWeight = FontWeight.SemiBold),
+                color = colors.textMain,
+            )
+
+            Text("执行时间（cron 5 字段：分 时 日 月 周）",
+                style = CCMText.body12.copy(fontSize = 10.48.sp),
+                color = colors.textSecondary)
+            androidx.compose.foundation.text.BasicTextField(
+                value = cron,
+                onValueChange = { cron = it; error = "" },
+                textStyle = CCMText.body14.copy(color = colors.textMain),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(colors.claudeOrange),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(7.36.dp))
+                    .background(colors.input)
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(
+                    "0 9 * * *" to "每天9点",
+                    "0 * * * *" to "每小时",
+                    "*/30 * * * *" to "每30分",
+                    "0 9 * * 1" to "每周一",
+                ).forEach { (expr, label) ->
+                    Text(
+                        label,
+                        style = CCMText.body12.copy(fontSize = 10.48.sp),
+                        color = if (cron == expr) colors.accent else colors.textSecondary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(5.dp))
+                            .clickable { cron = expr; error = "" }
+                            .padding(horizontal = 6.dp, vertical = 3.dp),
+                    )
+                }
+            }
+
+            Text("执行内容（到点自动跑的 prompt）",
+                style = CCMText.body12.copy(fontSize = 10.48.sp),
+                color = colors.textSecondary)
+            androidx.compose.foundation.text.BasicTextField(
+                value = prompt,
+                onValueChange = { prompt = it; error = "" },
+                textStyle = CCMText.body13.copy(color = colors.textMain),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(colors.claudeOrange),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 60.dp)
+                    .clip(RoundedCornerShape(7.36.dp))
+                    .background(colors.input)
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+            )
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.clickable { durable = !durable },
+            ) {
+                androidx.compose.foundation.layout.Box(
+                    modifier = Modifier
+                        .size(16.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(if (durable) colors.accent else Color.Transparent)
+                        .border(1.dp, if (durable) colors.accent else colors.border, RoundedCornerShape(3.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (durable) Text("✓", style = CCMText.body12, color = Color.White)
+                }
+                Text(
+                    "长期任务（写盘，重启后仍生效）",
+                    style = CCMText.body12.copy(fontSize = 11.sp),
+                    color = colors.textMain,
+                )
+            }
+
+            if (error.isNotBlank()) {
+                Text(error, style = CCMText.body12, color = Color(0xFFD9534F))
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(9.2.dp, Alignment.End),
+            ) {
+                Text(
+                    "取消",
+                    style = CCMText.body13,
+                    color = colors.textSecondary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable(onClick = onDismiss)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+                Text(
+                    "创建",
+                    style = CCMText.body13.copy(fontWeight = FontWeight.Medium),
+                    color = if (cron.isNotBlank() && prompt.isNotBlank()) Color(0xFFD97757)
+                            else colors.textSecondary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable(enabled = cron.isNotBlank() && prompt.isNotBlank()) {
+                            val ok = onCreate(cron.trim(), prompt.trim(), durable)
+                            if (!ok) error = "创建失败：cron 表达式格式不对（需要 5 个字段）"
+                        }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                )
             }
         }
     }
