@@ -887,7 +887,6 @@ object AppGraph {
      * 和 OkHttp 连接池（可能有坏连接）。改字段会让旧 Provider 的状态
      * 污染新的 —— Node 版踩过「端点 A 的结论连坐到端点 B」。
      */
-    @Synchronized
     /**
      * 重建**工具注册表**（含 Bash 通道）—— 环境模式切换后调。
      *

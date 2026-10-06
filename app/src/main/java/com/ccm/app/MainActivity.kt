@@ -221,11 +221,18 @@ fun CcmRoot() {
                         //  再重建会话（把新 executor 注入 AgentLoop）。
                         // ══════════════════════════════════════════════════
                         try {
+                            // ⚠️ 这里不能用 MainActivity 的 appScope / TAG ——
+                            // CcmRoot() 是**顶层 @Composable 函数**，与
+                            // MainActivity 类是两个独立作用域（静态检查查不出，
+                            // CI 报 Unresolved reference 才发现的）。
+                            // 用 AppGraph 暴露的 appScope（init 时存进去的）。
                             val app = ctx.applicationContext
-                            AppGraph.rebuildTools(app, appScope)
-                            AppGraph.rebuild(app, appScope)
+                            com.ccm.app.AppGraph.appScope?.let { sc ->
+                                AppGraph.rebuildTools(app, sc)
+                                AppGraph.rebuild(app, sc)
+                            }
                         } catch (t: Throwable) {
-                            Log.w(TAG, "引导页完成后重建失败：${t.message}")
+                            android.util.Log.w("CcmRoot", "引导页完成后重建失败：${t.message}")
                         }
                         installed = true
                     },
