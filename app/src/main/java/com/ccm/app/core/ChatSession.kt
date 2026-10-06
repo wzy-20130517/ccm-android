@@ -54,6 +54,8 @@ import kotlinx.coroutines.launch
  */
 class ChatSession(
     private val container: AppContainer,
+    private val scope: CoroutineScope,
+) {
 
     /**
      * 暴露 AppContainer（2026-10-06 加）。
@@ -70,8 +72,6 @@ class ChatSession(
      * 加这个 getter 后，AppGraph 能在创建 session 时把 container 存下来。
      */
     val appContainer: AppContainer get() = container
-    private val scope: CoroutineScope,
-) {
 
     private val _state = MutableStateFlow(State())
     /** UI 订阅这个渲染。 */
