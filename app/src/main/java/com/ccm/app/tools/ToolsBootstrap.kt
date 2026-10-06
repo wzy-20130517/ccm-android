@@ -139,6 +139,8 @@ class ToolsBootstrap(
         val permissions: ToolPermissions,
         val hooks: ToolHooks,
         val outputStore: ToolOutputStore,
+        /** 上下文文件追踪（2026-10-06 加，/files 的数据源）。 */
+        val contextFiles: com.ccm.app.core.session.ContextFiles? = null,
         val trashStore: TrashStore,
         val undoStore: UndoStore,
         /** 读 todos.json（audit-core #3：写路径齐全、恢复没人接 → 重启待办清空）。 */
@@ -497,7 +499,10 @@ class ToolsBootstrap(
 
         val rejected = registry.registerAll(*all.toTypedArray())
 
-        val executor = ToolExecutor(permissions, hooks, outputStore)
+        // 【2026-10-06 对齐 CLI】上下文文件追踪 —— /files 的数据源
+        // （记录本会话读/写过哪些文件，官方 readFileState 的等价物）。
+        val contextFiles = com.ccm.app.core.session.ContextFiles(cwd = defaultCwd.absolutePath)
+        val executor = ToolExecutor(permissions, hooks, outputStore, contextFiles = contextFiles)
 
         return Result(
             registered = all.map { it.name }.filter { it !in rejected },
@@ -515,6 +520,7 @@ class ToolsBootstrap(
             agentTools = agentTools,
             goalStore = goalStore,
             skillTools = skillTools,
+            contextFiles = contextFiles,
         )
     }
 

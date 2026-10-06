@@ -49,6 +49,11 @@ class ToolExecutor(
     private val hooks: ToolHooks,
     private val outputStore: ToolOutputStore,
     private val defaultTimeoutMs: Long = 600_000L,
+    /**
+     * 上下文文件追踪（2026-10-06 加，对齐 CLI 的 ContextFileTracker）。
+     * null = 不追踪（单测场景）。
+     */
+    private val contextFiles: com.ccm.app.core.session.ContextFiles? = null,
 ) : com.ccm.app.core.tool.ToolRunner {
 
     // ⚠️ 实现 core 的 [com.ccm.app.core.tool.ToolRunner] 接口是**必须的**，不是可选装饰：
@@ -183,6 +188,14 @@ class ToolExecutor(
 
         if (result.failed) failedCalls++
 
+        // 【2026-10-06 对齐 CLI】上下文文件追踪（官方 /files 语义）——
+        // 记录本次读/写过哪个文件。工具成功才记（失败的不算进上下文）。
+        if (!result.failed) {
+            try {
+                contextFiles?.record(tool.name, input.toMapForTracker())
+            } catch (_: Throwable) {}
+        }
+
         // ⑥ 结果截断（只处理文本，attachments 独立走多模态通道，不参与截断）
         val finalResult = truncateResult(tool, result)
 
@@ -281,3 +294,11 @@ private fun anyToJsonElement(v: Any?): kotlinx.serialization.json.JsonElement = 
     }
     else -> JsonPrimitive(v.toString())
 }
+
+/**
+ * JsonObject → Map（给 ContextFiles.record 用，它只要 file_path / path 两个键）。
+ */
+private fun kotlinx.serialization.json.JsonObject.toMapForTracker(): Map<String, Any?> =
+    this.mapValues { (_, v) ->
+        (v as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+    }

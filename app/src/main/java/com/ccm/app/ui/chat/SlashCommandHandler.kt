@@ -517,27 +517,52 @@ private fun handleQueryCommands(cmd: String, arg: String, ctx: SlashContext): Sl
         // 装配时的 cwd 一致）。AppGraph 没有公开 cwd getter，这里按同样规则拼。
         // 读不到或为空就提示。
         "/files" -> {
-            val storage = com.ccm.app.AppGraph.storage
-            if (storage == null) {
-                SlashResult.Notice("**工作区文件**\n\n- 读不到存储目录")
-            } else {
-                // WORKSPACE_DIR 是 AppGraph 的私有常量，这里用相同字面量
-                // （"workspace"）拼路径，保持与装配时 cwd 一致。
-                val workspace = java.io.File(storage.root, "workspace")
-                val files = workspace.listFiles()?.sortedBy { it.name }
-                if (files.isNullOrEmpty()) {
-                    SlashResult.Notice("**工作区文件**\n\n- 工作区为空：${workspace.absolutePath}")
+            // ══════════════════════════════════════════════════════════════
+            //  【2026-10-06 对齐 CLI】语义修正
+            //
+            //  原来 APK 的 /files 是「列工作区目录」（文件管理器的活）——
+            //  CLI 的 /files 是「**当前上下文里读/写过的文件**」
+            //  （官方 readFileState，Agent 的「记忆」）。
+            //  用户想看「这个会话碰过哪些文件」时，APK 给不了。
+            //
+            //  现在改用 ContextFiles（ToolExecutor 每次工具执行后记录）。
+            //  保留 `/files dir` 子命令给原来的目录列表功能。
+            // ══════════════════════════════════════════════════════════════
+            val a = arg.trim().lowercase()
+            val tracker = com.ccm.app.AppGraph.toolsResult?.contextFiles
+            if (a == "reset" || a == "clear") {
+                tracker?.reset()
+                SlashResult.Notice("已清空上下文文件记录。")
+            } else if (a == "dir" || a == "ls") {
+                // 原来的「列工作区目录」行为，挪到 /files dir
+                val storage = com.ccm.app.AppGraph.storage
+                if (storage == null) {
+                    SlashResult.Notice("**工作区文件**\n\n- 读不到存储目录")
                 } else {
-                    SlashResult.Notice(
-                        buildString {
-                            append("**工作区文件**（${files.size}）\n\n")
-                            files.forEach { f ->
-                                // 目录加尾斜杠，便于区分
-                                append("- ${f.name}${if (f.isDirectory) "/" else ""}\n")
-                            }
-                        }.trimEnd()
-                    )
+                    val workspace = java.io.File(storage.root, "workspace")
+                    val files = workspace.listFiles()?.sortedBy { it.name }
+                    if (files.isNullOrEmpty()) {
+                        SlashResult.Notice("**工作区文件**\n\n- 工作区为空：${workspace.absolutePath}")
+                    } else {
+                        SlashResult.Notice(
+                            buildString {
+                                append("**工作区目录**（${files.size}）\n\n")
+                                files.forEach { f ->
+                                    append("- ${f.name}${if (f.isDirectory) "/" else ""}\n")
+                                }
+                            }.trimEnd()
+                        )
+                    }
                 }
+            } else if (tracker != null) {
+                val list = tracker.list()
+                SlashResult.Notice(
+                    "**上下文文件**（${list.size} 个，✎=写过 ·=读过）\n\n" +
+                        tracker.format() +
+                        "\n\n_看工作区目录用 `/files dir`；清空记录用 `/files reset`。_"
+                )
+            } else {
+                SlashResult.Notice("上下文文件追踪未初始化。")
             }
         }
 
