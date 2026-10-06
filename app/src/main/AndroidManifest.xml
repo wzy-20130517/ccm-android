@@ -50,6 +50,22 @@
 
          声明后 TermuxChannel.isAvailable() / 引导页检测才准。
          ══════════════════════════════════════════════════════════════ -->
+    <!-- ══════════════════════════════════════════════════════════════
+         Termux RUN_COMMAND 权限（2026-10-06 用户报错：Not allowed to
+         start service Intent ... without permission
+         com.termux.permission.RUN_COMMAND）
+
+         Termux 的 RunCommandService 在 manifest 里声明了
+         android:permission="com.termux.permission.RUN_COMMAND" ——
+         调用方必须**在 manifest 里声明同名 uses-permission**，否则
+         startService 被系统拦（错误信息就是这个）。
+
+         注意：这是 signature 级权限，Termux 会签名校验 ——
+         必须用 F-Droid 版 Termux（与 CCM 同为 F-Droid 签名体系）。
+         Play 版 Termux 签名不同，会静默失败。
+         ══════════════════════════════════════════════════════════════ -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+
     <queries>
         <!-- 外接 Termux 通道（RUN_COMMAND Intent 发给它执行命令） -->
         <package android:name="com.termux" />

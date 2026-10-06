@@ -1765,7 +1765,23 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                             com.ccm.app.core.provider.AppConfig.save(
                                 loadR.config.copy(workspacePath = a), st.configFile,
                             )
-                            SlashResult.Notice("工作区已设为 `$a`。\n\n⚠ 需重启（或新会话）生效。")
+                            // 【2026-10-06 用户报「换工作区必须开新对话，太糟糕」】
+                            // 原来只写 config.json —— cwd 是 AgentLoop 的构造参数，
+                            // 不重建就一直是旧值，用户只能开新会话/重启。
+                            // 现在：立即 rebuild（cwd 随装配更新，历史保留）。
+                            var applied = false
+                            try {
+                                val appCtx = ctx.appContext
+                                val scope = com.ccm.app.AppGraph.appScope
+                                if (appCtx != null && scope != null) {
+                                    applied = com.ccm.app.AppGraph.rebuild(appCtx, scope) != null
+                                }
+                            } catch (_: Throwable) {}
+                            SlashResult.Notice(
+                                "工作区已设为 `$a`。" +
+                                    if (applied) "\n\n_已立即生效（会话历史保留）。_"
+                                    else "\n\n⚠ 重建会话失败，下次开新会话时生效。"
+                            )
                         }
                     }
                 }

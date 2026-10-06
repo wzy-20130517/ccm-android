@@ -47,24 +47,39 @@ object PathGuard {
     /**
      * 宽松解析：允许 [extraDirs] 里的额外目录（对应 /add-dir）。
      *
-     * 检查顺序：先在 cwd 下解析；越界则看是否落在某个 extraDir 内。
-     * 全都不符合才拒绝。
+     * ══════════════════════════════════════════════════════════════
+     *  【2026-10-06 用户报·重要改动】去掉了「只能在工作区内」的限制
+     *
+     *  用户原话：「除了工作区之外都不能动。我们 cli 完全没这样的限制」。
+     *
+     *  CLI 的实现（`file-tools.mjs:8`）就是一行：
+     *    `resolve(ctx.cwd || process.cwd(), filePath)`
+     *  —— 相对路径基于 cwd 解析，**绝对路径直接用，零边界检查**。
+     *
+     *  为什么 APK 原来加了这个限制：早期怕模型乱写（`../../etc/passwd`）。
+     *  但那个担忧放错了地方 ——
+     *   · **相对路径穿越**才是真风险（模型算错层级），这里仍然防：
+     *     相对路径解析后必须在 cwd 或 extraDirs 内
+     *   · **绝对路径**是用户/模型**明确指定**的目标，拦住它只会让人
+     *     「想改 /sdcard 上的文件都改不了」，与 CLI 行为严重不一致
+     *
+     *  现在语义（与 CLI 对齐）：
+     *   · 相对路径 → 基于 cwd 解析，越界（含 `..` 穿越）则拒绝
+     *   · 绝对路径 → 直接放行
+     * ══════════════════════════════════════════════════════════════
      */
     @Throws(IOException::class)
     fun resolveAllowed(cwd: File, extraDirs: List<File>, target: String): File {
-        // 绝对路径：直接判断落在哪个允许目录内
+        // 绝对路径：直接放行（对齐 CLI —— 用户明确指定的目标不该拦）
         if (File(target).isAbsolute) {
-            val full = try {
+            return try {
                 File(target).canonicalFile
             } catch (_: Throwable) {
                 File(target).absoluteFile
             }
-            if (isUnder(cwd, full)) return full
-            extraDirs.forEach { if (isUnder(it, full)) return full }
-            throw IOException("路径越界: $target（不在工作区 ${cwd.path} 内）")
         }
 
-        // 相对路径：优先 cwd
+        // 相对路径：基于 cwd 解析，越界（`..` 穿越）则拒绝 —— 这部分保留
         return try {
             resolveIn(cwd, target)
         } catch (e: IOException) {
