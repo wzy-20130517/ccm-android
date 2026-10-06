@@ -258,8 +258,16 @@ private fun LineChart(
             }
 
             // 各序列折线
+            //
+            // 【2026-10-06 修两处】
+            // ① maxV 原来写在 forEach **里面** —— 每条序列都把整个 series
+            //    扫一遍求最大值（O(n²)）。提到循环外（循环不变量）。
+            // ② 补零值保护（coerceAtLeast(1f)）—— 同文件的 BarChart 有，
+            //    LineChart 没有。全零数据时 0f/0f = NaN，path.lineTo(NaN, NaN)
+            //    的绘制行为未定义（接入真实数据后可能出现）。
+            val maxV = (series.maxOfOrNull { it.points.maxOrNull() ?: 0f } ?: 0f)
+                .coerceAtLeast(1f)
             series.forEach { s ->
-                val maxV = series.maxOf { it.points.max() }
                 val step = plotW / (s.points.size - 1).coerceAtLeast(1)
                 val path = androidx.compose.ui.graphics.Path()
                 s.points.forEachIndexed { i, v ->

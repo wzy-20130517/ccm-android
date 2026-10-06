@@ -440,7 +440,11 @@ private fun AdminGenerateDialog(
 ) {
     Box(
         modifier = Modifier
-            .fillMaxWidth()
+            // 【2026-10-06 修】原来是 fillMaxWidth —— 只定宽、高度由内容决定，
+            // 于是遮罩只盖顶部一条、弹窗贴左上角（contentAlignment 在
+            // 「高度=内容高度」的 Box 里等于没效果）。
+            // Web 原版是 `fixed inset-0 flex items-center justify-center`（全屏）。
+            .fillMaxSize()
             .background(AdminColors.black40)
             .clickable(onClick = onDismiss)
             .padding(AdminSpacing.p4),

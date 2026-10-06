@@ -268,7 +268,11 @@ private fun UserCell(
                 fontWeight = if (header) FontWeight.Medium else FontWeight.Normal,
                 fontFamily = if (mono) CcmMono else com.ccm.app.ui.theme.CcmSans,
             ),
-            color = if (header) AdminColors.gray600 else AdminColors.gray600,
+            // 【2026-10-06 修】原来是 if (header) gray600 else gray600 ——
+            // 两个分支同值，三元无意义。
+            // 修正为「表头浅、数据行深」（与 AdminModelsPage:295 一致：
+            // gray500 / gray700）—— 表头是次要信息，数据行才是要读的。
+            color = if (header) AdminColors.gray500 else AdminColors.gray700,
             maxLines = 1,
         )
     }

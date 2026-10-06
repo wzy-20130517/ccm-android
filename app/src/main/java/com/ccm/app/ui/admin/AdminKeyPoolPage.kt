@@ -447,8 +447,13 @@ private fun KeyTable(rows: List<KeyRow>) {
                         }
                     }
                     // 操作列：编辑 / 启停 / 删除
+                    //
+                    // 【2026-10-06 修】74dp 装不下三个文字按钮（单个约 27.6dp
+                    // × 3 + 两个 3.68 gap ≈ 90.2dp）→ 第三个按钮画到列外。
+                    // 套餐页对同样三个按钮用的是 92dp（刚好装下）—— 74 是
+                    // 照 Web 的图标按钮尺寸算的，但本项目用文字替代了图标。
                     Row(
-                        modifier = Modifier.width(74.dp).padding(vertical = AdminSpacing.p3),
+                        modifier = Modifier.width(92.dp).padding(vertical = AdminSpacing.p3),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(3.68.dp),
                     ) {
@@ -485,7 +490,10 @@ private fun TableCell(
                 fontWeight = if (header) FontWeight.Medium else FontWeight.Normal,
                 fontFamily = if (mono) CcmMono else com.ccm.app.ui.theme.CcmSans,
             ),
-            color = if (header) AdminColors.gray600 else AdminColors.gray600,
+            // 【2026-10-06 修】原来是 if (header) gray600 else gray600 ——
+            // 两个分支同值，三元无意义。
+            // 修正为「表头浅、数据行深」（与 AdminModelsPage:295 一致）。
+            color = if (header) AdminColors.gray500 else AdminColors.gray700,
             maxLines = 1,
         )
     }
@@ -506,7 +514,9 @@ private fun TableCell(
 private fun AdminRechargeDialog(onDismiss: () -> Unit) {
     Box(
         modifier = Modifier
-            .fillMaxWidth()
+            // 【2026-10-06 修】同 AdminRedemptionPage 的弹窗：fillMaxWidth 只定宽，
+            // 遮罩盖不住全屏、弹窗贴左上角。改 fillMaxSize 让 contentAlignment 生效。
+            .fillMaxSize()
             .background(AdminColors.gray800.copy(alpha = 0.3f))
             .clickable(onClick = onDismiss)
             .padding(AdminSpacing.p4),
