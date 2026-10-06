@@ -64,7 +64,21 @@ object TarExtractor {
         // 失败原因要能被安装日志看到 —— 原来只写 Log.e（进 logcat），
         // 而用户和我们看的是 install.log，那里只有一句「解压失败」，
         // 等于把最有用的信息（异常类型和消息）藏起来了。
-        onError: (String) -> Unit = {}
+        onError: (String) -> Unit = {},
+        /**
+         * 严格模式（2026-10-06 加）：校验符号链接目标不逃出 [destDir]。
+         *
+         * 【为什么默认关】rootfs 解压**必须**允许 symlink 指向外部 ——
+         * Ubuntu 里 /usr/bin/perl → ../lib/... 这类相对链接是正常的，
+         * 且系统链接（/system/bin/sh）本来就指向包外。开了会破坏解压。
+         *
+         * 【什么时候开】解压**第三方内容**时（市场下载的 skill/plugin 包）——
+         * 那里 symlink 指向包外没有正当理由，是典型的逃逸手法：
+         *   1. 包里放 evil → /data/data/.../shared_prefs
+         *   2. 后续文件通过 evil/xxx 写到目标外
+         * 恶意包可以借此写到 App 私有目录之外。
+         */
+        strict: Boolean = false,
     ): Boolean {
         val total = archive.length()
         var processed = 0L
@@ -153,7 +167,11 @@ object TarExtractor {
                         '2' -> {  // 符号链接
                             val target = paxLink ?: longLink ?: readString(header, 157, 100)
                             outFile.parentFile?.mkdirs()
-                            if (!createLink(target, outFile)) {
+                            // 严格模式：拒绝逃出 destDir 的符号链接（见 extract 的参数说明）
+                            if (strict && !isLinkTargetSafe(target, outFile, destDir)) {
+                                Log.w(TAG, "拒绝越界符号链接: $clean -> $target")
+                                onError("拒绝越界符号链接：$clean -> $target")
+                            } else if (!createLink(target, outFile)) {
                                 Log.w(TAG, "symlink 失败: $clean -> $target")
                             }
                         }
@@ -177,7 +195,11 @@ object TarExtractor {
                                     val depth = clean.count { it == '/' }
                                     "../".repeat(depth) + target.trimStart('/')
                                 } else target
-                                if (!createLink(linkTarget, outFile)) {
+                                // 严格模式：硬链接转换后的符号链接同样不能逃出 destDir
+                                if (strict && !isLinkTargetSafe(linkTarget, outFile, destDir)) {
+                                    Log.w(TAG, "拒绝越界硬链接: $clean -> $target")
+                                    onError("拒绝越界硬链接：$clean -> $target")
+                                } else if (!createLink(linkTarget, outFile)) {
                                     Log.w(TAG, "硬链接转换失败: $clean -> $target")
                                 }
                             }
@@ -375,6 +397,32 @@ object TarExtractor {
      * 某些 ROM 的 SELinux 策略会拒绝（抛 FileSystemException）。
      * 这时退回 toybox 的 ln —— 它是 system 分区的可执行文件，权限上更宽松。
      */
+    /**
+     * 符号链接目标是否安全（不逃出 [destDir]）。
+     *
+     * 判定：
+     *   · 目标解析后（相对链接基于链接所在目录）必须在 destDir 之内
+     *   · 目标本身可以是相对路径（如 ../lib/x），只要最终落在 destDir 内
+     *
+     * 用途：严格模式解压第三方内容时拦截逃逸链接。
+     */
+    private fun isLinkTargetSafe(target: String, linkFile: File, destDir: File): Boolean {
+        return try {
+            val destCanonical = destDir.canonicalFile
+            // 相对目标基于链接所在目录解析（POSIX 语义）
+            val resolved = if (target.startsWith("/")) {
+                File(target)
+            } else {
+                File(linkFile.parentFile, target)
+            }
+            val targetCanonical = resolved.canonicalFile
+            val destPath = destCanonical.path
+            targetCanonical.path == destPath || targetCanonical.path.startsWith(destPath + File.separator)
+        } catch (_: Throwable) {
+            false   // 解析失败 → 保守拒绝
+        }
+    }
+
     private fun createLink(target: String, linkFile: File): Boolean {
         // 路 1：NIO
         try {

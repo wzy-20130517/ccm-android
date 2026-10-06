@@ -203,9 +203,28 @@ class PhoneUseService : IPhoneUseService.Stub {
 
     override fun tap(x: Int, y: Int): Boolean = input("tap", x.toString(), y.toString())
 
+    /**
+     * 长按（2026-10-06 加）。
+     *
+     * Android 的 `input` 命令没有 longpress 子命令 —— 用 swipe 模拟：
+     * 起点终点相同 + 持续 durationMs（系统按按住时长判定长按）。
+     * 默认 600ms 是实测值：短于 500ms 系统当单击，太长（>1500ms）在
+     * 部分 ROM 上会被当成拖拽起始。
+     */
+    override fun longPress(x: Int, y: Int, durationMs: Int): Boolean {
+        val d = if (durationMs in 300..5000) durationMs else 600
+        return input("swipe", x.toString(), y.toString(), x.toString(), y.toString(), d.toString())
+    }
+
     override fun tapRef(ref: String): Boolean {
         val e = synchronized(refLock) { refTable[ref] } ?: return false
         return tap(e.cx, e.cy)
+    }
+
+    /** 取节点中心坐标（不点击）—— 长按用，见 AIDL 注释。 */
+    override fun tapRefAt(ref: String): IntArray {
+        val e = synchronized(refLock) { refTable[ref] } ?: return IntArray(0)
+        return intArrayOf(e.cx, e.cy)
     }
 
     override fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int): Boolean =

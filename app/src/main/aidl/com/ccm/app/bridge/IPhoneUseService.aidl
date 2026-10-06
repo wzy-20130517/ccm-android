@@ -40,6 +40,26 @@ interface IPhoneUseService {
     /** 按节点 id 点击（id 来自最近一次 dumpTree；失效返回 false）。 */
     boolean tapRef(String ref) = 8;
 
+    /**
+     * 长按坐标（2026-10-06 加）。
+     *
+     * 实现用 `input swipe x y x y duration` 模拟 —— 同起终点 + 长时长
+     * 就是长按（Android 的 input 命令没有独立的 longpress 动作）。
+     * 原来 phone_tap_xy 声明了 long_press 参数但从不读取（静默执行成单击），
+     * phone_click 也报「长按暂未支持」—— 长按场景（图标菜单/消息操作）
+     * 完全不可用。
+     */
+    boolean longPress(int x, int y, int durationMs) = 18;
+
+    /**
+     * 取节点中心坐标（不点击）—— 2026-10-06 加，给长按用。
+     *
+     * 返回 [x, y]；节点不存在/失效返回空数组。
+     * 为什么不让 tapRef 带长按参数：AIDL 改方法签名会让旧客户端崩溃，
+     * 新加方法更安全（且 tapRef 的语义保持"点击"不变）。
+     */
+    int[] tapRefAt(String ref) = 19;
+
     /** 在副屏上滑动（坐标版）。 */
     boolean swipe(int x1, int y1, int x2, int y2, int durationMs) = 4;
 

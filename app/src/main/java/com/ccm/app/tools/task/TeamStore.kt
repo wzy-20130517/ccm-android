@@ -205,13 +205,6 @@ class TeamStore(private val rootDir: File) {
     }
 
     /**
-     * 加入团队。**幂等** —— 重复加入不报错。
-     *
-     * 为什么必须幂等：子 Agent 可能被重启后重新 join，
-     * 报错会让它以为「进不去」而放弃协作。
-     */
-    @Synchronized
-    /**
      * 记录「**我**（本进程）以什么身份加入了哪个团队」。
      *
      * 【2026-10-06 加】原来只有团队花名册（成员列表），没有「我是谁」——
@@ -239,6 +232,20 @@ class TeamStore(private val rootDir: File) {
         }
     } catch (_: Throwable) { null }
 
+    /**
+     * 加入团队。**幂等** —— 重复加入不报错。
+     *
+     * 为什么必须幂等：子 Agent 可能被重启后重新 join，
+     * 报错会让它以为「进不去」而放弃协作。
+     *
+     * ⚠️ 【2026-10-06 修】原来这个函数上面有个「加入团队」的注释 +
+     * @Synchronized，但 KDoc 插在注解和函数之间 —— 注解**挂到了
+     * setMyIdentity**，而 join 裸奔。多个子 Agent 并发 TeamJoin 同一团队时
+     * 会 read-modify-write 竞态 → 成员丢失 → send 误报「不在团队里」。
+     *
+     * 教训：注解必须紧贴声明，中间不能夹注释（同 CronTools 那处）。
+     */
+    @Synchronized
     fun join(team: String, agent: String, role: String = ""): TeamInfo? {
         val cfg = readTeam(team) ?: return null
         val name = safeName(agent)

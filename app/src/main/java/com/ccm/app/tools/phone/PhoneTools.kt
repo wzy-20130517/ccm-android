@@ -228,9 +228,18 @@ class PhoneTools(
             val ref = normalizeRef(input.str("ref")!!)
             return try {
                 if (input.bool("long_press") == true) {
-                    // AIDL 没有长按专用方法 —— 用 tapRef 拿坐标后长按。
-                    // （服务侧的 tapRef 是单击；长按需要坐标版本，这里明确说明不支持）
-                    ToolResult.failed("长按暂未支持（服务侧只有单击接口）。可以先用 phone_tap_xy 长按坐标。")
+                    // 【2026-10-06 修】原来报「长按暂未支持」并让用户改用
+                    // phone_tap_xy —— 但那条路当时也不支持长按（静默变单击），
+                    // 两头都走不通。现在 AIDL 有 longPress + tapRefAt，
+                    // 按 ref 取坐标后真长按。
+                    val xy = svc.tapRefAt(ref)
+                    if (xy == null || xy.size < 2) {
+                        ToolResult.failed("节点已失效（#$ref）。界面刷新过，请重新 phone_snapshot 再试。")
+                    } else {
+                        val ok = svc.longPress(xy[0], xy[1], 600)
+                        if (ok) ToolResult.ok("已长按 #$ref (${xy[0]}, ${xy[1]})")
+                        else ToolResult.failed("长按失败 #$ref")
+                    }
                 } else {
                     val ok = svc.tapRef(ref)
                     if (ok) ToolResult.ok("已点击 #$ref")
@@ -281,11 +290,20 @@ class PhoneTools(
                 }
             }
 
+            // 【2026-10-06 修】原来完全不读 long_press 参数 —— 声明了却不生效，
+            // 模型以为长按成功、实际只是单击（静默失败，比报错更难查）。
+            val longPress = input.bool("long_press") == true
             return try {
-                val ok = svc.tap(x, y)
-                if (ok) ToolResult.ok("已点击 ($x, $y)") else ToolResult.failed("点击失败 ($x, $y)")
+                if (longPress) {
+                    // 长按：走 AIDL 的 longPress（input swipe 同起终点模拟）
+                    val ok = svc.longPress(x, y, 600)
+                    if (ok) ToolResult.ok("已长按 ($x, $y)") else ToolResult.failed("长按失败 ($x, $y)")
+                } else {
+                    val ok = svc.tap(x, y)
+                    if (ok) ToolResult.ok("已点击 ($x, $y)") else ToolResult.failed("点击失败 ($x, $y)")
+                }
             } catch (e: Throwable) {
-                ToolResult.Error("点击失败：${e.message}", ToolResult.INTERNAL)
+                ToolResult.Error("${if (longPress) "长按" else "点击"}失败：${e.message}", ToolResult.INTERNAL)
             }
         }
     }

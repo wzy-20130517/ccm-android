@@ -891,7 +891,6 @@ class ChatSession(
         var currentMessageId = ""
         // 思考流（与上面的正文流独立：先想后说，两个流交错）
         var thinkingBuf = ""
-        var currentThinkingId = ""
 
         try {
             events.collect { ev ->
@@ -914,10 +913,11 @@ class ChatSession(
                     is AgentEvent.ReasoningDelta -> {
                         // ★ 2026-09-27：原来是 `暂不进状态` 直接丢弃 ——
                         //   AssistantThinkingChain 739 行组件因此永远空转。
-                        //   现在与 TextDelta 同模式：messageId 变了重开一轮。
-                        // messageId 每次模型响应都会变化，但同一轮工具循环的思维链
-                        // 应连续显示；只记录最新 id，不因工具往返清空累计内容。
-                        currentThinkingId = ev.messageId
+                        //
+                        // 【2026-10-06】thinkingBuf 是**整轮 run 的累积**（跨工具往返），
+                        // 与 AgentLoop 每轮新建的 reasoningSb 不同 —— 只有累积值才能
+                        // 跟 UI 收到的 thinking 串做前缀匹配（见 ToolStart 里的说明）。
+                        // 原来这里记了个 currentThinkingId 但从未使用，已删。
                         thinkingBuf += ev.text
                         _state.value = _state.value.copy(thinking = thinkingBuf)
                     }

@@ -14,6 +14,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -349,10 +352,24 @@ class TermuxChannel(private val context: Context) : BashChannel {
         }
 
         // 等结果（带超时）—— 结果由 TermuxResultService 投进这个队列
+        //
+        // 【2026-10-06 改】原来一次 poll 阻塞整个 timeoutMs（最长 10 分钟）——
+        // poll 不响应协程取消，用户按「停止」后要干等到超时才生效。
+        // 现在切成 250ms 的小段轮询，每段之间检查 isActive，
+        // 取消能在 250ms 内生效（体验上"立刻停"）。
         var result: android.os.Bundle? = null
+        val deadline = System.currentTimeMillis() + timeoutMs
         try {
-            result = resultHolder.poll(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+            while (System.currentTimeMillis() < deadline) {
+                result = resultHolder.poll(250, java.util.concurrent.TimeUnit.MILLISECONDS)
+                if (result != null) break
+                currentCoroutineContext().ensureActive()
+            }
         } catch (_: InterruptedException) {
+        } catch (_: CancellationException) {
+            // 用户取消：清掉注册，把取消继续抛出去（让上层走 cancel 路径）
+            TermuxResultService.unregister(executionId)
+            throw CancellationException("Termux 命令被取消")
         }
         TermuxResultService.unregister(executionId)
 

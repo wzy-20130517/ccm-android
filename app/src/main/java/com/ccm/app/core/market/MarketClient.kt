@@ -425,6 +425,10 @@ object MarketClient {
         val ok = com.ccm.app.runtime.TarExtractor.extract(
             archive = archive,
             destDir = destDir,
+            // 【2026-10-06】市场下载的是**第三方内容**（接入外部源后更是），
+            // 用严格模式拦截逃出安装目录的符号链接（tar 逃逸的经典手法）。
+            // rootfs 解压不开这个（那边有合法的包外链接）。
+            strict = true,
             onError = { err = it },
         )
         if (!ok) {

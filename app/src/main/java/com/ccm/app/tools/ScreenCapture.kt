@@ -183,36 +183,59 @@ object ScreenCapture {
         }
     }
 
-    /** 截图并转 base64（给 AI 看图用） */
+    /**
+     * 截图并转 base64（给 AI 看图用）。
+     *
+     * ══════════════════════════════════════════════════════════════
+     *  【2026-10-06 修资源泄漏】原来复制了 capture() 的注册逻辑，
+     *  但**没复制清理**，三个早退路径全漏：
+     *    · 超时 return null → 监听器没摘（下一帧还会解码一次整帧，主线程！）
+     *    · 超时 return null → bitmap 已装好一帧但没 recycle（大图泄漏）
+     *    · bitmap==null 的 return → 同上
+     *  phone.screenshot 走的正是这条路径，反复调用会 OOM。
+     *
+     *  现在：监听器摘除 + bitmap 回收统一放 finally，早退路径全覆盖。
+     * ══════════════════════════════════════════════════════════════
+     */
     fun captureBase64(quality: Int = 80): String? {
         val reader = imageReader ?: return null
         val latch = CountDownLatch(1)
         var bitmap: Bitmap? = null
+        var listenerSet = false
 
-        try { reader.acquireLatestImage()?.close() } catch (_: Throwable) {}
+        try {
+            try { reader.acquireLatestImage()?.close() } catch (_: Throwable) {}
 
-        reader.setOnImageAvailableListener({ r ->
-            try {
-                val img = r.acquireLatestImage()
-                if (img != null) {
-                    bitmap = imageToBitmap(img)
-                    img.close()
+            reader.setOnImageAvailableListener({ r ->
+                try {
+                    val img = r.acquireLatestImage()
+                    if (img != null) {
+                        bitmap = imageToBitmap(img)
+                        img.close()
+                    }
+                } catch (_: Throwable) {
+                } finally {
+                    latch.countDown()
                 }
-            } catch (_: Throwable) {
-            } finally {
-                latch.countDown()
-            }
-        }, Handler(Looper.getMainLooper()))
+            }, Handler(Looper.getMainLooper()))
+            listenerSet = true
 
-        if (!latch.await(3000, TimeUnit.MILLISECONDS)) return null
+            if (!latch.await(3000, TimeUnit.MILLISECONDS)) return null
 
-        val bmp = bitmap ?: return null
-        return try {
+            val bmp = bitmap ?: return null
             val bos = ByteArrayOutputStream()
             bmp.compress(Bitmap.CompressFormat.JPEG, quality, bos)
-            Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP)
+            return Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP)
+        } catch (_: Throwable) {
+            return null
         } finally {
-            bmp.recycle()
+            // ① 摘监听器（早退/异常路径全覆盖）—— 不摘的话下一帧到达时
+            //    那个 lambda 仍会执行一次整帧解码（写进没人读的局部变量）
+            if (listenerSet) {
+                try { reader.setOnImageAvailableListener(null, null) } catch (_: Throwable) {}
+            }
+            // ② 回收 bitmap —— 成功路径也已 copy 出字节，可安全回收
+            try { bitmap?.recycle() } catch (_: Throwable) {}
         }
     }
 

@@ -1609,8 +1609,20 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                         SlashResult.Notice("用法：`/trash restore <序号>`（用 `/trash` 查看序号）")
                     } else {
                         // 兜底目录：工作区（manifest 缺失时用它拼恢复路径）
-                        val fallback = java.io.File(com.ccm.app.AppGraph.workspacePath().ifBlank { "." })
-                        SlashResult.Notice("**" + trash.restore(idx, fallback) + "**")
+                        //
+                        // 【2026-10-06 修】原来用 `ifBlank { "." }` —— File(".")
+                        // 是**进程当前目录**（Android 上通常是 /），恢复的文件
+                        // 会落到用户完全想不到的地方。没工作区就明确报错，
+                        // 让用户先设工作区（或说明恢复目标）。
+                        val wsPath = com.ccm.app.AppGraph.workspacePath()
+                        if (wsPath.isBlank()) {
+                            SlashResult.Notice(
+                                "**无法恢复**：没有设置工作区，不知道把文件恢复到哪。\n\n" +
+                                    "先用 `/workspace <路径>` 设置工作区，再重试。",
+                            )
+                        } else {
+                            SlashResult.Notice("**" + trash.restore(idx, java.io.File(wsPath)) + "**")
+                        }
                     }
                 }
                 "clear", "清空" -> SlashResult.Notice("**" + trash.clear() + "**")
@@ -3009,9 +3021,21 @@ internal fun launchGitDiff(ctx: SlashContext, arg: String) {
         } catch (_: Throwable) { }
         return
     }
-    val cwd = com.ccm.app.AppGraph.workspacePath().ifBlank { null }
+    val wsPath = com.ccm.app.AppGraph.workspacePath()
+    // 【2026-10-06】没工作区时用通道默认目录（rootfs /root 或 Termux home），
+    // 那不是用户的代码仓库 —— 跑出来的 git diff 是空的或无关的。
+    // 不拦（有些用户就喜欢在默认目录里操作），但**明确告诉他看的是哪**。
+    val cwd = wsPath.ifBlank { null }
 
     scope.launch {
+        if (wsPath.isBlank()) {
+            try {
+                session.injectNotice(
+                    "**提示**：没有设置工作区，将在通道默认目录里跑 git diff" +
+                        "（可能不是你的代码仓库）。用 `/workspace <路径>` 指定仓库位置。",
+                )
+            } catch (_: Throwable) {}
+        }
         // 【2026-10-06 对齐 CLI】原来只跑 `git diff --stat`（**只有统计**）——
         // CLI 的 /diff 给完整 diff + 词级高亮（cmd-extensions.mjs:139 cmdDiff）。
         // 现在：stat 摘要 + 完整 diff（超长截断 20K，对齐 CLI 的 20000）。

@@ -184,8 +184,6 @@ class CronStore(private val rootDir: File) {
         return removed || removed2
     }
 
-    /** 标记已触发（循环任务据此重算下次） */
-    @Synchronized
     /**
      * 调度器心跳（audit-core #8：loadDurable/saveDurable 齐全但
      * nextRun/markFired **零调用方** —— 持久任务存盘重启后永不触发）。
@@ -195,7 +193,17 @@ class CronStore(private val rootDir: File) {
      * 2. nextRun 到点 → onFire 投递；**返回 true 才记账**
      *    （返回 false = 目标正忙、下个 tick 重试，不丢任务）
      * 3. recurring 记 lastFiredAt；一次性任务投递成功即从清单移除
+     *
+     * ⚠️ 【2026-10-06 修】原来这个函数上面有个「标记已触发」的注释 +
+     * @Synchronized，但 KDoc 插在注解和函数之间 —— 注解**挂到了本函数**，
+     * 而真正该加锁的 markFired 反而裸奔（schedulerTick 每 30s 从
+     * appScope 线程调，CronCreate/Delete 工具从模型线程调，
+     * 两边并发操作同一个 durableTasks 列表 + 同一个文件）。
+     *
+     * 教训：**注解必须紧贴它修饰的声明，中间不能夹注释** ——
+     * Kotlin 不报错，但注解的作用目标会静默改变。
      */
+    @Synchronized
     fun schedulerTick(now: Long = System.currentTimeMillis(), onFire: (Task) -> Boolean) {
         loadDurable()
         val due = durableTasks.filter { t -> nextRun(t)?.let { it <= now } == true }
@@ -211,6 +219,8 @@ class CronStore(private val rootDir: File) {
         }
     }
 
+    /** 标记已触发（循环任务据此重算下次）。与 schedulerTick 共用 durableTasks，必须同锁。 */
+    @Synchronized
     fun markFired(id: String) {
         val idx = durableTasks.indexOfFirst { it.id == id }
         if (idx >= 0) {
