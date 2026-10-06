@@ -386,9 +386,12 @@ private fun McpEnvDialog(
     onConfirm: (Map<String, String>) -> Unit,
 ) {
     val colors = CCMTheme.colors
+    // 【2026-10-06 用户反馈】原来把 item.env 的**提示文本**当值填进输入框
+    // （如 MAIL_USER 框里预填"邮箱地址"）—— 用户报「输入框全部被真实字符占位」。
+    // 正确做法：输入框空着，提示文本放 placeholder。
     val values = remember {
         androidx.compose.runtime.mutableStateMapOf<String, String>().apply {
-            item.env.forEach { (k, v) -> put(k, v) }
+            item.env.keys.forEach { k -> put(k, "") }
         }
     }
 
@@ -415,17 +418,27 @@ private fun McpEnvDialog(
             item.env.forEach { (k, hint) ->
                 Column {
                     Text(k, style = CCMText.body12.copy(fontSize = 10.48.sp), color = colors.textSecondary)
-                    androidx.compose.foundation.text.BasicTextField(
-                        value = values[k] ?: "",
-                        onValueChange = { values[k] = it },
-                        textStyle = CCMText.body13.copy(color = colors.textMain),
-                        cursorBrush = androidx.compose.ui.graphics.SolidColor(colors.claudeOrange),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(7.36.dp))
-                            .background(colors.input)
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                    )
+                    // 【2026-10-06】用 Box 叠 placeholder（BasicTextField 没有原生 placeholder）
+                    Box {
+                        if ((values[k] ?: "").isEmpty()) {
+                            Text(
+                                hint,
+                                style = CCMText.body13.copy(color = colors.textSecondary.copy(alpha = 0.5f)),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            )
+                        }
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = values[k] ?: "",
+                            onValueChange = { values[k] = it },
+                            textStyle = CCMText.body13.copy(color = colors.textMain),
+                            cursorBrush = androidx.compose.ui.graphics.SolidColor(colors.claudeOrange),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(7.36.dp))
+                                .background(colors.input)
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                        )
+                    }
                 }
             }
             Row(

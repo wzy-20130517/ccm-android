@@ -152,9 +152,32 @@ fun AssistantThinkingChain(
     //   调用方没给 events 时，用 thinking 文本 + 本轮工具卡**现场合成**时间线。
     //   Web 的思维链时间线就是这么来的 —— 没有它，UI 只剩「摘要 + 一大段裸文本」，
     //   这正是「思维链跟 Web 扯不上关系」的主因。
-    val resolvedEvents = remember(events, thinking, toolCards, isThinking) {
-        if (events.isNotEmpty()) events
-        else buildReasoningTimelineEvents(thinking, toolCards, isThinking)
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-06 性能优化】流式时节流重算
+    //
+    // 原来 thinking 每加一个字符就重算整条时间线（split + N 个正则），
+    // 一次 500 字的回复要算 500 次 —— 用户报「思维链性能太差」。
+    //
+    // 优化：流式期间**每 120ms 才算一次**（节流），完成后立即算一次
+    // （保证最终结果精确）。观感不变 —— 120ms 的刷新间隔肉眼
+    // 分辨不出（人眼约 100ms 才感知到变化），但计算量降到 1/10。
+    //
+    // 用 `produceState` 实现：它能在 key 变化时起协程、防抖、
+    // 又在协程结束时把最终值写进 state。
+    // ══════════════════════════════════════════════════════════════
+    val resolvedEvents by androidx.compose.runtime.produceState(
+        initialValue = if (events.isNotEmpty()) events else emptyList(),
+        events, thinking, toolCards.size, isThinking,
+    ) {
+        if (events.isNotEmpty()) {
+            value = events
+            return@produceState
+        }
+        if (isThinking) {
+            // 流式中：先等 120ms（期间 key 再变会取消本次，重新计时）
+            kotlinx.coroutines.delay(120)
+        }
+        value = buildReasoningTimelineEvents(thinking, toolCards, isThinking)
     }
 
     // 合成 done 事件（见类注释第 3 条）
@@ -432,7 +455,7 @@ fun AssistantThinkingCompactStatus(
     val tokens = remember(label) {
         // 对应 `tokenizeStreamingLabel`：按空白切分并保留空白段。
         // Kotlin 的 split 默认丢掉分隔符，用 Regex 的零宽后视模拟保留效果。
-        label.split(Regex("(?<=\\s)")).filter { it.isNotEmpty() }
+        label.split(RE_SPLIT_KEEP_WS).filter { it.isNotEmpty() }
     }
 
     var visibleTokens by remember(label, isThinking) {
@@ -1111,6 +1134,8 @@ internal fun buildReasoningTimelineEvents(
     val blocks = splitReasoningBlocks(normalized)
     if (blocks.isEmpty()) return emptyList()
 
+
+
     val toolEvents = buildToolEvents(toolCards)
 
     val out = mutableListOf<AssistantThinkingEvent>()
@@ -1167,7 +1192,7 @@ internal fun splitReasoningBlocks(thinking: String): List<String> {
     if (normalized.isEmpty()) return emptyList()
 
     val rawBlocks = normalized
-        .split(Regex("\n{2,}"))
+        .split(RE_BLANK_LINES)
         .map { it.trim() }
         .filter { it.isNotEmpty() }
 
@@ -1175,7 +1200,7 @@ internal fun splitReasoningBlocks(thinking: String): List<String> {
     for (block in rawBlocks) {
         val previous = merged.lastOrNull()
         // 列表续行：`- ` / `* ` / `• ` / `1. ` / `1) `
-        val isListContinuation = Regex("^([-*•]|\\d+[.)]\\s)").containsMatchIn(block)
+        val isListContinuation = RE_LIST_MARKER.containsMatchIn(block)
         // 上一段以冒号结尾（去 markdown 后）→ 它在邀请细节
         val previousInvitesDetails =
             previous != null && stripMarkdown(previous).trimEnd().endsWith(":")
@@ -1190,9 +1215,7 @@ internal fun splitReasoningBlocks(thinking: String): List<String> {
     if (merged.size > 1) return merged
 
     // 兜底：按英文思考起始词切（对应源码的 lookahead 正则）
-    val fallback = Regex(
-        "\n(?=(?:Let me|I should|I need to|First,|Next,|Then,|Perfect[.!]?|Now ))",
-    ).split(normalized).map { it.trim() }.filter { it.isNotEmpty() }
+    val fallback = RE_THINKING_STARTERS.split(normalized).map { it.trim() }.filter { it.isNotEmpty() }
 
     return if (fallback.size > 1) fallback else rawBlocks
 }
@@ -1206,10 +1229,7 @@ internal fun splitReasoningBlocks(thinking: String): List<String> {
 internal fun isToolHandoffBlock(block: String): Boolean {
     val cleaned = stripMarkdown(block)
     if (cleaned.isEmpty()) return false
-    return Regex(
-        "^(let me|i should|first,\\s*i should|next,\\s*i should|next,\\s*i'll|i'll|now i'?ll)",
-        RegexOption.IGNORE_CASE,
-    ).containsMatchIn(cleaned)
+    return RE_HANDOFF.containsMatchIn(cleaned)
 }
 
 /**
@@ -1226,7 +1246,7 @@ internal fun summarizeThinkingBlock(block: String, maxLength: Int = 120): String
     val firstNarrative = lines.firstOrNull { !it.startsWith("-") && !it.startsWith("*") && !it.startsWith("•") }
         ?: lines.firstOrNull() ?: ""
 
-    val sentences = Regex("[^.!?。！？]+[.!?。！？]?")
+    val sentences = RE_SENTENCE
         .findAll(firstNarrative)
         .map { it.value.trim() }
         .filter { it.isNotEmpty() }
@@ -1246,12 +1266,12 @@ internal fun summarizeThinkingBlock(block: String, maxLength: Int = 120): String
  * 这是摘要文字用的，不是渲染用。
  */
 internal fun stripMarkdown(text: String): String = text
-    .replace(Regex("`([^`]+)`"), "$1")
-    .replace(Regex("\\*\\*([^*]+)\\*\\*"), "$1")
-    .replace(Regex("\\*([^*]+)\\*"), "$1")
-    .replace(Regex("\\[([^\\]]+)\\]\\([^)]+\\)"), "$1")
-    .replace(Regex("(?m)^[-*•]\\s+"), "")
-    .replace(Regex("\\s+"), " ")
+    .replace(RE_BACKTICK, "$1")
+    .replace(RE_BOLD, "$1")
+    .replace(RE_ITALIC, "$1")
+    .replace(RE_LINK, "$1")
+    .replace(RE_LIST_PREFIX, "")
+    .replace(RE_WHITESPACE, " ")
     .trim()
 
 /**
@@ -1260,7 +1280,7 @@ internal fun stripMarkdown(text: String): String = text
  * 折叠所有空白 + 超长截断加省略号（注意：截断后总长 = maxLength，不是 maxLength+1）。
  */
 internal fun normalizePreviewText(value: String, maxLength: Int = 64): String {
-    val cleaned = value.trim().replace(Regex("\\s+"), " ")
+    val cleaned = value.trim().replace(RE_WHITESPACE, " ")
     if (cleaned.isEmpty()) return ""
     return if (cleaned.length > maxLength) cleaned.take(maxLength - 1) + "…" else cleaned
 }
@@ -1332,3 +1352,57 @@ private fun buildToolStepLabel(card: ChatToolCard): String {
         }
     }
 }
+
+// ══════════════════════════════════════════════════════════════════
+//  【2026-10-06 性能优化】正则缓存
+// ══════════════════════════════════════════════════════════════════
+//
+// 原来这些 Regex 都在热路径里现 new（splitReasoningBlocks /
+// isToolHandoffBlock / summarizeThinkingBlock 等），而思维链**每流式
+// 吐一个字符就重算一次** —— 一次 500 字的回复要 new 上千个 Regex 对象。
+//
+// Kotlin 的顶层 val 是**类加载时初始化一次**（不是每次访问都建），
+// 所以搬到这里就等于全局复用。观感完全不变，只是不再重复编译正则。
+//
+// 命名按用途（不按模式），避免以后改了模式忘改名。
+
+/** 空行分段（`splitReasoningBlocks`）。 */
+private val RE_BLANK_LINES = RE_BLANK_LINES
+
+/** 列表续行标记（`- xxx` / `* xxx` / `• xxx` / `1. xxx` / `1) xxx`）。 */
+private val RE_LIST_MARKER = RE_LIST_MARKER
+
+/** 英文思考起始词（兜底切分）。 */
+private val RE_THINKING_STARTERS = Regex(
+    "\n(?=(?:Let me|I should|I need to|First,|Next,|Then,|Perfect[.!]?|Now ))",
+)
+
+/** 工具交接句（`isToolHandoffBlock`）。 */
+private val RE_HANDOFF = Regex(
+    "^(let me|i should|first,\\s*i should|next,\\s*i should|next,\\s*i'll|i'll|now i'?ll)",
+    RegexOption.IGNORE_CASE,
+)
+
+/** markdown 反引号代码（`stripMarkdown`）。 */
+private val RE_BACKTICK = Regex("`([^`]+)`")
+
+/** markdown 粗体。 */
+private val RE_BOLD = Regex("\\*\\*([^*]+)\\*\\*")
+
+/** markdown 斜体。 */
+private val RE_ITALIC = Regex("\\*([^*]+)\\*")
+
+/** markdown 链接。 */
+private val RE_LINK = Regex("\\[([^\\]]+)\\]\\([^)]+\\)")
+
+/** markdown 列表前缀（行首）。 */
+private val RE_LIST_PREFIX = Regex("(?m)^[-*•]\\s+")
+
+/** 空白折叠。 */
+private val RE_WHITESPACE = Regex("\\s+")
+
+/** 按空白切词保留分隔符（打字机效果）。 */
+private val RE_SPLIT_KEEP_WS = RE_SPLIT_KEEP_WS
+
+/** 句子边界（摘要取首句）。 */
+private val RE_SENTENCE = RE_SENTENCE

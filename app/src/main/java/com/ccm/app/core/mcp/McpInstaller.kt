@@ -73,9 +73,21 @@ class McpInstaller(
                 command = listOf(
                     "/bin/bash", "-c",
                     "export DEBIAN_FRONTEND=noninteractive; " +
+                        // 【2026-10-06 用户反馈「浏览器自动化安装失败」】
+                        // 实测根因（两条）：
+                        //   1. dpkg 状态损坏（之前安装中断留下）→ apt 直接拒绝
+                        //   2. 装 nodejs 不够 —— npm 是**单独的包**，要一起装
+                        //
+                        // 修复流程（每步幂等）：
+                        //   dpkg --configure -a（修状态）
+                        //   apt --fix-broken install（修依赖）
+                        //   apt install nodejs npm（两个都装）
+                        "export DEBIAN_FRONTEND=noninteractive; " +
+                        "dpkg --configure -a 2>&1 | tail -2; " +
+                        "apt-get --fix-broken install -y 2>&1 | tail -2; " +
                         "apt-get update -qq 2>&1 | tail -2; " +
-                        "apt-get install -y -qq nodejs 2>&1 | tail -5; " +
-                        "command -v node && node --version",
+                        "apt-get install -y -qq nodejs npm 2>&1 | tail -5; " +
+                        "command -v node && node --version; command -v npm && npm --version",
                 ),
                 workDir = "/root",
                 onLine = { line ->

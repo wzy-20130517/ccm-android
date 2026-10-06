@@ -298,9 +298,18 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
     var route by rememberSaveable { mutableStateOf(CcmRoute.HOME) }
     // 设置是**覆盖层不是路由**（对齐 Web：showSettings 状态，location 不变）
     var showSettings by remember { mutableStateOf(false) }
+    // 【2026-10-06 问题21 修复】记录「进设置前在哪」——
+    // 关闭设置时回去，而不是一律跳首页。
+    // 原来 `onClose = { navigate(CcmRoute.HOME) }` 是 bug：
+    // 从对话页进设置，关闭后跳首页 → 用户报「切页回来变首页样式」。
+    var routeBeforeSettings by remember { mutableStateOf<CcmRoute?>(null) }
 
     /** 切页 —— 对齐 Web：路由变化时自动收起抽屉（`App.tsx:378`） */
     fun navigate(to: CcmRoute) {
+        // 【2026-10-06 问题21】进设置页前记住当前页（关闭时回去）
+        if (to == CcmRoute.SETTINGS && route != CcmRoute.SETTINGS) {
+            routeBeforeSettings = route
+        }
         route = to
         sidebarOpen = false
     }
@@ -1100,7 +1109,9 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     }
 
                     CcmRoute.SETTINGS -> SettingsScreen(
-                        onClose = { navigate(CcmRoute.HOME) },
+                        // 【2026-10-06 问题21】回到「进设置前的那一页」，
+                        // 而不是一律跳首页（原来那样会丢当前对话）
+                        onClose = { navigate(routeBeforeSettings ?: CcmRoute.HOME) },
                     )
 
                     CcmRoute.PROJECTS -> {
