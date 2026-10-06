@@ -70,6 +70,19 @@ object PathGuard {
      */
     @Throws(IOException::class)
     fun resolveAllowed(cwd: File, extraDirs: List<File>, target: String): File {
+        // 【2026-10-06】没有工作区（cwd 为空）时，**相对路径直接拒绝** ——
+        // File("") 会解析成进程当前目录（通常是 /），模型写个 "a.txt"
+        // 就会落到 /a.txt（既没权限又莫名其妙）。
+        // 绝对路径仍放行（用户明确指定，不受工作区配置影响）。
+        if (cwd.path.isBlank() && !File(target).isAbsolute) {
+            throw IOException(
+                "没有工作区，相对路径无法解析。\n" +
+                    "两种解决办法：\n" +
+                    "  · 用绝对路径（如 /sdcard/Download/claude-workspace/a.txt）\n" +
+                    "  · 或先用 /workspace <路径> 设置工作区"
+            )
+        }
+
         // 绝对路径：直接放行（对齐 CLI —— 用户明确指定的目标不该拦）
         if (File(target).isAbsolute) {
             return try {

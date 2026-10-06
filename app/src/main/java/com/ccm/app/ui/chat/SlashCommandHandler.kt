@@ -879,7 +879,8 @@ private fun handleQueryCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                 val sess = com.ccm.app.AppGraph.session
                 sb.append(if (sess != null) "- ✅ 会话已就绪\n" else "- ⚠️ 无活动会话\n")
                 // 5) 工作区
-                sb.append("- 工作区：`${com.ccm.app.AppGraph.workspacePath()}`\n")
+                val ws1 = com.ccm.app.AppGraph.workspacePath()
+                sb.append("- 工作区：${if (ws1.isBlank()) "（未设置）" else "`$ws1`"}\n")
                 sb.append("- 会话 ID：`${com.ccm.app.AppGraph.sessionId}`\n")
                 SlashResult.Notice(sb.toString().trimEnd())
             }
@@ -1998,11 +1999,42 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                 SlashResult.Notice("存储未初始化。")
             } else {
                 val a = arg.trim()
-                if (a.isBlank()) {
+                // 【2026-10-06 加】`/workspace clear`（或 off/reset）清空配置 ——
+                // 回到「未设置」状态（自动解析默认目录）。
+                // 原来没有清空入口：设错了只能手改 config.json。
+                if (a.equals("clear", true) || a.equals("off", true) || a.equals("reset", true)) {
+                    val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                    if (loadR.error != null) {
+                        SlashResult.Notice("配置损坏：${loadR.error}")
+                    } else {
+                        com.ccm.app.core.provider.AppConfig.save(
+                            loadR.config.copy(workspacePath = null), st.configFile,
+                        )
+                        var applied = false
+                        try {
+                            val appCtx = ctx.appContext
+                            val scope = com.ccm.app.AppGraph.appScope
+                            if (appCtx != null && scope != null) {
+                                applied = com.ccm.app.AppGraph.rebuild(appCtx, scope) != null
+                            }
+                        } catch (_: Throwable) {}
+                        SlashResult.Notice(
+                            "工作区已清空 —— 现在**没有工作区**。" +
+                                if (applied) "\n\n_已立即生效（新会话/重启也保持）_" else ""
+                        )
+                    }
+                } else if (a.isBlank()) {
+                    val wsNow = com.ccm.app.AppGraph.workspacePath()
                     SlashResult.Notice(
-                        "**当前工作区**：`${com.ccm.app.AppGraph.workspacePath()}`\n\n" +
-                            "用法：`/workspace <路径>` 设置（空 = 用应用私有目录）\n" +
-                            "⚠ 需「所有文件访问」权限才能用 `/sdcard` 路径"
+                        if (wsNow.isBlank()) {
+                            "**工作区**：未设置（工具的相对路径会报错，需要绝对路径）\n\n" +
+                                "用法：`/workspace <路径>` 设置\n" +
+                                "⚠ 需「所有文件访问」权限才能用 `/sdcard` 路径"
+                        } else {
+                            "**当前工作区**：`$wsNow`\n\n" +
+                                "用法：`/workspace <路径>` 设置 · `/workspace clear` 清空\n" +
+                                "⚠ 需「所有文件访问」权限才能用 `/sdcard` 路径"
+                        }
                     )
                 } else {
                     val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
@@ -2071,7 +2103,8 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                 val perms = tr?.permissions
                 sb.append("- ℹ️ 权限模式：${perms?.mode ?: "?"}\n")
                 // 5. 工作区
-                sb.append("- ℹ️ 工作区：${com.ccm.app.AppGraph.workspacePath()}\n")
+                val ws2 = com.ccm.app.AppGraph.workspacePath()
+                sb.append("- ℹ️ 工作区：${if (ws2.isBlank()) "（未设置）" else ws2}\n")
                 // 6. 版本
                 sb.append("- ℹ️ 版本：${com.ccm.app.AppGraph.appVersion()}\n")
             }

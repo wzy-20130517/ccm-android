@@ -82,36 +82,36 @@ object AppGraph {
     /**
      * 解析工作区目录（2026-10-01）。
      *
-     * 优先用 config 的 workspacePath（与 CLI /workspace、Web 设置页同语义）；
-     * 为空或建不出目录（权限/路径无效）时落回默认 files/workspace —— 
-     * 配置错不该让 App 起不来。
+     * 语义（2026-10-06 改）：**配置为空 = 没有工作区**，返回空串。
+     *
+     * 原来会兜底到 files/workspace —— 用户无法表达「我不用工作区」，
+     * App 还会在隐藏位置建目录写文件。现在只有显式配置且目录**已存在**
+     * 时才返回路径（不自动建目录，避免写错路径时到处建目录）。
      */
     private fun resolveWorkspaceDir(st: com.ccm.app.core.AppStorage, cfg: com.ccm.app.core.provider.AppConfig): String {
         val configured = cfg.workspacePath?.trim().orEmpty()
-        if (configured.isNotEmpty()) {
-            try {
-                val d = File(configured)
-                if (d.isDirectory || d.mkdirs()) return d.absolutePath
-            } catch (_: Throwable) {}
+        if (configured.isEmpty()) {
+            // ══════════════════════════════════════════════════════════
+            //  【2026-10-06 改】没配置 = **没有工作区**，不再兜底默认目录
+            // ══════════════════════════════════════════════════════════
+            //
+            // 原来这里会依次尝试 envMode 外部目录 → files/workspace，
+            // 永远返回一个路径 —— 用户无法表达「我不用工作区」，
+            // 而且 App 会在他不知道的地方悄悄建目录、往里写文件。
+            //
+            // 现在的语义：**空 = 真的没有**。返回空串，由调用方处理。
+            // 想用工作区就显式设（/workspace <路径> 或设置页填）。
+            return ""
         }
-        // 【2026-10-06 envMode】Termux 模式下默认工作区必须落在**两边都能访问**
-        // 的地方 —— files/workspace 是 App 私有目录，Termux 进程进不去，
-        // 会导致「工具在 A 写文件、Bash 在 B 找文件」的错位。
-        //
-        // 用 App 私有外部目录（Android/data/com.ccm.app/files/workspace）：
-        //   · Termux 侧：/sdcard/Android/data/com.ccm.app/files/workspace
-        //     （Termux 有存储权限就能读写，这是 Android 11+ 仍允许的例外路径）
-        //   · App 侧：无需任何权限（自己应用的外部目录）
-        // 两边是同一个物理目录，只是路径前缀不同。
-        if (cfg.envMode == "termux") {
-            try {
-                // appContext 是 init() 存下的 Application 引用（本方法是
-                // object 的成员，没有局部 context 可用）。
-                val ext = File(appContext?.getExternalFilesDir(null), WORKSPACE_DIR)
-                if (ext.isDirectory || ext.mkdirs()) return ext.absolutePath
-            } catch (_: Throwable) {}
+        return try {
+            val d = File(configured)
+            // 【2026-10-06】原来 `d.isDirectory || d.mkdirs()` 会自动建目录 ——
+            // 用户写错路径时会在他没预期的地方建目录。
+            // 现在：目录必须已存在（不自动建），不存在就返回空。
+            if (d.isDirectory) d.absolutePath else ""
+        } catch (_: Throwable) {
+            ""
         }
-        return File(st.root, WORKSPACE_DIR).apply { mkdirs() }.absolutePath
     }
 
     /**
@@ -121,7 +121,7 @@ object AppGraph {
      * 之前 `/files` 直接拼 `storage.root/workspace`，配置了 workspacePath 时
      * 会指错目录。本 getter 统一出口，新命令都用它。
      *
-     * 存储未初始化时返回空串（调用方自行提示）。
+     * 存储未初始化、或**没有配置工作区**时返回空串（调用方自行提示）。
      */
     fun workspacePath(): String {
         val st = storage ?: return ""

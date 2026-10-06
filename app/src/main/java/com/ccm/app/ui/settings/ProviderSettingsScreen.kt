@@ -272,6 +272,31 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
         // ── 详情区 ────────────────────────────────────────────────
         Column(verticalArrangement = Arrangement.spacedBy(11.04.dp)) {
 
+            // ══════════════════════════════════════════════════════
+            //  【2026-10-06 修】没有供应商时隐藏前四组
+            //
+            //  原来只有「危险区」有 `if (selected != null)` 守卫，前四组
+            //  照常渲染 —— 结果是：一个 Provider 都没有时，界面显示
+            //  空的连接信息表单（key/url/模型全空），用户以为要在这里填，
+            //  填了也不知道存给谁（selected 是 null）。
+            //  正确行为：没选中就整块不显示，只留「添加」入口。
+            // ══════════════════════════════════════════════════════
+            if (selected == null) {
+                // 空状态：引导用户添加第一个 Provider
+                ProviderSettingGroup(
+                    title = "还没有供应商",
+                    hint = "添加一个才能开始对话",
+                ) {
+                    Text(
+                        "点上方「+ 添加」按钮新建 —— 需要填 API 地址、模型名和密钥" +
+                            "（从你的中转站或官方后台获取）。",
+                        style = CCMText.body12,
+                        color = colors.textSecondary,
+                    )
+                }
+            }
+
+            if (selected != null) {
             // ── SettingGroup 1：连接信息 ─────────────────────────
             ProviderSettingGroup(
                 title = "连接信息",
@@ -735,6 +760,8 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                     }
                 }
             }
+
+            }   // ← if (selected != null) 的闭合（前四组）
 
             // ── SettingGroup 5：危险区（2026-09-29 补 —— CLI 有 `rm` 这里没有）──
             if (selected != null) {

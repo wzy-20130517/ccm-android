@@ -306,12 +306,16 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                 SettingsLabel("工作区")
                 Spacer(Modifier.height(SettingsLabelGap))
                 Text(
-                    text = "工具读写文件的根目录。空 = 默认（应用私有 workspace 目录）。",
+                    // 【2026-10-06 改语义】空 = **没有工作区**（不再是"用默认目录"）——
+                    // 相对路径会明确报错，绝对路径不受影响。
+                    text = "工具读写文件的根目录。留空 = 不设工作区" +
+                        "（工具用相对路径时会报错，需用绝对路径）。目录必须已存在。",
                     style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
                     color = CCMTheme.colors.textSecondary,
                 )
                 Spacer(Modifier.height(7.36.dp))
                 // 输入框显示**实际生效路径**（问题18：不再让用户猜）
+                // 没有工作区时为空串 —— 输入框留空即「未设置」
                 val actualWs = currentWorkspace()
                 var wsInput by remember(actualWs) { mutableStateOf(actualWs) }
                 var wsError by remember { mutableStateOf("") }
@@ -325,6 +329,13 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                 if (actualWs.isNotEmpty()) {
                     Text(
                         text = "当前生效：$actualWs",
+                        style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                        color = CCMTheme.colors.textSecondary,
+                    )
+                } else {
+                    // 【2026-10-06】空 ≠ 加载失败，明确告知状态
+                    Text(
+                        text = "当前：未设置工作区",
                         style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
                         color = CCMTheme.colors.textSecondary,
                     )
