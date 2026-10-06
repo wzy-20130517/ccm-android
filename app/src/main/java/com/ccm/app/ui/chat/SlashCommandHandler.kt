@@ -1358,6 +1358,34 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                 } catch (_: Throwable) {}
                 return SlashResult.Notice("$r\n\n（已落盘，重启保留）")
             }
+            // 【2026-10-06 补】allow / deny / ask / remove 子命令 ——
+            // 对齐 CLI 的 `/permissions allow <工具名>`（cmd-extensions.mjs:704）。
+            // 原来 APK 只有 mode（改模式）+ 默认（看规则），规则表**只能手编
+            // permissions.json**（ToolPermissions 有读没写）。
+            val parts = sub.split(Regex("\\s+"), limit = 2)
+            val action = parts.getOrNull(0)?.lowercase().orEmpty()
+            if (action in setOf("allow", "deny", "ask", "remove")) {
+                val tool = parts.getOrNull(1)?.trim().orEmpty()
+                val perms = com.ccm.app.AppGraph.toolsResult?.permissions
+                    ?: return SlashResult.Notice("权限系统未初始化。")
+                if (tool.isBlank()) {
+                    return SlashResult.Notice("用法：`/permissions $action <工具名>`")
+                }
+                return if (action == "remove") {
+                    val removed = perms.removeRule(tool)
+                    SlashResult.Notice(
+                        if (removed.isEmpty()) "`$tool` 本来就不在任何规则表里。"
+                        else "已从 ${removed.joinToString("/")} 移除 `$tool`。"
+                    )
+                } else {
+                    val err = perms.addRule(action, tool)
+                    SlashResult.Notice(
+                        if (err == null) "已把 `$tool` 加入 **$action** 表。"
+                        else "添加失败：$err"
+                    )
+                }
+            }
+
             SlashResult.Notice("**权限规则**\n\n" + try {
                 val perms = com.ccm.app.AppGraph.toolsResult?.permissions
                 if (perms != null) {
@@ -1369,6 +1397,7 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                         "允许：${arr("allow").joinToString(", ").ifBlank { "(空)" }}\n" +
                         "拒绝：${arr("deny").joinToString(", ").ifBlank { "(空)" }}\n" +
                         "询问：${arr("ask").joinToString(", ").ifBlank { "(空)" }}\n\n" +
+                        "用法：`/permissions mode <模式>` · `allow|deny|ask <工具名>` · `remove <工具名>`\n" +
                         "规则文件：${perms.rulesFilePath()}"
                 } else "权限系统未初始化"
             } catch (e: Throwable) { "读取失败：${e.message}" })

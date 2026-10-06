@@ -156,6 +156,76 @@ class ToolPermissions(private val configDir: File) {
         put("ask", JSONArray())
     }
 
+    // ── 规则写入（2026-10-06 加，对齐 CLI /permissions allow|deny|ask|remove）──
+    //
+    // 【原来只有读没有写】`resolve` 会读 allow/deny/ask 三张表，但没有任何
+    // 方法能**改**它们 —— 用户只能手编 permissions.json。CLI 有完整的
+    // `/permissions allow <工具> / deny / ask / remove` 四条子命令。
+
+    /**
+     * 往某张表加一个工具名（幂等：已在表里不重复加）。
+     *
+     * @param list 表名：allow / deny / ask
+     * @return null = 成功；非 null = 错误信息
+     */
+    @Synchronized
+    fun addRule(list: String, toolName: String): String? {
+        if (list !in setOf("allow", "deny", "ask")) return "表名必须是 allow / deny / ask"
+        if (toolName.isBlank()) return "工具名不能为空"
+        return try {
+            val rules = JSONObject(loadRules().toString())   // 深拷贝，避免改到缓存
+            val arr = rules.optJSONArray(list) ?: JSONArray()
+            // 先检查是否已在
+            for (i in 0 until arr.length()) {
+                if (arr.optString(i, "") == toolName) return null   // 幂等
+            }
+            arr.put(toolName)
+            rules.put(list, arr)
+            saveRules(rules)
+            null
+        } catch (t: Throwable) {
+            "写入失败：${t.message}"
+        }
+    }
+
+    /**
+     * 从**所有**表里移除一个工具名（对齐 CLI 的 remove 语义）。
+     *
+     * @return 被移除的表名列表（空 = 本来就不在任何表里）
+     */
+    @Synchronized
+    fun removeRule(toolName: String): List<String> {
+        return try {
+            val rules = JSONObject(loadRules().toString())
+            val removed = mutableListOf<String>()
+            listOf("allow", "deny", "ask").forEach { key ->
+                val arr = rules.optJSONArray(key) ?: return@forEach
+                val kept = JSONArray()
+                var hit = false
+                for (i in 0 until arr.length()) {
+                    val v = arr.optString(i, "")
+                    if (v == toolName) hit = true else kept.put(v)
+                }
+                if (hit) {
+                    rules.put(key, kept)
+                    removed += key
+                }
+            }
+            if (removed.isNotEmpty()) saveRules(rules)
+            removed
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    /** 落盘（写后清缓存，下次读重新加载）。 */
+    private fun saveRules(rules: JSONObject) {
+        permFile.parentFile?.mkdirs()
+        permFile.writeText(rules.toString(2))
+        rulesCache = null
+        rulesMtime = -1L
+    }
+
     private fun hasIn(obj: JSONObject, key: String, toolName: String): Boolean {
         val arr = obj.optJSONArray(key) ?: return false
         for (i in 0 until arr.length()) {
