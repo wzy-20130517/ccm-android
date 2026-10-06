@@ -2603,7 +2603,7 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                         // 支持 /tvly <tvly-...> 与 /tvly set <tvly-...> 两种写法
                         val key = (if (sub == "set") subArg else a).trim()
                         if (key.isBlank()) {
-                            SlashResult.Notice("用法：\`/tvly <tvly-...>\` 或 \`/tvly set <tvly-...>\`")
+                            SlashResult.Notice("用法：`/tvly <tvly-...>` 或 `/tvly set <tvly-...>`")
                         } else {
                             com.ccm.app.core.provider.AppConfig.save(
                                 loadR.config.copy(tavilyKey = key), st.configFile,
@@ -2611,7 +2611,7 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                             com.ccm.app.AppGraph.toolSettings?.put("tavilyApiKey", key)
                             SlashResult.Notice(
                                 "Tavily key 已设置（${key.take(8)}…${key.takeLast(4)}）· 立即生效。\n\n" +
-                                    "_注册拿 key：<https://app.tavily.com/>（key 形如 \`tvly-xxxxxxxx\`）_"
+                                    "_注册拿 key：<https://app.tavily.com/>（key 形如 `tvly-xxxxxxxx`）_"
                             )
                         }
                     }
@@ -2620,10 +2620,10 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                         SlashResult.Notice(
                             "**Tavily 搜索**（WebSearch 联网搜索用）\n\n" +
                                 "- Key：${if (k.isNullOrBlank()) "❌ 未配置" else "✅ 已配置（${k.take(8)}…）"}\n" +
-                                "- 格式：\`tvly-xxxxxxxx\`\n\n" +
+                                "- 格式：`tvly-xxxxxxxx`\n\n" +
                                 "用法：\n" +
-                                "- \`/tvly <tvly-...>\` 设置（立即生效）\n" +
-                                "- \`/tvly clear\` 清空\n\n" +
+                                "- `/tvly <tvly-...>` 设置（立即生效）\n" +
+                                "- `/tvly clear` 清空\n\n" +
                                 "_没 key 时 WebSearch 不可用，可改用 SearchInfo（国内源）。_"
                         )
                     }
