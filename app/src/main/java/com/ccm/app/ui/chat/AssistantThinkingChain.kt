@@ -1402,7 +1402,7 @@ private val RE_LIST_PREFIX = Regex("(?m)^[-*•]\\s+")
 private val RE_WHITESPACE = Regex("\\s+")
 
 /** 按空白切词保留分隔符（打字机效果）。 */
-private val RE_SPLIT_KEEP_WS = RE_SPLIT_KEEP_WS
+private val RE_SPLIT_KEEP_WS = Regex("(?<=\\s)")
 
 /** 句子边界（摘要取首句）。 */
-private val RE_SENTENCE = RE_SENTENCE
+private val RE_SENTENCE = Regex("[^.!?。！？]+[.!?。！？]?")
