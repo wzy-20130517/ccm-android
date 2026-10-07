@@ -11,17 +11,18 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,14 +72,13 @@ fun MarketScreen(
 ) {
     val colors = CCMTheme.colors
     val ctx = androidx.compose.ui.platform.LocalContext.current
-    val scope = rememberCoroutineScope()
+    // 全局安装状态（顶部进度条 / 卡片 busy / 完成刷新都读它）
+    val mkt = com.ccm.app.core.market.MarketInstallState
 
     var tab by remember { mutableStateOf(MarketTab.SKILL) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf("") }
     var items by remember { mutableStateOf<List<MarketItem>>(emptyList()) }
-    var log by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf<String?>(null) }
     var refresh by remember { mutableStateOf(0) }
     var configFor by remember { mutableStateOf<MarketItem?>(null) }
 
@@ -122,6 +122,11 @@ fun MarketScreen(
     }
 
     // 拉清单
+    // 安装/卸载完成（appScope 发信号）→ 重扫已装状态 + 重拉清单
+    androidx.compose.runtime.LaunchedEffect(mkt.doneTick) {
+        if (mkt.doneTick > 0) refresh++
+    }
+
     LaunchedEffect(refresh) {
         loading = true
         error = ""
@@ -196,6 +201,73 @@ fun MarketScreen(
 
         Box(Modifier.fillMaxWidth().height(1.dp).background(colors.border))
 
+        // ── 安装进度条（固定，不随列表滚动）────────────────────────
+        // 【2026-10-07 加】原来日志渲染在滚动列表最底部 —— 点下载后
+        // 用户滚在上面完全看不到有没有开始。移到这里（tab 条下、
+        // 滚动区外），任何滚动位置都能看到进度。
+        if (mkt.running || mkt.result.isNotBlank()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(colors.input.copy(alpha = 0.7f))
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (mkt.running) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp,
+                        color = colors.textSecondary,
+                    )
+                } else {
+                    Text(
+                        if (mkt.result.startsWith("✅")) "✓" else "✕",
+                        style = CCMText.body13,
+                        color = if (mkt.result.startsWith("✅")) Color(0xFF4CAF50) else Color(0xFFF44336),
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        if (mkt.running) {
+                            when (mkt.action) {
+                                "uninstall" -> "正在卸载 ${mkt.targetName}"
+                                else -> "正在安装 ${mkt.targetName}"
+                            }
+                        } else mkt.result,
+                        style = CCMText.body12.copy(fontWeight = FontWeight.Medium),
+                        color = colors.textMain,
+                        maxLines = 2,
+                    )
+                    // 实时进度（安装类日志的关键行，如「下载环境包 12MB / 64MB」）
+                    val liveLine = if (mkt.running) mkt.log else ""
+                    if (liveLine.isNotBlank()) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            liveLine,
+                            style = CCMText.body11,
+                            color = colors.textSecondary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                if (!mkt.running && mkt.result.isNotBlank()) {
+                    Text(
+                        "✕",
+                        style = CCMText.body12,
+                        color = colors.textSecondary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { mkt.clearResult() }
+                            .padding(6.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+        }
+
         // ── 内容 ─────────────────────────────────────────────────────
         Column(
             modifier = Modifier
@@ -228,33 +300,34 @@ fun MarketScreen(
                             MarketItemCard(
                                 item = item,
                                 installed = installedNameOf(item) in installed,
-                                busy = busy == item.id,
+                                busy = mkt.running && mkt.targetId == item.id,
                                 onInstall = {
                                     if (item.type == "mcp" && item.env.isNotEmpty()) {
                                         configFor = item
                                     } else {
-                                        busy = item.id
-                                        scope.launch {
-                                            log = "正在下载 ${item.name}…"
-                                            val ok = com.ccm.app.core.market.MarketClient.install(ctx, item) { s -> log = s }
-                                            // 【2026-10-06 修】失败时**保留详情** ——
-                                            // 原来直接覆盖成「安装失败」四个字，用户看不到
-                                            // 是下载失败/解压失败/Node 装不上（onLog 逐条
-                                            // 回传的 ❌ 原因全被这一行盖掉）。
-                                            log = if (ok) "✅ ${item.name} 安装完成"
-                                            else "❌ ${item.name} 安装失败（原因见上方日志）\n$log"
-                                            busy = null
-                                            refresh++
+                                        // 【2026-10-07 改】安装跑 appScope ——
+                                        // 原来在 UI scope，切主页窗口销毁即取消，
+                                        // 下载断在半路。进度写全局 MarketInstallState
+                                        // （顶部固定进度条 + 卡片状态都读它）。
+                                        com.ccm.app.AppGraph.appScope?.launch {
+                                            mkt.begin(item.id, item.name, "install")
+                                            val ok = com.ccm.app.core.market.MarketClient.install(ctx, item) { s ->
+                                                mkt.appendLog(s)
+                                            }
+                                            mkt.finish(
+                                                if (ok) "✅ ${item.name} 安装完成"
+                                                else "❌ ${item.name} 安装失败：${mkt.log}",
+                                            )
                                         }
                                     }
                                 },
                                 onUninstall = {
-                                    busy = item.id
-                                    scope.launch {
-                                        val ok = com.ccm.app.core.market.MarketClient.uninstall(ctx, item) { s -> log = s }
-                                        log = if (ok) "已卸载 ${item.name}" else "卸载失败"
-                                        busy = null
-                                        refresh++
+                                    com.ccm.app.AppGraph.appScope?.launch {
+                                        mkt.begin(item.id, item.name, "uninstall")
+                                        val ok = com.ccm.app.core.market.MarketClient.uninstall(ctx, item) { s ->
+                                            mkt.appendLog(s)
+                                        }
+                                        mkt.finish(if (ok) "已卸载 ${item.name}" else "卸载失败")
                                     }
                                 },
                             )
@@ -263,19 +336,8 @@ fun MarketScreen(
                 }
             }
 
-            if (log.isNotBlank()) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    log,
-                    style = CCMText.body12.copy(fontSize = 11.sp, lineHeight = 16.sp),
-                    color = colors.textSecondary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(colors.input.copy(alpha = 0.6f))
-                        .padding(12.dp),
-                )
-            }
+            // 旧的「底部日志块」已删 —— 进度统一显示在顶部固定进度条
+            // （滚动到底才看得见 = 用户不知道有没有开始）。
 
         }
     }
@@ -287,14 +349,15 @@ fun MarketScreen(
             onDismiss = { configFor = null },
             onConfirm = { env ->
                 configFor = null
-                busy = item.id
-                scope.launch {
-                    log = "正在下载 ${item.name}…"
-                    val ok = com.ccm.app.core.market.MarketClient.install(ctx, item, env) { s -> log = s }
-                    log = if (ok) "✅ ${item.name} 安装完成（重启 App 后可用）"
-                    else "❌ 安装失败（原因见上方日志）\n$log"
-                    busy = null
-                    refresh++
+                com.ccm.app.AppGraph.appScope?.launch {
+                    mkt.begin(item.id, item.name, "install")
+                    val ok = com.ccm.app.core.market.MarketClient.install(ctx, item, env) { s ->
+                        mkt.appendLog(s)
+                    }
+                    mkt.finish(
+                        if (ok) "✅ ${item.name} 安装完成（重启 App 后可用）"
+                        else "❌ 安装失败：${mkt.log}",
+                    )
                 }
             },
         )
@@ -348,6 +411,11 @@ data class MarketItem(
     /** 需要的 apt 依赖（如 libnss3）。 */
     val aptDeps: List<String> = emptyList(),
     val env: Map<String, String> = emptyMap(),
+    /**
+     * 项目自带（本仓库 registry）→ 卡片标「推荐」。
+     * 2026-10-07 加：区分「官方精选」与抓取的第三方海量条目。
+     */
+    val recommended: Boolean = false,
 )
 
 @Composable
@@ -380,6 +448,17 @@ private fun MarketItemCard(
                     style = CCMText.body13.copy(fontWeight = FontWeight.Medium),
                     color = colors.textMain,
                 )
+                if (item.recommended) {
+                    Text(
+                        "推荐",
+                        style = CCMText.body11.copy(fontWeight = FontWeight.Medium),
+                        color = colors.bgMain,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(colors.accent)
+                            .padding(horizontal = 5.dp, vertical = 1.dp),
+                    )
+                }
                 if (item.size.isNotBlank()) {
                     Text(
                         item.size,

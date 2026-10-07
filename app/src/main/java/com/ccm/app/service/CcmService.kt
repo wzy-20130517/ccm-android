@@ -71,10 +71,32 @@ class CcmService : Service() {
         var isRunning = false
             private set
 
+        /** 唤醒锁是否持有（自动保活链路的可观测状态；进程内单例）。 */
+        @Volatile
+        var wakeLockHeld = false
+            private set
+
     }
 
     private var serverSocket: ServerSocket? = null
     private val executor = Executors.newCachedThreadPool()
+
+    /**
+     * 部分唤醒锁（2026-10-07 加）。
+     *
+     * 【补的缺口】WAKE_LOCK 权限声明了很久但全项目从没真正 acquire 过 ——
+     * 前台服务防的是「进程被杀」，防不了「息屏后 CPU 深度休眠」：
+     * Doze 下桥接 HTTP 响应挂起、长任务（npm 安装/agent 跑批）停摆，
+     * 表现为「切后台一会儿回来任务没动静」。
+     *
+     * 【为什么这比 CLI 的静音音频干净】CLI 在 Termux 里没法开前台服务，
+     * 才用「播静音音频抢 audio focus」骗系统别冻结 —— APK 有正规
+     * 前台服务，配 PARTIAL_WAKE_LOCK（只保 CPU、不亮屏、系统推荐用法）
+     * 就达到同样效果，没有隐藏播放的电量/合规代价。
+     *
+     * 持有策略：服务活着就持有（onCreate acquire / onDestroy release）。
+     */
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
     private lateinit var bridge: NativeBridge
     private lateinit var rootfsManager: RootfsManager
 
@@ -86,6 +108,19 @@ class CcmService : Service() {
 
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotification("服务运行中"))
+
+        // 拿唤醒锁（配合前台服务：进程不被杀 + CPU 不睡）
+        try {
+            val pm = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+            wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "ccm:CcmService").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+            wakeLockHeld = true
+            Log.i(TAG, "已获取 PARTIAL_WAKE_LOCK")
+        } catch (t: Throwable) {
+            Log.w(TAG, "获取 WakeLock 失败: ${t.message}")
+        }
 
         startBridgeServer()
         Log.i(TAG, "服务已启动，桥接端口 $BRIDGE_PORT")
@@ -105,6 +140,9 @@ class CcmService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+        try { wakeLock?.release() } catch (_: Throwable) {}
+        wakeLock = null
+        wakeLockHeld = false
         try { serverSocket?.close() } catch (_: Throwable) {}
         executor.shutdownNow()
         Log.i(TAG, "服务已停止")

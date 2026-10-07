@@ -123,6 +123,34 @@ class MainActivity : ComponentActivity() {
             Log.w(TAG, "启动 CcmService 失败：${t.message}")
         }
 
+        // ── 自动保活：电池优化白名单（2026-10-07，首次启动弹一次）──────
+        //
+        // 前台服务防「进程被杀」，但 REDMI/MIUI 等不加电池白名单照样冻结
+        // 后台（Doze 挂起 CPU、网络断开）。权限声明了
+        // REQUEST_IGNORE_BATTERY_OPTIMIZATIONS 却一直没人发起申请 ——
+        // 原来靠用户敲命令看说明自己去设置里找，属于把操作成本推给用户。
+        //
+        // 现在：只问一次（SharedPreferences 记「已问过」，允许/拒绝都记），
+        // 没问过且确实没加白名单才弹系统申请框；拒绝过不再纠缠。
+        try {
+            val sp = getSharedPreferences("keepalive", MODE_PRIVATE)
+            if (!sp.getBoolean("batteryAsked", false)) {
+                val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
+                if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                    val intent = Intent(
+                        android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        android.net.Uri.parse("package:$packageName"),
+                    )
+                    startActivity(intent)
+                    Log.i(TAG, "已发起电池白名单申请")
+                }
+                sp.edit().putBoolean("batteryAsked", true).apply()
+            }
+        } catch (t: Throwable) {
+            // 个别 ROM 禁自请求（会抛）→ 静默降级，不影响启动
+            Log.w(TAG, "电池白名单申请失败: ${t.message}")
+        }
+
         // 装配新架构（幂等 —— Activity 重建时复用同一个会话）
         val graph = AppGraph.init(applicationContext, appScope)
         Log.i(TAG, "AppGraph 装配：${if (graph != null) "成功" else "失败/无配置"}；" +

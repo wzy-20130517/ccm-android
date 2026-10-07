@@ -1643,19 +1643,6 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
             }
         }
 
-        // ── /keepalive —— 保活状态（对齐 CLI /keepalive）────────────────────
-        //
-        // APK 是普通 Android 应用，保活靠前台服务/唤醒锁，与 CLI 的
-        // Termux wake-lock + 静音音频不是一回事 —— 这里只做**如实说明**。
-        "/keepalive" -> SlashResult.Notice(
-            "**保活**\n\n" +
-                "APK 是标准 Android 应用，没有 CLI 那套 Termux 保活（`termux-wake-lock` + 静音音频）。\n\n" +
-                "让长时间任务不被系统杀掉的办法：\n" +
-                "- 把应用切到后台前先拉到最近任务列表（部分系统会保留）\n" +
-                "- 系统设置里给本应用关掉电池优化（设置 → 应用 → 电池 → 不受限制）\n" +
-                "- 长任务期间保持屏幕点亮或用充电状态",
-        )
-
         // ── /plugin —— DSH 插件宿主（2026-10-07 新增，对齐 CLI /plugin）──
         //
         // 真正的执行在 PluginCommandRunner（suspend），这里只做解析 + 投递：

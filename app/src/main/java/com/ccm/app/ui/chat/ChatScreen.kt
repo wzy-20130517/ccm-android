@@ -120,6 +120,8 @@ fun ChatScreen(
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
     // 【2026-10-06 问题24】键盘高度（dp），消息区留白要加上它
     val imeBottomDp = with(density) { WindowInsets.ime.getBottom(this).toDp() }
+    // todo 看板折叠态（提升到这里 —— 折叠时面板不渲染，标题栏显徽标）
+    var todoCollapsed by remember { mutableStateOf(true) }
 
     Box(
         modifier = modifier
@@ -133,6 +135,36 @@ fun ChatScreen(
                 onRename = onRename,
                 onExport = onExport,
                 onSwitchClick = onSwitchClick,
+                // todo 折叠徽标（零占位）—— 展开时不显示（面板自己有头部）
+                trailing = if (todos.isNotEmpty() && todoCollapsed) {
+                    {
+                        val tDone = todos.count { it.status == com.ccm.app.ui.common.TodoStatus.COMPLETED }
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { todoCollapsed = false }
+                                .padding(horizontal = 8.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            com.ccm.app.ui.common.PainterIcon(
+                                com.ccm.app.R.drawable.ic_list_checks,
+                                size = 12.dp,
+                                tint = colors.accent,
+                            )
+                            Text(
+                                "$tDone/${todos.size}",
+                                style = CCMText.body11,
+                                color = colors.textSecondary,
+                            )
+                            com.ccm.app.ui.common.PainterIcon(
+                                com.ccm.app.R.drawable.ic_chevron_down,
+                                size = 10.dp,
+                                tint = colors.textSecondary,
+                            )
+                        }
+                    }
+                } else null,
             )
 
             // 【2026-10-06「开不开都挡 + 进消息流不常驻」】看板定稿：
@@ -141,10 +173,15 @@ fun ChatScreen(
             //   · **常驻条**：标题栏下方的独立区域，消息区 Box(weight 1f)
             //     自动让位 —— 既一直看得见，也不遮挡任何内容。
             // 默认折叠（TodoPanel.kt 改的），折叠态只占一行进度。
-            if (todos.isNotEmpty()) {
+            // 【2026-10-07 优化「折叠也挡」】折叠态不渲染面板（原来那条
+            // 42dp 常驻条把消息区永久压矮）→ 收进标题栏徽标（零占位），
+            // 展开才恢复常驻条（此时占位是用户主动要的）。
+            if (todos.isNotEmpty() && !todoCollapsed) {
                 com.ccm.app.ui.common.TodoPanel(
                     todos = todos,
                     running = running,
+                    collapsed = false,
+                    onToggle = { todoCollapsed = true },
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -553,6 +590,8 @@ private fun ChatHeaderBar(
     onRename: () -> Unit,
     onExport: () -> Unit,
     onSwitchClick: () -> Unit = {},
+    /** 标题栏右侧小插槽（todo 折叠徽标用 —— 零占位替代常驻条）。 */
+    trailing: (@Composable () -> Unit)? = null,
 ) {
     val colors = CCMTheme.colors
 
@@ -598,11 +637,12 @@ private fun ChatHeaderBar(
             }
         }
 
-        // 右：Export
+        // 右：插槽（todo 徽标）+ Export
         Row(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            trailing?.invoke()
             Box(
                 modifier = Modifier
                     .height(40.dp)

@@ -153,6 +153,7 @@ object MarketClient {
         val env = JSONObject()
         i.env.forEach { (k, v) -> env.put(k, v) }
         put("env", env)
+        put("recommended", i.recommended)
     }
 
     private fun jsonToItem(o: JSONObject?): MarketItem? = o?.let { j ->
@@ -171,6 +172,7 @@ object MarketClient {
                 installBrowser = j.optBoolean("installBrowser"),
                 aptDeps = j.optJSONArray("aptDeps").jsonStrList(),
                 env = j.optJSONObject("env").jsonStrMap(),
+                recommended = j.optBoolean("recommended"),
             )
         }
 
@@ -221,6 +223,7 @@ object MarketClient {
                     installBrowser = o.optBoolean("installBrowser", false),
                     aptDeps = aptDeps,
                     env = env,
+                    recommended = true,
                 )
             }.filter { it.id.isNotBlank() }
         } catch (t: Throwable) {

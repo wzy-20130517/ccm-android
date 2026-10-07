@@ -77,14 +77,30 @@ fun TodoPanel(
     todos: List<TodoItem>,
     modifier: Modifier = Modifier,
     running: Boolean = false,
+    /**
+     * 受控折叠态（2026-10-07 加）。
+     *
+     * 背景：折叠态的卡片（头部一行 + 阴影 + 边框）仍占约 42dp 布局，
+     * 消息区被永久压矮 —— 用户反馈「折叠起来也挡」。
+     * 现在 ChatScreen 把状态提上去：折叠时不渲染本组件、改在标题栏
+     * 显示一个小徽标（零占位），展开才渲染面板。
+     *
+     * null = 用内部默认（兼容不关心此状态的调用方）。
+     */
+    collapsed: Boolean? = null,
+    /** 折叠态切换回调（传了 [collapsed] 就应传它）。 */
+    onToggle: (() -> Unit)? = null,
 ) {
+    var internalCollapsed by remember { mutableStateOf(true) }
+    val isCollapsed = collapsed ?: internalCollapsed
+    val doToggle: () -> Unit = {
+        if (onToggle != null) onToggle()
+        else internalCollapsed = !internalCollapsed
+    }
     val colors = CCMTheme.colors
     // 【2026-10-06 用户反馈「看板太挡」】默认**折叠**。
-    // 浮在右下角 + 276dp 宽 + 展开时 239dp 高，把正文盖掉一大块。
-    // 折叠态只占一行头部（进度 3/5 + chevron），底部「正在进行：…」
-    // 状态条不受 collapsed 控制照常显示 —— 信息不丢，想要细节点一下展开。
-    var collapsed by remember { mutableStateOf(true) }
-
+    // 【2026-10-07】折叠状态改成可受控 —— 折叠态整体不渲染（零占位），
+    // 由调用方决定何时显示本组件（详见 collapsed 参数注释）。
     if (todos.isEmpty()) return
 
     val total = todos.size
@@ -104,7 +120,7 @@ fun TodoPanel(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { collapsed = !collapsed }
+                .clickable { doToggle() }
                 .padding(horizontal = 14.72.dp, vertical = 11.04.dp),   // px-4 py-3
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(7.36.dp),      // gap-2
@@ -131,7 +147,7 @@ fun TodoPanel(
                 R.drawable.ic_chevron_down,
                 size = 12.88.dp,                            // size={14} × 0.92
                 tint = colors.textSecondary,
-                modifier = Modifier.rotate(if (collapsed) -90f else 0f),
+                modifier = Modifier.rotate(if (isCollapsed) -90f else 0f),
             )
         }
 
@@ -161,7 +177,7 @@ fun TodoPanel(
         }
 
         // ── 列表（可折叠，max-h-[260px]）─────────────────────────────
-        if (!collapsed) {
+        if (!isCollapsed) {
             Column(
                 modifier = Modifier
                     .heightIn(max = 239.2.dp)               // max-h-[260px] × 0.92

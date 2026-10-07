@@ -87,7 +87,6 @@ val COMMON_SLASH_COMMANDS: List<Pair<String, String>> = listOf(
     "/btw" to "侧问一句（不进主上下文）",
     "/add-dir" to "额外可访问目录",
     "/plugins" to "插件管理（/plugin list|install）",
-    "/keepalive" to "保活状态说明",
     "/github" to "GitHub 配置（/github login <token>）",
     "/mail" to "邮箱说明",
     "/mcp" to "MCP 服务器（HTTP/SSE + stdio）",
