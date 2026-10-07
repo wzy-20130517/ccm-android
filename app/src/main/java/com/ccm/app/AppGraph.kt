@@ -811,6 +811,13 @@ object AppGraph {
             }
 
             session = sess
+
+            // 【2026-10-07 修】QQ 桥重新 attach 到新会话 ——
+            // 原来 openSession 换会话不重新 attach，host 订阅的还是旧
+            // session 实例：QQ 消息能注入新会话（agent 跑起来了），但
+            // 回复收集永远监听旧实例 → 回复永远发不回 QQ（实测 trace
+            // 有 run_start/run_end 但无 sendReply）。
+            try { qqHost?.attach(sess) } catch (_: Throwable) {}
             // ══════════════════════════════════════════════════════════
             //  【2026-10-06 修 P0】把 container 存下来
             // ══════════════════════════════════════════════════════════
@@ -1098,6 +1105,8 @@ object AppGraph {
                 try { sess.restoreTodos(toolsResult?.loadTodos?.invoke().orEmpty()) } catch (_: Throwable) {}
             }
             session = sess
+            // QQ 桥重新 attach（rebuild 换 session 实例，回复收集要跟上）
+            try { sess?.let { qqHost?.attach(it) } } catch (_: Throwable) {}
             // ══════════════════════════════════════════════════════════
             //  【2026-10-06 修 P0】把 container 存下来
             // ══════════════════════════════════════════════════════════
