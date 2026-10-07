@@ -3059,92 +3059,173 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
             val sub = arg.trim().split(Regex("\\s+")).firstOrNull()?.lowercase().orEmpty()
             val rest = arg.trim().split(Regex("\\s+")).drop(1).joinToString(" ").trim()
 
-            // 输出侧能力探测：QQPush 工具在注册表里，但 pusher 是否注入决定能否用
-            val pushReady = try {
-                com.ccm.app.AppGraph.toolNames.contains("QQPush")
-            } catch (_: Throwable) { false }
+            // 【2026-10-07 真实现】原来是「状态说明版」（全部子命令返回
+            // 「APK 尚未接入」）。现在桥已落地（QqBridge/QqBridgeHost），
+            // 所有子命令接真数据。
+            val host = com.ccm.app.AppGraph.qqHost
+            val filesDir = ctx.appContext?.filesDir
+            val cfg = filesDir?.let { com.ccm.app.core.integrations.QqConfigStore.load(it) }
+                ?: com.ccm.app.core.integrations.QqConfigStore.Cfg()
+            val b = host?.bridge
 
-            val statusBody = buildString {
-                append("**QQ 桥状态**\n\n")
-                append("- 输入桥（监听）: **未接入**（APK 无端口监听 / NapCat 对接）\n")
-                append("- 输出工具: ${if (pushReady) "`QQPush` / `QQRecall` 已注册" else "未注册"}")
-                append("（QQPush 的推送器未注入 → 调用会报「未接入」）\n")
-                append("- 主人 QQ: —（无桥，无此配置）\n")
-                append("- 待处理队列: —\n\n")
-                append("**说明**\n\n")
-                append("- CLI 的 QQ 桥让用户能在 QQ 私聊里下指令、收回复；")
-                append("APK 暂未实现该输入通道。\n")
-                append("- 需要在 QQ 上指挥 Agent 时，走 **CLI 侧**（Termux 里的 CCM）。\n")
-                append("- APK 的 QQ 相关能力只有输出工具（QQPush 推消息/文件、QQRecall 回溯群消息），")
-                append("且需 App 层注入推送器后才可用。")
+            fun save(owner: String? = null, api: String? = null, port: Int? = null,
+                     open: Boolean? = null, interrupt: Boolean? = null, enabled: Boolean? = null) {
+                filesDir?.let {
+                    com.ccm.app.core.integrations.QqConfigStore.save(
+                        it, owner = owner, napcatApi = api, port = port,
+                        openMode = open, interrupt = interrupt, ccmEnabled = enabled,
+                    )
+                }
             }
 
             when (sub) {
-                "", "status" -> SlashResult.Notice(statusBody)
+                "", "status" -> {
+                    val body = buildString {
+                        append("**QQ 桥状态**\n\n")
+                        append("- 监听：")
+                        if (b?.running == true) {
+                            append("✅ 运行中（127.0.0.1:${b.port}）\n")
+                        } else {
+                            append("❌ 未运行（${if (cfg.ccmEnabled) "配置已开，但启动失败/未 attach" else "/qq on 启动"}）\n")
+                        }
+                        append("- 主人 QQ：${cfg.owner.ifBlank { "—（未配置，/qq owner <QQ号>）" }}\n")
+                        append("- NapCat API：${cfg.napcatApi}\n")
+                        append("- 端口：${cfg.port}\n")
+                        append("- 放行模式：${if (cfg.openMode) "**开**（群内任何人 @ 都唤醒）" else "关（只主人）"}\n")
+                        append("- 打断开关：${if (cfg.interrupt) "开（新消息打断当前任务）" else "关（排队）"}\n")
+                        append("- 待处理队列：${b?.pending()?.let { if (it) "有" else "空" } ?: "—"}\n")
+                        b?.lastError?.let { append("- 最近错误：$it\n") }
+                        append("\n")
+                        append("**收**：NapCat 把上报 POST 到 `127.0.0.1:${cfg.port}`；")
+                        append("**发**：回复 POST 到 `${cfg.napcatApi}/send_private_msg`。\n")
+                        append("_桥只对接 NapCat 的 HTTP API —— NapCat 怎么部署、跑在哪，桥不关心。_")
+                    }
+                    SlashResult.Notice(body)
+                }
 
-                "help" -> SlashResult.Notice(
-                    "**/qq 用法**（子命令结构与 CLI 一致；APK 当前全部不可执行）\n\n" +
-                        "- `/qq` / `/qq status` — 查看状态\n" +
-                        "- `/qq on|off` — 启停监听（APK 无监听）\n" +
-                        "- `/qq setup` — 配置向导（APK 无此配置）\n" +
-                        "- `/qq owner <QQ号>` — 设主人号（APK 无此配置）\n" +
-                        "- `/qq port <端口>` / `/qq api <URL>` — 端点配置（APK 无监听）\n" +
-                        "- `/qq queue` — 待处理消息（APK 无队列）\n" +
-                        "- `/qq interrupt on|off` — 打断开关（APK 无桥）\n" +
-                        "- `/qq open on|off` — 群放行模式（APK 无桥）\n\n" +
-                        "_APK 尚未接入 QQ 输入桥；以上子命令均返回现状说明，不会实际执行。_",
-                )
+                "on" -> {
+                    if (cfg.owner.isBlank()) {
+                        SlashResult.Notice("**先配主人号**：`/qq owner <你的QQ号>`\n\n只有主人号的私聊会进会话（安全边界）。")
+                    } else {
+                        val err = host?.start(cfg.owner, cfg.napcatApi, cfg.port, cfg.openMode, cfg.interrupt)
+                        if (err != null) {
+                            SlashResult.Notice("启动失败：$err")
+                        } else {
+                            save(enabled = true)
+                            SlashResult.Notice(
+                                "✅ QQ 桥已启动。\n\n" +
+                                    "- 监听：`127.0.0.1:${cfg.port}`（把 NapCat 的上报地址配到这里）\n" +
+                                    "- 发送：`${cfg.napcatApi}`\n" +
+                                    "- 主人：`${cfg.owner}`\n\n" +
+                                    "_发消息测试一下：私聊你的机器人号，消息会进这个会话。_",
+                            )
+                        }
+                    }
+                }
 
-                "on" -> SlashResult.Notice(
-                    "**APK 尚未接入 QQ 输入桥** —— 无法启动监听。\n\n" +
-                        "CLI 侧的 `/qq on` 会在本机起 3000 端口监听 NapCat 推送；\n" +
-                        "APK 没有该实现（需要前台服务 + 常驻网络监听）。\n\n" +
-                        "_替代：在 Termux 里用 CLI 版 CCM，它的 /qq 功能完整可用。_",
-                )
-
-                "off" -> SlashResult.Notice(
-                    "**APK 尚未接入 QQ 输入桥** —— 没有可停止的监听。",
-                )
+                "off" -> {
+                    host?.stop()
+                    save(enabled = false)
+                    SlashResult.Notice("已停止 QQ 桥监听。")
+                }
 
                 "setup" -> SlashResult.Notice(
-                    "**APK 尚未接入 QQ 输入桥** —— 无配置向导。\n\n" +
-                        "CLI 的 `/qq setup` 一次配完主人号 / 端口 / NapCat API。\n\n" +
-                        "_替代：在 CLI 侧执行 `/qq setup`（配置存 qq-config.json）。_",
+                    "**QQ 桥配置**（逐步配齐即可）\n\n" +
+                        "1. `/qq owner <你的QQ号>` — 主人号（必须，只有它的私聊进会话）\n" +
+                        "2. `/qq api <NapCat地址>` — 默认 `http://127.0.0.1:5700`\n" +
+                        "3. `/qq port <端口>` — 默认 3000（NapCat 上报配这里）\n" +
+                        "4. `/qq on` — 启动\n\n" +
+                        "**NapCat 侧配置**（在 NapCat 的配置里）：\n" +
+                        "- HTTP 服务：开，端口 5700\n" +
+                        "- HTTP 上报：地址 `http://127.0.0.1:${cfg.port}`，格式 array\n\n" +
+                        "_当前：主人 ${cfg.owner.ifBlank { "未配" }} / API ${cfg.napcatApi} / 端口 ${cfg.port}_",
                 )
 
-                "owner" -> SlashResult.Notice(
+                "owner" -> {
                     if (rest.isBlank()) {
-                        "**APK 尚未接入 QQ 输入桥** —— 无主人号配置。\n\n_CLI 用法：`/qq owner <QQ号>`。_"
+                        SlashResult.Notice("当前主人号：${cfg.owner.ifBlank { "—（未配置）" }}\n\n用法：`/qq owner <QQ号>`")
+                    } else if (!rest.matches(Regex("\\d{5,12}"))) {
+                        SlashResult.Notice("QQ 号格式不对（应为 5-12 位数字）：`$rest`")
                     } else {
-                        "**APK 尚未接入 QQ 输入桥** —— 主人号未保存（无桥可绑）。\n\n" +
-                            "_要在 CLI 侧设置：`/qq owner $rest`。_"
-                    },
-                )
+                        save(owner = rest)
+                        SlashResult.Notice("✅ 主人号已设为 `$rest`。${if (b?.running == true) "\n\n_监听中 —— 需 /qq off 再 /qq on 生效。_" else ""}")
+                    }
+                }
 
-                "port" -> SlashResult.Notice(
-                    "**APK 尚未接入 QQ 输入桥** —— 无监听端口。\n\n_CLI 用法：`/qq port <端口>`（默认 3000）。_",
-                )
+                "port" -> {
+                    val n = rest.toIntOrNull()
+                    if (n == null || n !in 1..65535) {
+                        SlashResult.Notice("当前端口：${cfg.port}\n\n用法：`/qq port <1-65535>`")
+                    } else {
+                        save(port = n)
+                        SlashResult.Notice("✅ 端口已设为 `$n`。${if (b?.running == true) "\n\n_监听中 —— 需 /qq off 再 /qq on 生效。_" else ""}")
+                    }
+                }
 
-                "api" -> SlashResult.Notice(
-                    "**APK 尚未接入 QQ 输入桥** —— 无 NapCat API 配置。\n\n_CLI 用法：`/qq api <URL>`（默认 http://127.0.0.1:5700）。_",
-                )
+                "api" -> {
+                    if (rest.isBlank()) {
+                        SlashResult.Notice("当前 NapCat API：`${cfg.napcatApi}`\n\n用法：`/qq api <http://...>`")
+                    } else if (!rest.startsWith("http")) {
+                        SlashResult.Notice("地址需 http:// 或 https:// 开头：`$rest`")
+                    } else {
+                        save(api = rest.trimEnd('/'))
+                        SlashResult.Notice("✅ NapCat API 已设为 `$rest`。")
+                    }
+                }
 
-                "queue" -> SlashResult.Notice(
-                    "**APK 尚未接入 QQ 输入桥** —— 无待处理队列。",
-                )
+                "queue" -> {
+                    val items = b?.peekQueue() ?: emptyList()
+                    if (items.isEmpty()) {
+                        SlashResult.Notice("待处理队列为空。")
+                    } else {
+                        val body = buildString {
+                            append("**待处理队列（${items.size} 条）**\n\n")
+                            items.forEachIndexed { i, m ->
+                                append("${i + 1}. ${m.text.take(60).replace("\n", " ")}\n")
+                            }
+                        }
+                        SlashResult.Notice(body)
+                    }
+                }
 
-                "interrupt" -> SlashResult.Notice(
-                    "**APK 尚未接入 QQ 输入桥** —— 无打断开关。\n\n_CLI 用法：`/qq interrupt on|off`（新消息是否打断正在跑的任务）。_",
-                )
+                "interrupt" -> {
+                    val v = when (rest.lowercase()) {
+                        "on", "true", "1" -> true
+                        "off", "false", "0" -> false
+                        else -> null
+                    }
+                    if (v == null) {
+                        SlashResult.Notice("当前打断开关：${if (cfg.interrupt) "开" else "关"}\n\n用法：`/qq interrupt on|off`")
+                    } else {
+                        save(interrupt = v)
+                        b?.allowInterrupt = v
+                        SlashResult.Notice("✅ 打断开关：${if (v) "**开**（新消息会打断当前任务）" else "关（消息排队）"}")
+                    }
+                }
 
-                "open" -> SlashResult.Notice(
-                    "**APK 尚未接入 QQ 输入桥** —— 无群放行模式。\n\n_CLI 用法：`/qq open on|off`（开启后群内任何人 @ 都能唤醒）。_",
-                )
+                "open" -> {
+                    val v = when (rest.lowercase()) {
+                        "on", "true", "1" -> true
+                        "off", "false", "0" -> false
+                        else -> null
+                    }
+                    if (v == null) {
+                        SlashResult.Notice("当前放行模式：${if (cfg.openMode) "开" else "关"}\n\n用法：`/qq open on|off`\n\n_开启后群内任何人 @ 都能唤醒（风险：手机操作权限对全群开放）。_")
+                    } else {
+                        save(open = v)
+                        b?.openMode = v
+                        SlashResult.Notice(
+                            if (v) "⚠️ 放行模式已开 —— 群内**任何人** @ 都能唤醒。发现可疑消息可 /qq open off 关掉。"
+                            else "✅ 放行模式已关（只有主人能唤醒）。",
+                        )
+                    }
+                }
 
                 else -> SlashResult.Notice(
                     "未知子命令 `$sub`。\n\n" +
-                        "APK 的 `/qq` 是**状态说明版**（尚未接入 QQ 输入桥）。\n" +
-                        "可用：`/qq` · `/qq status` · `/qq help`，其余子命令会给出对应说明。",
+                        "可用：`/qq` `/qq status` `/qq on` `/qq off` `/qq setup` " +
+                        "`/qq owner <QQ号>` `/qq port <端口>` `/qq api <URL>` " +
+                        "`/qq queue` `/qq interrupt on|off` `/qq open on|off`",
                 )
             }
         }

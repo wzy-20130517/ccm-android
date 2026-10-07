@@ -281,6 +281,14 @@ object AppGraph {
     val sessionState: androidx.compose.runtime.State<ChatSession?> get() = _sessionState
 
     /**
+     * QQ 桥接线器（2026-10-07）—— 桥实例管理 + 会话注入 + 回复收集。
+     * init 时创建并 attach；/qq 命令与 QQPush 工具都通过它操作。
+     */
+    @Volatile
+    var qqHost: com.ccm.app.core.integrations.QqBridgeHost? = null
+        private set
+
+    /**
      * 子 Agent 管理器（问题40）。
      *
      * 时序：ToolsBootstrap 先构造（拿不到 container），
@@ -658,6 +666,22 @@ object AppGraph {
             //   3. 热更新永远报失败（container?.refreshApi() 短路成 null）
             container = sess?.appContainer
             initError = null
+
+            // ── QQ 桥接线（2026-10-07）────────────────────────────────
+            // 配置开了（endpoints.ccm.enabled）就自动启动；没开不动
+            //（其他端开的 on 不该让 APK 抢端口）。
+            try {
+                val host = qqHost ?: com.ccm.app.core.integrations.QqBridgeHost(
+                    filesDir = app.filesDir,
+                    scope = scope,
+                ).also { qqHost = it }
+                sess?.let { s2 ->
+                    val err = host.attach(s2)
+                    if (err != null) initError = "QQ 桥启动失败：$err"
+                }
+            } catch (t: Throwable) {
+                initError = "QQ 桥接线失败：${t.message?.take(80)}"
+            }
             // 待办看板恢复（audit-core #3）
             try { sess.restoreTodos(tools.loadTodos()) } catch (_: Throwable) {}
 
