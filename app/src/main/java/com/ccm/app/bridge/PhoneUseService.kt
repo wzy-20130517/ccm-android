@@ -467,21 +467,75 @@ class PhoneUseService : IPhoneUseService.Stub {
 
     // ── 应用 ────────────────────────────────────────────────
 
+    /**
+     * 应用中文名缓存（pkg → label）。
+     *
+     * 内存级即可：服务是常驻进程，label 本身由 packageManager 即时读（毫秒级，
+     * 不像 CLI 要走 aapt 解析 APK），缓存只为 list labels:true 的批量展示。
+     */
+    private val labelCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     override fun app(action: String, pkg: String, filter: String): String {
         return try {
             when (action.lowercase()) {
-                "list" -> {
-                    val out = runShell("pm list packages 2>/dev/null", 15000)
+                "list", "list_labels" -> {
+                    // CLI 同款语义（tools-phone.mjs T:1302-1308）：
+                    // 默认只列第三方（-3）用户应用；filter 非空时查全部（含系统应用）——
+                    // 全量 200+ 行会淹掉有用信息，系统应用只在明确过滤时出现。
+                    val flag = if (filter.isEmpty()) " -3" else ""
+                    val out = runShell("pm list packages$flag 2>/dev/null", 15000)
                     val body = out.substringAfter('\n', "")
                     val pkgs = body.split('\n')
                         .map { it.removePrefix("package:").trim() }
-                        .filter { it.isNotEmpty() && (filter.isEmpty() || it.contains(filter, ignoreCase = true)) }
+                        .filter {
+                            it.isNotEmpty() && (filter.isEmpty() ||
+                                it.contains(filter, ignoreCase = true) ||
+                                // labels 模式下 filter 也匹配已缓存的中文名（CLI T:1327-1330）
+                                (action == "list_labels" &&
+                                    labelCache[it]?.contains(filter, ignoreCase = true) == true))
+                        }
                         .sorted()
-                        .take(200)
+                        .take(500)
                     org.json.JSONObject().apply {
                         put("ok", true)
                         put("count", pkgs.size)
                         put("apps", org.json.JSONArray(pkgs))
+                        if (action == "list_labels") {
+                            // 只回**缓存里已有**的中文名，不做批量扫描 ——
+                            // 要某个应用名用 action=label 按需读（读完自动进缓存）。
+                            val lm = org.json.JSONObject()
+                            for ((k, v) in labelCache) lm.put(k, v)
+                            put("labels", lm)
+                        }
+                    }.toString()
+                }
+                "label" -> {
+                    if (pkg.isEmpty()) return errJson("缺少 package")
+                    labelCache[pkg]?.let {
+                        return org.json.JSONObject().apply {
+                            put("ok", true)
+                            put("label", it)
+                            put("cached", true)
+                        }.toString()
+                    }
+                    // APK 就是 Android 应用本身 —— packageManager 直接读资源里的 label，
+                    // 不需要 CLI 那套「复制 APK 到中立区 + aapt 解析」的绕行。
+                    val label = try {
+                        val pm = appContext?.packageManager
+                        val info = pm?.getApplicationInfo(pkg, 0)
+                        if (pm != null && info != null) pm.getApplicationLabel(info).toString() else null
+                    } catch (_: Throwable) { null }
+                    if (label.isNullOrEmpty()) {
+                        return org.json.JSONObject().apply {
+                            put("ok", false)
+                            put("error", "读不到中文名（APK 可能被加固或不存在）")
+                        }.toString()
+                    }
+                    labelCache[pkg] = label
+                    org.json.JSONObject().apply {
+                        put("ok", true)
+                        put("label", label)
+                        put("cached", false)
                     }.toString()
                 }
                 "current" -> {
@@ -492,12 +546,24 @@ class PhoneUseService : IPhoneUseService.Stub {
                     org.json.JSONObject().apply {
                         put("ok", p.isNotEmpty())
                         put("package", p)
-                        if (p.isEmpty()) put("error", "读不到前台应用")
+                        if (p.isEmpty()) put("error", "未获取到前台应用")
                     }.toString()
                 }
                 "launch" -> {
                     if (pkg.isEmpty()) return errJson("缺少 package")
                     launchOnDisplay(pkg)
+                }
+                "stop" -> {
+                    if (pkg.isEmpty()) return errJson("缺少 package")
+                    val out = runShell("am force-stop $pkg", 15000)
+                    val exit = out.substringBefore('\n').trim().toIntOrNull() ?: -1
+                    if (exit != 0) {
+                        return errJson("停止失败：exit=$exit ${out.substringAfter('\n').take(200)}")
+                    }
+                    org.json.JSONObject().apply {
+                        put("ok", true)
+                        put("message", "已停止 $pkg")
+                    }.toString()
                 }
                 else -> errJson("未知 action: $action")
             }
@@ -774,11 +840,17 @@ class PhoneUseService : IPhoneUseService.Stub {
 
         val rows = ArrayList<NodeRow>()
         var idSeq = 0
+        // 前台包名：取第一个非系统窗口的 root.packageName（UiAutomation 当前可读的最上层窗口）。
+        // 拿不到就省略 —— 首行不带 pkg= 字段而已，不影响其余格式。
+        var frontPkg: String? = null
         for (w in ws) {
             val root = try {
                 w?.javaClass?.getMethod("getRoot")?.invoke(w) as? android.view.accessibility.AccessibilityNodeInfo
             } catch (_: Throwable) { null } ?: continue
             if (noSystemUi && isSystemWindow(w, root)) continue
+            if (frontPkg == null) {
+                frontPkg = try { root.packageName?.toString() } catch (_: Throwable) { null }
+            }
             idSeq = walkCollect(root, rows, idSeq, 0, interactiveOnly)
         }
 
@@ -811,6 +883,7 @@ class PhoneUseService : IPhoneUseService.Stub {
 
         val sb = StringBuilder()
         sb.append("# display=").append(id).append(" ").append(dispW).append('x').append(dispH)
+        if (!frontPkg.isNullOrBlank()) sb.append(" pkg=").append(frontPkg)
         sb.append(" count=").append(capped.size)
         if (total > capped.size) {
             sb.append(" truncated=1 total=").append(total)

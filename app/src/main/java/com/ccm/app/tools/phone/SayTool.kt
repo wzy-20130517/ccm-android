@@ -6,9 +6,13 @@ import com.ccm.app.core.tool.ToolContext
 import com.ccm.app.core.tool.ToolResult
 import com.ccm.app.core.tool.ToolSchema
 import com.ccm.app.core.tool.ToolSchema.bool
+import com.ccm.app.core.tool.ToolSchema.double
 import com.ccm.app.core.tool.ToolSchema.str
 import com.ccm.app.tools.NativeTts
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * say —— 语音播报。
@@ -78,11 +82,17 @@ class SayTool(private val context: Context) : Tool() {
     override val inputSchema: JsonObject = ToolSchema.objectSchema(
         "text" to ToolSchema.string("要念的话，25 字内，口语化"),
         "secret" to ToolSchema.boolean("为 true 时终端不回显播报内容（听写场景用），默认 false"),
-        "voice" to ToolSchema.string("可选音色短名（如 yunxia / xiaoxiao），省略用默认"),
+        // voice 不声明：APK 用系统 TTS，没有 Edge 的任意音色能力（NativeTts 不暴露
+        // setVoice），声明了实现也不读 = 静默无效。要音色得先给 NativeTts 加能力。
         "style" to ToolSchema.string(
             "可选语气预设：cheerful/excited/gentle/calm/serious/sad/angry/affectionate/chat/narration",
         ),
-        "styledegree" to ToolSchema.string("可选语气强度，0.01 到 2；1 为默认强度"),
+        // CLI 是 type:'number'（T:1180）；这里手写 schema ——
+        // ToolSchema 只有 integer，用它会把 0.5 这类小数挡在外面。
+        "styledegree" to buildJsonObject {
+            put("type", JsonPrimitive("number"))
+            put("description", JsonPrimitive("可选语气强度，0.01 到 2；1 为默认强度"))
+        },
         required = listOf("text"),
     )
 
@@ -95,8 +105,11 @@ class SayTool(private val context: Context) : Tool() {
 
         // 语速/音调：style 与 styledegree 在 APK 侧映射为 rate/pitch 的轻微偏移。
         // （Node 版走 Edge TTS 的 prosody 参数；APK 用系统 TTS，只能近似。）
+        // styledegree 容错读取：schema 是 number，但模型可能给字符串数字。
         val style = input.str("style")
-        val degree = input.str("styledegree")?.toFloatOrNull()?.coerceIn(0.01f, 2f) ?: 1f
+        val degree = (input.double("styledegree")?.toFloat()
+            ?: input.str("styledegree")?.toFloatOrNull())
+            ?.coerceIn(0.01f, 2f) ?: 1f
         val (rate, pitch) = mapStyle(style, degree)
 
         return try {

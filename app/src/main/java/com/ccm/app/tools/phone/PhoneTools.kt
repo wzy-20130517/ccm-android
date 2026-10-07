@@ -13,6 +13,7 @@ import com.ccm.app.core.tool.ToolSchema.str
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
+import kotlin.math.roundToInt
 import org.json.JSONObject
 import java.io.File
 
@@ -67,6 +68,17 @@ class PhoneTools(
 
         /** 默认元素树节点上限 */
         private const val DEFAULT_MAX_NODES = 120
+
+        /**
+         * 最近一次【截图】注入时的缩放比例（真实尺寸 ÷ 图上尺寸）。
+         *
+         * APK 的图片缩放发生在 AgentLoop 注入层（不是工具内），所以比例只能由
+         * 注入层回写到这里，供 phone_tap_xy 的 from_screenshot:true 换算 ——
+         * 对齐 CLI 的 lastShotScale（tools-phone.mjs T:1040-1050）。
+         * null = 还没有截图记录（先调 phone_screenshot）。
+         */
+        @Volatile
+        var recentShotScale: Pair<Float, Float>? = null
     }
 
     /**
@@ -74,14 +86,23 @@ class PhoneTools(
      *
      * 【2026-10-06 加】拿服务时同步「本次会话的模式」给 Service ——
      * 它据此决定操作主屏（前台）还是副屏（后台）。
+     *
+     * @param skipGate true = 跳过模式闸门（phone_shell 专用）。对齐 CLI
+     *   `tools-phone.mjs T:1466-1470` 的语义：shell 是**通用通道**（诊断、查包名、
+     *   读日志），与「要不要操作手机界面」是两件事 —— 用户选 idle 只是说
+     *   「别动我屏幕」，不代表「别执行诊断命令」；强制它反而会挡住合理的
+     *   诊断需求（比如查副屏为什么没起来）。Shizuku 可用性检查照常保留。
      */
-    private suspend fun service(): Result<com.ccm.app.bridge.IPhoneUseService> =
+    private suspend fun service(skipGate: Boolean = false): Result<com.ccm.app.bridge.IPhoneUseService> =
         withContext(Dispatchers.IO) {
             // ① 模式闸门（2026-10-06）—— 放在最前：还没定模式就先问用户。
             //    放这里的理由：**一处覆盖全部 14 个调用点**，
             //    以后新增手机工具也不会漏（跟 agent 侧 service() 同思路）。
-            modeGate()?.let {
-                return@withContext Result.failure(IllegalStateException(it))
+            //    phone_shell 走 skipGate=true 绕过（见上方注释，对齐 CLI）。
+            if (!skipGate) {
+                modeGate()?.let {
+                    return@withContext Result.failure(IllegalStateException(it))
+                }
             }
             val reason = ShizukuBridge.unavailableReason()
             if (reason != null) {
@@ -165,8 +186,9 @@ class PhoneTools(
             "获取当前手机界面的元素树文本快照（比截图快一个数量级，优先用它）。" +
                 "输出是平铺格式：首行状态，次行列头，之后一行一元素，形如 " +
                 "#e12 Button \"发送\" 940,2100,1180,2200 c。" +
-                "直接用行首的 id（e12）做 phone_click 的目标，不要自己算坐标。" +
-                "flags: c=可点 e=可输入 s=可滚 k±=选中 off=禁用。界面变化后旧 id 会失效，需重新 snapshot。"
+                "用行首 id（e12）做 phone_click / phone_type 的目标。" +
+                "flags 含义：c=可点 e=可输入 s=可滚 k±=选中 off=禁用 focus=聚焦。" +
+                "界面变化后旧 id 会失效，需重新 snapshot。"
         override val isReadOnly = true
         // ⚠️ 虽然只读，但**不可并发** —— 多个快照同时抓会互相干扰（服务侧是单份状态）
         override val isConcurrencySafe = false
@@ -189,7 +211,12 @@ class PhoneTools(
                     input.bool("no_system_ui") ?: true,
                 )
                 if (tree.isBlank()) {
-                    ToolResult.failed(SCREEN_OFF_HINT)
+                    // 空树不一定是息屏（无窗口 / WebView/Flutter 时元素树也是空的），
+                    // 一刀切报「息屏」会让模型让用户「点亮屏幕」而不是改用截图。
+                    ToolResult.failed(
+                        "未解析到可见元素。可能息屏（点亮屏幕重试），" +
+                            "也可能是 WebView/Flutter 界面 —— 改用 phone_screenshot 看画面。",
+                    )
                 } else {
                     ToolResult.ok(tree)
                 }
@@ -236,13 +263,28 @@ class PhoneTools(
                         ToolResult.failed("节点已失效（#$ref）。界面刷新过，请重新 phone_snapshot 再试。")
                     } else {
                         val ok = svc.longPress(xy[0], xy[1], 600)
-                        if (ok) ToolResult.ok("已长按 #$ref (${xy[0]}, ${xy[1]})")
-                        else ToolResult.failed("长按失败 #$ref")
+                        if (ok) {
+                            ToolResult.ok(
+                                "已长按 #$ref (${xy[0]}, ${xy[1]})\n" +
+                                    "界面可能已变化，需要继续操作请重新 phone_snapshot",
+                            )
+                        } else ToolResult.failed("长按失败 #$ref")
                     }
                 } else {
-                    val ok = svc.tapRef(ref)
-                    if (ok) ToolResult.ok("已点击 #$ref")
-                    else ToolResult.failed("节点已失效（#$ref）。界面刷新过，请重新 phone_snapshot 再点。")
+                    // 先取中心坐标再 tap（AIDL 不回传类名，给不了 CLI T:760 的
+                    // 「元素名 @ 坐标」全格式 —— 坐标 + 下一步句是能达到的最大信息量）。
+                    val xy = svc.tapRefAt(ref)
+                    if (xy == null || xy.size < 2) {
+                        ToolResult.failed("节点已失效（#$ref）。界面刷新过，请重新 phone_snapshot 再点。")
+                    } else {
+                        val ok = svc.tap(xy[0], xy[1])
+                        if (ok) {
+                            ToolResult.ok(
+                                "已点击 #$ref (${xy[0]}, ${xy[1]})\n" +
+                                    "界面可能已变化，需要继续操作请重新 phone_snapshot",
+                            )
+                        } else ToolResult.failed("点击失败 #$ref（坐标指令未生效）")
+                    }
                 }
             } catch (e: Throwable) {
                 ToolResult.Error("点击失败：${e.message}", ToolResult.INTERNAL)
@@ -275,13 +317,27 @@ class PhoneTools(
             }
             var x = input.int("x")!!
             var y = input.int("y")!!
+            var note = ""
 
-            // 坐标来自缩放截图 → 按副屏真实尺寸换算
+            // 按截图坐标点击：查最近一次截图的缩放比例自动换算（对齐 CLI T:794-806）。
+            // 不加这个的话模型每轮都要手算「缩放图坐标 × 比例」，实测十几轮里
+            // 每轮一次乘法，又慢又容易算错。比例由 AgentLoop 注入缩放图时回写
+            // （PhoneTools.recentShotScale）—— APK 的缩放发生在注入层而不是工具内。
             if (input.bool("from_screenshot") == true) {
+                val scale = recentShotScale
+                    ?: return ToolResult.failed(
+                        "还没有截图记录，无法换算。先调 phone_screenshot，" +
+                            "或直接传真实像素坐标（不设 from_screenshot）",
+                    )
+                val ox = x
+                val oy = y
+                x = (x * scale.first).roundToInt()
+                y = (y * scale.second).roundToInt()
+                note = "（截图坐标 $ox,$oy → 真实 $x,$y）"
+                // 边界夹取：换算后可能溢出屏幕 1~2px（四舍五入/缩放误差）
                 try {
                     val metrics = svc.displayMetrics()
                     if (metrics != null && metrics.size >= 2 && metrics[0] > 0) {
-                        // 截图缩放比例由调用方在 prompt 里说明；这里只做边界夹取保护
                         x = x.coerceIn(0, metrics[0])
                         y = y.coerceIn(0, metrics[1])
                     }
@@ -292,17 +348,20 @@ class PhoneTools(
             // 【2026-10-06 修】原来完全不读 long_press 参数 —— 声明了却不生效，
             // 模型以为长按成功、实际只是单击（静默失败，比报错更难查）。
             val longPress = input.bool("long_press") == true
+            val what = if (longPress) "长按" else "点击"
             return try {
-                if (longPress) {
-                    // 长按：走 AIDL 的 longPress（input swipe 同起终点模拟）
-                    val ok = svc.longPress(x, y, 600)
-                    if (ok) ToolResult.ok("已长按 ($x, $y)") else ToolResult.failed("长按失败 ($x, $y)")
+                val ok = if (longPress) svc.longPress(x, y, 600) else svc.tap(x, y)
+                if (ok) {
+                    // 对齐 CLI T:815-817：坐标 + 换算回显 + 下一步引导
+                    ToolResult.ok(
+                        "已$what坐标 $x,$y$note\n" +
+                            "界面可能已变化，需要继续操作请重新 phone_snapshot",
+                    )
                 } else {
-                    val ok = svc.tap(x, y)
-                    if (ok) ToolResult.ok("已点击 ($x, $y)") else ToolResult.failed("点击失败 ($x, $y)")
+                    ToolResult.failed("$what失败 ($x, $y)")
                 }
             } catch (e: Throwable) {
-                ToolResult.Error("${if (longPress) "长按" else "点击"}失败：${e.message}", ToolResult.INTERNAL)
+                ToolResult.Error("$what失败：${e.message}", ToolResult.INTERNAL)
             }
         }
     }
@@ -421,8 +480,12 @@ class PhoneTools(
             if (x1 != null && y1 != null && x2 != null && y2 != null) {
                 return try {
                     val ok = svc.swipe(x1, y1, x2, y2, duration)
-                    if (ok) ToolResult.ok("已从 ($x1, $y1) 滑到 ($x2, $y2)")
-                    else ToolResult.failed("滑动失败")
+                    if (ok) {
+                        ToolResult.ok(
+                            "已从 ($x1, $y1) 滑到 ($x2, $y2)\n" +
+                                "界面可能已变化，需要继续操作请重新 phone_snapshot",
+                        )
+                    } else ToolResult.failed("滑动失败")
                 } catch (e: Throwable) {
                     ToolResult.Error("滑动失败：${e.message}", ToolResult.INTERNAL)
                 }
@@ -451,8 +514,12 @@ class PhoneTools(
                 }
                 return try {
                     val ok = svc.swipe(fx, fy, tx, ty, duration)
-                    if (ok) ToolResult.ok("已在 #$ref 上向 $dir 滑动")
-                    else ToolResult.failed("滑动失败")
+                    if (ok) {
+                        ToolResult.ok(
+                            "已在 #$ref 上向 $dir 滑动\n" +
+                                "界面可能已变化，需要继续操作请重新 phone_snapshot",
+                        )
+                    } else ToolResult.failed("滑动失败")
                 } catch (e: Throwable) {
                     ToolResult.Error("滑动失败：${e.message}", ToolResult.INTERNAL)
                 }
@@ -461,7 +528,12 @@ class PhoneTools(
             // ③ 整屏模式（默认）
             return try {
                 val ok = svc.swipeDir(dir, duration)
-                if (ok) ToolResult.ok("已向 $dir 滑动") else ToolResult.failed("滑动失败")
+                if (ok) {
+                    ToolResult.ok(
+                        "已向 $dir 滑动\n" +
+                            "界面可能已变化，需要继续操作请重新 phone_snapshot",
+                    )
+                } else ToolResult.failed("滑动失败")
             } catch (e: Throwable) {
                 ToolResult.Error("滑动失败：${e.message}", ToolResult.INTERNAL)
             }
@@ -490,7 +562,10 @@ class PhoneTools(
             }
             val key = input.str("key")!!
             val code = keyCodeOf(key)
-                ?: return ToolResult.invalidInput("未知按键：$key")
+                ?: return ToolResult.invalidInput(
+                    "未知按键 \"$key\"。可用: " +
+                        "back/home/recent/enter/delete/tab/escape/volume_up/volume_down/power 或 KEYCODE_XXX",
+                )
 
             return try {
                 val ok = svc.key(code)
@@ -551,12 +626,20 @@ class PhoneTools(
                 return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
             }
             return try {
-                val bytes = svc.latestFrame()
+                // 帧缓存可能还没刷新（刚触发建屏/首帧未到）——空帧重试 3 次。
+                // 失败文案要带「已重试」字样（对齐 CLI T:1029），让模型知道已尽力过。
+                var bytes: ByteArray? = null
+                for (attempt in 1..3) {
+                    bytes = svc.latestFrame()
+                    if (!bytes.isNullOrEmpty()) break
+                    if (attempt < 3) withContext(Dispatchers.IO) { Thread.sleep(300) }
+                }
                 if (bytes == null || bytes.isEmpty()) {
                     return ToolResult.failed(SCREEN_OFF_HINT)
                 }
+                val frame = bytes
                 val target = File(screenshotDir(), "shot-${System.currentTimeMillis()}.jpg")
-                withContext(Dispatchers.IO) { target.writeBytes(bytes) }
+                withContext(Dispatchers.IO) { target.writeBytes(frame) }
 
                 val hint = input.str("prompt")?.takeIf { it.isNotBlank() }
                     ?.let { "（关注：$it）" } ?: ""
@@ -565,7 +648,7 @@ class PhoneTools(
                     listOf(Attachment.ImageFile(target.absolutePath, "image/jpeg")),
                 )
             } catch (e: Throwable) {
-                ToolResult.Error("截图失败：${e.message}", ToolResult.INTERNAL)
+                ToolResult.Error("截屏失败（已重试）：${e.message}", ToolResult.INTERNAL)
             }
         }
     }
@@ -604,9 +687,11 @@ class PhoneTools(
             val deadline = System.currentTimeMillis() + maxWait
             var lastTree = ""
             var stableCount = 0
+            var rounds = 0
 
             while (System.currentTimeMillis() < deadline) {
                 ctx.checkCancelled()
+                rounds++
                 val tree = try {
                     svc.dumpTree(true, DEFAULT_MAX_NODES, true)
                 } catch (_: Throwable) {
@@ -615,17 +700,25 @@ class PhoneTools(
 
                 if (wantText != null) {
                     if (tree.contains(wantText)) {
-                        return ToolResult.ok("已等到文字「$wantText」出现")
+                        return ToolResult.ok("\"$wantText\" 已出现（第 $rounds 次采样）")
                     }
                 } else if (wantGone != null) {
                     if (!tree.contains(wantGone)) {
-                        return ToolResult.ok("文字「$wantGone」已消失")
+                        return ToolResult.ok("\"$wantGone\" 已消失（第 $rounds 次采样）")
                     }
                 } else {
                     // 无参数：等界面稳定
                     if (tree == lastTree && tree.isNotEmpty()) {
                         stableCount++
-                        if (stableCount >= 1) return ToolResult.ok("界面已稳定")
+                        if (stableCount >= 1) {
+                            // 首行形如 "# display=8 1080x2400 pkg=com.x count=12"
+                            val count = Regex("""count=(\d+)""").find(tree)?.groupValues?.get(1) ?: "?"
+                            val pkg = Regex("""pkg=([\w.]+)""").find(tree)?.groupValues?.get(1) ?: "未知"
+                            return ToolResult.ok(
+                                "界面已稳定（$pkg，$count 个元素，第 $rounds 次采样）\n" +
+                                    "可以 phone_snapshot 取最新元素树",
+                            )
+                        }
                     } else {
                         stableCount = 0
                     }
@@ -634,11 +727,15 @@ class PhoneTools(
                 withContext(Dispatchers.IO) { Thread.sleep(250) }
             }
 
+            // 对齐 CLI T:1156-1157：说清等的是什么条件 + 点破「可能永远不会达成」，
+            // 免得模型超时后在「重试」和「放弃」之间反复试。
             return ToolResult.failed(
-                when {
-                    wantText != null -> "等待超时（${maxWait}ms）：「$wantText」未出现"
-                    wantGone != null -> "等待超时（${maxWait}ms）：「$wantGone」未消失"
-                    else -> "等待超时（${maxWait}ms）：界面仍在变化"
+                run {
+                    val what = wantText?.let { "等 \"$it\" 出现" }
+                        ?: wantGone?.let { "等 \"$it\" 消失" }
+                        ?: "等界面稳定"
+                    "超时未满足条件（$what，采样 $rounds 次）。" +
+                        "界面可能仍在变化，或条件本身不会达成"
                 },
             )
         }
@@ -651,52 +748,119 @@ class PhoneTools(
     inner class PhoneAppTool : Tool() {
         override val name = "phone_app"
         override val description =
-            "启动应用（在虚拟副屏启动，不占物理屏；若应用已在主屏运行会自动搬运过去，不重启）。" +
-                "action:'list' 列已装应用。"
+            "启动/切换应用（在虚拟副屏启动，不占物理屏；若应用已在主屏运行会自动搬运过去，不重启），" +
+                "或列已安装应用。" +
+                "list 加 labels:true 可显示中文名（只显示缓存里已有的，不现场扫描）。" +
+                "要看某个应用的中文名用 action:label + package（读单个很快，读完进缓存）。"
         override val isConcurrencySafe = false
         override val maxResultSizeChars = 10_000
 
         override val inputSchema: JsonObject = ToolSchema.objectSchema(
             "package" to ToolSchema.string("包名，如 com.android.settings"),
             "action" to ToolSchema.string(
-                "launch（默认）| list | current | stop",
-                enum = listOf("launch", "list", "current", "stop"),
+                "默认 launch；label=读单个应用的中文名",
+                enum = listOf("launch", "list", "current", "stop", "label"),
             ),
-            "filter" to ToolSchema.string("action=list 时按关键词过滤"),
+            "filter" to ToolSchema.string("list 时按关键词过滤（包名或已缓存的中文名）"),
+            "labels" to ToolSchema.boolean("list 时显示中文名（默认 false，只显示缓存里已有的，不现场扫描）"),
         )
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
             val svc = service().getOrElse {
                 return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
             }
-            val action = input.str("action") ?: "launch"
+            // 对齐 CLI T:1295：没给 action 时，给了 package → launch，没给 → current
+            val action = input.str("action")
+                ?: if (input.str("package").isNullOrBlank()) "current" else "launch"
             val pkg = input.str("package") ?: ""
             val filter = input.str("filter") ?: ""
+            val wantLabels = input.bool("labels") == true
 
-            if (action == "launch" && pkg.isBlank()) {
-                return ToolResult.invalidInput("action=launch 时 package 必填")
+            if (action in setOf("launch", "stop", "label") && pkg.isBlank()) {
+                return ToolResult.invalidInput("$action 需要 package 参数")
             }
-            // 包名安全校验（对齐 CCM 的 /^[\w.]+$/）
+            // 包名安全校验（对齐 CLI 的 /^[\w.]+$/）
             if (pkg.isNotEmpty() && !Regex("^[\\w.]+$").matches(pkg)) {
-                return ToolResult.invalidInput("包名格式非法：$pkg")
+                return ToolResult.invalidInput("包名格式不合法：$pkg")
             }
 
             return try {
-                val raw = svc.app(action, pkg, filter)
-                val obj = try {
-                    JSONObject(raw)
-                } catch (_: Throwable) {
-                    null
+                // labels 只影响 list 的展示（读缓存），AIDL 签名固定三个 String ——
+                // 所以把 labels 标志编进 action 传给服务侧（约定值 list_labels，同文件内）。
+                val serviceAction = if (action == "list" && wantLabels) "list_labels" else action
+                val raw = svc.app(serviceAction, pkg, filter)
+                val obj = try { JSONObject(raw) } catch (_: Throwable) { null }
+                if (obj == null) return ToolResult.failed(raw.take(1_000))
+                if (!obj.optBoolean("ok", true)) {
+                    val err = obj.optString("error").ifEmpty { raw.take(500) }
+                    // label 读不到：CLI T:1367 是正常回执不是报错 ——
+                    // 模型据此知道该换包名/放弃，而不是当成工具故障重试。
+                    if (action == "label") return ToolResult.ok("$pkg  $err")
+                    return ToolResult.failed(err)
                 }
-                if (obj != null && obj.optBoolean("ok", true)) {
-                    val list = obj.optString("list", "")
-                    if (list.isNotEmpty()) ToolResult.ok(list) else ToolResult.ok(raw)
-                } else {
-                    ToolResult.failed(raw)
+                when (action) {
+                    "list" -> formatAppList(obj, wantLabels, filter)
+                    "label" -> {
+                        val label = obj.optString("label")
+                        val cached = obj.optBoolean("cached", false)
+                        ToolResult.ok("$pkg  $label" + if (cached) "（缓存）" else "")
+                    }
+                    "stop" -> ToolResult.ok(obj.optString("message", "已停止 $pkg"))
+                    "launch" -> ToolResult.ok(
+                        obj.optString("message", "已启动 $pkg") + "\n用 phone_snapshot 查看当前界面",
+                    )
+                    "current" -> {
+                        val p = obj.optString("package")
+                        if (p.isNotEmpty()) ToolResult.ok(p) else ToolResult.failed("未获取到前台应用")
+                    }
+                    else -> ToolResult.ok(raw)
                 }
             } catch (e: Throwable) {
                 ToolResult.Error("应用操作失败：${e.message}", ToolResult.INTERNAL)
             }
+        }
+
+        /**
+         * list 的行式输出 —— 对齐 CLI T:1335-1355 的格式与提示文案。
+         *
+         * 紧凑 JSON（原来 K:692 读的 `list` 字段还跟服务侧的 `apps` 对不上）
+         * 对模型不友好：截断了不说、第三方/系统不分、中文名挂哪不知道。
+         */
+        private fun formatAppList(obj: JSONObject, wantLabels: Boolean, kw: String): ToolResult {
+            val apps = obj.optJSONArray("apps") ?: return ToolResult.failed("list 返回缺少 apps 字段")
+            val total = apps.length()
+            val labels = if (wantLabels) obj.optJSONObject("labels") else null
+            val tag = if (kw.isEmpty()) "第三方" else "全部（含系统）"
+            val show = (0 until minOf(80, total)).map { apps.getString(it) }
+            val lines = if (wantLabels) {
+                show.map { p ->
+                    val l = labels?.optString(p) ?: ""
+                    if (l.isNotEmpty()) "$p  $l" else p
+                }
+            } else show
+
+            val sb = StringBuilder()
+            sb.append("已安装应用（$tag）$total 个")
+            if (kw.isNotEmpty()) sb.append("（含 \"$kw\"）")
+            sb.append(":\n")
+            sb.append(lines.joinToString("\n"))
+            if (wantLabels) {
+                var known = 0
+                for (i in 0 until total) {
+                    val l = labels?.optString(apps.getString(i)) ?: ""
+                    if (l.isNotEmpty()) known++
+                }
+                if (known == 0) {
+                    sb.append("\n（中文名缓存为空。要看某个应用名：phone_app label <包名>）")
+                } else if (known < total) {
+                    sb.append("\n（中文名只显示了缓存里已有的 $known 个；" +
+                        "其余用 phone_app label <包名> 按需读）")
+                }
+            }
+            if (kw.isEmpty() && total >= 80) {
+                sb.append("\n（只显示前 80 个，加 filter 关键词可搜系统应用）")
+            }
+            return ToolResult.ok(sb.toString())
         }
     }
 
@@ -727,7 +891,13 @@ class PhoneTools(
             if (input.str("command").isNullOrBlank()) "command is required" else null
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
-            val svc = service().getOrElse {
+            // 【不走模式闸门（skipGate=true）】对齐 CLI T:1466-1470：
+            // 模式闸门是给「操作手机界面」用的 —— idle 模式下不该点击/输入；
+            // 但 shell 是**通用通道**（诊断、查包名、读日志），与「要不要操作手机界面」
+            // 是两件事 —— 用户选了 idle 只是说「别动我屏幕」，不代表「别执行诊断命令」。
+            // 强制它反而会挡住合理的诊断需求（比如查副屏为什么没起来）。
+            // Shizuku 可用性检查照常走（service() 内部 ②③ 两步）。
+            val svc = service(skipGate = true).getOrElse {
                 return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
             }
             val cmd = input.str("command")!!
@@ -737,12 +907,17 @@ class PhoneTools(
                 val out = svc.runShell(cmd, timeout)
                 val (code, stdout) = parseShellResult(out)
                 if (code == 0) {
-                    ToolResult.ok(stdout.ifEmpty { "(无输出)" })
+                    // 空输出也要给明确回执 + 命令回显（CLI T:1478），
+                    // 否则模型分不清「命令没输出」和「工具坏了」。
+                    // 服务侧 runShell 用 redirectErrorStream 合并了 stderr，
+                    // 没有独立 [stderr] 可分流 —— 至少把命令回显出来。
+                    if (stdout.isEmpty()) ToolResult.ok("（命令已执行，无输出）\n\$ $cmd")
+                    else ToolResult.ok(stdout)
                 } else {
-                    ToolResult.failed("exit=$code\n$stdout")
+                    ToolResult.failed("exit=$code\n$stdout\n命令：$cmd")
                 }
             } catch (e: Throwable) {
-                ToolResult.Error("命令执行失败：${e.message}", ToolResult.INTERNAL)
+                ToolResult.Error("执行失败：${e.message}\n命令：$cmd", ToolResult.INTERNAL)
             }
         }
     }
@@ -775,7 +950,8 @@ class PhoneTools(
                     withContext(Dispatchers.IO) {
                         ShizukuBridge.phoneService(context)?.destroy()
                     }
-                    ToolResult.ok("已请求停止副屏服务")
+                    // 对齐 CLI T:1530 完成时态
+                    ToolResult.ok("副屏已停止")
                 } catch (e: Throwable) {
                     ToolResult.Error("停止失败：${e.message}", ToolResult.INTERNAL)
                 }
@@ -785,18 +961,60 @@ class PhoneTools(
                 return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
             }
             return try {
-                val status = svc.status()
                 if (action == "status") {
-                    ToolResult.ok(status)
+                    ToolResult.ok(renderVdStatus(svc.status()))
                 } else {
                     // start/restart：服务侧在首次调用时自动建屏，
                     // 这里通过一次 dumpTree 触发建屏，再读状态
                     runCatching { svc.dumpTree(false, 1, false) }
-                    ToolResult.ok("已触发副屏$action\n${svc.status()}")
+                    val st = try { JSONObject(svc.status()) } catch (_: Throwable) { null }
+                    if (st == null) {
+                        ToolResult.ok("已触发副屏$action")
+                    } else {
+                        val disp = st.optInt("display_id", -1)
+                        val age = st.optLong("frame_age_ms", -1)
+                        val usable = st.optBoolean("running", false) &&
+                            st.optInt("frame_bytes", 0) > 0 && age >= 0 && age <= 5000
+                        // 对齐 CLI T:1544
+                        ToolResult.ok(
+                            "副屏已启动\n  display id: $disp\n  可用: " +
+                                if (usable) "是" else "否（帧缓存还没刷新，稍等再试）",
+                        )
+                    }
                 }
             } catch (e: Throwable) {
                 ToolResult.Error("副屏操作失败：${e.message}", ToolResult.INTERNAL)
             }
+        }
+
+        /**
+         * status() 的 JSON → 加工文本（对齐 CLI T:1518-1525）。
+         *
+         * 原来直接把原始 JSON 扔给模型：没有「未运行 → 用 phone_vd start 启动」的引导，
+         * 也看不出帧缓存新不新鲜 —— description 里承诺的「帧缓存新鲜度」形同虚设。
+         * 字段拿不到（解析失败/缺字段）时原样返回或省略对应行，不编造。
+         */
+        private fun renderVdStatus(raw: String): String {
+            val st = try { JSONObject(raw) } catch (_: Throwable) { null }
+                ?: return raw
+            if (!st.optBoolean("running", false)) {
+                return "副屏未运行。用 phone_vd start 启动。"
+            }
+            val disp = st.optInt("display_id", -1)
+            val age = st.optLong("frame_age_ms", -1)
+            val hasFrame = st.optInt("frame_bytes", 0) > 0 && age >= 0
+            // 守护侧持续把最新帧编成 JPEG，正常 age 在秒级内；
+            // >5s 说明合成停了（息屏/副屏没起来）—— 画面可能是旧的。
+            val fresh = hasFrame && age <= 5000
+            val lines = mutableListOf(
+                "副屏运行中",
+                "  display id: $disp",
+            )
+            if (hasFrame) {
+                lines += "  帧缓存    : ${if (fresh) "新鲜" else "已过期"}（${age / 1000} 秒前更新）"
+            }
+            if (!fresh) lines += "  ⚠️ 帧缓存过期，画面可能是旧的。建议 phone_vd restart"
+            return lines.joinToString("\n")
         }
     }
 

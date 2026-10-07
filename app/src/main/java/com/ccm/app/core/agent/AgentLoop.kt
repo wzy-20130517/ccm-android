@@ -17,6 +17,7 @@ import com.ccm.app.core.tool.ToolResult
 import com.ccm.app.core.tool.ToolRunner
 import com.ccm.app.core.tool.ToolStorage
 import com.ccm.app.core.tool.ToolUiCallback
+import com.ccm.app.tools.phone.PhoneTools
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -1284,6 +1285,29 @@ class AgentLoop(
                         }
                         if (loaded != null) {
                             blocks += ContentBlock.Image(loaded.base64, loaded.mimeType)
+                            // 截图的缩放比例回写给 phone_tap_xy —— from_screenshot:true 的
+                            // 换算依据（对齐 CLI 工具内 lastShotScale，T:1040-1050）。
+                            // APK 的缩放发生在注入层而不是工具内，比例只能在这里记。
+                            if (att.path.contains("phone-shots")) {
+                                val fromWH = loaded.resizedFrom?.let { parseSize(it) }
+                                val toWH = loaded.resizedTo?.let { parseSize(it) }
+                                if (fromWH != null && toWH != null) {
+                                    PhoneTools.recentShotScale =
+                                        (fromWH.first.toFloat() / toWH.first) to
+                                        (fromWH.second.toFloat() / toWH.second)
+                                    // 对齐 CLI T:1051-1053：只说「缩放了」不够，
+                                    // 还要指路 from_screenshot 让工具换算，别让模型自己乘。
+                                    resizeNotes += "图已缩放 ${loaded.resizedFrom} → ${loaded.resizedTo}。" +
+                                        "按图上坐标点击时用 phone_tap_xy 并设 from_screenshot:true，" +
+                                        "工具会自动换算，不要自己乘。"
+                                } else {
+                                    // 截图但没缩放（超长边没超限）→ 记 1:1 ——
+                                    // 否则模型对「刚截的图」传 from_screenshot:true 会撞上
+                                    // 「还没有截图记录」的报错（CLI T:1049 同款行为）。
+                                    // 非截图路径不碰这个状态，避免覆盖截图的比例。
+                                    PhoneTools.recentShotScale = 1f to 1f
+                                }
+                            }
                             // 缩放透明化（工具自己标了 resizedFrom 也要带上）
                             loaded.resizedFrom?.let { from ->
                                 resizeNotes += "图片已从 $from 缩放到 ${loaded.resizedTo}（节省 token；微小文字/细节可能受影响）"
@@ -1337,6 +1361,16 @@ class AgentLoop(
         if (blocks.isNotEmpty()) {
             messages += Message(Message.ROLE_USER, blocks)
         }
+    }
+
+    /** 解析 "WxH" 尺寸串（resizedFrom/resizedTo 格式）。非法返回 null。 */
+    private fun parseSize(s: String): Pair<Int, Int>? {
+        val parts = s.split('x')
+        if (parts.size != 2) return null
+        val w = parts[0].trim().toIntOrNull() ?: return null
+        val h = parts[1].trim().toIntOrNull() ?: return null
+        if (w <= 0 || h <= 0) return null
+        return w to h
     }
 
     /** 读图片文件并编码成 base64。失败返回 null（不抛）。 */
