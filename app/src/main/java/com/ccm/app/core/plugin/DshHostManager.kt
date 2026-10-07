@@ -77,6 +77,42 @@ class DshHostManager(private val context: Context) {
     private fun hostDir(): File = File(runtime.rootfsDir(), HOST_DIR.removePrefix("/"))
 
     /**
+     * Node 运行时就绪：装上（ensureNode）+ 版本 ≥22。
+     *
+     * deploy 和 start **共用** —— state()==Ready 时会跳过 deploy 直接
+     * start，检查只放 deploy 里就形同虚设（真机踩过：依赖齐了但 Node
+     * 还是 18，宿主加载即崩 SyntaxError）。
+     *
+     * 22 的来源：宿主的 dsh-subprocess-local 用 node:util
+     * .getSystemErrorMessage（22.3+ API），18 上 import 即崩。
+     */
+    suspend fun ensureNodeRuntime(onLog: (String) -> Unit = {}): Boolean {
+        onLog("检查 Node 运行时…")
+        val mcpInstaller = com.ccm.app.core.mcp.McpInstaller(context, runtime)
+        if (!mcpInstaller.ensureNode { s -> onLog(s) }) {
+            onLog("Node 安装失败")
+            return false
+        }
+        val nodeMajor = probeNodeMajor()
+        if (nodeMajor < 22) {
+            onLog("Node $nodeMajor 过旧（宿主要求 22+），升级到 " +
+                com.ccm.app.runtime.ToolchainCatalog.NODE_VERSION + "…")
+            val upgraded = com.ccm.app.runtime.RootfsManager(context).installToolchains(
+                selected = setOf("nodejs"),
+                exec = { cmd, ln -> runtime.exec(command = cmd, onLine = ln) },
+                onLine = { s -> onLog(s) },
+            )
+            val after = probeNodeMajor()
+            if (!upgraded || after < 22) {
+                onLog("Node 升级失败（当前 $after）")
+                return false
+            }
+            onLog("Node 已升级到 v$after")
+        }
+        return true
+    }
+
+    /**
      * 探 rootfs 内 node 的大版本（如 18/22/24）。没装返回 0。
      * 走 `node --version`（PATH 里 /usr/local 优先于 /usr/bin）。
      */
@@ -166,35 +202,8 @@ class DshHostManager(private val context: Context) {
             }
             Log.i(TAG, "核心文件已部署到 ${hostDir.absolutePath}")
 
-            // 2. Node 运行时（复用 MCP 安装器：apt nodejs + npm + 修 dpkg）
-            onLog("检查 Node 运行时…")
-            val mcpInstaller = com.ccm.app.core.mcp.McpInstaller(context, runtime)
-            if (!mcpInstaller.ensureNode { s -> onLog(s) }) {
-                onLog("Node 安装失败")
-                return@withContext false
-            }
-
-            // 2.5 Node 版本（宿主要 22+ —— 真机崩过：dsh-subprocess-local
-            //     用的 node:util.getSystemErrorMessage 是 22.3+ 的 API，
-            //     apt 的 18.19.1 上 SyntaxError 直接退不出）。
-            //     升级走 ToolchainCatalog 的 nodejs 工具链（官方 tarball →
-            //     /usr/local/bin/node，PATH 优先于 /usr/bin 的 apt 版）。
-            val nodeMajor = probeNodeMajor()
-            if (nodeMajor < 22) {
-                onLog("Node $nodeMajor 过旧（宿主要求 22+），升级到 " +
-                    com.ccm.app.runtime.ToolchainCatalog.NODE_VERSION + "…")
-                val upgraded = com.ccm.app.runtime.RootfsManager(context).installToolchains(
-                    selected = setOf("nodejs"),
-                    exec = { cmd, ln -> runtime.exec(command = cmd, onLine = ln) },
-                    onLine = { s -> onLog(s) },
-                )
-                val after = probeNodeMajor()
-                if (!upgraded || after < 22) {
-                    onLog("Node 升级失败（当前 $after）")
-                    return@withContext false
-                }
-                onLog("Node 已升级到 v$after")
-            }
+            // 2. Node 运行时（含版本要求，见 ensureNodeRuntime）
+            if (!ensureNodeRuntime(onLog)) return@withContext false
 
             // 3. 依赖（120+ 包，首次约几分钟到十几分钟，取决于网络）
             if (!File(hostDir, READY_MARKER).exists()) {
@@ -292,6 +301,9 @@ class DshHostManager(private val context: Context) {
                 onLog("宿主已在运行")
                 return@withContext true
             }
+
+            // 环境就绪检查（Ready 路径跳过了 deploy，Node 版本要在这里把关）
+            if (!ensureNodeRuntime(onLog)) return@withContext false
 
             onLog("启动插件宿主…")
 
