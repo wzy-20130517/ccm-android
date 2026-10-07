@@ -255,6 +255,9 @@ private fun CoworkInputCard(
     attachCount: Int = 0,
 ) {
     val colors = CCMTheme.colors
+    // onPick 里 rebuild 要用 —— 本函数与 CoworkScreen 是**两个作用域**，
+    // 外层的 ctxCow 看不见（CI 报 Unresolved reference 'ctxCow'）
+    val ctxLocal = androidx.compose.ui.platform.LocalContext.current
 
     Column(
         modifier = Modifier
@@ -411,7 +414,7 @@ private fun CoworkInputCard(
                             ?.let { store.setCurrent(it.id) }
                     }
                     com.ccm.app.AppGraph.appScope?.let { sc ->
-                        com.ccm.app.AppGraph.rebuild(ctxCow.applicationContext, sc)
+                        com.ccm.app.AppGraph.rebuild(ctxLocal.applicationContext, sc)
                     }
                 },
             )
