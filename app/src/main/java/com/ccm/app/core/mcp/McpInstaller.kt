@@ -91,6 +91,11 @@ class McpInstaller(
                 workDir = "/root",
                 onLine = { line ->
                     if (line.contains("/usr/bin/node") || line.contains("v18")) ok = true
+                    // 【2026-10-07 加】透传输出 —— 原来这里只判 ok 不上报，
+                    // apt 的真实报错（E: ... / 网络失败 / dpkg 损坏）全被吞，
+                    // 调用方只看到「正在安装 Node.js → Node 安装失败」，
+                    // 拿不到根因只能瞎猜。
+                    if (line.isNotBlank()) onProgress?.onStep(line)
                 },
                 timeoutMs = 10 * 60_000L,
                 idleMs = 3 * 60_000L,

@@ -72,12 +72,18 @@ fun PluginPanel(modifier: Modifier = Modifier) {
                         host.state() is DshHostManager.State.DepsMissing
                     ) {
                         logLine = "首次安装插件宿主（约 334MB，可能十几分钟）…"
-                        var lastLog = ""
-                        val ok = host.deploy { s -> lastLog = s; logLine = s }
+                        // 日志**窗口**（保留最后 6 行）—— 单行会被覆盖：
+                        // apt 的真实报错是中间某行，最后一行永远是
+                        // 「Node 安装失败」这种结论，光看它分不清根因
+                        val logWindow = ArrayDeque<String>()
+                        val ok = host.deploy { s ->
+                            logWindow.addLast(s)
+                            while (logWindow.size > 6) logWindow.removeFirst()
+                            logLine = logWindow.joinToString("\n")
+                        }
                         if (!ok) {
-                            // 带上最后一行日志 —— 光说「部署失败」分不清是
-                            // rootfs 没装 / Node 装不上 / npm 依赖失败
-                            error = "宿主部署失败：" + lastLog.ifBlank { "（Node 或依赖没装上）" }
+                            val tail = logWindow.joinToString(" | ").ifBlank { "（Node 或依赖没装上）" }
+                            error = "宿主部署失败：$tail"
                             loading = false
                             return@launch
                         }
