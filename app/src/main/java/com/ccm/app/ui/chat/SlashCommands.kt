@@ -75,7 +75,6 @@ val COMMON_SLASH_COMMANDS: List<Pair<String, String>> = listOf(
     "/cowork" to "协调者模式（/coordinate 的别名）",
     "/workflow" to "AgentWorkflow 阶段说明",
     "/web" to "Web 服务说明",
-    "/backup" to "备份说明",
     // ── 工具 ──
     "/compact" to "压缩历史（status|micro|force [N]|<N>）",
     "/copy" to "复制最后一条回复",

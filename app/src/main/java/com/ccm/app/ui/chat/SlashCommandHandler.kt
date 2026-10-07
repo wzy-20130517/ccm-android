@@ -1508,15 +1508,15 @@ private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): S
                 "_要在手机上用浏览器访问，走 Web 端（`~/claude-code-mobile/web`）。_",
         )
 
-        // ── /backup —— 备份（对齐 CLI /backup）──────────────────────────────
-        "backup" -> SlashResult.Notice(
-            "**备份**\n\n" +
-                "CLI 的 `/backup` 把代码/配置打包上传（本地目录 / GitHub / WebDAV / rclone）。\n\n" +
-                "APK 侧的等价做法：\n" +
-                "- 会话与配置都在应用私有目录（`${com.ccm.app.AppGraph.storage?.root?.absolutePath ?: "?"}`）\n" +
-                "- 用 `/export` 导出对话，或用系统文件管理器备份该目录\n" +
-                "- 跨设备同步配置：把 `config.json` 拷到另一端的同名字段即可（字段名互通）",
-        )
+        // ── /backup —— 已删除（2026-10-07，对齐 CLI）───────────────────────
+        //
+        // CLI 已于 2026-10-03 下线该功能（`cmd-registry.mjs` 注释：「/backup
+        // 功能下线」），APK 这边原来还留着一条「备份说明」分支 —— 一个不存在的
+        // 命令在命令表里列着，用户敲了只会得到一段解释。按对齐纪律删除：
+        // 分支（这里原来有）+ 命令表条目（SlashCommands.kt 同步删）。
+        //
+        // 备份需求的实际出路（写在 /export 与 /trash 的说明里，不再单列命令）：
+        // 会话与配置在应用私有目录，/export 导出对话，/trash 管文件回收站。
 
         else -> null
     }
