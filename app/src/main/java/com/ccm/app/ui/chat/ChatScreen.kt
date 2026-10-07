@@ -233,6 +233,13 @@ fun ChatScreen(
             // 它自己吃 ime padding 上推时，消息区 `weight(1f)` 自动缩，
             // 消息区**不需要**再吃一次 ime padding。
             Box(modifier = Modifier.weight(1f)) {
+                val scrollState = rememberScrollState()
+
+                // ★ 2026-09-27：原来没有自动滚动 —— 新消息只画在
+                //   视口外，用户必须手动往下滑，流式回复时看不到内容。
+                //   行为对齐 Web（跟底；用户上翻即停止跟随）。
+                var followBottom by remember { mutableStateOf(true) }
+
                 // ── 回到底部按钮（不在跟随时显示）─────────────────────
                 // followBottom=false = 用户上翻脱离跟随。按钮贴在
                 // 消息区底部中央（椭圆胶囊），点击平滑滚到底并恢复跟随。
@@ -273,13 +280,6 @@ fun ChatScreen(
                         )
                     }
                 }
-
-                val scrollState = rememberScrollState()
-
-                // ★ 2026-09-27：原来没有自动滚动 —— 新消息只画在
-                //   视口外，用户必须手动往下滑，流式回复时看不到内容。
-                //   行为对齐 Web（跟底；用户上翻即停止跟随）。
-                var followBottom by remember { mutableStateOf(true) }
                 // 【2026-10-06 问题46 修复·第六版（最终）—— 对齐 Web 的判定模型】
                 //
                 // 用户反馈：「我手动拉到页面最底下时一次都没触发过跟随」（提了 5 次）。
