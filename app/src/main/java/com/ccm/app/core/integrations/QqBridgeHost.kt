@@ -167,12 +167,24 @@ class QqBridgeHost(
             return
         }
 
+        // 【去重】队列里的这条已经被消费（next()）才轮到注入 ——
+        // 若还在队首说明是 onMessage 直调进来的，需要出队；
+        // 出队失败（已被别的路径消费）则不重复注入。
+        // 原来 onMessage 直接调 injectToSession 且不动队列，drain 循环
+        // 见队列非空又注入一次 —— 同一条消息进会话两次（实测日志双份）。
+        val head = bridge?.peekQueue()?.firstOrNull()
+        if (head === msg) {
+            bridge?.next()   // 消费队首（就是本条）
+        }
+
         // 路由：本轮回复发回给谁
         replyTarget = msg.userId to msg.groupId
 
         // 组装正文：带来源头（对齐 CLI 的「【QQ消息｜来自 用户xxx】」）
         val who = if (msg.nickname.isNotBlank()) "${msg.nickname}(${msg.userId})" else msg.userId
-        val from = if (msg.groupId != null) "群${msg.groupId} · $who" else "用户$msg.userId"
+        // ⚠️ 必须用 ${msg.userId}（$msg.userId 会被解析成 $msg 后跟字面 .userId，
+        // 把整个 data class 打进正文 —— 实测踩过）
+        val from = if (msg.groupId != null) "群${msg.groupId} · $who" else "用户${msg.userId}"
         val body = buildString {
             append("【QQ消息｜来自 $from】\n")
             append(msg.text)
