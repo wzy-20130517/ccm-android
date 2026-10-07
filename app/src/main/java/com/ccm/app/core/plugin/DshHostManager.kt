@@ -139,6 +139,23 @@ class DshHostManager(private val context: Context) {
             // 3. 依赖（120+ 包，首次约几分钟到十几分钟，取决于网络）
             if (!File(hostDir, READY_MARKER).exists()) {
                 onLog("安装插件宿主依赖（约 334MB，首次较慢）…")
+
+                // ── npm 镜像（2026-10-07 真机踩坑）──────────────────────
+                // rootfs 里没有 .npmrc → npm 直连 registry.npmjs.org，
+                // 国内网络直接卡死（实测 70 秒零字节增长，cache 停在 11MB）。
+                // CLI 侧（Termux ~/.npmrc）早就配了 npmmirror，APK 这边
+                // 的 rootfs 是全新环境，没人给它配 —— 这里补上。
+                // 覆盖写（幂等）：镜像地址是固定值，不怕用户改过。
+                try {
+                    File(runtime.rootfsDir(), "root/.npmrc").writeText(
+                        "registry=https://registry.npmmirror.com\n" +
+                            "fetch-retries=3\n" +
+                            "fetch-retry-maxtimeout=60000\n",
+                    )
+                } catch (t: Throwable) {
+                    Log.w(TAG, "写 .npmrc 失败（继续直连）: ${t.message}")
+                }
+
                 var npmExitCode: Int? = null
                 runtime.execWithTimeout(
                     command = listOf(
