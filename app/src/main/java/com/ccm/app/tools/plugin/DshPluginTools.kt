@@ -82,19 +82,28 @@ class DshPluginTools(private val context: Context) {
                         DshHostManager.State.NotInstalled,
                         DshHostManager.State.DepsMissing,
                         -> {
-                            ctx.ui.onProgress?.invoke("首次安装插件宿主（约 334MB，较慢）…")
-                            if (!host.deploy { s -> ctx.ui.onProgress?.invoke(s) }) {
+                            ctx.ui.onProgress("首次安装插件宿主（约 334MB，较慢）…")
+                            // ⚠️ deploy 的 onLog 是同步回调（exec 线程里调），
+                            // 里面不能调 suspend 的 onProgress —— 收集起来，
+                            // 失败时附进错误信息供排查。
+                            val deployLog = mutableListOf<String>()
+                            if (!host.deploy { s -> deployLog.add(s) }) {
                                 return ToolResult.Error(
                                     "宿主未运行，自动部署失败（Node 或依赖没装上）—— " +
-                                        "去「定制 → 插件」看安装日志，或先手动装 Node 工具链。",
+                                        "去「定制 → 插件」看安装日志，或先手动装 Node 工具链。\n" +
+                                        "日志尾部: ${deployLog.takeLast(5).joinToString(" / ")}",
                                 )
                             }
                         }
                         else -> Unit
                     }
-                    ctx.ui.onProgress?.invoke("启动插件宿主…")
-                    if (!host.start { s -> ctx.ui.onProgress?.invoke(s) }) {
-                        return ToolResult.Error("宿主启动失败 —— 查看 rootfs 内 /root/.ccm/dsh-host/host.log")
+                    ctx.ui.onProgress("启动插件宿主…")
+                    val startLog = mutableListOf<String>()
+                    if (!host.start { s -> startLog.add(s) }) {
+                        return ToolResult.Error(
+                            "宿主启动失败 —— 查看 rootfs 内 /root/.ccm/dsh-host/host.log\n" +
+                                "日志: ${startLog.takeLast(3).joinToString(" / ")}",
+                        )
                     }
                 }
             }
@@ -171,7 +180,7 @@ class DshPluginTools(private val context: Context) {
 
                 "install_bundle" -> {
                     if (target.isNullOrBlank()) return ToolResult.Error("install_bundle 需要 target（插件模块名）")
-                    ctx.ui.onProgress?.invoke("安装 $target（宿主内 npm install，可能几分钟）…")
+                    ctx.ui.onProgress("安装 $target（宿主内 npm install，可能几分钟）…")
                     when (val r = PluginManager.install(target)) {
                         is PluginManager.Result.Ok -> ToolResult.Success("已安装并加载: ${r.value}")
                         is PluginManager.Result.Err -> ToolResult.Error("安装失败: ${r.message}")

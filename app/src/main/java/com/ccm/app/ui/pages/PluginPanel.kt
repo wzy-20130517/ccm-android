@@ -117,7 +117,7 @@ fun PluginPanel(modifier: Modifier = Modifier) {
             verticalAlignment = Alignment.Top,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("插件", style = CCMText.title16, color = colors.textMain)
+                Text("插件", style = CCMText.body16Bold, color = colors.textMain)
                 Spacer(Modifier.height(2.dp))
                 Text(
                     "DSH 插件（Cordis 框架）—— 常驻宿主进程的扩展，与「连接器」不同层次。",
@@ -156,12 +156,12 @@ fun PluginPanel(modifier: Modifier = Modifier) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0x1AF44336))
+                    .background(colors.error.copy(alpha = 0.10f))
                     .padding(horizontal = 12.dp, vertical = 9.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(error, style = CCMText.body12, color = Color(0xFFF44336), modifier = Modifier.weight(1f))
-                Text("✕", color = Color(0x99F44336), modifier = Modifier.clickable { error = "" })
+                Text(error, style = CCMText.body12, color = colors.error, modifier = Modifier.weight(1f))
+                Text("✕", color = colors.error.copy(alpha = 0.6f), modifier = Modifier.clickable { error = "" })
             }
         }
 
@@ -216,7 +216,7 @@ fun PluginPanel(modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxWidth().padding(top = 48.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text("插件宿主未运行", style = CCMText.title15, color = colors.textMain)
+                Text("插件宿主未运行", style = CCMText.body15, color = colors.textMain)
                 Spacer(Modifier.height(6.dp))
                 Text(
                     "无法连接到 DSH 宿主（proot 内 127.0.0.1:8790）",
@@ -394,7 +394,7 @@ private fun PluginRow(
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-            .background(colors.cardBg)
+            .background(colors.bgSidebar)
             .padding(horizontal = 14.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -442,7 +442,7 @@ private fun BundleRow(bundle: PluginManager.Bundle, installed: Boolean, busy: Bo
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-            .background(colors.cardBg)
+            .background(colors.bgSidebar)
             .padding(horizontal = 14.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -486,7 +486,7 @@ private fun ProviderRow(p: PluginManager.Provider) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-            .background(colors.cardBg)
+            .background(colors.bgSidebar)
             .padding(horizontal = 14.dp, vertical = 11.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -546,7 +546,7 @@ private fun InstallBox(
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .border(1.dp, colors.border, RoundedCornerShape(12.dp))
-            .background(colors.cardBg)
+            .background(colors.bgSidebar)
             .padding(14.dp),
     ) {
         Text("安装插件包", style = CCMText.body13.copy(fontWeight = FontWeight.Medium), color = colors.textMain)
