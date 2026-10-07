@@ -76,6 +76,28 @@ class DshHostManager(private val context: Context) {
     /** 宿主部署目录（rootfs 内）。 */
     private fun hostDir(): File = File(runtime.rootfsDir(), HOST_DIR.removePrefix("/"))
 
+    /**
+     * 探 rootfs 内 node 的大版本（如 18/22/24）。没装返回 0。
+     * 走 `node --version`（PATH 里 /usr/local 优先于 /usr/bin）。
+     */
+    private fun probeNodeMajor(): Int {
+        var major = 0
+        try {
+            runtime.execWithTimeout(
+                command = listOf("/bin/bash", "-c", "node --version 2>/dev/null || echo v0"),
+                workDir = "/root",
+                onLine = { line ->
+                    Regex("v(\\d+)").find(line.trim())?.let {
+                        major = it.groupValues[1].toIntOrNull() ?: 0
+                    }
+                },
+                timeoutMs = 15_000L,
+                idleMs = 10_000L,
+            )
+        } catch (_: Throwable) { /* 返回 0 → 触发升级路径 */ }
+        return major
+    }
+
     sealed interface State {
         /** 未部署（assets 文件还没拷进 rootfs） */
         data object NotInstalled : State
@@ -150,6 +172,28 @@ class DshHostManager(private val context: Context) {
             if (!mcpInstaller.ensureNode { s -> onLog(s) }) {
                 onLog("Node 安装失败")
                 return@withContext false
+            }
+
+            // 2.5 Node 版本（宿主要 22+ —— 真机崩过：dsh-subprocess-local
+            //     用的 node:util.getSystemErrorMessage 是 22.3+ 的 API，
+            //     apt 的 18.19.1 上 SyntaxError 直接退不出）。
+            //     升级走 ToolchainCatalog 的 nodejs 工具链（官方 tarball →
+            //     /usr/local/bin/node，PATH 优先于 /usr/bin 的 apt 版）。
+            val nodeMajor = probeNodeMajor()
+            if (nodeMajor < 22) {
+                onLog("Node $nodeMajor 过旧（宿主要求 22+），升级到 " +
+                    com.ccm.app.runtime.ToolchainCatalog.NODE_VERSION + "…")
+                val upgraded = com.ccm.app.runtime.RootfsManager(context).installToolchains(
+                    selected = setOf("nodejs"),
+                    exec = { cmd, ln -> runtime.exec(command = cmd, onLine = ln) },
+                    onLine = { s -> onLog(s) },
+                )
+                val after = probeNodeMajor()
+                if (!upgraded || after < 22) {
+                    onLog("Node 升级失败（当前 $after）")
+                    return@withContext false
+                }
+                onLog("Node 已升级到 v$after")
             }
 
             // 3. 依赖（120+ 包，首次约几分钟到十几分钟，取决于网络）
