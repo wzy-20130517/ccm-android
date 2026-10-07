@@ -1345,6 +1345,36 @@ private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): S
             }
         }
 
+        // ── /coordinate、/cowork —— 协调者模式（2026-10-07 对齐 CLI）──────────
+        //
+        // 开启后主对话只做编排（拆解/派活/汇总），不亲自改代码；
+        // 编排能力来自既有的 Agent / SendMessage / AgentStop / TeamCreate 工具。
+        // 状态与实现在 SlashCoordinate（进程级单例，对齐 CLI 的 CoordinatorMode）。
+        //
+        // 【与 Coordinator 子 agent 类型别混】那个是「被派出去的某个子 agent 是
+        // 协调者」，本命令是「主对话本人是协调者」——两者可同时存在。
+        "coordinate", "cowork" -> SlashCoordinate.dispatch(ctx, arg)
+
+        // ── /workflow —— 阶段化工作流说明（2026-10-07 对齐 CLI）─────────────
+        //
+        // CLI 是纯文字说明（`index.mjs` case 'workflow' 返回一段字符串）。
+        // APK 侧 AgentWorkflow 工具已注册（Explore → Plan → Implement → Review），
+        // 这里给用户侧入口 + 讲清与 Agent 工具的分工。
+        "workflow" -> SlashResult.Notice(
+            "**AgentWorkflow：Explore → Plan → Implement → Review**\n\n" +
+                "固定流程的多阶段子 Agent 工作流：\n" +
+                "- **Explore** — 只读调查，摸清代码结构\n" +
+                "- **Plan** — 只读分析，给出执行计划\n" +
+                "- **Implement** — 实施改动（本阶段工具不限）\n" +
+                "- **Review** — 只读审查，找问题\n\n" +
+                "每阶段独立上下文、工具白名单、轮次上限和超时；阶段间只传压缩报告。\n" +
+                "**由 Agent 工具调用**（工具名 `AgentWorkflow`），默认不后台运行。\n\n" +
+                "与 Agent 工具的区别：\n" +
+                "- `AgentWorkflow` = 固定流程（顺序不可变），适合复杂多文件任务\n" +
+                "- `Agent` = 灵活分工（模型自己决定派几个、什么角色）\n\n" +
+                "⚠ 4 个阶段串行执行，整轮耗时较长；简单任务直接自己做，别用它。",
+        )
+
         // ── /imagegen —— 生图配置（对齐 CLI /imagegen）──────────────────────
         //
         // 落盘位置：config.json 的 imageGen 字段（与 CLI 同字段，配置可互搬）。
