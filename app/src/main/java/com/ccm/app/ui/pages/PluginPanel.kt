@@ -72,9 +72,12 @@ fun PluginPanel(modifier: Modifier = Modifier) {
                         host.state() is DshHostManager.State.DepsMissing
                     ) {
                         logLine = "首次安装插件宿主（约 334MB，可能十几分钟）…"
-                        val ok = host.deploy { s -> logLine = s }
+                        var lastLog = ""
+                        val ok = host.deploy { s -> lastLog = s; logLine = s }
                         if (!ok) {
-                            error = "宿主部署失败（Node 或依赖没装上）"
+                            // 带上最后一行日志 —— 光说「部署失败」分不清是
+                            // rootfs 没装 / Node 装不上 / npm 依赖失败
+                            error = "宿主部署失败：" + lastLog.ifBlank { "（Node 或依赖没装上）" }
                             loading = false
                             return@launch
                         }

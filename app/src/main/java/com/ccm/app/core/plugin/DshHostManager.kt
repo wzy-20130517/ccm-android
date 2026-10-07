@@ -89,6 +89,15 @@ class DshHostManager(private val context: Context) {
      */
     suspend fun deploy(onLog: (String) -> Unit = {}): Boolean = withContext(Dispatchers.IO) {
         try {
+            // ── 前置：rootfs 必须已装 ─────────────────────────────
+            // 首次引导页的「安装 Linux 运行环境」没走完时，rootfs 目录是
+            // 空的（只有 mkdirs 沿途创建的 root/），apt/node 全不存在 ——
+            // 不检查的话会白跑到 ensureNode 才失败，错误还看不出根因。
+            if (!com.ccm.app.runtime.RootfsManager(context).isInstalled()) {
+                onLog("Linux 运行环境未安装（rootfs 缺失）—— 先在首次启动引导页完成「安装 Linux 运行环境」，或到 设置 → 环境 安装")
+                return@withContext false
+            }
+
             val hostDir = File(runtime.rootfsDir(), HOST_DIR.removePrefix("/"))
 
             // 1. 拷核心文件（每次覆盖 —— APK 升级可能改了它们）
