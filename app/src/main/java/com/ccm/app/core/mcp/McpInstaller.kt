@@ -56,9 +56,13 @@ class McpInstaller(
      * @return 成功与否
      */
     suspend fun ensureNode(onProgress: Progress? = null): Boolean {
-        // 1. 检测
-        if (hasNode()) {
-            Log.i(TAG, "node 已就绪")
+        // 1. 检测 —— 【2026-10-07 修】原来只看 hasNode()，而真实调用方
+        // （MCP 装包 / 插件宿主 npm ci）全都要 npm。真机实测踩过：
+        // 上一轮 apt 部分成功（node 在、npm 不在），这一轮 hasNode()
+        // 为 true 直接短路 → npm 永远没机会装 → npm ci 报
+        // `npm: command not found` (127)。两个都在才算就绪。
+        if (hasNode() && hasNpm()) {
+            Log.i(TAG, "node + npm 已就绪")
             return true
         }
 
@@ -104,11 +108,24 @@ class McpInstaller(
             Log.e(TAG, "装 node 失败：${t.message}", t)
         }
 
-        // 3. 复查
-        val result = hasNode()
-        Log.i(TAG, "node 安装${if (result) "成功" else "失败"}")
+        // 3. 复查（node 和 npm 都要有 —— 只有 node 的话调用方照样炸）
+        val result = hasNode() && hasNpm()
+        Log.i(TAG, "node+npm 安装${if (result) "成功" else "失败"}")
         return result
     }
+
+    /** rootfs 里有没有 npm（ensureNode 的就绪判据之一）。 */
+    fun hasNpm(): Boolean = try {
+        var found = false
+        runtime.execWithTimeout(
+            command = listOf("/bin/bash", "-c", "command -v npm || true"),
+            workDir = "/root",
+            onLine = { line -> if (line.trim().endsWith("/npm")) found = true },
+            timeoutMs = 10_000,
+            idleMs = 5_000,
+        )
+        found
+    } catch (_: Throwable) { false }
 
     /** rootfs 里有没有 node。 */
     fun hasNode(): Boolean = try {
