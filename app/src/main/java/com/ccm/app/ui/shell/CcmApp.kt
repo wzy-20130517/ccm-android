@@ -196,8 +196,10 @@ enum class CcmRoute(val path: String) {
     ARTIFACTS("/artifacts"),
     COWORK("/cowork"),
     SCHEDULED("/scheduled"),
-    LOGIN("/login"),
-    ADMIN("/admin");
+    LOGIN("/login");
+    // 【2026-10-07 删】原 ADMIN("/admin") —— 对应 ui/admin/ 那套管理后台
+    // （复刻 Web 时多做的 UI，7 个页面全零调用、数据全硬编码）。
+    // 已随 ui/admin/ 目录一起删除。
 
     companion object {
         /** 从路径解析路由（未知路径回 [HOME]，对齐 Web 的兜底重定向） */
