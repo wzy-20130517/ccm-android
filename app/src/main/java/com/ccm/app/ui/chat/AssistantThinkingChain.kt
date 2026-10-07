@@ -346,10 +346,18 @@ private fun ThinkingDetailedEvent(
     val lineCount = detail.split('\n').count { it.trim().isNotEmpty() }
     val expandable = detail.length > 280 || lineCount > 8
 
-    // 行进入动画（延迟 index × 45ms，与普通版一致）
+    // 行进入动画（延迟 index × 45ms，**封顶 200ms**）
+    //
+    // 【2026-10-06 修「思维链导致页面无内容」】原延迟不封顶 —— 第 N 行
+    // 要等 N×45ms 才显示。流式输出快时（每 100ms 一行），屏幕上会同时
+    // 有十几行处于「等待延迟」状态（alpha=0）→ 看起来大片空白。
+    // 用户报「思维链有时导致页面上无内容」。
+    //
+    // 封顶 200ms（≈前 4 行有错开感，后面的立即开始）：
+    // 保留「一条条推进」的观感，又不会让后面的行长时间不可见。
     val enter = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
-        delay(index * 45L)
+        delay(minOf(index * 45L, 200L))
         enter.animateTo(
             targetValue = 1f,
             animationSpec = tween(220, easing = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)),
@@ -586,11 +594,12 @@ private fun ThinkingTimelineEvent(
     val muted = event.kind != ThinkingEventKind.DONE
 
     // ── 行进入动画（`thought-chain-row-enter 220ms cubic-bezier(.22,1,.36,1) both`）
-    // 延迟 index × 45ms —— 逐行错开是「时间线在推进」的关键观感，
-    // 去掉延迟会变成所有行同时闪入，失去「一条条发生」的语义。
+    // 延迟 index × 45ms，**封顶 200ms** —— 逐行错开保留「时间线在推进」的
+    // 观感，但原实现不封顶，第 20 行要等 900ms 才显示；流式输出快时
+    // 屏幕上同时十几行 alpha=0 → 大片空白（用户报「思维链导致无内容」）。
     val enter = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
-        delay(index * 45L)
+        delay(minOf(index * 45L, 200L))
         enter.animateTo(
             targetValue = 1f,
             animationSpec = tween(220, easing = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)),
