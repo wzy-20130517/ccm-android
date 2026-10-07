@@ -257,6 +257,9 @@ class DshHostManager(private val context: Context) {
                 val cmd = com.ccm.app.core.mcp.McpInstaller(context, runtime)
                     .buildProotCommand("$HOST_DIR/server.mjs")
                 val pb = java.lang.ProcessBuilder(cmd)
+                // ⚠️ 必须补 proot 的 env（PROOT_TMP_DIR 等）—— 缺了直接
+                // fatal: can't create temporary file（真机 host.log 实测）
+                runtime.applyProotEnv(pb)
                 pb.redirectErrorStream(true)
                 pb.redirectOutput(
                     java.lang.ProcessBuilder.Redirect.to(File(hostDir(), "host.log")),

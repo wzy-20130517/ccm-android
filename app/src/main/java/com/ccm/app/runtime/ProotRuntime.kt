@@ -146,6 +146,31 @@ class ProotRuntime(private val context: Context) {
     val prootL2sDir: File
         get() = File(rootfs, ".l2s").apply { if (!exists()) mkdirs() }
 
+    /**
+     * 给**常驻进程**的 ProcessBuilder 补 proot 必需的环境变量。
+     *
+     * 【为什么单独抽出来】exec 内部有一份同样的设置（LD_PRELOAD 移除 /
+     * LD_LIBRARY_PATH / PROOT_LOADER / PROOT_TMP_DIR / TMPDIR），
+     * 而 DshHostManager 起常驻宿主用的是 McpInstaller.buildProotCommand
+     * + 自己 new 的 ProcessBuilder —— 没带这些 env 时 proot 直接 fatal：
+     *   `can't create temporary file: Permission denied` +
+     *   `execve(/usr/bin/env): Function not implemented`
+     * （真机 host.log 实测）。新增常驻进程入口一律调本方法，别再手拼。
+     *
+     * 【PROOT_TMP_DIR 为什么必须】App 的默认 TMPDIR 不可写，proot 启动时
+     * 要做 f2fs bug 探测，建不了临时文件就 fatal。
+     */
+    fun applyProotEnv(pb: ProcessBuilder) {
+        val env = pb.environment()
+        env.remove("LD_PRELOAD")
+        env["LD_LIBRARY_PATH"] = context.applicationInfo.nativeLibraryDir
+        val loader = prootLoaderBin
+        if (loader.exists()) env["PROOT_LOADER"] = loader.absolutePath
+        val tmp = prootTmpDir
+        env["PROOT_TMP_DIR"] = tmp.absolutePath
+        env["TMPDIR"] = tmp.absolutePath
+    }
+
     fun isReady(): Boolean = prootBin.exists() && rootfs.isDirectory
 
     /**
