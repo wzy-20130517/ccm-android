@@ -76,11 +76,24 @@ class DshHostManager(private val context: Context) {
         data class Error(val message: String) : State
     }
 
-    /** 当前状态（快速判断，不做网络健康检查） */
+    /**
+     * 当前状态（快速判断，不做网络健康检查）。
+     *
+     * ⚠️ marker 之外**还要验证 node_modules** —— 真机实测踩过：
+     * 旧版 deploy 的 npm 段有 bug（管道吞退出码），npm ci 失败也写了
+     * .installed，光看 marker 会误判 Ready → 跳过依赖安装直接 start
+     * → 宿主起来就崩（ERR_MODULE_NOT_FOUND）。marker 可能是假的，
+     * 依赖目录不会说谎。
+     */
     fun state(): State {
         val hostDir = File(runtime.rootfsDir(), HOST_DIR.removePrefix("/"))
         if (!File(hostDir, "server.mjs").exists()) return State.NotInstalled
         if (!File(hostDir, READY_MARKER).exists()) return State.DepsMissing
+        if (!File(hostDir, "node_modules/@deepseek-ai/cordis").exists()) {
+            // 假 marker（旧 bug 遗留）→ 按未装处理，deploy 会重跑 npm ci
+            File(hostDir, READY_MARKER).delete()
+            return State.DepsMissing
+        }
         return State.Ready
     }
 
