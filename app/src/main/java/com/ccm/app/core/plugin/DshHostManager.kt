@@ -52,6 +52,22 @@ class DshHostManager(private val context: Context) {
         /** 部署完成标记（node_modules 装完才写） */
         private const val READY_MARKER = ".installed"
 
+        /**
+         * 常驻宿主进程（2026-10-07 加）。
+         *
+         * 【为什么必须持有进程】原来 start 用 `nohup node ... &` fire-and-forget
+         * + `runtime.exec`（proot 强制 --kill-on-exit）—— exec 一返回，
+         * proot 退出就把它启动的整棵进程树杀掉（nohup 只挡 SIGHUP，挡不住
+         * proot 直接 kill）。真机实测：host.log 0 字节，宿主活不过 2 秒，
+         * 健康检查永远失败。
+         *
+         * 改成 ProcessBuilder 直接持有 proot 进程（对齐 McpStdioTransport
+         * 跑 MCP server 的做法）—— Process 活着 proot 就活着，node 自然常驻。
+         * 放 companion：DshHostManager 每次 new，实例字段存不住进程句柄。
+         */
+        @Volatile
+        private var hostProcess: Process? = null
+
         private const val HEALTH_PATH = "/control/status"
     }
 
@@ -234,21 +250,28 @@ class DshHostManager(private val context: Context) {
             }
 
             onLog("启动插件宿主…")
-            // nohup 后台起，输出进日志文件方便排查
-            runtime.exec(
-                command = listOf(
-                    "/bin/bash", "-c",
-                    "cd $HOST_DIR && nohup node server.mjs > host.log 2>&1 & " +
-                        "sleep 2; echo STARTED",
-                ),
-                workDir = "/root",
-                onLine = { line ->
-                    if (line.contains("STARTED")) Log.i(TAG, "host 启动指令已发出")
-                },
-            )
 
-            // 等健康检查通过（最多 ~10s）
-            repeat(10) {
+            // 常驻模式：ProcessBuilder 持有 proot 进程（见 hostProcess 注释）
+            // —— 不能用 runtime.exec（--kill-on-exit 会把 nohup 的 node 杀掉）。
+            try {
+                val cmd = com.ccm.app.core.mcp.McpInstaller(context, runtime)
+                    .buildProotCommand("$HOST_DIR/server.mjs")
+                val pb = java.lang.ProcessBuilder(cmd)
+                pb.redirectErrorStream(true)
+                pb.redirectOutput(
+                    java.lang.ProcessBuilder.Redirect.to(File(hostDir(), "host.log")),
+                )
+                // 旧句柄先杀干净（重复 start 会泄漏进程）
+                try { hostProcess?.destroyForcibly() } catch (_: Throwable) {}
+                hostProcess = pb.start()
+                Log.i(TAG, "宿主进程已启动 pid=${hostProcess?.pid()}")
+            } catch (t: Throwable) {
+                onLog("宿主进程创建失败: ${t.message}")
+                return@withContext false
+            }
+
+            // 等健康检查通过（最多 ~15s；首次加载插件要几秒）
+            repeat(15) {
                 if (isAlive()) {
                     onLog("宿主已启动（$BASE_URL）")
                     return@withContext true
@@ -277,7 +300,12 @@ class DshHostManager(private val context: Context) {
     /** 停止宿主进程 */
     suspend fun stop(onLog: (String) -> Unit = {}) = withContext(Dispatchers.IO) {
         try {
-            // pkill 按启动命令匹配；node server.mjs 是宿主专属命令
+            // 先杀持有的常驻进程（常驻模式下 pkill 不一定找得到）
+            try {
+                hostProcess?.destroyForcibly()
+                hostProcess = null
+            } catch (_: Throwable) {}
+            // 兜底：pkill 按命令匹配（进程句柄丢失/别的实例起的）
             runtime.exec(
                 command = listOf("/bin/bash", "-c", "pkill -f 'node server.mjs'; echo KILLED"),
                 workDir = "/root",
