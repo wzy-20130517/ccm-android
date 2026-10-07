@@ -493,20 +493,25 @@ class ToolsBootstrap(
             // ── 【2026-10-06 问题40】MCP 工具（动态注册）─────────────
             //
             // MCP server 的工具是**运行时发现的**（连上后 listTools），
-            // 不能在编译期列出来。所以这里同步读配置 + 用已缓存的工具列表
-            // 注册（首次连接在 App 启动后异步做，见 McpBootstrap）。
+            // 不能在编译期列出来。所以这里同步读配置 + 注册**通用入口工具**，
+            // 真正的工具列表由 McpGenericTool 在首次调用时懒加载。
             //
             // 配置：files/mcp.json（对齐 CLI 的 ~/.claude-code-mobile/mcp.json）
+            //
+            // 【2026-10-07】原来只注册 `url != null`（HTTP）的 —— stdio 的
+            // 配置（mail-qq 这类 node server）连工具入口都看不到。现在
+            // 用 ServerConfig.runnable 判据，两类都注册；stdio 的启动
+            // 由 McpManager 经 McpLaunch 包 proot 完成（node 在 rootfs 里）。
             try {
                 val mcpFile = File(storage.rootDir, "mcp.json")
                 if (mcpFile.exists()) {
-                    val mgr = com.ccm.app.core.mcp.McpManager(mcpFile)
-                    // 同步读配置里 HTTP 类型的服务器，注册**占位工具**
-                    // （真正的工具列表在首次调用时懒加载 —— 见 McpToolAdapter）
+                    val mgr = com.ccm.app.core.mcp.McpManager(
+                        configFile = mcpFile,
+                        runtime = com.ccm.app.runtime.ProotRuntime(context),
+                    )
                     mgr.loadServers()
-                        .filter { !it.disabled && it.url != null }
+                        .filter { !it.disabled && it.runnable }
                         .forEach { cfg ->
-                            // 用通用「调用」工具（因为编译期不知道有哪些工具）
                             add(com.ccm.app.tools.mcp.McpGenericTool(mgr, cfg.name))
                         }
                 }

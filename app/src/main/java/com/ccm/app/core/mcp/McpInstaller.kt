@@ -147,13 +147,39 @@ class McpInstaller(
      * ProcessBuilder 直接跑**（不经过 proot）—— 所以这里要生成
      * 「proot 包装 + node 脚本」的完整命令。
      *
-     * @param serverPath rootfs 里的入口脚本路径（如 /root/.ccm/mcp/mail-qq/server.mjs）
+     * 【2026-10-07 修两处】
+     *
+     * ① **node 路径不再写死 `/usr/bin/node`**。apt 装的是 18，而项目里
+     *    多处会把它升级到 `/usr/local/bin/node` 的 24（插件宿主明确要求
+     *    22+）。绝对路径绕过 PATH，升级过的 node 用不上 —— DshHostManager
+     *    真机踩过同款（`host.log` 仍报 v18 SyntaxError），它在自己那侧做了
+     *    替换。这里按 PATH 优先级现查，写出来的配置本身就对。
+     *
+     * ② **serverPath 支持宿主机路径**（自动翻译成客户机路径）。
+     *    本方法的契约一直是「客户机路径」，但市场安装链
+     *    （MarketClient）传的是 `File(rootfs, "root/.ccm/mcp/<id>")` 的
+     *    `absolutePath`（**宿主机**视角）—— 生成的 argv 里挂着宿主路径，
+     *    proot 里的 node 按客户机视角解析不到。幂等翻译兜住这条链。
+     *
+     * @param serverPath rootfs 里的入口脚本路径（客户机或宿主机视角均可）
      * @param env 环境变量
      * @return 可直接给 ProcessBuilder 的 argv
      */
     fun buildProotCommand(serverPath: String, env: Map<String, String> = emptyMap()): List<String> {
-        val rootfs = runtime.rootfsDir().absolutePath
+        val rootfs = runtime.rootfsDir().absolutePath.trimEnd('/')
         val libDir = context.applicationInfo.nativeLibraryDir
+
+        // 宿主机路径 → 客户机路径（幂等：已是客户机路径时原样）
+        val guestScript = if (serverPath.startsWith("$rootfs/")) {
+            serverPath.removePrefix(rootfs)
+        } else serverPath
+
+        // 按 PATH 优先级选 node：升级到 /usr/local/bin 的版本优先于 apt 的
+        val nodeBin = if (File(runtime.rootfsDir(), "usr/local/bin/node").exists()) {
+            "/usr/local/bin/node"
+        } else {
+            "/usr/bin/node"
+        }
 
         val cmd = mutableListOf<String>()
         cmd += "$libDir/libproot.so"
@@ -175,8 +201,8 @@ class McpInstaller(
         cmd += "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         // 用户配的环境变量
         env.forEach { (k, v) -> cmd += "$k=$v" }
-        cmd += "/usr/bin/node"
-        cmd += serverPath
+        cmd += nodeBin
+        cmd += guestScript
         return cmd
     }
 
