@@ -264,7 +264,9 @@ class DshHostManager(private val context: Context) {
                 // 旧句柄先杀干净（重复 start 会泄漏进程）
                 try { hostProcess?.destroyForcibly() } catch (_: Throwable) {}
                 hostProcess = pb.start()
-                Log.i(TAG, "宿主进程已启动 pid=${hostProcess?.pid()}")
+                // 不打 pid —— java.lang.Process.pid() 在 Android 上
+                // 受 API 级别限制（CI 实测 Unresolved reference）
+                Log.i(TAG, "宿主进程已启动")
             } catch (t: Throwable) {
                 onLog("宿主进程创建失败: ${t.message}")
                 return@withContext false
