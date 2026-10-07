@@ -101,6 +101,22 @@ fun MarketScreen(
                 val o = org.json.JSONObject(mcpFile.readText())
                 o.optJSONObject("mcpServers")?.keys()?.forEach { s += it }
             }
+            // DSH 插件：已装清单在宿主的 plugins.json（rootfs 内
+            // /root/.claude-code-mobile/dsh-host/plugins.json，
+            // DATA_DIR 默认值，见 server.mjs）。spec 与 MarketItem.entry
+            // 提取后的格式一致（substringAfter("add ")）。
+            try {
+                val pj = java.io.File(
+                    com.ccm.app.runtime.ProotRuntime(ctx).rootfsDir(),
+                    "root/.claude-code-mobile/dsh-host/plugins.json",
+                )
+                if (pj.exists()) {
+                    val arr = org.json.JSONObject(pj.readText()).optJSONArray("plugins")
+                    if (arr != null) {
+                        for (i in 0 until arr.length()) s += arr.optJSONObject(i)?.optString("spec").orEmpty()
+                    }
+                }
+            } catch (_: Throwable) {}
         } catch (_: Throwable) {}
         s
     }
@@ -296,6 +312,9 @@ fun MarketScreen(
  */
 private fun installedNameOf(item: MarketItem): String = when (item.type) {
     "skill" -> item.id.removePrefix("anthropic-skill-").removePrefix("skill-").ifBlank { item.id }
+    // plugin：key 是宿主 plugins.json 里的 spec（entry 是安装命令，
+    // 要取 "add " 后面的部分）—— 与 MarketClient.install 的提取逻辑一致
+    "plugin" -> item.entry.substringAfter("add ", item.entry).trim()
     else -> item.id
 }
 
@@ -383,22 +402,10 @@ private fun MarketItemCard(
         }
         when {
             busy -> Text("…", style = CCMText.body12, color = colors.textSecondary)
-            // 【2026-10-06 加】DSH 插件不在手机上装（要走 dsh-host）——
-            // 只提供「复制安装命令」，用户拿去在 CLI/服务器上跑。
-            // 显示成"复制命令"而不是"下载"，避免误导。
-            item.type == "plugin" && item.entry.isNotBlank() -> Text(
-                "复制命令",
-                style = CCMText.body12.copy(fontSize = 11.sp, fontWeight = FontWeight.Medium),
-                color = colors.accent,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .clickable {
-                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                            as android.content.ClipboardManager
-                        cm.setPrimaryClip(android.content.ClipData.newPlainText("dsh", item.entry))
-                    }
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
-            )
+            // 【2026-10-07 改】DSH 插件原来只有「复制安装命令」（当时没有
+            // 本地宿主）。现在 DshHostManager 会在 proot 里部署 dsh-host，
+            // plugin 条目走正常「下载」按钮 → MarketClient.install 的
+            // "plugin" 分支 → 宿主 npm install + 热加载。
             installed -> Text(
                 "卸载",
                 style = CCMText.body12.copy(fontSize = 11.sp),

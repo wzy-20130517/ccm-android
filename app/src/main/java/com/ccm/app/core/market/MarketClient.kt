@@ -271,6 +271,45 @@ object MarketClient {
                     o.put("mcpServers", servers)
                     mcpFile.writeText(o.toString(2))
                 }
+                "plugin" -> {
+                    // DSH 插件：走 proot 里的 dsh-host（DshHostManager 部署 + 启动，
+                    // 再调 /control/install 让宿主自己 npm install + 热加载）。
+                    val host = com.ccm.app.core.plugin.DshHostManager(ctx)
+
+                    // 首次使用：部署文件 + Node + 依赖（334MB，一次性的）
+                    if (host.state() is com.ccm.app.core.plugin.DshHostManager.State.NotInstalled ||
+                        host.state() is com.ccm.app.core.plugin.DshHostManager.State.DepsMissing
+                    ) {
+                        onLog("首次安装插件宿主（较大，约 334MB）…")
+                        if (!host.deploy { s -> onLog(s) }) {
+                            onLog("❌ 插件宿主部署失败")
+                            return@withContext false
+                        }
+                    }
+                    if (!host.isAlive() && !host.start { s -> onLog(s) }) {
+                        onLog("❌ 插件宿主启动失败")
+                        return@withContext false
+                    }
+
+                    // entry 形如「dsh plugin add github:owner/slug」或裸包名
+                    val spec = item.entry
+                        .substringAfter("add ", item.entry)
+                        .trim()
+                    if (spec.isBlank()) {
+                        onLog("❌ 该条目没有可识别的安装规格")
+                        return@withContext false
+                    }
+                    onLog("安装插件 $spec（npm，可能需要几分钟）…")
+                    when (val r = com.ccm.app.core.plugin.PluginManager.install(spec)) {
+                        is com.ccm.app.core.plugin.PluginManager.Result.Ok -> {
+                            onLog("✅ 插件 $spec 已安装")
+                        }
+                        is com.ccm.app.core.plugin.PluginManager.Result.Err -> {
+                            onLog("❌ ${r.message}")
+                            return@withContext false
+                        }
+                    }
+                }
                 else -> {
                     onLog("❌ 未知类型：${item.type}")
                     return@withContext false
@@ -303,6 +342,16 @@ object MarketClient {
                     File(ctx.filesDir, "skills/${item.id}").deleteRecursively()
                     File(ctx.filesDir, "skills/$skillName").deleteRecursively()
                     File(ctx.filesDir, "skills/${item.id}.md").delete()
+                }
+                "plugin" -> {
+                    // 从宿主配置移除 + 热卸载（npm 包保留，与 CLI 侧行为一致）
+                    val host = com.ccm.app.core.plugin.DshHostManager(ctx)
+                    if (host.isAlive()) {
+                        val spec = item.entry
+                            .substringAfter("add ", item.entry)
+                            .trim()
+                        com.ccm.app.core.plugin.PluginManager.remove(spec)
+                    }
                 }
                 "mcp" -> {
                     // 删 rootfs 里的 + mcp.json 里的
