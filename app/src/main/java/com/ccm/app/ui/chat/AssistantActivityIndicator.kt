@@ -101,23 +101,25 @@ fun AssistantActivityIndicator(
     didLongThinking: Boolean = false,
 ) {
     val context = LocalContext.current
-    // path 解析一次（22K 字符，每帧重解析会卡）
-    val framePath: Path? = remember {
-        try {
-            val raw = context.resources.openRawResource(
-                context.resources.getIdentifier(
-                    "claude_thinking_sprite", "raw", context.packageName,
-                ),
-            ).bufferedReader().use { it.readText() }
-            val androidPath = PathParser.createPathFromPathData(raw)
-            if (androidPath == null) null
-            else Path().apply { addPath(androidPath.asComposePath()) }
-        } catch (_: Throwable) {
-            null
+    // 【2026-10-06 改】path 解析一次（22K 字符）—— 但原来在 **remember 里同步做**，
+    // 首次组合时主线程要解析 22K 的 SVG path（1~2 帧卡顿）。
+    // 现在：全局缓存（顶层 object）+ 首次异步解析。
+    //   · 缓存命中（第二次以后）→ 直接可用，零开销
+    //   · 首次 → 先返回 null（不渲染），IO 线程解析完回填
+    var framePath by remember {
+        mutableStateOf(SpriteCache.get(context))
+    }
+    if (framePath == null) {
+        androidx.compose.runtime.LaunchedEffect(context) {
+            val p = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                SpriteCache.load(context)
+            }
+            if (p != null) framePath = p
         }
     }
 
-    if (framePath == null) return   // 资产缺失时静默（不崩、不占位）
+    val fp = framePath
+    if (fp == null) return   // 资产缺失/尚未解析完 → 静默（不崩、不占位）
 
     // ── dissolve 状态机 ────────────────────────────────────────────────
     // 对应 Web 的 `previousPhaseRef` + `shouldPlayDissolve`：
@@ -190,9 +192,53 @@ fun AssistantActivityIndicator(
             //    15 帧一帧也切不动。
             scale(scaleF, scaleF, pivot = Offset.Zero) {
                 translate(top = -frame * SPRITE_FRAME_SIZE) {
-                    drawPath(framePath, color)
+                    drawPath(fp, color)
                 }
             }
+        }
+    }
+}
+
+/**
+ * 思维指示器精灵图的路径缓存（2026-10-06 加）。
+ *
+ * 【为什么需要】22K 字符的 SVG path 解析（PathParser）在主线程要 1~2 帧。
+ * 用顶层 object 做**跨组合**缓存 —— 解析一次后所有实例直接命中
+ * （原来的 remember 只在单个组件实例内缓存，切页重建又要解析一次）。
+ *
+ * ⚠️ 用 object（不是 class）是有意的：App 内只需要一份 path。
+ */
+private object SpriteCache {
+    @Volatile private var cached: androidx.compose.ui.graphics.Path? = null
+    @Volatile private var loaded = false
+
+    /** 同步取（已加载过时直接返回）。 */
+    fun get(context: android.content.Context): androidx.compose.ui.graphics.Path? {
+        if (loaded) return cached
+        return null   // 未加载 → 调用方走异步
+    }
+
+    /** 异步加载（IO 线程调）。 */
+    fun load(context: android.content.Context): androidx.compose.ui.graphics.Path? {
+        if (loaded) return cached
+        return try {
+            val raw = context.resources.openRawResource(
+                context.resources.getIdentifier(
+                    "claude_thinking_sprite", "raw", context.packageName,
+                ),
+            ).bufferedReader().use { it.readText() }
+            // ⚠️ 用 androidx.core.graphics.PathParser（Android 平台解析器）——
+            // 与原来 remember 里的实现一致。不是 compose 的 vector.PathParser。
+            val androidPath = PathParser.createPathFromPathData(raw)
+            val p = if (androidPath == null) null
+            else androidx.compose.ui.graphics.Path().apply { addPath(androidPath.asComposePath()) }
+            cached = p
+            loaded = true
+            p
+        } catch (_: Throwable) {
+            loaded = true   // 失败也标记（不反复重试）
+            cached = null
+            null
         }
     }
 }

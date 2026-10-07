@@ -132,6 +132,8 @@ class AppContainer private constructor(
     ): SubAgentManager {
         val mgr = SubAgentManager(scope = scope, spawn = spawn)
         subAgents = mgr
+        // 同步到 companion 静态 holder（spawnSubAgent 闭包读它 —— 见 holder 注释）
+        activeSubAgentManager = mgr
         return mgr
     }
 
@@ -380,6 +382,20 @@ class AppContainer private constructor(
     }
 
     companion object {
+
+        /**
+         * 当前生效的 SubAgentManager（2026-10-06 加）。
+         *
+         * 【为什么放 companion 静态字段】`build()` 是静态工厂函数，
+         * 里面的 spawnSubAgent 闭包**访问不到实例属性**（this 不在作用域）——
+         * 而它需要在「后台派活」时拿到 manager。
+         * `attachSubAgents` 装配时把 manager 存这里，闭包运行时读它。
+         *
+         * 单例语义成立：App 同时只有一个 AppContainer 生效（进程级单例，
+         * rebuild 会换新实例，但 manager 也随之重建 —— 见 attachSubAgents 调用点）。
+         */
+        @Volatile
+        var activeSubAgentManager: com.ccm.app.core.agent.SubAgentManager? = null
 
         /**
          * 默认系统提示词（问题29 修复：从 assets 读完整版）。
@@ -690,7 +706,10 @@ class AppContainer private constructor(
                         // taskId 生成、并发上限、运行中登记）。manager 未装配时
                         // 退回同步（至少功能可用，只是不后台）。
                         if (spec.runInBackground) {
-                            val mgr = subAgents
+                            // ⚠️ 不能用 this.subAgents —— 本函数在 **companion object**
+                            // 里（build 是静态工厂），访问不到实例属性（编译报
+                            // Unresolved reference）。用 companion 的静态 holder。
+                            val mgr = activeSubAgentManager
                             if (mgr != null) {
                                 val r = mgr.spawnAsync(spec)
                                 return@spawn r

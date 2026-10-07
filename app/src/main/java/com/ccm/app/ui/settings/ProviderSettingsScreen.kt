@@ -156,6 +156,12 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
     // 防抖重建的触发计数（逐字符输入用，见 DebouncedRebuild）
     var keyChangeTick by remember { mutableStateOf(0) }
     var urlChangeTick by remember { mutableStateOf(0) }
+    // 【2026-10-06 加】显示名也要防抖 —— 原来 onValueChange 里每次击键
+    // 都 store.setDisplayName（序列化+写盘，主线程）+ refreshTick++
+    // （refreshTick 又让一批 remember 重跑、重读磁盘）。
+    // 输入较长名字时掉帧，而且 refreshTick 变化正是「池密钥明文回显」
+    // bug 的触发路径（那个 bug 已修，但这个隐患仍在）。
+    var nameChangeTick by remember { mutableStateOf(0) }
     var fetchingModels by remember { mutableStateOf(false) }
     // 【2026-10-06 问题6】模型勾选弹窗的状态
     var showModelPicker by remember { mutableStateOf(false) }
@@ -183,6 +189,25 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
 
     // 防抖重建：key / URL 输入停止 800ms 后重建会话（改了当前 Provider 才重建）
     DebouncedRebuild(trigger = keyChangeTick, changedId = selectedId)
+    // 密钥的防抖落盘（500ms 无输入后写）—— 与上面的 DebouncedRebuild
+    // （800ms 后重建会话）配合：先落盘，再重建。
+    androidx.compose.runtime.LaunchedEffect(keyChangeTick) {
+        if (keyChangeTick <= 0) return@LaunchedEffect
+        kotlinx.coroutines.delay(500)
+        selectedId.takeIf { it.isNotBlank() }?.let { id ->
+            store?.setKey(id, apiKey)
+            refreshTick++
+        }
+    }
+    // 显示名的防抖落盘（500ms 无输入后写）
+    androidx.compose.runtime.LaunchedEffect(nameChangeTick) {
+        if (nameChangeTick <= 0) return@LaunchedEffect
+        kotlinx.coroutines.delay(500)
+        selectedId.takeIf { it.isNotBlank() }?.let { id ->
+            store?.setDisplayName(id, dispName)
+            refreshTick++
+        }
+    }
     DebouncedRebuild(trigger = urlChangeTick, changedId = selectedId)
 
     Column(modifier = modifier) {
@@ -356,12 +381,14 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                                 // （掩码态编辑会把「sk-ab…3fgh」的省略号后内容写进配置）
                                 if (!keyPoolMode && showKey) {
                                     apiKey = v
-                                    // 立刻落盘（对齐 CLI 的 /key 命令「立即生效」）
-                                    selected?.let { sel ->
-                                        store?.setKey(sel.id, v)
-                                        keyChangeTick++   // 防抖重建（见 DebouncedRebuild）
-                                    }
-                                    refreshTick++   // 让「池·N」等派生显示跟着变
+                                    // 【2026-10-06 改防抖】原来每敲一个字符就
+                                    // setKey（写盘）+ keyChangeTick++ + refreshTick++
+                                    // —— 三个都逐字符触发（主线程 IO + 一批
+                                    // remember 重跑）。长 key（sk- 后几十字符）
+                                    // 输入时明显掉帧。
+                                    // 现在只更新 UI state + 防抖计数，实际写盘
+                                    // 由下面的 LaunchedEffect（500ms 无输入后）执行。
+                                    keyChangeTick++
                                 }
                             },
                             placeholder = if (keyPoolMode) "轮换池（只读）" else "sk-...",
@@ -406,9 +433,13 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                     SettingsTextField(
                         value = dispName,
                         onValueChange = {
+                            // 【2026-10-06 改防抖】原来每敲一个字符就
+                            // setDisplayName（写盘）+ refreshTick++（触发一批
+                            // remember 重跑重读磁盘）—— 主线程逐字符 IO。
+                            // 现在只更新 UI state + 递增防抖计数，实际写盘
+                            // 由下面的 LaunchedEffect（500ms 无输入后）执行。
                             dispName = it
-                            selected?.let { sel -> store?.setDisplayName(sel.id, it) }
-                            refreshTick++
+                            nameChangeTick++
                         },
                         placeholder = "Claude",
                     )

@@ -351,13 +351,9 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
             activeSession = g
         }
     }
-    // 【2026-10-06 问题21 诊断】打状态变化（排查「切页回来变首页」）
-    LaunchedEffect(route, activeSession) {
-        android.util.Log.i(
-            "CcmApp",
-            "route=$route | activeSession=${if (activeSession != null) "有" else "null"}",
-        )
-    }
+    // 【2026-10-06 删】原来这里有「问题21 诊断」的 logcat 日志
+    // （每次切页/切会话打一行）。诊断已完成，且它是个 LaunchedEffect ——
+    // 每切一次页就多跑一次协程，纯噪音。
     // 会话列表（侧栏最近 + 列表页共用一个数据源）
     var sessions by remember { mutableStateOf<List<SessionSummary>>(emptyList()) }
     // 列表页搜索词（受控，路由切走再回来保留）
