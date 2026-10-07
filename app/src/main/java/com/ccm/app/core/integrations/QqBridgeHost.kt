@@ -119,7 +119,10 @@ class QqBridgeHost(
             napcatApi = napcatApi,
             port = port,
             owner = owner,
-            onMessage = { msg -> injectToSession(msg) },
+            onMessage = { msg ->
+                Log.i(TAG, "onMessage 回调: ${msg.text.take(30)}")
+                injectToSession(msg)
+            },
             onAbort = { session?.stop() },
             isRunning = { session?.isRunning == true },
             scope = scope,
@@ -179,7 +182,9 @@ class QqBridgeHost(
             }
         }
 
+        Log.i(TAG, "注入会话: session=${s.hashCode()} text=${body.take(40)}")
         s.send(body, msg.imagePaths)
+        Log.i(TAG, "send 已调用")
 
         // 队列里的下一条：等当前轮跑完再注入（对齐 CLI 的 drain 循环）
         scope.launch(Dispatchers.Default) {
