@@ -198,6 +198,10 @@ fun SettingsTextField(
             cursorBrush = androidx.compose.ui.graphics.SolidColor(colors.accent),
             modifier = Modifier
                 .fillMaxWidth()
+                // 【2026-10-07】有 trailing 按钮时右侧留 56dp —— 原来输入
+                // 长文本（如完整 PAT）会溢出到 trailing 底下，文字重叠
+                //（「…SRWsX」压着「隐藏」）。
+                .padding(end = if (trailing != null) 56.dp else 0.dp)
                 .padding(vertical = SettingsInputPaddingV),
             decorationBox = { inner ->
                 if (value.isEmpty() && placeholder != null) {
