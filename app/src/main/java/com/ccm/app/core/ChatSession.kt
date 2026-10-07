@@ -507,6 +507,18 @@ class ChatSession(
      * 跟新 session 抢同一个落盘文件。
      */
     fun dispose() {
+        // 【2026-10-07】补 SessionEnd hook（对齐 CLI `index.mjs:4314`）——
+        // 原来 APK 全项目零触发（差距报告 #18）。触发点是**本方法**：
+        // 会话切换（openSession）、App 退出（AppGraph.shutdown）、rebuild
+        // 三条路径都经过 dispose。异步 fire-and-forget（不阻塞释放流程，
+        // fail-open；与 SessionStart 同款）。
+        try {
+            if (com.ccm.app.AppGraph.toolsResult?.hooks != null) {
+                scope.launch {
+                    try { triggerHook("SessionEnd", reason = "dispose") } catch (_: Throwable) {}
+                }
+            }
+        } catch (_: Throwable) {}
         try {
             container.shutdown()
         } catch (_: Throwable) {

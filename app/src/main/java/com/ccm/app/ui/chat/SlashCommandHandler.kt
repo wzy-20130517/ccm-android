@@ -845,8 +845,8 @@ private fun handleQueryCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                 if (events.isEmpty()) {
                     SlashResult.Notice(
                         "**Hooks**\n\n当前没有注册任何 hook。\n\n" +
-                            "_配置方式：在存储根放 `hooks.json`（支持 SessionStart / PreToolUse / " +
-                            "PostToolUse / UserPromptSubmit / Stop 等事件）。_",
+                            "_配置方式：在存储根放 `hooks.json`（支持 SessionStart / SessionEnd / " +
+                            "PreToolUse / PostToolUse / UserPromptSubmit / PreCompact / PostCompact / Stop 八类事件）。_",
                     )
                 } else {
                     SlashResult.Notice(
@@ -1067,6 +1067,17 @@ private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): S
 
     return when (c) {
         // ── /effort：思考强度（AppConfig.effort: String?，可选值对齐 ApiClient）────
+        // ── /effort —— 思考强度（2026-10-07 对齐 CLI：7 档 + off + replay）────
+        //
+        // CLI（`index.mjs:3670`）：7 档 + off（关思考）+ show/hide（终端渲染开关）
+        // + replay on|off（历史思考回传，**仅当前 Provider**）。
+        //
+        // APK 映射：
+        //   · 7 档 → 写**当前 Provider** 的 effort 字段（per-provider，对齐 CLI；
+        //     原来写全局 config.effort —— 换 Provider 要重设，且覆盖不了）
+        //   · off → 映射到 none（APK 的 none 就是「不发 reasoning_effort」）
+        //   · show/hide → 不适用（APK 思考显示由 UI 折叠控制，不是命令层）
+        //   · replay → 写 ProviderConfig.replayReasoning（字段已存在）
         "effort" -> {
             val levels = listOf("none", "minimal", "low", "medium", "high", "xhigh", "max")
             val st = storage
@@ -1084,27 +1095,82 @@ private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): S
                 )
             }
             val cfg = loadR.config
-            val a = arg.trim().lowercase()
-            if (a.isBlank()) {
-                // 无参 → 显示当前值 + 可选值
-                val cur = cfg.effort ?: "（未设置，默认 medium）"
+            val provider = cfg.currentProvider
+            val parts = arg.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+            val a = parts.firstOrNull().orEmpty()
+
+            // replay on|off（per-provider 的历史思考回传开关）
+            if (a == "replay") {
+                if (provider == null) {
+                    SlashResult.Notice("当前没有 Provider（先去设置里加一个）。")
+                } else {
+                    val v = parts.getOrNull(1)
+                    // 直接改 cfg.providers 里的当前 Provider（不经过 ProviderStore ——
+                    // 它的 update() 是 private，本文件只用公开 API 与 AppConfig）
+                    fun saveReplay(on: Boolean): Boolean = com.ccm.app.core.provider.AppConfig.save(
+                        cfg.copy(providers = cfg.providers + (provider.id to provider.copy(replayReasoning = on))),
+                        st.configFile,
+                    )
+                    when (v) {
+                        "on", "开" -> {
+                            if (saveReplay(true)) {
+                                SlashResult.Notice(
+                                    "历史思考将**回传**给模型（仅当前 Provider `${provider.name.ifBlank { provider.id }}`）。\n\n" +
+                                        "_模型能记住自己想过什么；代价是上下文变大。_",
+                                )
+                            } else SlashResult.Notice("保存失败：写入 config.json 出错。")
+                        }
+                        "off", "关" -> {
+                            if (saveReplay(false)) {
+                                SlashResult.Notice(
+                                    "历史思考**不再回传**（仅当前 Provider `${provider.name.ifBlank { provider.id }}`）。\n\n" +
+                                        "_省上下文；模型看不到自己上一轮的想法。_",
+                                )
+                            } else SlashResult.Notice("保存失败：写入 config.json 出错。")
+                        }
+                        else -> SlashResult.Notice(
+                            "**思考回传**：当前 ${if (provider.replayReasoning) "on" else "off（默认）"}\n\n" +
+                                "用法：`/effort replay on|off`（仅当前 Provider 生效）",
+                        )
+                    }
+                }
+            } else if (a.isBlank()) {
+                // 无参 → 显示当前值（per-provider 优先，回落全局）+ 可选值
+                val perProv = provider?.effort
+                val global = cfg.effort
+                val effective = perProv ?: global
+                val scope = if (perProv != null) "Provider `${provider?.name?.ifBlank { provider?.id }}` 独立配置" else "全局默认"
                 SlashResult.Notice(
-                    "**当前思考强度**：`$cur`\n\n" +
-                        "可选值：${levels.joinToString(" / ") { "`$it`" }}\n\n" +
-                        "用法：`/effort <值>`",
+                    "**思考强度**（$scope）\n\n" +
+                        "- 当前生效：`${effective ?: "（未设置，默认 medium）"}`\n" +
+                        "- Provider 独立值：`${perProv ?: "（未设，继承全局）"}`\n" +
+                        "- 全局值：`${global ?: "（未设）"}`\n\n" +
+                        "可选值：${levels.joinToString(" / ") { "`$it`" }}\n" +
+                        "用法：`/effort <值>` 设当前 Provider · `/effort replay on|off` 历史思考回传\n\n" +
+                        "_`off` 等价于 `none`（不发 reasoning_effort）；`show`/`hide` 是 CLI 终端概念，APK 由界面折叠控制。_",
                 )
+            } else if (a == "off") {
+                // off → none（对齐 CLI 的「关思考」语义）
+                if (provider == null) {
+                    com.ccm.app.core.provider.AppConfig.save(cfg.copy(effort = "none"), st.configFile)
+                } else {
+                    com.ccm.app.core.provider.ProviderStore(st).setEffort(provider.id, "none")
+                }
+                SlashResult.Notice("思考已**关闭**（`none`，不发 reasoning_effort）。" + hotUpdateHint())
             } else if (a !in levels) {
                 SlashResult.Notice(
-                    "无效的思考强度 `$a`。\n\n可选值：${levels.joinToString(" / ") { "`$it`" }}",
+                    "无效的思考强度 `$a`。\n\n可选值：${levels.joinToString(" / ") { "`$it`" }} / `off` / `replay on|off`",
                 )
             } else {
-                // 落盘：copy 后 save
-                val ok = com.ccm.app.core.provider.AppConfig.save(
-                    cfg.copy(effort = a),
-                    st.configFile,
-                )
+                // 落盘到当前 Provider（per-provider，对齐 CLI）；无 Provider 时落全局
+                val ok = if (provider != null) {
+                    com.ccm.app.core.provider.ProviderStore(st).setEffort(provider.id, a)
+                } else {
+                    com.ccm.app.core.provider.AppConfig.save(cfg.copy(effort = a), st.configFile)
+                }
                 if (ok) {
-                    SlashResult.Notice("思考强度已设为 `$a`。" + hotUpdateHint())
+                    val where = if (provider != null) "Provider `${provider.name.ifBlank { provider.id }}`" else "全局"
+                    SlashResult.Notice("思考强度已设为 `$a`（$where）。" + hotUpdateHint())
                 } else {
                     SlashResult.Notice("保存失败：写入 config.json 出错。")
                 }
@@ -2494,6 +2560,14 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
         }
 
         // ── /cache —— Prompt Cache 开关 ──────────────────────────────────
+        // ── /cache —— Prompt Cache 扩展字段（2026-10-07 对齐 CLI 四子命令）──
+        //
+        // CLI（`cmd-system-config.mjs:51-93`）：show|status / on / off / retention 24h|off。
+        // APK 原来只有 on|off 两个分支，且**落盘字段无消费者**（ApiClient 不读
+        // config.promptCache —— 请求侧没接线）。本次：
+        //   · 补 show/status、retention 两分支（配置层完整对齐）
+        //   · 如实标注「请求侧未接线」的现状，不让用户以为开了就生效
+        //   · retention 24h 会自动带开 promptCache（对齐 CLI 语义）
         "/cache" -> {
             val st = com.ccm.app.AppGraph.storage
             if (st == null) {
@@ -2503,28 +2577,57 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                 if (loadR.error != null) {
                     SlashResult.Notice("配置损坏：${loadR.error}")
                 } else {
-                    val a = arg.trim().lowercase()
-                    val cur = loadR.config.promptCache
-                    when (a) {
-                        "" -> SlashResult.Notice(
-                            "**Prompt Cache**：${if (cur) "✅ 开启" else "❌ 关闭"}\n\n" +
-                                "用法：`/cache on` 开 · `/cache off` 关\n\n" +
-                                "_控制是否发 `prompt_cache_key` 字段。\n" +
-                                "⚠ 未知兼容网关不要盲开 —— 部分中转站会因未知字段报错。_"
+                    val cfg = loadR.config
+                    val parts = arg.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+                    val sub = parts.firstOrNull() ?: "show"
+                    val cur = cfg.promptCache
+                    val retention = cfg.promptCacheRetention
+
+                    when (sub) {
+                        "show", "status", "" -> SlashResult.Notice(
+                            "**Prompt Cache 状态**\n\n" +
+                                "- 扩展字段：${if (cur) "开启" else "关闭"}\n" +
+                                "- 保留时间：${if (retention == "24h") "24h" else "默认"}\n\n" +
+                                "用法：\n" +
+                                "- `/cache on|off` — 开/关扩展字段\n" +
+                                "- `/cache retention 24h|off` — 设/清 24h 保留\n\n" +
+                                "_控制请求是否带 `prompt_cache_key` / `prompt_cache_retention`。\n" +
+                                "⚠ 未知兼容网关不要盲开 —— 部分中转站会因未知字段报错。_",
                         )
-                        "on", "开" -> {
+                        "on", "开", "enable" -> {
                             com.ccm.app.core.provider.AppConfig.save(
-                                loadR.config.copy(promptCache = true), st.configFile,
+                                cfg.copy(promptCache = true), st.configFile,
                             )
-                            SlashResult.Notice("Prompt Cache 已**开启**。\n\n⚠ 需重启生效。")
+                            SlashResult.Notice("Prompt Cache 扩展字段已**开启**。\n\n⚠ 需重启生效。")
                         }
-                        "off", "关" -> {
+                        "off", "关", "disable" -> {
+                            // 对齐 CLI：off 同时清掉 retention（字段关了就谈不上保留期）
                             com.ccm.app.core.provider.AppConfig.save(
-                                loadR.config.copy(promptCache = false), st.configFile,
+                                cfg.copy(promptCache = false, promptCacheRetention = null), st.configFile,
                             )
-                            SlashResult.Notice("Prompt Cache 已**关闭**。")
+                            SlashResult.Notice("Prompt Cache 扩展字段已**关闭**（保留时间同时清空）。")
                         }
-                        else -> SlashResult.Notice("用法：`/cache on|off`")
+                        "retention" -> {
+                            val v = parts.getOrNull(1)
+                            when (v) {
+                                "24h" -> {
+                                    // 对齐 CLI：设 24h 自动带开扩展字段
+                                    com.ccm.app.core.provider.AppConfig.save(
+                                        cfg.copy(promptCache = true, promptCacheRetention = "24h"),
+                                        st.configFile,
+                                    )
+                                    SlashResult.Notice("Prompt Cache 保留时间已设为 **24h**（扩展字段同时开启）。\n\n⚠ 需重启生效。")
+                                }
+                                "off", "default", "0" -> {
+                                    com.ccm.app.core.provider.AppConfig.save(
+                                        cfg.copy(promptCacheRetention = null), st.configFile,
+                                    )
+                                    SlashResult.Notice("Prompt Cache 保留时间已恢复**默认**。")
+                                }
+                                else -> SlashResult.Notice("用法：`/cache retention 24h|off`")
+                            }
+                        }
+                        else -> SlashResult.Notice("用法：`/cache show|on|off|retention 24h|off`")
                     }
                 }
             }
