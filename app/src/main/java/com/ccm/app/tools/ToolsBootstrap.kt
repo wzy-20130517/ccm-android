@@ -111,10 +111,15 @@ class ToolsBootstrap(
     private val qqPusher: QqTools.Pusher? = null,
     /** QQ 群消息回溯器（QQRecall 用）—— App 层注入 */
     private val qqRecaller: QqTools.Recaller? = null,
-    /** GitHub PAT（GitHub* 工具用）—— /github login 设置 */
-    private val githubToken: String? = null,
-    /** 默认 GitHub 仓库（owner/name）—— /github repo 设置 */
-    private val githubRepo: String? = null,
+    /**
+     * GitHub PAT 提供者（GitHub* 工具用）—— /github login 设置。
+     *
+     * 【2026-10-07 改提供者】原为构造快照，设完 token 要重启 App；
+     * 现在每次工具调用现取，**立即生效**。
+     */
+    private val githubToken: () -> String? = { null },
+    /** 默认 GitHub 仓库提供者（owner/name）—— /github repo 设置。 */
+    private val githubRepo: () -> String? = { null },
     /**
      * 运行模式状态（deep / plan / watch）—— **必须与 AgentLoop 用同一个实例**。
      *

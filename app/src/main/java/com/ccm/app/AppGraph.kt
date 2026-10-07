@@ -556,8 +556,10 @@ object AppGraph {
                 // → GitHubRepo/GitHubIssues 等 8 个工具全部报「未配置」。
                 // 配置格式对齐 CLI 的 ~/.claude-code-mobile/github.json：
                 //   { "token": "ghp_...", "defaultRepo": "owner/name" }
-                githubToken = readGithubConfig()?.first,
-                githubRepo = readGithubConfig()?.second,
+                // 【2026-10-07】改传提供者（每次工具调用现读 github.json）——
+                // /github login 设完 token 立即生效，不用重启 App
+                githubToken = { readGithubConfig()?.first },
+                githubRepo = { readGithubConfig()?.second },
                 // 【2026-10-06 问题40】CommandExec —— 原来没传 →
                 // 工具永远报「未接入（需要 App 层注入命令执行器）」。
                 //
@@ -953,8 +955,10 @@ object AppGraph {
                 settings = settings,
                 bridge = NativeBridge(app),
                 askUser = { q, opts -> askUserBlocking(q, opts) },
-                githubToken = readGithubConfig()?.first,
-                githubRepo = readGithubConfig()?.second,
+                // 【2026-10-07】改传提供者（每次工具调用现读 github.json）——
+                // /github login 设完 token 立即生效，不用重启 App
+                githubToken = { readGithubConfig()?.first },
+                githubRepo = { readGithubConfig()?.second },
                 commandExec = { cmd ->
                     try {
                         val full = if (cmd.startsWith("/")) cmd else "/$cmd"

@@ -42,9 +42,27 @@ import java.net.URLEncoder
  * @param defaultRepo 默认仓库（`owner/name`，可空）
  */
 class GitHubTools(
-    private val token: String?,
-    private val defaultRepo: String? = null,
+    /**
+     * token 提供者（**每次调用时现取**，不是构造快照）。
+     *
+     * 【2026-10-07 改惰性】原为构造参数快照 —— AppGraph 装配时读一次
+     * github.json，启动后 `/github login` 写的 token 进不了已建好的
+     * 实例，必须重启 App 才生效（连 /github 自己的提示文案都写着
+     * 「需重启」）。改成提供者后配置**立即生效**，与 toolsProvider
+     * 的惰性取值同一思路。
+     */
+    private val tokenProvider: () -> String?,
+    /** 默认仓库提供者（同上，现取）。 */
+    private val defaultRepoProvider: () -> String? = { null },
 ) {
+    /** 兼容旧调用点的便捷构造：固定值包装成提供者。 */
+    constructor(token: String?, defaultRepo: String? = null) : this(
+        tokenProvider = { token },
+        defaultRepoProvider = { defaultRepo },
+    )
+
+    private val token: String? get() = tokenProvider()
+    private val defaultRepo: String? get() = defaultRepoProvider()
 
     companion object {
         private const val API = "https://api.github.com"

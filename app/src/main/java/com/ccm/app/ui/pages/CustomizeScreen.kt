@@ -33,6 +33,7 @@ import com.ccm.app.R
 import com.ccm.app.ui.common.PainterIcon
 import com.ccm.app.ui.theme.CCMText
 import com.ccm.app.ui.theme.CCMTheme
+import kotlinx.coroutines.launch
 
 /**
  * 定制页 —— 对齐 Web 的 `/customize` 路由（`CustomizePage.tsx`，1244 行）。
@@ -279,6 +280,168 @@ private fun CustomizeDetail(item: CustomizeItem, onBack: () -> Unit) {
             style = CCMText.body13,
             color = colors.textSecondary,
         )
+
+        // ── 配置区（2026-10-07 加 —— 连接器从「只读卡片」变「真能配」）──
+        // 之前详情页只有名称 + 描述两段静态文字，用户根本没法配置。
+        // 现在按连接器类型渲染各自的配置表单。
+        if (item.kind == "connectors") {
+            Spacer(Modifier.height(18.dp))
+            ConnectorConfigPanel(item.id)
+        }
+    }
+}
+
+/**
+ * 连接器配置面板（2026-10-07）—— 按 id 渲染对应配置表单。
+ *
+ * 数据落点与 /github 命令一致（github.json），所以两条路径互通：
+ * 命令设的这里能看到，这里设的命令也能看到。
+ * 工具侧 2026-10-07 起改惰性读盘，配置完**立即生效**（不用重启）。
+ */
+@Composable
+private fun ConnectorConfigPanel(id: String) {
+    val colors = CCMTheme.colors
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+
+    // github.json 路径（与 SlashCommandHandler 的 /github 分支同一文件）
+    val cfgFile = remember {
+        val root = com.ccm.app.AppGraph.storage?.root
+        if (root != null) java.io.File(root, "github.json") else null
+    }
+
+    fun readCfg(): org.json.JSONObject = try {
+        if (cfgFile?.exists() == true) org.json.JSONObject(cfgFile.readText()) else org.json.JSONObject()
+    } catch (_: Throwable) { org.json.JSONObject() }
+
+    fun writeCfg(o: org.json.JSONObject) {
+        try { cfgFile?.writeText(o.toString(2)) } catch (_: Throwable) {}
+    }
+
+    when (id) {
+        "github" -> {
+            var token by remember { mutableStateOf(readCfg().optString("token", "")) }
+            var repo by remember { mutableStateOf(readCfg().optString("defaultRepo", "")) }
+            var showToken by remember { mutableStateOf(false) }
+            var testResult by remember { mutableStateOf("") }
+            var testing by remember { mutableStateOf(false) }
+            val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+            Text("配置", style = CCMText.body13.copy(fontWeight = FontWeight.Medium), color = colors.textMain)
+            Spacer(Modifier.height(8.dp))
+            com.ccm.app.ui.settings.SettingsTextField(
+                value = if (showToken) token else if (token.isBlank()) "" else "••••••••••••••••",
+                onValueChange = { v ->
+                    // 掩码态不接受编辑（防把省略号写进配置）—— 点眼睛后编辑
+                    if (showToken) token = v
+                },
+                placeholder = "GitHub PAT（ghp_... 或 github_pat_...）",
+                readOnly = !showToken,
+                trailing = {
+                    Text(
+                        if (showToken) "隐藏" else "显示",
+                        style = CCMText.body12,
+                        color = colors.textSecondary,
+                        modifier = Modifier
+                            .clickable { showToken = !showToken }
+                            .padding(6.dp),
+                    )
+                },
+            )
+            Spacer(Modifier.height(8.dp))
+            com.ccm.app.ui.settings.SettingsTextField(
+                value = repo,
+                onValueChange = { repo = it },
+                placeholder = "默认仓库 owner/name（可选）",
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // 保存
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(colors.accent)
+                        .clickable {
+                            val o = readCfg()
+                            o.put("token", token.trim())
+                            o.put("defaultRepo", repo.trim())
+                            writeCfg(o)
+                            testResult = "✅ 已保存（工具立即生效，无需重启）"
+                        }
+                        .padding(horizontal = 14.dp, vertical = 7.dp),
+                ) {
+                    Text("保存", style = CCMText.body13, color = colors.bgMain)
+                }
+                // 测试连接（GitHub /user 接口）
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(colors.input)
+                        .clickable {
+                            if (testing) return@clickable
+                            testing = true
+                            testResult = "测试中…"
+                            scope.launch {
+                                testResult = try {
+                                    val t = token.trim()
+                                    if (t.isBlank()) "❌ 先填 token"
+                                    else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        val conn = (java.net.URL("https://api.github.com/user").openConnection() as java.net.HttpURLConnection).apply {
+                                            setRequestProperty("Authorization", "Bearer $t")
+                                            setRequestProperty("User-Agent", "CCM-Android/1.0")
+                                            connectTimeout = 15000
+                                            readTimeout = 15000
+                                        }
+                                        val code = conn.responseCode
+                                        when (code) {
+                                            200 -> {
+                                                val body = conn.inputStream.bufferedReader().readText()
+                                                val login = org.json.JSONObject(body).optString("login", "?")
+                                                "✅ 连接成功（账号：$login）"
+                                            }
+                                            401 -> "❌ token 无效或过期（401）"
+                                            403 -> "❌ 权限不足或被限流（403）"
+                                            else -> "❌ HTTP $code"
+                                        }
+                                    }
+                                } catch (e: Throwable) {
+                                    "❌ 网络失败：${e.message?.take(60)}"
+                                }
+                                testing = false
+                            }
+                        }
+                        .padding(horizontal = 14.dp, vertical = 7.dp),
+                ) {
+                    Text("测试连接", style = CCMText.body13, color = colors.textMain)
+                }
+            }
+            if (testResult.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(testResult, style = CCMText.body12, color = colors.textSecondary)
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "配好后可用 8 个工具：GitHubRepo / GitHubIssues / GitHubIssueView / GitHubPRs / GitHubPRComments / GitHubComment / GitHubCreateIssue / GitHubFile。也可用 /github login 命令设置（两条路径互通）。",
+                style = CCMText.body12,
+                color = colors.textSecondary,
+            )
+        }
+        "qq" -> {
+            Text("接入状态", style = CCMText.body13.copy(fontWeight = FontWeight.Medium), color = colors.textMain)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "APK 尚未接入 QQ 输入桥（消息进不来）。工具侧 QQPush / QQRecall 依赖推送器/回溯器注入，当前未接入，调用会如实报「未接入」。\n\n" +
+                    "CLI 版通过 NapCat 桥支持 QQ 私聊下指令，APK 侧暂无计划（需要外部 QQ 协议服务）。",
+                style = CCMText.body12,
+                color = colors.textSecondary,
+            )
+        }
+        else -> {
+            Text(
+                "该连接器暂无配置项。",
+                style = CCMText.body12,
+                color = colors.textSecondary,
+            )
+        }
     }
 }
 
