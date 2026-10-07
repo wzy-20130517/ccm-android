@@ -189,26 +189,11 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
 
     // 防抖重建：key / URL 输入停止 800ms 后重建会话（改了当前 Provider 才重建）
     DebouncedRebuild(trigger = keyChangeTick, changedId = selectedId)
-    // 密钥的防抖落盘（500ms 无输入后写）—— 与上面的 DebouncedRebuild
-    // （800ms 后重建会话）配合：先落盘，再重建。
-    androidx.compose.runtime.LaunchedEffect(keyChangeTick) {
-        if (keyChangeTick <= 0) return@LaunchedEffect
-        kotlinx.coroutines.delay(500)
-        selectedId.takeIf { it.isNotBlank() }?.let { id ->
-            store?.setKey(id, apiKey)
-            refreshTick++
-        }
-    }
-    // 显示名的防抖落盘（500ms 无输入后写）
-    androidx.compose.runtime.LaunchedEffect(nameChangeTick) {
-        if (nameChangeTick <= 0) return@LaunchedEffect
-        kotlinx.coroutines.delay(500)
-        selectedId.takeIf { it.isNotBlank() }?.let { id ->
-            store?.setDisplayName(id, dispName)
-            refreshTick++
-        }
-    }
     DebouncedRebuild(trigger = urlChangeTick, changedId = selectedId)
+    // ⚠️ 密钥/显示名的防抖落盘 LaunchedEffect **不能放这里** ——
+    // 它们引用的 apiKey/dispName 是下面 SettingGroup 内的局部变量，
+    // 在这个作用域不可见（编译报 Unresolved reference）。
+    // 已挪到各自的变量声明之后（见 SettingGroup 1 内部）。
 
     Column(modifier = modifier) {
         Text(
@@ -341,6 +326,28 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                     mutableStateOf(selected?.let { store?.get(it.id)?.url } ?: "")
                 }
                 var showKey by remember { mutableStateOf(false) }
+
+                // ── 防抖落盘（2026-10-06 加）────────────────────────────
+                // 密钥/显示名原来逐字符写盘（主线程 IO + 触发一批 remember
+                // 重跑），长文本输入掉帧。改成 500ms 无输入后写。
+                // ⚠️ 必须放在 apiKey/dispName 声明**之后** —— 放函数顶层
+                // 会因作用域不可见而编译失败（CI 抓过）。
+                androidx.compose.runtime.LaunchedEffect(keyChangeTick) {
+                    if (keyChangeTick <= 0) return@LaunchedEffect
+                    kotlinx.coroutines.delay(500)
+                    selectedId.takeIf { it.isNotBlank() }?.let { id ->
+                        store?.setKey(id, apiKey)
+                        refreshTick++
+                    }
+                }
+                androidx.compose.runtime.LaunchedEffect(nameChangeTick) {
+                    if (nameChangeTick <= 0) return@LaunchedEffect
+                    kotlinx.coroutines.delay(500)
+                    selectedId.takeIf { it.isNotBlank() }?.let { id ->
+                        store?.setDisplayName(id, dispName)
+                        refreshTick++
+                    }
+                }
 
                 ProviderField(label = "API 密钥") {
                     Row(
