@@ -89,7 +89,19 @@ fun PluginPanel(modifier: Modifier = Modifier) {
                         }
                     }
                     logLine = "启动插件宿主…"
-                    host.start { s -> logLine = s }
+                    val startWindow = ArrayDeque<String>()
+                    val started = host.start { s ->
+                        startWindow.addLast(s)
+                        while (startWindow.size > 6) startWindow.removeFirst()
+                        logLine = startWindow.joinToString("\n")
+                    }
+                    if (!started) {
+                        // 启动失败的日志（含 host.log 崩溃栈尾部）转进 error ——
+                        // 原来只写 logLine，finally 会把它清掉，用户只看到
+                        // 「宿主未运行」却不知道为什么
+                        error = "宿主启动失败：" +
+                            startWindow.joinToString(" / ").ifBlank { "（见 host.log）" }
+                    }
                     alive = host.isAlive()
                 }
                 hostAlive = alive

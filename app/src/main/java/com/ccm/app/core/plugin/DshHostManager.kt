@@ -57,6 +57,9 @@ class DshHostManager(private val context: Context) {
 
     private val runtime = ProotRuntime(context)
 
+    /** 宿主部署目录（rootfs 内）。 */
+    private fun hostDir(): File = File(runtime.rootfsDir(), HOST_DIR.removePrefix("/"))
+
     sealed interface State {
         /** 未部署（assets 文件还没拷进 rootfs） */
         data object NotInstalled : State
@@ -123,26 +126,42 @@ class DshHostManager(private val context: Context) {
             // 3. 依赖（120+ 包，首次约几分钟到十几分钟，取决于网络）
             if (!File(hostDir, READY_MARKER).exists()) {
                 onLog("安装插件宿主依赖（约 334MB，首次较慢）…")
-                var ok = false
+                var npmExitCode: Int? = null
                 runtime.execWithTimeout(
                     command = listOf(
                         "/bin/bash", "-c",
+                        // 【2026-10-07 修】原来是 `npm ci ... 2>&1 | tail -5; echo NPM_DONE`
+                        // —— 两个 bug：
+                        //   1. 管道吞退出码（tail 永远 0），且 echo NPM_DONE 无条件执行
+                        //      → ok 恒真 → npm ci 失败也写 .installed → 宿主起来就崩
+                        //      （实测：node_modules 没有，ERR_MODULE_NOT_FOUND）
+                        //   2. 真实报错被 tail -5 截断，排查无门
+                        // 现在：不走管道（完整输出进 onLine）、打退出码、
+                        // marker 写入前还要**验证 node_modules 真的存在**（双保险）。
                         "cd $HOST_DIR && " +
-                            "npm ci --omit=dev --no-audit --no-fund 2>&1 | tail -5; " +
-                            "echo NPM_DONE",
+                            "npm ci --omit=dev --no-audit --no-fund 2>&1; " +
+                            "echo NPM_EXIT=\$?",
                     ),
                     workDir = "/root",
                     onLine = { line ->
-                        if (line.contains("NPM_DONE")) ok = true
-                        // npm 进度行转给 UI（去掉 ANSI 颜色码）
+                        line.substringAfter("NPM_EXIT=", "").trim().toIntOrNull()?.let {
+                            npmExitCode = it
+                        }
+                        // npm 输出转给 UI（去掉 ANSI 颜色码）
                         val clean = line.replace(Regex("\\[[0-9;]*m"), "")
-                        if (clean.isNotBlank()) onLog(clean.take(100))
+                        if (clean.isNotBlank()) onLog(clean.take(120))
                     },
                     timeoutMs = 30 * 60_000L,
                     idleMs = 10 * 60_000L,
                 )
-                if (!ok) {
-                    onLog("依赖安装未正常结束")
+                if (npmExitCode == null || npmExitCode != 0) {
+                    onLog("依赖安装失败（npm 退出码 $npmExitCode）")
+                    return@withContext false
+                }
+                // 双保险：marker 只在依赖真到位时写（宿主 import 的核心包必须在）
+                val coreDep = File(hostDir, "node_modules/@deepseek-ai/cordis")
+                if (!coreDep.exists()) {
+                    onLog("npm 退出码 0 但核心依赖缺失（${coreDep.name} 不存在）")
                     return@withContext false
                 }
                 File(hostDir, READY_MARKER).writeText(System.currentTimeMillis().toString())
@@ -202,7 +221,17 @@ class DshHostManager(private val context: Context) {
                 }
                 delay(1_000)
             }
-            onLog("宿主未在预期时间内就绪，查看 $HOST_DIR/host.log")
+            // 启动失败把 host.log 尾部捞出来 —— 崩溃栈在里面
+            // （实测崩点：ERR_MODULE_NOT_FOUND，node_modules 缺失）
+            val logTail = try {
+                File(hostDir(), "host.log")
+                    .takeIf { it.exists() }
+                    ?.readLines()
+                    ?.takeLast(6)
+                    ?.joinToString(" / ")
+                    .orEmpty()
+            } catch (_: Throwable) { "" }
+            onLog("宿主未就绪${if (logTail.isNotBlank()) "：$logTail" else ""}")
             false
         } catch (t: Throwable) {
             Log.e(TAG, "启动失败", t)
