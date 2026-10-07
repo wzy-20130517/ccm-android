@@ -378,10 +378,48 @@ class AgentLoop(
     /** 读当前历史（会话保存用）。 */
     fun getHistory(): List<Message> = messages.toList()
 
-    /** 覆盖历史（会话恢复用）。 */
+    /**
+     * 覆盖历史（会话恢复 / /compact / /clear / /rewind 用）。
+     *
+     * 【2026-10-07】替换后**重估**上下文占用（对齐 CLI `agent.mjs:setHistory`）：
+     * lastPromptTokens 是上一次 API 返回的 prompt_tokens（压缩前的大数字），
+     * 不重估的话水位判定读旧值 → blocking 拒发 → 请求发不出去 → 值永远
+     * 不更新 → 死循环（「刚 compact 过还是被拦」）。
+     * 估算 4 字符 ≈ 1 token（与 Compactor 同口径），下次真实请求成功后
+     * 会被准确值替换；空历史时估出 system prompt 部分，同样能归零水位。
+     */
     fun setHistory(history: List<Message>) {
         messages.clear()
         messages.addAll(history)
+        try {
+            val est = estimateHistoryTokens()
+            if (est > 0) {
+                lastPromptTokens = est
+                isApproxPromptTokens = true
+            }
+        } catch (_: Throwable) { /* 估算失败不影响设历史本身 */ }
+    }
+
+    /**
+     * 按当前历史粗估 token 数（4 字符 ≈ 1 token）。
+     *
+     * 含 system prompt —— 它也是请求的一部分，只算历史会系统性低估。
+     */
+    private fun estimateHistoryTokens(): Int {
+        var chars = 0
+        for (m in messages) {
+            for (b in m.content) {
+                when (b) {
+                    is ContentBlock.Text -> chars += b.text.length
+                    is ContentBlock.ToolUse -> chars += b.input.toString().length
+                    is ContentBlock.ToolResult -> chars += b.content.length
+                    is ContentBlock.Image -> chars += 3000   // 图片粗算
+                    else -> {}
+                }
+            }
+        }
+        val sp = try { systemPromptProvider().length } catch (_: Throwable) { 0 }
+        return (chars + sp + 3) / 4
     }
 
     /** 追加一条用户消息（不触发 run）。 */
@@ -401,6 +439,24 @@ class AgentLoop(
     @Volatile
     var lastPromptTokens: Int = 0
         private set
+
+    /**
+     * [lastPromptTokens] 是否为本地估算值（/context 显示 `~` 前缀用）。
+     * 真实请求返回 usage 时由 [emitUsage] 清除。
+     */
+    @Volatile
+    var isApproxPromptTokens: Boolean = false
+        private set
+
+    /**
+     * 工具前压缩检查点回调（对齐 CLI `index.mjs` 的 `beforeToolCall`）。
+     *
+     * 每批工具执行前（[executeTools] 开头）调一次；是否达到压缩条件、
+     * 30s 防抖都在实现方（ChatSession）判断 —— AgentLoop 只负责触发。
+     * null = 未接线（单测场景）。
+     */
+    @Volatile
+    var beforeToolCallHook: (suspend () -> Unit)? = null
 
     /**
      * 工具存储根目录（问题40：/compact 写备份用）。
@@ -840,6 +896,7 @@ class AgentLoop(
         if (usage.isEmpty) return
         totalInputTokens += usage.promptTokens
         lastPromptTokens = usage.promptTokens   // P1-8：AutoCompact 水位判断用
+        isApproxPromptTokens = false             // 真实 usage 回来了，清掉 setHistory 的估算标记
         totalOutputTokens += usage.completionTokens
         emit(AgentEvent.Usage(usage.promptTokens, usage.completionTokens))
     }
@@ -1003,6 +1060,20 @@ class AgentLoop(
         emit: suspend (AgentEvent) -> Unit,
         messageId: String,
     ): List<ToolExecResult> {
+
+        // ── beforeToolCall 自动压缩检查点（对齐 CLI index.mjs:1983）────────
+        //
+        // 长任务单轮几十个工具，等 run 结束才压已经撞 400 了；达到压缩条件时
+        // 先压完再继续工具。是否达到条件、30s 防抖都在回调里判断（ChatSession），
+        // 这里只负责触发 —— 与 run 结束后的自动压缩并存，不是替换。
+        try {
+            beforeToolCallHook?.invoke()
+        } catch (e: CancellationException) {
+            throw e   // 外层取消不能被吞
+        } catch (_: Throwable) {
+            // 压缩失败不能把整批工具带崩（对齐 CLI beforeToolCall 的 crashLog 兜底）
+        }
+
         val tools = toolsProvider()
 
         // 分区与调度交给 ToolDispatcher（那块逻辑独立可测，见其类注释）

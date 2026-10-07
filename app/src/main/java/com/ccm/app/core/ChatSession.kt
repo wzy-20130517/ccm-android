@@ -2,6 +2,7 @@ package com.ccm.app.core
 
 import com.ccm.app.core.agent.AgentEvent
 import com.ccm.app.core.agent.AgentLoop
+import com.ccm.app.core.compact.AutoCompact
 import com.ccm.app.core.provider.AppConfig
 import com.ccm.app.core.session.Message
 import com.ccm.app.core.session.ContentBlock
@@ -82,6 +83,42 @@ class ChatSession(
 
     /** 是否正在跑。 */
     val isRunning: Boolean get() = runningJob?.isActive == true
+
+    /**
+     * 上次对话流水位提示的等级（同级去重：升级才再打，压回 OK 后恢复）。
+     * 对齐 CLI `index.mjs` 的 `lastWaterLevel`。
+     */
+    @Volatile
+    private var lastWaterLevel: AutoCompact.Level = AutoCompact.Level.OK
+
+    /** beforeToolCall 压缩防抖：上次实际执行检查的时间戳。 */
+    @Volatile
+    private var lastToolCompactAt: Long = 0L
+
+    init {
+        // beforeToolCall 工具前压缩检查点接线（差距报告 Top#3）——
+        // AgentLoop.executeTools 每批工具分发前回调到这里，条件/防抖判断在
+        // maybeAutoCompactFromTool。与 run 结束后的自动压缩并存，不是替换。
+        container.agentLoop.beforeToolCallHook = { maybeAutoCompactFromTool() }
+    }
+
+    /**
+     * 当前上下文水位 —— blocking/error/warning/ok 判定的唯一入口。
+     *
+     * 每次先用当前配置刷一遍 `autoCompact.maxContext` —— 它是装配时快照，
+     * 用户在 /context 或设置页改了 maxContextTokens 后不刷新会按旧值判
+     * （阈值热更新是另一条待办，这里只保 maxContext 同步）。
+     *
+     * @param tokens 判定基准，默认取上次请求的真实 prompt_tokens；
+     *   contextReport 兜底估算时会传估算值。
+     */
+    private fun currentWater(
+        tokens: Int = container.agentLoop.lastPromptTokens,
+    ): AutoCompact.WaterLevel {
+        val mc = container.config.maxContextTokens
+        if (mc > 0) container.autoCompact.maxContext = mc
+        return container.autoCompact.waterLevel(tokens)
+    }
 
     /**
      * 注入一条本地回复（不走 API、不进模型上下文）。
@@ -175,7 +212,7 @@ class ChatSession(
         val msgCount = history.size
         // 当前上下文 = 最近一次 API 返回的 prompt_tokens（每次请求带全量历史）
         var curTokens = container.agentLoop.lastPromptTokens
-        var estimated = false
+        var estimated = container.agentLoop.isApproxPromptTokens   // setHistory 估算标记（~ 前缀）
         if (curTokens <= 0 && msgCount > 0) {
             // 兜底估算：重启恢复会话后 lastPromptTokens 还是 0，
             // 直接显示 0 会让人以为上下文空了。按字符数粗估（中英混合约 2 字符/token）。
@@ -197,10 +234,18 @@ class ChatSession(
         val pct = if (maxTokens > 0) (curTokens * 100 / maxTokens).coerceAtMost(100) else 0
         val filled = (pct / 5).coerceAtMost(20)
         val bar = "█".repeat(filled) + "░".repeat(20 - filled)
-        val status = when {
-            curTokens > maxTokens * 0.8 -> "⚠ 接近上限，建议 /compact"
-            curTokens > maxTokens * 0.5 -> "· 使用过半，注意长度"
-            else -> "✓ 上下文充裕"
+        // 水位口径与对话流提示统一（三层：剩 33K/20K/13K），避免 /context 一套、
+        // 发消息时另一套双份提示；50% 档保留（正常范围内的长度提醒）。
+        val water = currentWater(curTokens)
+        val remainK = water.remainTokens.coerceAtLeast(0) / 1000
+        val status = when (water.level) {
+            AutoCompact.Level.BLOCKING -> "✗ 上下文已满（剩约 ${remainK}K），请先 /compact"
+            AutoCompact.Level.ERROR -> "⚠ 上下文剩约 ${remainK}K —— 快到硬上限了，建议 /compact"
+            AutoCompact.Level.WARNING -> "· 上下文剩约 ${remainK}K —— 接近上限时可以 /compact"
+            AutoCompact.Level.OK -> when {
+                curTokens > maxTokens * 0.5 -> "· 使用过半，注意长度"
+                else -> "✓ 上下文充裕"
+            }
         }
         val fmt = { n: Int -> "%,d".format(n) }
         return buildString {
@@ -495,6 +540,44 @@ class ChatSession(
             return
         }
 
+        // ── 三层水位守门（对齐 CLI index.mjs:6261-6297）────────────────────────
+        //
+        // blocking（剩 <13K）：**不发请求**，直接在对话里生成错误气泡 ——
+        // 防止 413 撞墙浪费一次全量请求。warning/error：对话流插一条黄字提示
+        // （不阻塞，用户自己决定要不要 /compact），同级去重 —— 升级才再打、
+        // 压回 ok 后恢复（CLI 同款 lastWaterLevel 语义）。
+        val water = currentWater()
+        if (water.level == AutoCompact.Level.BLOCKING) {
+            // 用户消息照常上屏（他得看到自己发了什么），但不进 agent 历史
+            _state.value = _state.value.copy(
+                bubbles = _state.value.bubbles + Bubble(
+                    role = Message.ROLE_USER,
+                    text = text,
+                    messageId = "user-${System.currentTimeMillis()}",
+                    images = imagePaths,
+                ),
+            )
+            val remainK = water.remainTokens.coerceAtLeast(0) / 1000
+            injectNotice("✗ 上下文已满（剩约 ${remainK}K），这次没有发给模型 —— 请先 /compact 再发消息")
+            saveForced()
+            return
+        }
+        if (water.level == AutoCompact.Level.ERROR || water.level == AutoCompact.Level.WARNING) {
+            if (water.level != lastWaterLevel) {
+                val remainK = water.remainTokens.coerceAtLeast(0) / 1000
+                injectNotice(
+                    if (water.level == AutoCompact.Level.ERROR) {
+                        "⚠ 上下文剩约 ${remainK}K —— 快到硬上限了，建议 /compact"
+                    } else {
+                        "· 上下文剩约 ${remainK}K —— 接近上限时可以 /compact"
+                    }
+                )
+            }
+            lastWaterLevel = water.level
+        } else {
+            lastWaterLevel = AutoCompact.Level.OK   // 压回正常 → 恢复，下次升级再打
+        }
+
         val userBubble = Bubble(
             role = Message.ROLE_USER,
             text = text,
@@ -573,6 +656,30 @@ class ChatSession(
             )
         } else {
             ac.reportFailure()
+        }
+    }
+
+    /**
+     * beforeToolCall 检查点（差距报告 Top#3）：每批工具执行前查水位，超阈值先压。
+     *
+     * 与 run 结束后的 [maybeAutoCompact] **并存**（不是替换）：单轮几十个工具的
+     * 长任务中途就撞 400，等 run 结束已晚。30s 防抖 —— 一次 run 里压过一次就够
+     * （对齐 CLI `index.mjs` 的 `_lastAutoCompactAt`）。钩子由 AgentLoop.executeTools
+     * 在每批工具分发前触发。
+     */
+    private suspend fun maybeAutoCompactFromTool() {
+        val ac = container.autoCompact
+        if (!ac.isEnabled || ac.isTripped) return          // 未启用/断路：短路（默认关闭）
+        val hist = container.agentLoop.getHistory()
+        val tokens = container.agentLoop.lastPromptTokens
+        if (!ac.shouldCompact(hist, tokens)) return        // 没超阈值不动（不消耗防抖额度）
+        val now = System.currentTimeMillis()
+        if (now - lastToolCompactAt < 30_000L) return       // 30s 防抖：别每个工具都压
+        lastToolCompactAt = now                            // 先占位：压缩期间的后续批次不再进来
+        try {
+            maybeAutoCompact()
+        } catch (_: Throwable) {
+            // 压缩失败不能把工具批次带崩（钩子侧兜底）
         }
     }
 
