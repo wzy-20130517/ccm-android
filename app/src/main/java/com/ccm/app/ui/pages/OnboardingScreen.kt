@@ -553,7 +553,12 @@ fun OnboardingScreen(
  * 后者编译期直接报「This annotation is not applicable to target
  * 'local variable'」。
  */
-private class ProgressSink {
+/**
+ * 【2026-10-07 private → internal】设置 → 环境 的「安装 Linux 环境」按钮
+ * 也用它 —— envMode=termux 的用户引导页会被跳过，rootfs 一直没有安装入口，
+ * 插件宿主/MCP 的 Node 又必须跑在里面。
+ */
+internal class ProgressSink {
     @Volatile var progress: Float = 0f
     @Volatile var log: String = ""
     @Volatile var finished: Boolean = false
@@ -568,7 +573,12 @@ private class ProgressSink {
  * @param emit (进度 0~1, 日志行) —— 日志为空串时表示只更新进度
  * @return 是否成功
  */
-private suspend fun runInstall(
+/**
+ * 【2026-10-07 private → internal】同 [ProgressSink]：设置页入口复用。
+ * 设置页调用时传 `envMode = "proot"`（强制装 rootfs，与命令环境的
+ * envMode 解耦）+ `selectedToolchains = emptySet()`（工具链随后按需装）。
+ */
+internal suspend fun runInstall(
     rootfs: RootfsManager,
     proot: ProotRuntime,
     selectedToolchains: Set<String>,

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -169,6 +170,66 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
                 ok = env.linux,
                 value = if (env.linux) "已安装" else "未安装",
             )
+            // 【2026-10-07 加】安装入口 —— 与 envMode 解耦。
+            //
+            // 原来 rootfs 只有首次引导页一条安装路，而 envMode=termux 的
+            // 用户引导页直接跳过（MainActivity 分流判据），rootfs 永远装不上：
+            // 插件宿主（proot 内跑 dsh-host）和 MCP 的 npm 装包都卡在这。
+            // 这里补一个随时可用的入口：只装 rootfs 本体（envMode 强制传
+            // "proot" 绕过 termux 跳过逻辑；工具链不装，按需再从引导装）。
+            if (!env.linux) {
+                val scope = androidx.compose.runtime.rememberCoroutineScope()
+                var installing by remember { mutableStateOf(false) }
+                var installLog by remember { mutableStateOf("") }
+                var installError by remember { mutableStateOf("") }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (installing) installLog.ifBlank { "安装中…" }
+                        else installError.ifBlank { "插件/MCP 需要它（约 100MB）" },
+                        style = CCMText.body11,
+                        color = if (installError.isNotBlank() && !installing) colors.error
+                        else colors.textSecondary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        if (installing) "…" else "安装",
+                        style = CCMText.body13.copy(fontWeight = FontWeight.Medium),
+                        color = if (installing) colors.textSecondary else colors.textMain,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .border(1.dp, colors.border, RoundedCornerShape(8.dp))
+                            .clickable(enabled = !installing) {
+                                installError = ""
+                                installing = true
+                                scope.launch {
+                                    val rootfs = com.ccm.app.runtime.RootfsManager(ctx)
+                                    val proot = com.ccm.app.runtime.ProotRuntime(ctx)
+                                    val ok = com.ccm.app.ui.pages.runInstall(
+                                        rootfs = rootfs,
+                                        proot = proot,
+                                        selectedToolchains = emptySet(),
+                                        envMode = "proot",   // 强制装（不看 envMode）
+                                        emit = { _, line ->
+                                            if (line.isNotBlank()) installLog = line.take(80)
+                                        },
+                                    )
+                                    installing = false
+                                    if (ok) {
+                                        installLog = ""
+                                        refreshTick++   // 重新探测，状态变「已安装」
+                                    } else {
+                                        installError = "安装失败：$installLog"
+                                    }
+                                }
+                            }
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                    )
+                }
+            }
             EnvRow(
                 label = "proot 运行时",
                 ok = env.proot,
