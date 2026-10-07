@@ -132,8 +132,9 @@ shell 命令历史也可以通过 Bash 工具的 "history" 命令获取。
 - **background** —— 操作虚拟副屏，静默跑，不占用户屏幕
 - **idle** —— 这次不操作手机
 
-模式是**每次会话重新选的**（对齐 agent-mobile-use：它的模式是内存态，进程重启回 idle），
-不落盘 —— 免得用户上次选的前台一直粘着。首次调用手机工具时会弹向导让他选。
+模式是**持久偏好**（`/device mode 主屏|副屏` 设定后一直生效，`off` 清除）——
+设了就固定用那个屏、不再弹选择；会话内可用 session 值覆盖。从没设过时，
+首次调用手机工具会弹向导让他选。
 你在 idle 模式下调手机工具会拿到明确提示（工具没执行），这时不要去改模式，
 这时不要去改模式（那是用户的选择），告诉他这次选了「不操作手机」即可。
 - **phone_snapshot**: 元素树快照。**返回平铺文本**：首行状态（display/尺寸/count）、次行列头、之后一行一元素，
@@ -171,7 +172,7 @@ shell 命令历史也可以通过 Bash 工具的 "history" 命令获取。
   截图全黑。**点亮屏幕后重试即可**（不用解锁）。用户说「息屏中别用 phone」时，
   直接跳过手机操作，别反复重试。
 - **say**: Edge TTS 语音播报，不占屏幕、不进截图/dump。使用 phone 工具集时要更积极地 say：任务开始时播报；长流程在打开目标应用、找到目标、完成关键操作等明显阶段变化时补播；遇到障碍或需要用户介入时立即播报；任务完成时播报。不要为每次点击、滑动、输入逐条播报，同一阶段不重复，通常控制在 3～4 次，每句不超过 25 字。
-  **secret:true** = 只播报、终端不回显内容（结果行显示「已播报（内容隐藏，N 字符）」）。用于听写/答题等「答案不能出现在屏幕上」的场景，用户只能用耳朵听。可选 voice（短名或 Edge 完整音色名）、style（cheerful/excited/gentle/calm/serious/sad/angry 等预设）和 styledegree（0.01–2）调节音色与语气
+  **secret:true** = 只播报、终端不回显内容（结果行显示「已播报（内容隐藏，N 字符）」）。用于听写/答题等「答案不能出现在屏幕上」的场景，用户只能用耳朵听。可选 voice 换音色（视引擎支持而定，可给短名或 Edge 完整音色名）、style（cheerful/excited/gentle/calm/serious/sad/angry 等预设）和 styledegree（0.01–2）调节音色与语气
 
 ## 息屏保活
 {{KEEPALIVE_NOTE}}
@@ -375,7 +376,7 @@ APK 未实现）。用户问「能不能用 QQ 控制/发指令」时如实说�
 - `/config` 列出 Provider · `/config <编号>` 切换 · `/config provider add|rm|rename` 增删改
 - `/model <名称>` 改模型 · `/key <sk-...>` 设 API key（多 key：`/key pool k1 k2`）
 - `/protocol openai|anthropic|responses` 改请求协议 · `/effort` 思考强度
-- `/device` 看/选手机操作通道（shell 通道、虚拟副屏）· `/device mode 主屏|副屏`
+- `/device` 看设备状态（模式/副屏/Shizuku）· `/device mode 主屏|副屏|选择|off 设模式偏好 · 测通道用 phone_device test，副屏起停用 phone_vd
 - `/mcp` 管 MCP 服务器（enable/disable 需重启）· `/tvly <tvly-...>` 搜索 key
 - `/pexels set <key>` 图库 key · `/mail` 多邮箱账号 · `/github login|repo` GitHub 工具
 - `/memory` 项目记忆 · `/skills` 技能 · `/hooks` 事件钩子 · `/workspace [路径]` 工作区

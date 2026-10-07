@@ -570,16 +570,33 @@ private fun handleQueryCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                             )
                         }
                     }
-                } else {
-                    // 状态总览
+                } else if (sub == "vd" || sub == "test") {
+                    // APK 没实现 vd/test（那是 CLI 的子命令）——明确告诉用户用什么代替，
+                    // 不能静默落状态总览（用户会以为执行了）。
+                    SlashResult.Notice(
+                        "APK 未实现 `/device $sub` —— 用工具代替：\n" +
+                            "- 副屏起停/状态 → `phone_vd`(start/stop/status)\n" +
+                            "- 测通道 → `phone_device`(action:test)",
+                    )
+                } else if (sub == "" || sub == "status") {
+                    // 状态总览。副屏状态不在这里拉服务侧状态：命令分发是同步的，
+                    // phoneService 未绑定时会阻塞绑定（有主线程 ANR 风险），
+                    // 所以给工具入口让用户自己查。
                     val cur = com.ccm.app.tools.phone.PhoneMode.preference(ctx2)
                     SlashResult.Notice(
                         "**设备状态**\n\n" +
                             "- 手机操作模式：${com.ccm.app.tools.phone.PhoneMode.label()}\n" +
                             "- 偏好：${cur ?: "(从没设过)"}\n" +
-                            "- Shizuku：${com.ccm.app.bridge.ShizukuBridge.unavailableReason() ?: "已授权"}\n\n" +
-                            "用法：`/device mode 主屏|后台|选择|off`"
+                            "- Shizuku：${com.ccm.app.bridge.ShizukuBridge.unavailableReason() ?: "已授权"}\n" +
+                            "- 副屏状态：用 `phone_vd status` 查看\n\n" +
+                            "用法：`/device mode 主屏|副屏|选择|off` · " +
+                            "测通道 → `phone_device(action:test)` · 副屏起停 → `phone_vd`"
                     )
+                } else {
+                    // 未知子命令明确报错（对齐 CLI cmd-device.mjs 的 D:191 语义），
+                    // 不静默当 status —— 否则用户以为子命令执行了。
+                    val head = parts.firstOrNull() ?: sub
+                    SlashResult.Notice("未知子命令「$head」。敲 /device 看用法。")
                 }
             }
         }
