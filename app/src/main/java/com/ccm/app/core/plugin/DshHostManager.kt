@@ -152,7 +152,11 @@ class DshHostManager(private val context: Context) {
                         // 现在：不走管道（完整输出进 onLine）、打退出码、
                         // marker 写入前还要**验证 node_modules 真的存在**（双保险）。
                         "cd $HOST_DIR && " +
-                            "npm ci --omit=dev --no-audit --no-fund 2>&1; " +
+                            // --legacy-peer-deps：dsh-host 的 120+ 包之间有
+                            // peer 版本冲突，npm 7+ 默认严格校验会 ERESOLVE
+                            // 退出码 1（真机实测）。CLI 侧的安装命令同样带它。
+                            "npm ci --omit=dev --no-audit --no-fund " +
+                            "--legacy-peer-deps 2>&1; " +
                             "echo NPM_EXIT=\$?",
                     ),
                     workDir = "/root",
