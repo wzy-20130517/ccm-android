@@ -283,7 +283,7 @@ class McpStdioTransport(
                     } catch (_: Throwable) {}
                 }.apply { isDaemon = true }.start()
 
-                register(this)
+                register(this@McpStdioTransport)
 
                 // initialize 握手
                 val initResp = request(
