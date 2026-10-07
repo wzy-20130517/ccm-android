@@ -3043,6 +3043,112 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                 "_需要接码/收邮件时，可用 CLI 侧的 mail-qq；APK 侧暂无法替代。_"
         )
 
+        // ── /qq —— QQ 桥（2026-10-07 加，子命令结构对齐 CLI，如实说明未接入）──
+        //
+        // CLI 的 /qq 管的是「QQ 作为输入通道」：监听开关、主人号、端点、队列、
+        // 打断策略（`core/commands/cmd-qq.mjs`，13 个子命令）。
+        //
+        // APK 现状：**没有 QQ 输入桥**（无端口监听、无 NapCat 对接）。
+        // 输出侧只有 QQPush / QQRecall 两个工具，且 qqPusher 未注入
+        // （AppGraph 没传 → QQPush 报「未接入」）。
+        //
+        // 本命令按「状态说明版」实现：子命令结构与 CLI 一致（用户敲什么都不
+        // 会得到"未知命令"），每个子命令都给出明确的现状说明与替代路径，
+        // 不让用户误以为 APK 有 QQ 桥。
+        "/qq" -> {
+            val sub = arg.trim().split(Regex("\\s+")).firstOrNull()?.lowercase().orEmpty()
+            val rest = arg.trim().split(Regex("\\s+")).drop(1).joinToString(" ").trim()
+
+            // 输出侧能力探测：QQPush 工具在注册表里，但 pusher 是否注入决定能否用
+            val pushReady = try {
+                com.ccm.app.AppGraph.toolNames.contains("QQPush")
+            } catch (_: Throwable) { false }
+
+            val statusBody = buildString {
+                append("**QQ 桥状态**\n\n")
+                append("- 输入桥（监听）: **未接入**（APK 无端口监听 / NapCat 对接）\n")
+                append("- 输出工具: ${if (pushReady) "`QQPush` / `QQRecall` 已注册" else "未注册"}")
+                append("（QQPush 的推送器未注入 → 调用会报「未接入」）\n")
+                append("- 主人 QQ: —（无桥，无此配置）\n")
+                append("- 待处理队列: —\n\n")
+                append("**说明**\n\n")
+                append("- CLI 的 QQ 桥让用户能在 QQ 私聊里下指令、收回复；")
+                append("APK 暂未实现该输入通道。\n")
+                append("- 需要在 QQ 上指挥 Agent 时，走 **CLI 侧**（Termux 里的 CCM）。\n")
+                append("- APK 的 QQ 相关能力只有输出工具（QQPush 推消息/文件、QQRecall 回溯群消息），")
+                append("且需 App 层注入推送器后才可用。")
+            }
+
+            when (sub) {
+                "", "status" -> SlashResult.Notice(statusBody)
+
+                "help" -> SlashResult.Notice(
+                    "**/qq 用法**（子命令结构与 CLI 一致；APK 当前全部不可执行）\n\n" +
+                        "- `/qq` / `/qq status` — 查看状态\n" +
+                        "- `/qq on|off` — 启停监听（APK 无监听）\n" +
+                        "- `/qq setup` — 配置向导（APK 无此配置）\n" +
+                        "- `/qq owner <QQ号>` — 设主人号（APK 无此配置）\n" +
+                        "- `/qq port <端口>` / `/qq api <URL>` — 端点配置（APK 无监听）\n" +
+                        "- `/qq queue` — 待处理消息（APK 无队列）\n" +
+                        "- `/qq interrupt on|off` — 打断开关（APK 无桥）\n" +
+                        "- `/qq open on|off` — 群放行模式（APK 无桥）\n\n" +
+                        "_APK 尚未接入 QQ 输入桥；以上子命令均返回现状说明，不会实际执行。_",
+                )
+
+                "on" -> SlashResult.Notice(
+                    "**APK 尚未接入 QQ 输入桥** —— 无法启动监听。\n\n" +
+                        "CLI 侧的 `/qq on` 会在本机起 3000 端口监听 NapCat 推送；\n" +
+                        "APK 没有该实现（需要前台服务 + 常驻网络监听）。\n\n" +
+                        "_替代：在 Termux 里用 CLI 版 CCM，它的 /qq 功能完整可用。_",
+                )
+
+                "off" -> SlashResult.Notice(
+                    "**APK 尚未接入 QQ 输入桥** —— 没有可停止的监听。",
+                )
+
+                "setup" -> SlashResult.Notice(
+                    "**APK 尚未接入 QQ 输入桥** —— 无配置向导。\n\n" +
+                        "CLI 的 `/qq setup` 一次配完主人号 / 端口 / NapCat API。\n\n" +
+                        "_替代：在 CLI 侧执行 `/qq setup`（配置存 qq-config.json）。_",
+                )
+
+                "owner" -> SlashResult.Notice(
+                    if (rest.isBlank()) {
+                        "**APK 尚未接入 QQ 输入桥** —— 无主人号配置。\n\n_CLI 用法：`/qq owner <QQ号>`。_"
+                    } else {
+                        "**APK 尚未接入 QQ 输入桥** —— 主人号未保存（无桥可绑）。\n\n" +
+                            "_要在 CLI 侧设置：`/qq owner $rest`。_"
+                    },
+                )
+
+                "port" -> SlashResult.Notice(
+                    "**APK 尚未接入 QQ 输入桥** —— 无监听端口。\n\n_CLI 用法：`/qq port <端口>`（默认 3000）。_",
+                )
+
+                "api" -> SlashResult.Notice(
+                    "**APK 尚未接入 QQ 输入桥** —— 无 NapCat API 配置。\n\n_CLI 用法：`/qq api <URL>`（默认 http://127.0.0.1:5700）。_",
+                )
+
+                "queue" -> SlashResult.Notice(
+                    "**APK 尚未接入 QQ 输入桥** —— 无待处理队列。",
+                )
+
+                "interrupt" -> SlashResult.Notice(
+                    "**APK 尚未接入 QQ 输入桥** —— 无打断开关。\n\n_CLI 用法：`/qq interrupt on|off`（新消息是否打断正在跑的任务）。_",
+                )
+
+                "open" -> SlashResult.Notice(
+                    "**APK 尚未接入 QQ 输入桥** —— 无群放行模式。\n\n_CLI 用法：`/qq open on|off`（开启后群内任何人 @ 都能唤醒）。_",
+                )
+
+                else -> SlashResult.Notice(
+                    "未知子命令 `$sub`。\n\n" +
+                        "APK 的 `/qq` 是**状态说明版**（尚未接入 QQ 输入桥）。\n" +
+                        "可用：`/qq` · `/qq status` · `/qq help`，其余子命令会给出对应说明。",
+                )
+            }
+        }
+
         // ── /mcp —— MCP 服务器（APK 无 MCP）─────────────────────────────────
         //
         // 已确认 APK 源码里没有任何 MCP 相关实现（find *Mcp* 无结果）。

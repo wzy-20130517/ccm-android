@@ -92,6 +92,7 @@ val COMMON_SLASH_COMMANDS: List<Pair<String, String>> = listOf(
     "/plugins" to "插件管理（/plugin 的别名）",
     "/github" to "GitHub 配置（/github login <token>）",
     "/mail" to "邮箱说明",
+    "/qq" to "QQ 桥状态（尚未接入输入桥）",
     "/mcp" to "MCP 服务器（HTTP/SSE + stdio）",
     "/pexels" to "图库 key（/pexels set <key>）",
     "/tvly" to "Tavily 搜索 key（WebSearch 用，/tvly <tvly-...>）",
