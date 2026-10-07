@@ -102,7 +102,7 @@ fun PluginPanel(modifier: Modifier = Modifier) {
     }
 
     // 查询（秒级）：状态 / providers / bundles —— UI scope 即可
-    fun refresh() {
+    fun refresh(heal: Boolean = false) {
         scope.launch {
             loading = true
             error = ""
@@ -118,6 +118,13 @@ fun PluginPanel(modifier: Modifier = Modifier) {
                     // providers / bundles 失败不阻塞主状态
                     providers = (PluginManager.providers() as? PluginManager.Result.Ok)?.value ?: emptyList()
                     bundles = (PluginManager.bundles() as? PluginManager.Result.Ok)?.value ?: emptyList()
+                } else if (heal) {
+                    // 【2026-10-07 修】自愈判断必须放在**查询完成之后** ——
+                    // 原来写成「refresh() 后紧跟 if (hostAlive == false)」，
+                    // 但 refresh 是 scope.launch 异步的，那行跑的时候
+                    // hostAlive 还是初始值 null，条件永远不成立 → 自愈
+                    // 从未被投递（真机实测：面板永远停在空态）。
+                    startHeal()
                 }
             } catch (t: Throwable) {
                 error = t.message ?: "读取插件状态失败"
@@ -127,11 +134,7 @@ fun PluginPanel(modifier: Modifier = Modifier) {
         }
     }
 
-    LaunchedEffect(Unit) {
-        refresh()
-        // 宿主没起 → 投递自愈（appScope 长任务）
-        if (hostAlive == false && !deployState.running) startHeal()
-    }
+    LaunchedEffect(Unit) { refresh(heal = true) }
     // 自愈完成信号 → 重新查询
     LaunchedEffect(deployState.doneTick) {
         if (deployState.doneTick > 0) refresh()
@@ -178,7 +181,7 @@ fun PluginPanel(modifier: Modifier = Modifier) {
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
                         .border(1.dp, colors.border, RoundedCornerShape(8.dp))
-                        .clickable(enabled = !loading) { refresh() }
+                        .clickable(enabled = !loading) { refresh(heal = true) }
                         .padding(horizontal = 12.dp, vertical = 7.dp),
                 )
             }
@@ -296,9 +299,8 @@ fun PluginPanel(modifier: Modifier = Modifier) {
                         .clip(RoundedCornerShape(8.dp))
                         .background(colors.textMain)
                         .clickable {
-                            // 重试 = 投递自愈（appScope 跑 deploy/start）+ 立即查询
-                            startHeal()
-                            refresh()
+                            // 重试 = 查询 +（若没起）投递自愈
+                            refresh(heal = true)
                         }
                         .padding(horizontal = 16.dp, vertical = 9.dp),
                 )
