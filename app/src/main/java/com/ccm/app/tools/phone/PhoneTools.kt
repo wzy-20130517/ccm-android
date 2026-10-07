@@ -354,14 +354,14 @@ class PhoneTools(
                 if (ok) {
                     // 对齐 CLI T:815-817：坐标 + 换算回显 + 下一步引导
                     ToolResult.ok(
-                        "已$what坐标 $x,$y$note\n" +
+                        "已${what}坐标 $x,$y$note\n" +
                             "界面可能已变化，需要继续操作请重新 phone_snapshot",
                     )
                 } else {
-                    ToolResult.failed("$what失败 ($x, $y)")
+                    ToolResult.failed("${what}失败 ($x, $y)")
                 }
             } catch (e: Throwable) {
-                ToolResult.Error("$what失败：${e.message}", ToolResult.INTERNAL)
+                ToolResult.Error("${what}失败：${e.message}", ToolResult.INTERNAL)
             }
         }
     }
@@ -631,7 +631,7 @@ class PhoneTools(
                 var bytes: ByteArray? = null
                 for (attempt in 1..3) {
                     bytes = svc.latestFrame()
-                    if (!bytes.isNullOrEmpty()) break
+                    if (bytes != null && bytes.isNotEmpty()) break
                     if (attempt < 3) withContext(Dispatchers.IO) { Thread.sleep(300) }
                 }
                 if (bytes == null || bytes.isEmpty()) {
