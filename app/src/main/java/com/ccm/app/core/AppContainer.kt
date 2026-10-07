@@ -678,6 +678,26 @@ class AppContainer private constructor(
                 spawnSubAgent = spawn@{ spec ->
                     try {
                         // ══════════════════════════════════════════════════
+                        //  【2026-10-06 修】run_in_background 分流
+                        // ══════════════════════════════════════════════════
+                        //
+                        // 原来这个闭包**无条件同步跑完**（subLoop.run().collect{}），
+                        // 于是 Agent 工具的 run_in_background:true 被静默忽略 ——
+                        // 工具不立即返回 task_id，而是阻塞几分钟直到子 Agent 跑完；
+                        // AgentStatus 里也看不到「运行中」的它。
+                        //
+                        // 现在：后台模式交给 SubAgentManager.spawnAsync（它有
+                        // taskId 生成、并发上限、运行中登记）。manager 未装配时
+                        // 退回同步（至少功能可用，只是不后台）。
+                        if (spec.runInBackground) {
+                            val mgr = subAgents
+                            if (mgr != null) {
+                                val r = mgr.spawnAsync(spec)
+                                return@spawn r
+                            }
+                            // manager 没装配 → 落到下面的同步路径（不 return）
+                        }
+                        // ══════════════════════════════════════════════════
                         //  子 Agent 提示词（2026-10-06 对照 CLI plan.mjs 补齐）
                         //
                         // CLI 的结构：systemPromptBase（主提示词全文，**含
