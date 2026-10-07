@@ -310,8 +310,16 @@ class DshHostManager(private val context: Context) {
             // 常驻模式：ProcessBuilder 持有 proot 进程（见 hostProcess 注释）
             // —— 不能用 runtime.exec（--kill-on-exit 会把 nohup 的 node 杀掉）。
             try {
+                // ⚠️ buildProotCommand 末尾写死 /usr/bin/node（给 MCP 设计，
+                // 那时只有 apt 的 18）—— 绝对路径绕过 PATH，升级到
+                // /usr/local/bin/node 的 24 也用不上（真机：升级同分钟
+                // host.log 仍 v18 SyntaxError）。这里按 PATH 优先级换成
+                // 实际要用的 node。
+                val preferLocal = java.io.File(runtime.rootfsDir(), "usr/local/bin/node")
+                val nodeBin = if (preferLocal.exists()) "/usr/local/bin/node" else "/usr/bin/node"
                 val cmd = com.ccm.app.core.mcp.McpInstaller(context, runtime)
                     .buildProotCommand("$HOST_DIR/server.mjs")
+                    .map { if (it == "/usr/bin/node") nodeBin else it }
                 val pb = java.lang.ProcessBuilder(cmd)
                 // ⚠️ 必须补 proot 的 env（PROOT_TMP_DIR 等）—— 缺了直接
                 // fatal: can't create temporary file（真机 host.log 实测）
