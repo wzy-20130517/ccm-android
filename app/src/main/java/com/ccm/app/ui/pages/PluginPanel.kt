@@ -54,56 +54,61 @@ fun PluginPanel(modifier: Modifier = Modifier) {
     var hostAlive by remember { mutableStateOf<Boolean?>(null) }   // null = 未知
     var busy by remember { mutableStateOf<String?>(null) }        // 正在忙的条目名
     var error by remember { mutableStateOf("") }
-    var logLine by remember { mutableStateOf("") }                // 自愈/安装进度
     var showInstall by remember { mutableStateOf(false) }
     var installTarget by remember { mutableStateOf("") }
+    var logLine by remember { mutableStateOf("") }   // install 操作的进度（部署进度在 deployState）
 
-    // 首次进入 + 手动刷新：自愈（宿主没起 → 尝试起；首次会走部署）
-    fun refresh(withHeal: Boolean = true) {
+    // 部署进度/错误走全局状态（deployState）—— 长任务（Node + 334MB
+    // npm ci 十几分钟）跑在 AppGraph.appScope，不随窗口销毁被取消；
+    // UI 只订阅。详见 PluginDeployState 的注释。
+    val deployState = com.ccm.app.core.plugin.PluginDeployState
+
+    /**
+     * 自愈：宿主没起就部署 + 启动。
+     *
+     * ⚠️ 协程跑在 **AppGraph.appScope**（应用级），不是 remember 的
+     * UI scope —— 部署十几分钟，UI scope 会在窗口销毁（切页 / 虚拟副屏
+     * 被系统回收）时取消协程，npm ci 断在半路前功尽弃（真机踩过）。
+     * 本函数只负责投递，进度由 deployState 订阅驱动。
+     */
+    fun startHeal() {
+        if (deployState.running) return   // 已在跑，不重复投递
+        deployState.reset()
+        com.ccm.app.AppGraph.appScope?.launch {
+            try {
+                val host = DshHostManager(appCtx)
+                if (host.state() is DshHostManager.State.NotInstalled ||
+                    host.state() is DshHostManager.State.DepsMissing
+                ) {
+                    deployState.appendLog("首次安装插件宿主（约 334MB，可能十几分钟）…")
+                    val ok = host.deploy { s -> deployState.appendLog(s) }
+                    if (!ok) {
+                        deployState.fail("宿主部署失败（日志见上）")
+                        return@launch
+                    }
+                }
+                deployState.appendLog("启动插件宿主…")
+                val started = host.start { s -> deployState.appendLog(s) }
+                if (!started) {
+                    // start() 的日志含 host.log 崩溃栈尾部
+                    deployState.fail("宿主启动失败（日志见上）")
+                    return@launch
+                }
+                deployState.succeed()
+            } catch (t: Throwable) {
+                deployState.fail("自愈异常：${t.message}")
+            }
+        }
+    }
+
+    // 查询（秒级）：状态 / providers / bundles —— UI scope 即可
+    fun refresh() {
         scope.launch {
             loading = true
             error = ""
             try {
                 val host = DshHostManager(appCtx)
-                var alive = host.isAlive()
-                if (!alive && withHeal) {
-                    logLine = "连接宿主失败，尝试自愈…"
-                    if (host.state() is DshHostManager.State.NotInstalled ||
-                        host.state() is DshHostManager.State.DepsMissing
-                    ) {
-                        logLine = "首次安装插件宿主（约 334MB，可能十几分钟）…"
-                        // 日志**窗口**（保留最后 6 行）—— 单行会被覆盖：
-                        // apt 的真实报错是中间某行，最后一行永远是
-                        // 「Node 安装失败」这种结论，光看它分不清根因
-                        val logWindow = ArrayDeque<String>()
-                        val ok = host.deploy { s ->
-                            logWindow.addLast(s)
-                            while (logWindow.size > 6) logWindow.removeFirst()
-                            logLine = logWindow.joinToString("\n")
-                        }
-                        if (!ok) {
-                            val tail = logWindow.joinToString(" | ").ifBlank { "（Node 或依赖没装上）" }
-                            error = "宿主部署失败：$tail"
-                            loading = false
-                            return@launch
-                        }
-                    }
-                    logLine = "启动插件宿主…"
-                    val startWindow = ArrayDeque<String>()
-                    val started = host.start { s ->
-                        startWindow.addLast(s)
-                        while (startWindow.size > 6) startWindow.removeFirst()
-                        logLine = startWindow.joinToString("\n")
-                    }
-                    if (!started) {
-                        // 启动失败的日志（含 host.log 崩溃栈尾部）转进 error ——
-                        // 原来只写 logLine，finally 会把它清掉，用户只看到
-                        // 「宿主未运行」却不知道为什么
-                        error = "宿主启动失败：" +
-                            startWindow.joinToString(" / ").ifBlank { "（见 host.log）" }
-                    }
-                    alive = host.isAlive()
-                }
+                val alive = host.isAlive()
                 hostAlive = alive
                 if (alive) {
                     when (val r = PluginManager.status()) {
@@ -117,13 +122,22 @@ fun PluginPanel(modifier: Modifier = Modifier) {
             } catch (t: Throwable) {
                 error = t.message ?: "读取插件状态失败"
             } finally {
-                logLine = ""
                 loading = false
             }
         }
     }
 
-    LaunchedEffect(Unit) { refresh() }
+    LaunchedEffect(Unit) {
+        refresh()
+        // 宿主没起 → 投递自愈（appScope 长任务）
+        if (hostAlive == false && !deployState.running) startHeal()
+    }
+    // 自愈完成信号 → 重新查询
+    LaunchedEffect(deployState.doneTick) {
+        if (deployState.doneTick > 0) refresh()
+    }
+    // 部署失败过且当前没在跑 → 用户点「重试」会把 startHeal 再投一次；
+    // 这里只负责让 UI 反映 deployState（读取处直接绑，不需额外 effect）
 
     Column(
         modifier = modifier
@@ -170,8 +184,10 @@ fun PluginPanel(modifier: Modifier = Modifier) {
             }
         }
 
-        // ── 错误条 ───────────────────────────────────────────
-        if (error.isNotBlank()) {
+        // ── 错误条（查询错误 + 部署错误合并显示）────────────────
+        val shownError = if (error.isNotBlank()) error
+        else if (deployState.error.isNotBlank()) deployState.error else ""
+        if (shownError.isNotBlank()) {
             Spacer(Modifier.height(12.dp))
             Row(
                 modifier = Modifier
@@ -181,15 +197,35 @@ fun PluginPanel(modifier: Modifier = Modifier) {
                     .padding(horizontal = 12.dp, vertical = 9.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(error, style = CCMText.body12, color = colors.error, modifier = Modifier.weight(1f))
-                Text("✕", color = colors.error.copy(alpha = 0.6f), modifier = Modifier.clickable { error = "" })
+                Text(shownError, style = CCMText.body12, color = colors.error, modifier = Modifier.weight(1f))
+                Text(
+                    "✕",
+                    color = colors.error.copy(alpha = 0.6f),
+                    modifier = Modifier.clickable {
+                        error = ""
+                        deployState.error = ""
+                        deployState.log = ""
+                    },
+                )
             }
         }
 
-        // ── 自愈/安装进度 ─────────────────────────────────────
-        if (logLine.isNotBlank()) {
+        // ── 进度（部署在 deployState，install 在本地 logLine）──────
+        val shownLog = buildString {
+            if (deployState.log.isNotBlank()) append(deployState.log)
+            if (logLine.isNotBlank()) {
+                if (isNotEmpty()) append('\n')
+                append(logLine)
+            }
+        }
+        if (shownLog.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
-            Text(logLine, style = CCMText.body11, color = colors.textSecondary, maxLines = 3)
+            Text(
+                shownLog + if (deployState.running) " ⏳" else "",
+                style = CCMText.body11,
+                color = colors.textSecondary,
+                maxLines = 4,
+            )
         }
 
         // ── 安装输入 ─────────────────────────────────────────
@@ -217,7 +253,7 @@ fun PluginPanel(modifier: Modifier = Modifier) {
                             logLine = ""
                         }
                         busy = null
-                        refresh(withHeal = false)
+                        refresh()
                     }
                 },
             )
@@ -232,7 +268,7 @@ fun PluginPanel(modifier: Modifier = Modifier) {
             }
             return@Column
         }
-        if (hostAlive == false && !loading) {
+        if (hostAlive == false && !loading && !deployState.running) {
             Column(
                 modifier = Modifier.fillMaxWidth().padding(top = 48.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -244,9 +280,12 @@ fun PluginPanel(modifier: Modifier = Modifier) {
                     style = CCMText.body12,
                     color = colors.textSecondary,
                 )
-                if (error.isBlank()) {
+                val reason = error.ifBlank {
+                    deployState.error.lineSequence().firstOrNull().orEmpty()
+                }
+                if (reason.isNotBlank()) {
                     Spacer(Modifier.height(4.dp))
-                    Text(error.ifBlank { "" }, style = CCMText.body11, color = colors.textSecondary)
+                    Text(reason, style = CCMText.body11, color = colors.textSecondary, maxLines = 2)
                 }
                 Spacer(Modifier.height(16.dp))
                 Text(
@@ -256,7 +295,11 @@ fun PluginPanel(modifier: Modifier = Modifier) {
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
                         .background(colors.textMain)
-                        .clickable { refresh() }
+                        .clickable {
+                            // 重试 = 投递自愈（appScope 跑 deploy/start）+ 立即查询
+                            startHeal()
+                            refresh()
+                        }
                         .padding(horizontal = 16.dp, vertical = 9.dp),
                 )
             }
@@ -298,7 +341,7 @@ fun PluginPanel(modifier: Modifier = Modifier) {
                                     is PluginManager.Result.Err -> r.message
                                 }
                                 busy = null
-                                refresh(withHeal = false)
+                                refresh()
                             }
                         },
                         onRemove = {
@@ -309,7 +352,7 @@ fun PluginPanel(modifier: Modifier = Modifier) {
                                     is PluginManager.Result.Err -> r.message
                                 }
                                 busy = null
-                                refresh(withHeal = false)
+                                refresh()
                             }
                         },
                     )
@@ -338,7 +381,7 @@ fun PluginPanel(modifier: Modifier = Modifier) {
                                 }
                                 logLine = ""
                                 busy = null
-                                refresh(withHeal = false)
+                                refresh()
                             }
                         },
                     )
