@@ -846,16 +846,19 @@ class AppContainer private constructor(
                 sessionStore = sessionStore,
                 compactor = compactor,
                 // 【2026-10-06 P1-8 接线】阈值从配置读。
-                //
-                // APK 的配置是**百分比**（compactThreshold 0-100，/compact-threshold
-                // 设的），AutoCompact 要的是绝对 token 数 —— 换算一下：
-                //   tokenLimit = maxContext × pct / 100
-                // 不换算的话 isEnabled 恒 false（0 阈值 = 关闭），
-                // 用户设了阈值也不生效（这正是原来的状态）。
+                // 【2026-10-07 语义统一】对齐 CLI /compact-threshold <tokens> [messages]：
+                // 新字段 compactTokenLimit / compactMessageLimit 是绝对值，直接透传。
+                // 旧字段 compactThreshold（百分比 0-100）仅作兼容降级 ——
+                // 新字段全为 0 且旧字段 >0 时，仍按  maxContext × pct / 100 换算，
+                // 老配置不至于静默失效；两者都为 0 则 isEnabled=false（默认关闭）。
                 autoCompact = AutoCompact(
-                    tokenLimit = if (config.compactThreshold > 0) {
-                        (config.maxContextTokens.toLong() * config.compactThreshold / 100).toInt()
-                    } else 0,
+                    tokenLimit = when {
+                        config.compactTokenLimit > 0 -> config.compactTokenLimit
+                        config.compactThreshold > 0 ->
+                            (config.maxContextTokens.toLong() * config.compactThreshold / 100).toInt()
+                        else -> 0
+                    },
+                    messageLimit = config.compactMessageLimit,
                     maxContext = config.maxContextTokens,
                 ),
                 modes = modes,

@@ -74,7 +74,7 @@ val COMMON_SLASH_COMMANDS: List<Pair<String, String>> = listOf(
     "/web" to "Web 服务说明",
     "/backup" to "备份说明",
     // ── 工具 ──
-    "/compact" to "压缩历史（截断旧工具输出）",
+    "/compact" to "压缩历史（status|micro|force [N]|<N>）",
     "/copy" to "复制最后一条回复",
     "/permissions" to "权限规则（/permissions mode 值）",
     "/export" to "导出对话（系统分享）",
@@ -100,7 +100,7 @@ val COMMON_SLASH_COMMANDS: List<Pair<String, String>> = listOf(
     "/protocol" to "API 协议（/protocol openai|anthropic|responses）",
     "/workspace" to "工作区（/workspace [路径]）",
     "/doctor" to "环境自检",
-    "/compact-threshold" to "自动压缩阈值（/compact-threshold 80）",
+    "/compact-threshold" to "自动压缩阈值（/compact-threshold <tokens> <messages>）",
     "/replay" to "历史回放开关（/replay on|off）",
     "/cache" to "Prompt Cache 开关（/cache on|off）",
     "/font" to "字体（/font reset 恢复默认）",

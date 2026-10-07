@@ -732,6 +732,13 @@ private fun handleQueryCommands(cmd: String, arg: String, ctx: SlashContext): Sl
             }
         }
 
+        // ── /compact [status|micro|force [N]|<N>] —— 压缩（2026-10-07 对齐 CLI 四分支）──
+        //
+        // 原来只有对话页老 when 里的 `text == "/compact"` 精确匹配（无参形态），
+        // 子命令全丢。现在解析与实现在 SlashCompact，这里只转发。
+        // 无参形态仍由本分支接管（老 when 分支从此不可达，留着仅作历史参考）。
+        "/compact" -> SlashCompact.dispatch(ctx, arg)
+
         // ── /context <N> —— 设置上下文窗口上限（对齐 CLI /context 200k）─────
         //
         // APK 侧的 /context（无参）在对话页老 when 里显示用量；这里接管**带参**
@@ -2284,34 +2291,77 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
             }
         }
 
-        // ── /compact-threshold —— 自动压缩阈值 ───────────────────────────
+        // ── /compact-threshold —— 自动压缩阈值（2026-10-07 对齐 CLI 双参数语义）──
+        //
+        // 原来是百分比（0-100，存 compactThreshold），CLI 是 token+条数双参数。
+        // 现在对齐 CLI：
+        //   /compact-threshold               看当前值
+        //   /compact-threshold <tokens> [messages]  设（0 0 = 完全关闭）
+        // 存 config 的 compactTokenLimit/compactMessageLimit（新字段），
+        // 同时直接写运行态 AutoCompact 的 tokenLimit/messageLimit（public var）
+        // —— 热更新，不用重启（原实现只 save，要重启才生效）。
         "/compact-threshold" -> {
             val st = com.ccm.app.AppGraph.storage
-            if (st == null) {
-                SlashResult.Notice("存储未初始化。")
+                ?: return SlashResult.Notice("存储未初始化。")
+            val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+            if (loadR.error != null) {
+                SlashResult.Notice("配置损坏：${loadR.error}")
             } else {
-                val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
-                if (loadR.error != null) {
-                    SlashResult.Notice("配置损坏：${loadR.error}")
+                val parts = arg.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+                // 运行态（活跃容器）——改完立即生效；首页无会话时为 null，只落盘
+                val ac = com.ccm.app.AppGraph.container?.autoCompact
+
+                if (parts.isEmpty()) {
+                    val tok = ac?.tokenLimit ?: loadR.config.compactTokenLimit
+                    val msg = ac?.messageLimit ?: loadR.config.compactMessageLimit
+                    val enabled = ac?.isEnabled ?: (tok > 0 || msg > 0)
+                    SlashResult.Notice(
+                        "**自动压缩阈值**\n\n" +
+                            "- 固定 Token 阈值：${if (tok > 0) tok.toString() else "关闭(0)"}\n" +
+                            "- 固定消息阈值：${if (msg > 0) msg.toString() else "关闭(0)"}\n" +
+                            "- 自动压缩总开关：${if (enabled) "开启" else "关闭"}" +
+                            (if (ac?.isTripped == true) "（⚠ 断路器已跳闸，连续失败 ${ac.failures} 次）" else "") + "\n\n" +
+                            "说明：\n" +
+                            "- 默认关闭自动摘要，对话中不会主动压缩\n" +
+                            "- `/compact status` 仅查看建议，不执行\n" +
+                            "- `/compact`、`/compact force` 手动压缩\n" +
+                            "- `/compact-threshold 0 0` 完全关闭自动压缩\n" +
+                            "- `/compact-threshold <t> <m>` 设固定阈值并按阈值自动压缩\n" +
+                            "_压缩会摘要历史可能丢细节，所以默认关；设了阈值才会自动压。_",
+                    )
+                } else if (parts.size > 2) {
+                    SlashResult.Notice("参数过多。用法：`/compact-threshold <tokens> [messages]`")
                 } else {
-                    val a = arg.trim().removeSuffix("%")
-                    val cur = loadR.config.compactThreshold
-                    if (a.isBlank()) {
-                        SlashResult.Notice(
-                            "**自动压缩阈值**：${if (cur <= 0) "关闭" else "$cur%"}\n\n" +
-                                "用法：`/compact-threshold <百分比>`（0 = 关闭）\n" +
-                                "例：`/compact-threshold 80` —— 上下文用到 80% 时自动压缩\n\n" +
-                                "_注意：压缩会摘要历史，可能丢细节。默认关闭。_"
-                        )
+                    val t = parts[0].toIntOrNull()
+                    val m = if (parts.size == 2) parts[1].toIntOrNull() else null
+                    if (t == null || t < 0 || (parts.size == 2 && m == null) || (m != null && m < 0)) {
+                        SlashResult.Notice("参数无效。用法：`/compact-threshold <tokens> [messages]`（0 0 = 关闭）")
                     } else {
-                        val v = a.toIntOrNull()
-                        if (v == null || v < 0 || v > 100) {
-                            SlashResult.Notice("阈值必须是 0-100 的数字（0 = 关闭）。")
+                        // messages 缺省 = 不动现有条数阈值（对齐 CLI setMessageLimit 的行为）
+                        val effM = m ?: (ac?.messageLimit ?: loadR.config.compactMessageLimit)
+                        val ok = com.ccm.app.core.provider.AppConfig.save(
+                            loadR.config.copy(compactTokenLimit = t, compactMessageLimit = effM),
+                            st.configFile,
+                        )
+                        if (!ok) {
+                            SlashResult.Notice("保存失败：写入 config.json 出错。")
                         } else {
-                            com.ccm.app.core.provider.AppConfig.save(
-                                loadR.config.copy(compactThreshold = v), st.configFile,
+                            // 热更新运行态（AutoCompact 的 public var，不碰它的逻辑）
+                            if (ac != null) {
+                                ac.tokenLimit = t
+                                ac.messageLimit = effM
+                            }
+                            val state = buildString {
+                                append("Token 上限已设为: ${if (t == 0) "关闭" else t}\n")
+                                append("消息条数上限已设为: ${if (effM == 0) "关闭" else effM}\n")
+                                if (t > 0 || effM > 0) append("自动压缩: 开启（按固定阈值）")
+                                else append("自动压缩: 已完全关闭（仅手动 /compact）")
+                            }
+                            SlashResult.Notice(
+                                "**$state**" +
+                                    if (ac == null) "\n\n_当前无活跃会话，阈值已落盘，下次开新会话时生效。_"
+                                    else "\n\n_已热更新，立即生效（不用重启）。_",
                             )
-                            SlashResult.Notice(if (v == 0) "自动压缩已**关闭**。" else "自动压缩阈值已设为 **$v%**。")
                         }
                     }
                 }

@@ -125,11 +125,31 @@ data class AppConfig(
     /**
      * 自动压缩阈值（问题40：/compact-threshold）。
      *
-     * 0 = 关闭（默认）。>0 = 上下文用掉这么多百分比时自动压缩。
-     * 对齐 CLI 的 /compact-threshold。
+     * ⚠️ **已废弃（2026-10-07 语义统一）**：原来是「百分比 0-100」，
+     * 现在 CLI 对齐为「token 数 + 消息条数」双参数 —— 新字段见
+     * [compactTokenLimit] / [compactMessageLimit]。本字段仅为兼容旧配置保留：
+     * 新字段全为 0 且本字段 >0 时，仍按旧百分比换算（见 AppContainer 构造）。
+     * `/compact-threshold` 命令不再读写本字段。
      */
     @SerialName("compactThreshold")
     val compactThreshold: Int = 0,
+
+    /**
+     * 自动压缩的 token 阈值（0 = 不按 token 触发）。
+     *
+     * 对齐 CLI `/compact-threshold <tokens> [messages]`（config 的 tokenLimit）。
+     * 与 [compactMessageLimit] 都为 0 时自动压缩关闭。
+     */
+    @SerialName("compactTokenLimit")
+    val compactTokenLimit: Int = 0,
+
+    /**
+     * 自动压缩的消息条数阈值（0 = 不按条数触发）。
+     *
+     * 对齐 CLI 的 messageLimit。与 [compactTokenLimit] 都为 0 时自动压缩关闭。
+     */
+    @SerialName("compactMessageLimit")
+    val compactMessageLimit: Int = 0,
 
     /**
      * 进会话时是否显示历史正文（问题40：/replay）。
@@ -147,6 +167,14 @@ data class AppConfig(
      */
     @SerialName("promptCache")
     val promptCache: Boolean = false,
+
+    /**
+     * Prompt Cache 保留时间（2026-10-07 对齐 CLI `/cache retention 24h|off`）。
+     *
+     * `"24h"` = 请求带 24h retention；null/其他 = 默认（不带）。
+     */
+    @SerialName("promptCacheRetention")
+    val promptCacheRetention: String? = null,
 
     /**
      * 运行环境模式（2026-10-06 加）：首次引导时选一次，之后不再问。
@@ -189,7 +217,8 @@ data class AppConfig(
             "providers", "current", "greeting", "stream", "temperature",
             "maxContextTokens", "permissionMode", "vision", "visionProviderId",
             "keyRotateEvery", "imageGen", "effort", "tavilyKey", "webSearch", "pexelsKey",
-            "compactThreshold", "replayHistory", "promptCache", "envMode",
+            "compactThreshold", "compactTokenLimit", "compactMessageLimit",
+            "replayHistory", "promptCache", "promptCacheRetention", "envMode",
             "outputStyle", "workspacePath",
             "_extra",
         )
