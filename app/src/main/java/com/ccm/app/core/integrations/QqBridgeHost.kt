@@ -158,7 +158,11 @@ class QqBridgeHost(
     // ══════════════════════════════════════════════════════════════
 
     private fun injectToSession(msg: QqBridge.QqMessage) {
-        val s = session ?: return
+        val s = session
+        if (s == null) {
+            Log.w(TAG, "注入失败：session 为 null（未 attach）")
+            return
+        }
 
         // 路由：本轮回复发回给谁
         replyTarget = msg.userId to msg.groupId

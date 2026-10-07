@@ -281,6 +281,7 @@ class QqBridge(
         val root = try { JSONObject(body) } catch (_: Throwable) { return }
         val postType = root.optString("post_type", "")
         if (postType != "message") return
+        Log.i(TAG, "收到上报: type=${root.optString("message_type")} user=${root.optString("user_id")} owner=$owner")
 
         val msgType = root.optString("message_type", "")
         val userId = root.optString("user_id", "")
@@ -298,7 +299,10 @@ class QqBridge(
 
         if (msgType == "private") {
             // 私聊：只有主人能用，别人静默丢弃（对齐 CLI）
-            if (owner.isBlank() || userId != owner) return
+            if (owner.isBlank() || userId != owner) {
+                Log.i(TAG, "私聊被丢弃: owner=$owner userId=$userId")
+                return
+            }
             if (text.isBlank() && imageUrls.isEmpty() && fileInfos.isEmpty()) return
 
             // ── QQ 侧控制指令拦截（不喂给 agent）──
@@ -309,6 +313,7 @@ class QqBridge(
             }
 
             // 图片/文件下载（异步，下载完再注入）
+            Log.i(TAG, "私聊进队: ${text.take(40)}")
             scope.launch(Dispatchers.IO) {
                 val images = downloadImages(imageUrls)
                 val files = downloadFiles(fileInfos)
