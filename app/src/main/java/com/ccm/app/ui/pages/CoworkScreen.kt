@@ -388,15 +388,30 @@ private fun CoworkInputCard(
             CoworkDropdown(
                 label = "",
                 value = modelChoice,
-                options = modelOptions(),
+                // 【2026-10-06 修】modelOptions() 内部读 ProviderStore.list()
+                // → AppConfig.load → file.readText() + JSON 反序列化。
+                // 原来直接写在 composition 里 —— 协作页读了输入框 state，
+                // 每敲一个字符重组一次就**读一次盘**（实测 LandingScreen 同款
+                // 问题导致 Skipped 39 frames）。
+                // 包 remember，用 modelChoice 做 key（切模型后仍能刷新）。
+                options = remember(modelChoice) { modelOptions() },
                 onPick = { pick ->
                     modelChoice = pick
                     // 切 Provider 让下次请求生效（ApiClient 是装配期快照）
+                    //
+                    // 【2026-10-06 修「选了不生效」】原来调 openSession(sessionId)
+                    // 期望重建，但那个函数开头有守卫
+                    //   `if (id == sessionId && session != null) return session`
+                    // 传的就是当前 id、session 也非 null → 第一行就 return，
+                    // 重建逻辑一行没跑 → 回对话还是旧模型。
+                    // 改用 rebuild（真正的重建 API，与设置页关闭时走同一条）。
                     com.ccm.app.AppGraph.storage?.let { st ->
                         val store = com.ccm.app.core.provider.ProviderStore(st)
                         store.list().firstOrNull { "${it.name} · ${it.model}" == pick }
                             ?.let { store.setCurrent(it.id) }
-                        com.ccm.app.AppGraph.openSession(com.ccm.app.AppGraph.sessionId)
+                    }
+                    com.ccm.app.AppGraph.appScope?.let { sc ->
+                        com.ccm.app.AppGraph.rebuild(ctxCow.applicationContext, sc)
                     }
                 },
             )

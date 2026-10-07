@@ -170,10 +170,17 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
     var modelFetchMessage by remember { mutableStateOf<String?>(null) }
     val settingsScope = androidx.compose.runtime.rememberCoroutineScope()
     // ★ #6：联网图标真值（remember 一次，别在 map 里每行读盘 —— 主线程 IO 教训）
+    //
+    // 【2026-10-06 修默认值矛盾】原来这里写 `... == true`（null → false），
+    // 而「能力开关」区写 `curCfg?.webSearch ?: true`（null → true）——
+    // 全新安装（字段为 null）时两处显示矛盾：开关显示「已开启」，
+    // 供应商列表却没有联网图标。
+    // 统一为 `?: true`（与开关默认开启一致，也与 ToolsBootstrap 的
+    // 「WebSearch 始终注册」语义相符）。
     val webSearchOn = remember(refreshTick) {
         com.ccm.app.AppGraph.storage?.let {
             AppConfig.load(it.configFile).config.webSearch
-        } == true
+        } ?: true
     }
 
     // 重新从磁盘读（写操作后调）
@@ -1598,11 +1605,25 @@ private fun GlobeIcon(color: Color, size: androidx.compose.ui.unit.Dp) {
  * 短 key（≤12 字符）直接整体星号化防反推。
  * 空串原样返回（placeholder 才会显示）。
  */
+/**
+ * 拉模型的共享 OkHttpClient（2026-10-06 加）。
+ *
+ * 【为什么共享】原来每次调 fetchProviderModels 都 `OkHttpClient()` 新建一个
+ * —— 每个实例自带连接池和线程池，不复用也不释放（OkHttp 官方明确建议
+ * 全局共用一个实例）。用户反复点「拉取模型」会累积线程/连接。
+ */
+private val modelFetchClient: okhttp3.OkHttpClient by lazy {
+    okhttp3.OkHttpClient.Builder()
+        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+}
+
 private fun fetchProviderModels(baseUrl: String, apiKey: String, protocol: String): Result<List<String>> = runCatching {
     require(baseUrl.isNotBlank()) { "API 地址为空" }
     require(apiKey.isNotBlank()) { "API Key 为空" }
 
-    // 【2026-10-06 用户反馈修正】原来的 URL 拼接有 bug：
+    // 【2026-10-06 修正】原来的 URL 拼接有 bug：
     //   `val url = if (anthropic) "$base/v1/models" else "$base/models"`
     // —— 用户填 `https://xxx/v1` 时变成 `https://xxx/v1/models` ✓
     //    但填 `https://xxx` 时变成 `https://xxx/models` ✗（缺 /v1）
@@ -1630,7 +1651,7 @@ private fun fetchProviderModels(baseUrl: String, apiKey: String, protocol: Strin
         builder.header("Authorization", "Bearer $apiKey")
     }
 
-    OkHttpClient().newCall(builder.build()).execute().use { response ->
+    modelFetchClient.newCall(builder.build()).execute().use { response ->
         val body = response.body?.string().orEmpty()
         if (!response.isSuccessful) {
             // 明确的错误提示（原来只有 "HTTP 401" 看不出原因）

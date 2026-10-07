@@ -70,26 +70,45 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
     //    连 Node 版本都写着过时的 v22.14.0，工具链真值是 v24.21.0）──
     // remember(refreshTick)：点「刷新」重查，不点不重复 IO。
     val ctx = androidx.compose.ui.platform.LocalContext.current
-    val env = remember(refreshTick) {
-        val rootfs = com.ccm.app.runtime.RootfsManager(ctx)
-        val proot = com.ccm.app.runtime.ProotRuntime(ctx)
-        val installed = try { rootfs.isInstalled() } catch (_: Throwable) { false }
-        EnvFacts(
-            shizuku = com.ccm.app.bridge.ShizukuBridge.granted(),
-            linux = installed,
-            proot = installed,
-            termuxInstalled = try {
-                ctx.packageManager.getPackageInfo("com.termux", 0); true
-            } catch (_: Throwable) { false },
-            termuxPerm = com.ccm.app.tools.bash.TermuxChannel.hasRunCommandPermission(ctx),
-            sdk = android.os.Build.VERSION.SDK_INT.toString(),
-            abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown",
-            home = ctx.filesDir.absolutePath,
-            uptimeMs = try {
-                android.os.SystemClock.elapsedRealtime() -
-                    android.os.Process.getStartElapsedRealtime()
-            } catch (_: Throwable) { 0L },
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-06 改异步】原来整块在 remember 里**同步**做 ——
+    //  其中 ShizukuBridge.granted() 可能走 binder IPC（Shizuku 服务响应慢时
+    //  卡数百毫秒），点「环境」tab 会明显卡顿。
+    //  现在：先给默认值渲染，IO 线程探测完回填（首次显示快，数据随后到）。
+    // ══════════════════════════════════════════════════════════════
+    var env by remember(refreshTick) {
+        androidx.compose.runtime.mutableStateOf(
+            EnvFacts(
+                shizuku = false, linux = false, proot = false,
+                termuxInstalled = false, termuxPerm = false,
+                sdk = android.os.Build.VERSION.SDK_INT.toString(),
+                abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown",
+                home = ctx.filesDir.absolutePath,
+                uptimeMs = 0L,
+            ),
         )
+    }
+    androidx.compose.runtime.LaunchedEffect(refreshTick) {
+        env = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val rootfs = com.ccm.app.runtime.RootfsManager(ctx)
+            val installed = try { rootfs.isInstalled() } catch (_: Throwable) { false }
+            EnvFacts(
+                shizuku = try { com.ccm.app.bridge.ShizukuBridge.granted() } catch (_: Throwable) { false },
+                linux = installed,
+                proot = installed,
+                termuxInstalled = try {
+                    ctx.packageManager.getPackageInfo("com.termux", 0); true
+                } catch (_: Throwable) { false },
+                termuxPerm = com.ccm.app.tools.bash.TermuxChannel.hasRunCommandPermission(ctx),
+                sdk = android.os.Build.VERSION.SDK_INT.toString(),
+                abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown",
+                home = ctx.filesDir.absolutePath,
+                uptimeMs = try {
+                    android.os.SystemClock.elapsedRealtime() -
+                        android.os.Process.getStartElapsedRealtime()
+                } catch (_: Throwable) { 0L },
+            )
+        }
     }
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(22.08.dp)) {

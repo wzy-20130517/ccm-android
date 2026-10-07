@@ -332,7 +332,13 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                 Spacer(Modifier.height(7.36.dp))
                 // 输入框显示**实际生效路径**（问题18：不再让用户猜）
                 // 没有工作区时为空串 —— 输入框留空即「未设置」
-                val actualWs = currentWorkspace()
+                //
+                // 【2026-10-06 修】原来 currentWorkspace() 直接写在 composition 里
+                // —— 它内部走 AppGraph.workspacePath() → 读 config.json（磁盘 IO），
+                // 每次重组都读一次。包 remember，用 wsRefresh 做 key
+                // （保存工作区后 +1 触发刷新）。
+                var wsRefresh by remember { mutableStateOf(0) }
+                val actualWs = remember(wsRefresh) { currentWorkspace() }
                 var wsInput by remember(actualWs) { mutableStateOf(actualWs) }
                 var wsError by remember { mutableStateOf("") }
                 SettingsTextField(
@@ -409,6 +415,7 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                                         com.ccm.app.core.provider.AppConfig.save(
                                             loadR.config.copy(workspacePath = toSave), st.configFile,
                                         )
+                                        wsRefresh++   // 触发 actualWs 重读（见上面的 remember）
                                         android.widget.Toast.makeText(
                                             ctx,
                                             "已保存（新会话生效）",
