@@ -66,12 +66,13 @@ object PluginManager {
         path: String,
         method: String = "GET",
         body: JSONObject? = null,
+        readTimeoutMs: Int = 30_000,
     ): JSONObject {
         val conn = URL("${DshHostManager.BASE_URL}$path").openConnection() as HttpURLConnection
         try {
             conn.requestMethod = method
             conn.connectTimeout = 5_000
-            conn.readTimeout = 30_000
+            conn.readTimeout = readTimeoutMs
             if (body != null) {
                 conn.doOutput = true
                 conn.setRequestProperty("Content-Type", "application/json")
@@ -171,7 +172,8 @@ object PluginManager {
             runApi("install $spec") {
                 val body = JSONObject().put("spec", spec)
                 if (config != null) body.put("config", config)
-                val json = call("/control/install", "POST", body)
+                // 180s：宿主内部要跑 npm install（对齐 CLI 工具的 timeout）
+                val json = call("/control/install", "POST", body, readTimeoutMs = 180_000)
                 json.optString("installed", spec)
             }
         }

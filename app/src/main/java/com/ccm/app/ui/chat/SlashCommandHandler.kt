@@ -82,6 +82,14 @@ class SlashContext(
     val startGoal: ((description: String, firstMessage: String) -> Unit)? = null,
     /** 读当前 goal 状态文本（null = 无目标）。 */
     val goalStatusText: (() -> String?)? = null,
+    /**
+     * 执行 /plugin 命令（2026-10-07 加，对齐 CLI /plugin）。
+     *
+     * 与 startGoal 同理：插件操作要走网络（宿主 npm/HTTP），handler 跑在
+     * 主线程不能阻塞 —— UI 层收到后在协程里调 PluginCommandRunner.run，
+     * 结果用 session.injectNotice 回屏。参数：(sub, arg)。
+     */
+    val runPlugin: ((sub: String, arg: String) -> Unit)? = null,
 )
 
 /**
@@ -1648,15 +1656,38 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                 "- 长任务期间保持屏幕点亮或用充电状态",
         )
 
-        // ── /plugins —— 插件（对齐 CLI /plugins）────────────────────────────
-        "/plugins" -> SlashResult.Notice(
-            "**插件**\n\n" +
-                "CLI 的 `/plugins` 列出已装插件（`plugins/` 目录下的扩展）。\n" +
-                "APK 无 DSH 插件宿主（那是 CLI 侧能力）—— 能力扩展走三条路：\n" +
-                "- **技能**：放 `skills/<名字>.md`（用 `/skills` 查看）\n" +
-                "- **Hooks**：放 `hooks.json`（用 `/hooks` 查看已注册事件）\n" +
-                "- **子 Agent**：放 `agents/<名字>.md`（用 `/agents` 查看）",
-        )
+        // ── /plugin —— DSH 插件宿主（2026-10-07 新增，对齐 CLI /plugin）──
+        //
+        // 真正的执行在 PluginCommandRunner（suspend），这里只做解析 + 投递：
+        // handler 是同步的、跑在主线程 onSend 回调里，不能直接做网络 IO。
+        "/plugin" -> {
+            if (ctx.runPlugin == null) {
+                SlashResult.Notice("**插件**\n\n插件系统未就绪（UI 层没注入执行器）")
+            } else {
+                val sub = arg.substringBefore(" ").trim()
+                val rest = arg.substringAfter(" ", "").trim()
+                ctx.runPlugin(sub, rest)
+                SlashResult.Notice("**插件**\n\n命令已提交，结果稍后显示…")
+            }
+        }
+
+        // ── /plugins —— 别名（对齐 CLI：/plugins 是 /plugin 的别名）────────
+        "/plugins" -> {
+            if (ctx.runPlugin == null) {
+                SlashResult.Notice(
+                    "**插件**\n\n" +
+                        "- **DSH 插件**：`/plugin`（宿主状态/装卸/启停）\n" +
+                        "- **技能**：`/skills`\n" +
+                        "- **Hooks**：`/hooks`\n" +
+                        "- **子 Agent**：`/agents`",
+                )
+            } else {
+                val sub = arg.substringBefore(" ").trim()
+                val rest = arg.substringAfter(" ", "").trim()
+                ctx.runPlugin(sub, rest)
+                SlashResult.Notice("**插件**\n\n命令已提交，结果稍后显示…")
+            }
+        }
 
         // ── /agents —— 列出可用子 agent 类型 ────────────────────────────────
         //

@@ -146,7 +146,11 @@ fun CustomizeScreen(
 
         // ── 内容：列表 或 详情（单屏互斥）────────────────────────────
         val detail = detailItem
-        if (detail == null) {
+        if (activeTab == CustomizeTab.PLUGINS) {
+            // 插件面板自带滚动 + 完整操作（状态/启停/安装/Provider），
+            // 不走 sections 过滤 —— 数据实时来自 DSH 宿主。
+            PluginPanel()
+        } else if (detail == null) {
             // 列表视图
             Column(
                 modifier = Modifier
@@ -331,6 +335,9 @@ private fun BackArrowGlyph(tint: Color, size: androidx.compose.ui.unit.Dp) {
 enum class CustomizeTab(val key: String, val label: String, val iconRes: Int) {
     SKILLS("skills", "技能", R.drawable.ic_skills),
     CONNECTORS("connectors", "连接器", R.drawable.ic_connectors),
+    // 2026-10-07 加：插件 tab（对齐 Web CustomizePage 的 plugins tab）——
+    // 面板自带完整列表+操作（PluginPanel），不走 sections 过滤。
+    PLUGINS("plugins", "插件", R.drawable.ic_plugins),
 }
 
 /** 定制项（UI 层） */

@@ -373,6 +373,9 @@ class ToolsBootstrap(
             add(lookupTools.SearchInfoTool())
             add(lookupTools.LookupTool())
 
+            // DSH 插件管理（对齐 CLI DshPlugin；宿主自愈见 DshHostManager）
+            add(com.ccm.app.tools.plugin.DshPluginTools(context).DshPluginTool())
+
             // 批 4：手机
             add(phoneTools.PhoneSnapshotTool())
             add(phoneTools.PhoneClickTool())

@@ -218,6 +218,14 @@ APK 是前台服务 + wake-lock，不需要手动保活。若长时间任务被�
   所以「这张图是什么」应该由**你自己看图**（ViewImage / 用户 /image 发的图）提炼关键词，再用 SearchInfo 搜，
   而不是调这个工具。陌生人物图认不出就直说，不要编名字。
 
+## DSH 插件工具（插件宿主）
+- **DshPlugin**: 管理 DSH 插件宿主（dsh-host）里的插件，对齐官方 plugin_manager 的 action 语义。
+  \`action=list_plugins\` 列已加载插件与 provider 状态（支持 offset/limit 分页）·
+  \`action=list_bundles\` 列可安装插件包 · \`action=set_plugin\` 启停（target + enabled）·
+  \`action=install_bundle\` 安装（target，宿主内 npm 装包 + 热加载）· \`action=remove_bundle\` 卸载 ·
+  \`action=providers\` 列 provider 的接入地址（baseUrl/apiKey）· \`action=status\` 宿主健康检查。
+  宿主未运行时会自动拉起（首次要装 Node 与依赖，约 334MB、可能十几分钟，autoStart:false 可跳过）。
+
 ## Git 工具
 - **GitStatus**: 查看仓库状态。只读工具
 - **GitDiff**: 查看文件差异。只读工具
@@ -387,6 +395,7 @@ APK 是前台服务 + wake-lock，不需要手动保活。若长时间任务被�
 | 搜索带锚点 | HashlineGrep | grep + 手工算锚点 |
 | 联网搜索信息 | WebSearch | curl + 手工解析 |
 | 查中文人物/作品/UP主 | SearchInfo（百度+B站源） | curl 抓百度 HTML |
+| 管理 DSH 插件 | DshPlugin（或 /plugin） | 手改 plugins.json / npm 命令 |
 | 打开搜到的某条看全文 | Lookup | WebFetch 自己拼 URL 逐个试 |
 | 找图片素材 | FindImage | curl 图库 API |
 | 抓取网页内容 | WebFetch | curl + 手撸 HTML |

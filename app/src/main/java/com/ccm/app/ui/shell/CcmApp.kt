@@ -466,6 +466,19 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         val gs = com.ccm.app.AppGraph.toolsResult?.goalStore
                         gs?.get(AppGraph.sessionId)?.let { g -> gs.render(g) }
                     },
+                    // /plugin（对齐 CLI）：协程里跑，结果 injectNotice 回屏
+                    runPlugin = { sub, rest ->
+                        val appC = appCtx.applicationContext
+                        val sess = activeSession
+                        AppGraph.appScope?.launch {
+                            val md = try {
+                                com.ccm.app.core.plugin.PluginCommandRunner.run(appC, sub, rest)
+                            } catch (t: Throwable) {
+                                "**插件**\n\n执行失败: ${t.message}"
+                            }
+                            sess?.injectNotice(md)
+                        }
+                    },
                     openPanel = { p ->
                         when (p) {
                             "model" -> showModelPicker = true

@@ -149,6 +149,19 @@ fun ChatScreenConnected(
             val sid = com.ccm.app.AppGraph.sessionId
             gs?.get(sid)?.let { g -> gs.render(g) }
         },
+        // /plugin（对齐 CLI）：协程里跑 PluginCommandRunner，结果 injectNotice 回屏
+        runPlugin = { sub, rest ->
+            val appCtx = ctx.applicationContext
+            val sess = session
+            com.ccm.app.AppGraph.appScope?.launch {
+                val md = try {
+                    com.ccm.app.core.plugin.PluginCommandRunner.run(appCtx, sub, rest)
+                } catch (t: Throwable) {
+                    "**插件**\n\n执行失败: ${t.message}"
+                }
+                sess.injectNotice(md)
+            }
+        },
         // 对话页不直接刷新列表：删除/重命名后回列表页时
         // CcmApp 的 CHATS 分支有 LaunchedEffect(route){refreshSessions()}
         refreshSessions = {},
