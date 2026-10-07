@@ -84,6 +84,22 @@ class ApiClient(
      * anthropic 协议的 thinking budget 映射未做（当前主力是 openai 兼容）。
      */
     private val effort: String? = null,
+    /**
+     * Prompt Cache 扩展字段（对齐 CLI api.mjs:1221 语义）。
+     * true 时 OpenAI 协议带 prompt_cache_key/retention，Anthropic 协议
+     * 在 system 块与最后一条消息块加 cache_control。
+     */
+    private val promptCache: Boolean = false,
+    /** 24h 保留（null = 不发送该字段）。 */
+    private val promptCacheRetention: String? = null,
+    /** 缓存键（会话 ID —— 同一会话稳定，跨会话隔离）。 */
+    private val sessionCacheKey: String? = null,
+    /**
+     * 思考回传（/effort replay on 时 true）。
+     * true 时历史里的 assistant 消息带 reasoning 字段（双写 reasoning +
+     * reasoning_content，对齐 CLI attachReasoning 的兼容处理）。
+     */
+    private val replayReasoning: Boolean = false,
 ) {
 
     /** 一次重试尝试的信息（给 UI 显示「第 2 次重试…」）。 */
@@ -863,6 +879,14 @@ class ApiClient(
         put("temperature", temperature)
         if (maxTok != null) put("max_tokens", maxTok)
         if (systemTopLevel && system.isNotEmpty()) put("system", system)
+        // Prompt Cache（/cache on）：OpenAI 兼容端点也支持这两个字段，
+        // 未配置时完全不发送（兼容旧网关）。
+        if (promptCache && !sessionCacheKey.isNullOrBlank()) {
+            put("prompt_cache_key", sessionCacheKey)
+        }
+        if (promptCache && !promptCacheRetention.isNullOrBlank()) {
+            put("prompt_cache_retention", promptCacheRetention)
+        }
         // 深度思考（audit-core #2）：none 不发（等价默认关）；
         // xhigh/max 是 CLI 扩展档，OpenAI 官方只认到 high → 归一到 high。
         (effortOverride ?: effort)?.takeIf { it.isNotBlank() && it != "none" }?.let { e ->
@@ -893,8 +917,52 @@ class ApiClient(
     ): JsonObject = buildJsonObject {
         put("model", model)
         // Anthropic 的 system 是**顶层字段**（不是 messages[0]）
-        if (system.isNotEmpty()) put("system", system)
-        put("messages", buildJsonArray { messages.forEach { add(it) } })
+        // Prompt Cache（/cache on）：system 拆成块数组 + cache_control
+        // （对齐 Anthropic prompt caching 官方用法：缓存断点打在
+        // system 末尾与最后一条消息 —— 长 system + 长历史收益最大）。
+        if (promptCache && system.isNotEmpty()) {
+            put("system", buildJsonArray {
+                add(buildJsonObject {
+                    put("type", "text")
+                    put("text", system)
+                    if (promptCacheRetention == "24h") {
+                        put("cache_control", buildJsonObject {
+                            put("type", "ephemeral")
+                            put("ttl", "24h")
+                        })
+                    } else {
+                        put("cache_control", buildJsonObject { put("type", "ephemeral") })
+                    }
+                })
+            })
+        } else if (system.isNotEmpty()) {
+            put("system", system)
+        }
+        put("messages", buildJsonArray {
+            messages.forEachIndexed { idx, m ->
+                if (promptCache && idx == messages.size - 1) {
+                    // 最后一条消息的最后一个 content 块加 cache_control
+                    val content = m["content"]
+                    if (content is kotlinx.serialization.json.JsonArray && content.isNotEmpty()) {
+                        val newBlocks = buildJsonArray {
+                            content.forEachIndexed { bi, b ->
+                                val o = b as? JsonObject
+                                if (o != null && bi == content.size - 1) {
+                                    add(buildJsonObject {
+                                        o.forEach { (k, v) -> put(k, v) }
+                                        put("cache_control", buildJsonObject { put("type", "ephemeral") })
+                                    })
+                                } else add(b)
+                            }
+                        }
+                        add(buildJsonObject {
+                            m.forEach { (k, v) -> if (k != "content") put(k, v) }
+                            put("content", newBlocks)
+                        })
+                    } else add(m)
+                } else add(m)
+            }
+        })
         put("stream", stream)
         put("max_tokens", maxTok ?: 4096)   // Anthropic 必填
         put("temperature", temperature)

@@ -191,6 +191,8 @@ class AppContainer private constructor(
                 storage = storageForSubAgent,
                 settings = settingsForSubAgent,
                 sessionId = "sub-" + System.currentTimeMillis(),
+                // 思考回传（子 Agent 沿用当前 Provider 的设置）
+                replayReasoning = config.providers[config.current]?.replayReasoning == true,
                 // 关键：不传 spawnSubAgent（子 Agent 不能再派）
                 toolRunner = toolRunnerForSubAgent ?: throw IllegalStateException("子 Agent 依赖未就绪（toolRunner）"),
                 imageScaler = null,
@@ -679,6 +681,8 @@ class AppContainer private constructor(
                 storage = AppBackedToolStorage(storage),
                 settings = buildSettings(config, provider),
                 sessionId = effectiveSessionId,
+                // 思考回传（/effort replay，2026-10-07 接线）
+                replayReasoning = provider.replayReasoning,
                 // 【2026-10-06 问题40 修复】原来这里是 `null`，注释说
                 // 「由上层在装配后注入」—— **但从来没注入过** →
                 // Agent 工具永远报「当前环境不支持派生子 Agent（spawnSubAgent 未注入）」
@@ -908,6 +912,14 @@ class AppContainer private constructor(
                 keyPoolStateFile = java.io.File(storage.root, "key-pool-state.json"),
                 // 深度思考（audit-core #2：config.effort 原来零消费）
                 effort = provider.effort ?: config.effort,
+                // Prompt Cache（/cache 命令，2026-10-07 接线 —— 此前只写配置
+                // 不消费，开关是假的）。cache key 用 sessionId 派生：
+                // 同会话稳定、跨会话隔离（对齐 CLI sessionCacheKey）。
+                promptCache = config.promptCache,
+                promptCacheRetention = config.promptCacheRetention,
+                sessionCacheKey = provider.id + ":main",
+                // 思考回传（/effort replay，同批接线）
+                replayReasoning = provider.replayReasoning,
             )
         }
 

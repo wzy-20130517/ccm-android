@@ -40,6 +40,17 @@ data class Message(
      *   · watch 模式每轮一条「继续执行」刷屏
      */
     val hidden: Boolean = false,
+    /**
+     * 本轮 assistant 的思考文本（/effort replay on 时回传给模型）。
+     *
+     * 【为什么存这里】CLI 的 attachReasoning 在**发送时**把 reasoning
+     * 附到消息上（api.mjs:603）—— APK 的历史是 Message 结构，
+     * 所以在**写入历史时**存下来（appendAssistantText/appendToolResults），
+     * 发送时按 replayReasoning 开关决定带不带（buildApiMessages）。
+     *
+     * 不回传时（默认 off）这个字段只用于 UI 展示，不占请求带宽。
+     */
+    val reasoning: String? = null,
 ) {
 
     /** 便捷构造：纯文本用户消息。 */

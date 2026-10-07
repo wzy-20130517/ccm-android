@@ -134,6 +134,12 @@ class AgentLoop(
      */
     private var visionClient: ApiClient? = null,
     /**
+     * 思考回传（/effort replay on）：历史里的 assistant 消息带
+     * reasoning/reasoning_content 字段发回模型（省上下文 vs 模型能看到
+     * 自己上一轮的想法）。默认 off —— 对齐 CLI replayReasoning 默认值。
+     */
+    private val replayReasoning: Boolean = false,
+    /**
      * trace 目录（`null` = 不记录）。
      *
      * **强烈建议传** —— Node 版那些最难查的 bug（「只有 WebSearch 被掐死」
@@ -192,6 +198,7 @@ class AgentLoop(
         sessionId: String = "",
         spawnSubAgent: (suspend (SubAgentSpec) -> SubAgentResult)? = null,
         visionClient: ApiClient? = null,
+        replayReasoning: Boolean = false,
         traceDir: java.io.File? = null,
         imageScaler: ImageScaler? = null,
         toolRunner: ToolRunner = ToolRunner.Unset,
@@ -211,6 +218,7 @@ class AgentLoop(
         sessionId = sessionId,
         spawnSubAgent = spawnSubAgent,
         visionClient = visionClient,
+        replayReasoning = replayReasoning,
         traceDir = traceDir,
         imageScaler = imageScaler,
         toolRunner = toolRunner,
@@ -920,6 +928,18 @@ class AgentLoop(
                     m.content.forEach { block -> add(blockToJson(block)) }
                 })
             }
+            // 思考回传（/effort replay on）：assistant 消息带 reasoning。
+            // 双写 reasoning + reasoning_content —— 上游实现分裂（NewAPI 系
+            // 只认前者、DeepSeek 官方只认后者），对齐 CLI attachReasoning。
+            if (m.role == Message.ROLE_ASSISTANT && replayReasoning) {
+                m.reasoning?.takeIf { it.isNotBlank() }?.let { r ->
+                    val clean = sanitizeTextForApi(r)
+                    if (clean.isNotBlank()) {
+                        put("reasoning", JsonPrimitive(clean))
+                        put("reasoning_content", JsonPrimitive(clean))
+                    }
+                }
+            }
         }
     })
 
@@ -1302,7 +1322,13 @@ class AgentLoop(
     private fun appendAssistantText(turn: AssistantTurn) {
         val blocks = mutableListOf<ContentBlock>()
         if (turn.text.isNotEmpty()) blocks += ContentBlock.Text(turn.text)
-        if (blocks.isNotEmpty()) messages += Message(Message.ROLE_ASSISTANT, blocks)
+        if (blocks.isNotEmpty()) {
+            messages += Message(
+                Message.ROLE_ASSISTANT, blocks,
+                // 思考文本随历史存下（replay on 时发送侧回传，见 buildApiMessages）
+                reasoning = turn.reasoning.takeIf { it.isNotEmpty() },
+            )
+        }
     }
 
     /** 把 assistant 回复 + 工具结果写进历史。 */
@@ -1315,7 +1341,10 @@ class AgentLoop(
         assistant.toolCalls.forEach { tc ->
             blocks += ContentBlock.ToolUse(tc.id, tc.name, parseArgs(tc.arguments))
         }
-        messages += Message(Message.ROLE_ASSISTANT, blocks)
+        messages += Message(
+            Message.ROLE_ASSISTANT, blocks,
+            reasoning = assistant.reasoning.takeIf { it.isNotEmpty() },
+        )
 
         val resultBlocks = results.map { r ->
             ContentBlock.ToolResult(r.id, r.result.textOrMessage, r.result.failed)
