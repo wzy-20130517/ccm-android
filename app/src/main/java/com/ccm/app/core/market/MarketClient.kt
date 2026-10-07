@@ -5,6 +5,7 @@ import android.util.Log
 import com.ccm.app.ui.pages.MarketItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -60,7 +61,33 @@ object MarketClient {
      * 每源独立失败 —— 自有源挂了仍有外部源可用，反之亦然。
      * 只有**全部为空**才返回 null（让 UI 显示"拉取失败"而不是"没有内容"）。
      */
-    suspend fun fetchRegistry(): List<MarketItem>? = withContext(Dispatchers.IO) {
+    /** 缓存文件（市场清单落盘，6 小时 TTL）。 */
+    private const val REGISTRY_CACHE_FILE = "market-registry-cache.json"
+
+    /** 缓存有效期：6 小时。市场数据不频繁变，过期才拉网络。 */
+    private const val REGISTRY_CACHE_TTL_MS = 6 * 3600_000L
+
+    /**
+     * 拉清单（**缓存优先**，2026-10-07 加）。
+     *
+     * 背景：外部源实测有死源（api.dsh-plugin.org TLS 握手失败，卡到超时）
+     * —— 即便加了并发，每次进市场页都白等一轮网络。
+     *
+     * 策略：
+     *   1. 缓存新鲜（<6h）→ **秒回**，不碰网络
+     *   2. 过期/无缓存 → 拉网络，成功写缓存
+     *   3. 网络全挂 → 过期缓存兜底（比给用户看空白强）
+     */
+    suspend fun fetchRegistry(ctx: Context): List<MarketItem>? = withContext(Dispatchers.IO) {
+        val cacheFile = File(ctx.filesDir, REGISTRY_CACHE_FILE)
+        val cached = readCache(cacheFile)
+
+        // 1. 新鲜缓存秒回
+        if (cached != null && System.currentTimeMillis() - cached.first < REGISTRY_CACHE_TTL_MS) {
+            return@withContext cached.second
+        }
+
+        // 2. 拉网络
         val own = fetchOwnRegistry()
         val external = try { MarketSources.fetchAll() } catch (_: Throwable) { emptyList() }
         // own 可空（自有源挂了）→ 用 orEmpty 兜底，别让整个市场跟着失败
@@ -68,7 +95,93 @@ object MarketClient {
         // 按 id 去重（理论上不会重，但外部源 id 前缀不同，防御性去重）
         val seen = mutableSetOf<String>()
         val deduped = merged.filter { seen.add(it.id) }
-        return@withContext if (deduped.isEmpty() && own == null) null else deduped
+        val fresh = if (deduped.isEmpty() && own == null) null else deduped
+
+        if (fresh != null && fresh.isNotEmpty()) {
+            writeCache(cacheFile, fresh)
+            return@withContext fresh
+        }
+
+        // 3. 网络失败 → 过期缓存兜底
+        cached?.second?.takeIf { it.isNotEmpty() }?.let { return@withContext it }
+        fresh
+    }
+
+    // ── 缓存读写 ────────────────────────────────────────────────
+
+    private fun writeCache(file: File, items: List<MarketItem>) {
+        try {
+            val arr = JSONArray()
+            items.forEach { arr.put(itemToJson(it)) }
+            val root = JSONObject()
+            root.put("ts", System.currentTimeMillis())
+            root.put("items", arr)
+            file.writeText(root.toString())
+        } catch (t: Throwable) {
+            Log.w(TAG, "写市场缓存失败: ${t.message}")
+        }
+    }
+
+    private fun readCache(file: File): Pair<Long, List<MarketItem>>? {
+        return try {
+            if (!file.exists()) return null
+            val root = JSONObject(file.readText())
+            val ts = root.optLong("ts", 0L)
+            val arr = root.optJSONArray("items") ?: return null
+            val items = (0 until arr.length()).mapNotNull { jsonToItem(arr.optJSONObject(it)) }
+            if (items.isEmpty()) null else ts to items
+        } catch (t: Throwable) {
+            Log.w(TAG, "读市场缓存失败: ${t.message}")
+            null
+        }
+    }
+
+    private fun itemToJson(i: MarketItem): JSONObject = JSONObject().apply {
+        put("id", i.id)
+        put("type", i.type)
+        put("name", i.name)
+        put("description", i.description)
+        put("author", i.author)
+        put("size", i.size)
+        put("url", i.url)
+        put("files", JSONArray(i.files))
+        put("npmInstall", i.npmInstall)
+        put("entry", i.entry)
+        put("npmPackage", i.npmPackage)
+        put("installBrowser", i.installBrowser)
+        put("aptDeps", JSONArray(i.aptDeps))
+        val env = JSONObject()
+        i.env.forEach { (k, v) -> env.put(k, v) }
+        put("env", env)
+    }
+
+    private fun jsonToItem(o: JSONObject?): MarketItem? = o?.let { j ->
+            MarketItem(
+                id = j.optString("id"),
+                type = j.optString("type"),
+                name = j.optString("name"),
+                description = j.optString("description"),
+                author = j.optString("author"),
+                size = j.optString("size"),
+                url = j.optString("url"),
+                files = j.optJSONArray("files").jsonStrList(),
+                npmInstall = j.optBoolean("npmInstall"),
+                entry = j.optString("entry"),
+                npmPackage = j.optString("npmPackage"),
+                installBrowser = j.optBoolean("installBrowser"),
+                aptDeps = j.optJSONArray("aptDeps").jsonStrList(),
+                env = j.optJSONObject("env").jsonStrMap(),
+            )
+        }
+
+    private fun JSONArray?.jsonStrList(): List<String> =
+        this?.let { arr -> (0 until arr.length()).map { arr.optString(it) } } ?: emptyList()
+
+    private fun JSONObject?.jsonStrMap(): Map<String, String> {
+        val o = this ?: return emptyMap()
+    val out = mutableMapOf<String, String>()
+        o.keys().forEach { k -> out[k] = o.optString(k) }
+        return out
     }
 
     /** 拉自有 registry.json（原 fetchRegistry 的逻辑，重命名保留）。 */

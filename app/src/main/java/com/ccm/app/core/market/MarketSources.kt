@@ -3,6 +3,8 @@ package com.ccm.app.core.market
 import android.util.Log
 import com.ccm.app.ui.pages.MarketItem
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -162,8 +164,11 @@ object MarketSources {
      */
     suspend fun fetchDshPlugins(): List<MarketItem> = withContext(Dispatchers.IO) {
         try {
-            val text = httpGet("https://api.dsh-plugin.org/plugins.zh.json")
-                ?: return@withContext emptyList()
+            // 主源失败（实测 TLS 握手直接挂）→ 落 npm 备源（npmmirror 秒回）
+            val text = httpGet(
+                "https://api.dsh-plugin.org/plugins.zh.json",
+                connectMs = 6_000, readMs = 15_000,
+            ) ?: return@withContext fetchDshPluginsFromNpm()
             val arr = JSONArray(text)
             // ⚠️ 实测这个源有 **12699 个插件** —— 全列会：
             //   · 解析 12MB JSON 卡住主线程（已放 IO，但内存也吃）
@@ -196,19 +201,70 @@ object MarketSources {
             }
         } catch (e: Throwable) {
             Log.w(TAG, "拉 DSH Plugin Hub 失败：${e.message}")
-            emptyList()
+            fetchDshPluginsFromNpm()
         }
     }
 
+    /**
+     * DSH 插件备源：npmmirror 的 npm search API（2026-10-07 加）。
+     *
+     * 主源 api.dsh-plugin.org 实测 TLS 握手失败（http=000，curl 退出 55），
+     * 一进市场页就卡到超时。npm 本来就是 DSH 插件的官方发布渠道，
+     * npmmirror 国内秒回（实测 <1s，10000 命中）。
+     *
+     * 过滤：包名 `dsh-` 前缀（社区命名约定），排除官方 `@deepseek-ai`
+     * 作用域（那是框架本体不是插件）。entry = npm 包名 —— MarketClient 的
+     * plugin 分支做 substringAfter("add ") 时找不到标记会原样返回，
+     * 正好作为 npm install 的 spec。
+     */
+    private suspend fun fetchDshPluginsFromNpm(): List<MarketItem> =
+        withContext(Dispatchers.IO) {
+            try {
+                val url = "https://registry.npmmirror.com/-/v1/search" +
+                    "?text=dsh-plugin&size=100"
+                val text = httpGet(url, connectMs = 6_000, readMs = 12_000)
+                    ?: return@withContext emptyList()
+                val root = JSONObject(text)
+                val arr = root.optJSONArray("objects") ?: return@withContext emptyList()
+                val out = mutableListOf<MarketItem>()
+                for (i in 0 until minOf(arr.length(), MAX_DSH_ITEMS)) {
+                    val pkg = arr.optJSONObject(i)?.optJSONObject("package") ?: continue
+                    val name = pkg.optString("name")
+                    if (name.isBlank()) continue
+                    // 排除官方包（框架本体）与不符合命名约定的
+                    if (name.startsWith("@deepseek-ai/")) continue
+                    if (!name.startsWith("dsh-") && !name.contains("/dsh-")) continue
+                    val desc = pkg.optString("description").orEmpty().take(200)
+                    if (desc.isBlank()) continue
+                    out += MarketItem(
+                        id = "npm-$name",
+                        type = "plugin",
+                        name = name,
+                        description = desc,
+                        size = pkg.optString("version"),
+                        entry = name,
+                    )
+                }
+                out
+            } catch (t: Throwable) {
+                Log.w(TAG, "npm 备源失败: ${t.message}")
+                emptyList()
+            }
+        }
+
     /** 并行拉三个源，合并（每源独立失败不影响其他）。 */
     suspend fun fetchAll(): List<MarketItem> = withContext(Dispatchers.IO) {
-        val results = mutableListOf<MarketItem>()
-        // 顺序拉（不是并发）—— 三个源的响应都很快（<1s），
-        // 并发要引入 awaitAll + 异常聚合，复杂度不值。
-        results += fetchAnthropicSkills()
-        results += fetchMcpRegistry()
-        results += fetchDshPlugins()
-        results
+        // 【2026-10-07 改并发】原顺序拉的前提「三个源都 <1s」已不成立：
+        // 实测 dsh-plugin.org TLS 直接失败要等 16s 超时 —— 一个坏源
+        // 拖死整页。三源并发，坏源只拖自己（每个源内部 try-catch，
+        // 失败返回空列表，不传染）。
+        coroutineScope {
+            val skills = async { fetchAnthropicSkills() }
+            val mcp = async { fetchMcpRegistry() }
+            val dsh = async { fetchDshPlugins() }
+            // 按固定顺序拼（保持 UI 分组稳定，与顺序拉一致）
+            skills.await() + mcp.await() + dsh.await()
+        }
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -217,16 +273,25 @@ object MarketSources {
 
     private const val MIRROR_PREFIX = "https://gh-proxy.com/"
 
-    /** GET 文本（GitHub 直连失败时走镜像）。 */
-    private fun httpGet(url: String): String? {
+    /**
+     * GET 文本（GitHub 直连失败时走镜像）。
+     *
+     * @param connectMs 连接超时（坏源实测 TLS 握手就能挂十几秒 —— 收紧到 8s）
+     * @param readMs 读取超时（dsh 12MB 大文件单独放宽）
+     */
+    private fun httpGet(
+        url: String,
+        connectMs: Int = 8_000,
+        readMs: Int = 15_000,
+    ): String? {
         val candidates = if (url.contains("github")) {
             listOf(url, MIRROR_PREFIX + url)
         } else listOf(url)
         for (u in candidates) {
             try {
                 val conn = URL(u).openConnection() as HttpURLConnection
-                conn.connectTimeout = 15_000
-                conn.readTimeout = 20_000
+                conn.connectTimeout = connectMs
+                conn.readTimeout = readMs
                 conn.setRequestProperty("User-Agent", UA)
                 conn.setRequestProperty("Accept", "application/json")
                 if (conn.responseCode == 200) {

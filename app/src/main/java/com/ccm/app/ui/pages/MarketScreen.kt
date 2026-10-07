@@ -127,7 +127,7 @@ fun MarketScreen(
         error = ""
         val r = withContext(Dispatchers.IO) {
             try {
-                com.ccm.app.core.market.MarketClient.fetchRegistry()
+                com.ccm.app.core.market.MarketClient.fetchRegistry(ctx)
             } catch (t: Throwable) {
                 null
             }
