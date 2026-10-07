@@ -289,6 +289,11 @@ fun AssistantThinkingChain(
         //   注意：不是「整段正文铺一遍再列事件」—— Web 从来不整段渲染 thinking，
         //   正文是以「每段一个事件」的形式呈现的（`renderDetailedThoughtEvent`）。
         syntheticEvents?.forEachIndexed { index, event ->
+            // 【2026-10-07 性能】key() 稳定 item 实例 —— 流式期间事件列表
+            // 每个 chunk 重建，无 key 时整列重组且子组件（含入场 Animatable、
+            // 打字机、旋转动画）被判定为「换位/重建」→ 动画重播 → 卡顿。
+            // key 取 index+kind+label 前缀：追加只在尾部，前缀项 key 不变。
+            androidx.compose.runtime.key("$index:${event.kind}:${event.label.take(32)}") {
             if (!event.detail.isNullOrBlank()) {
                 ThinkingDetailedEvent(
                     event = event,
@@ -305,6 +310,7 @@ fun AssistantThinkingChain(
                         index == activeEventIndex,
                 )
             }
+            } // key()
         }
     }
 }
@@ -503,14 +509,27 @@ fun AssistantThinkingCompactStatus(
     // ══════════════════════════════════════════════════════════════
     // 已显示的词数（跨重组保持；label 变时在 effect 里重置 —— 不在 remember 里写副作用）
     var visibleTokens by remember { mutableIntStateOf(0) }
+    // 上一版 label（判「流式追加」还是「新事件」）
+    var prevLabel by remember { mutableStateOf("") }
 
     LaunchedEffect(label) {   // ← 只依赖 label（不再因 isThinking 翻转重启）
-        // label 变了 → 从头播
-        visibleTokens = 1
+        // 【2026-10-07 性能】流式期间 label 每个 chunk 都在**追加变长**，
+        // 原逻辑每次 label 变就 visibleTokens=1 从头播 —— 三个问题：
+        //   1. 效果反复重启（每 chunk 一个新协程 + 取消旧的）
+        //   2. 词数永远追不上增长速度 → 播一半又回跳
+        //   3. 每 42ms 一次 visibleTokens++ = 每 42ms 一次重组
+        // 改：**追加型变化直接全显**（打字机只给「新事件开始」播一次）。
+        val isAppend = prevLabel.isNotEmpty() && label.startsWith(prevLabel)
+        prevLabel = label
         if (!isThinking) {
             visibleTokens = tokens.size
             return@LaunchedEffect
         }
+        if (isAppend) {
+            visibleTokens = tokens.size   // 追加 → 直接补到全文
+            return@LaunchedEffect
+        }
+        visibleTokens = 1                 // 新事件 → 正常逐词
         while (visibleTokens < tokens.size) {
             delay(42L)   // 与 Web 的 `setInterval(…, 42)` 一致
             visibleTokens += 1

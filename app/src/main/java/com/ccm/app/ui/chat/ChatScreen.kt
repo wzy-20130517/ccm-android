@@ -29,12 +29,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -42,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ccm.app.ui.theme.CCMText
 import com.ccm.app.ui.theme.CCMTheme
+import kotlinx.coroutines.launch
 
 /**
  * 聊天主界面容器 —— 对齐 Web `MainContent.tsx`（5537 行，全项目最难）。
@@ -136,8 +139,16 @@ fun ChatScreen(
                 onExport = onExport,
                 onSwitchClick = onSwitchClick,
                 // todo 折叠徽标（零占位）—— 展开时不显示（面板自己有头部）
-                trailing = if (todos.isNotEmpty() && todoCollapsed) {
-                    {
+                trailing = {
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = todos.isNotEmpty() && todoCollapsed,
+                        enter = androidx.compose.animation.fadeIn(
+                            animationSpec = androidx.compose.animation.core.tween(180),
+                        ),
+                        exit = androidx.compose.animation.fadeOut(
+                            animationSpec = androidx.compose.animation.core.tween(150),
+                        ),
+                    ) {
                         val tDone = todos.count { it.status == com.ccm.app.ui.common.TodoStatus.COMPLETED }
                         Row(
                             modifier = Modifier
@@ -164,7 +175,7 @@ fun ChatScreen(
                             )
                         }
                     }
-                } else null,
+                },
             )
 
             // 【2026-10-06「开不开都挡 + 进消息流不常驻」】看板定稿：
@@ -176,7 +187,21 @@ fun ChatScreen(
             // 【2026-10-07 优化「折叠也挡」】折叠态不渲染面板（原来那条
             // 42dp 常驻条把消息区永久压矮）→ 收进标题栏徽标（零占位），
             // 展开才恢复常驻条（此时占位是用户主动要的）。
-            if (todos.isNotEmpty() && !todoCollapsed) {
+            // 【2026-10-07 加动画】原来是 if 硬切（面板瞬间出现/消失
+            // 像闪屏）→ 展开向下撑开 + 淡入，收起向上收拢 + 淡出。
+            androidx.compose.animation.AnimatedVisibility(
+                visible = todos.isNotEmpty() && !todoCollapsed,
+                enter = androidx.compose.animation.expandVertically(
+                    animationSpec = androidx.compose.animation.core.tween(220),
+                ) + androidx.compose.animation.fadeIn(
+                    animationSpec = androidx.compose.animation.core.tween(180),
+                ),
+                exit = androidx.compose.animation.shrinkVertically(
+                    animationSpec = androidx.compose.animation.core.tween(200),
+                ) + androidx.compose.animation.fadeOut(
+                    animationSpec = androidx.compose.animation.core.tween(150),
+                ),
+            ) {
                 com.ccm.app.ui.common.TodoPanel(
                     todos = todos,
                     running = running,
@@ -208,6 +233,47 @@ fun ChatScreen(
             // 它自己吃 ime padding 上推时，消息区 `weight(1f)` 自动缩，
             // 消息区**不需要**再吃一次 ime padding。
             Box(modifier = Modifier.weight(1f)) {
+                // ── 回到底部按钮（不在跟随时显示）─────────────────────
+                // followBottom=false = 用户上翻脱离跟随。按钮贴在
+                // 消息区底部中央（椭圆胶囊），点击平滑滚到底并恢复跟随。
+                val btnScope = rememberCoroutineScope()
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = !followBottom,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 14.dp),
+                    enter = androidx.compose.animation.fadeIn(),
+                    exit = androidx.compose.animation.fadeOut(),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50)) // 椭圆胶囊
+                            .background(colors.bgMain.copy(alpha = 0.95f))
+                            .border(1.dp, colors.border, RoundedCornerShape(50))
+                            .shadow(6.dp, RoundedCornerShape(50))
+                            .clickable {
+                                btnScope.launch {
+                                    scrollState.animateScrollTo(scrollState.maxValue)
+                                }
+                                followBottom = true // 点击 = 恢复跟随
+                            }
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        com.ccm.app.ui.common.PainterIcon(
+                            com.ccm.app.R.drawable.ic_chevron_down,
+                            size = 13.dp,
+                            tint = colors.textSecondary,
+                        )
+                        Text(
+                            "回到底部",
+                            style = CCMText.body12,
+                            color = colors.textSecondary,
+                        )
+                    }
+                }
+
                 val scrollState = rememberScrollState()
 
                 // ★ 2026-09-27：原来没有自动滚动 —— 新消息只画在

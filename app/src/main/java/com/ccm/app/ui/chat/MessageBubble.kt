@@ -405,7 +405,13 @@ fun MessageList(
         bubbles.forEachIndexed { index, bubble ->
             if (bubble.isUser) {
                 UserBubble(
-                    text = bubble.text,
+                    // <image_resize_notice> 是 AgentLoop 拼给**模型**的
+                    // 元信息（告知缩放），不是用户输入 —— 渲染前剥掉，
+                    // 否则用户在自己气泡里看到一坨 XML 标签。
+                    text = bubble.text.replace(
+                        Regex("<image_resize_notice>[\\s\\S]*?</image_resize_notice>"),
+                        "",
+                    ).trim(),
                     images = bubble.images,
                     onResend = onResend?.let { fn -> { fn(bubble.messageId) } },
                     timestampMs = bubble.timestamp,
