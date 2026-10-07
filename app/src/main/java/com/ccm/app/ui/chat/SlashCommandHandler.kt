@@ -936,6 +936,65 @@ private fun handleQueryCommands(cmd: String, arg: String, ctx: SlashContext): Sl
             }
         }
 
+        // ── /context7 —— Context7 文档查询 MCP（2026-10-07 对齐 CLI）────────
+        //
+        // 配置层命令（读写成 mcp.json），同步纯函数在 SlashContext7。
+        "/context7" -> SlashContext7.dispatch(
+            arg,
+            com.ccm.app.AppGraph.storage?.let { java.io.File(it.root, "mcp.json") },
+        )
+
+        // ── /review —— 工作区审查（2026-10-07 对齐 CLI，零 API 调用）────────
+        //
+        // 要跑 git（BashChannel 是 suspend）→ 走 appScope.launch 异步，
+        // 结果 injectNotice 回屏（与 /summary 同模式）。
+        "/review" -> {
+            val scope = com.ccm.app.AppGraph.appScope
+                ?: return SlashResult.Notice("应用作用域未就绪，无法审查。")
+            val st = com.ccm.app.AppGraph.storage
+            val sess = ctx.session
+            if (sess == null) {
+                SlashResult.Notice("没有活动会话：审查结果需要显示在对话里。")
+            } else {
+                scope.launch {
+                    val text = try {
+                        SlashReview.run(
+                            channel = com.ccm.app.AppGraph.toolsResult?.bashChannel,
+                            storageRoot = st?.root,
+                            configFile = st?.configFile,
+                            cwd = com.ccm.app.AppGraph.workspacePath(),
+                        )
+                    } catch (t: Throwable) {
+                        "审查失败：${t.message}"
+                    }
+                    try { sess.injectNotice(text) } catch (_: Throwable) {}
+                }
+                SlashResult.Notice("_正在审查工作区…（结果稍后出现在对话里）_")
+            }
+        }
+
+        // ── /update —— 检查更新（2026-10-07 对齐 CLI，APK 走 Release 页）──────
+        //
+        // CLI 的 /update 从镜像下载 tar.gz 就地覆盖源码；APK 是已编译的安装包，
+        // 没有「就地覆盖」的对象 —— 自更新的正确通道是 GitHub Releases 重新装包。
+        // 这里给用户明确的引导 + 当前版本号（不假装有更新能力）。
+        "/update" -> {
+            // 版本号从 PackageManager 读（buildConfig 功能未开启，
+            // 不能引用 BuildConfig.VERSION_NAME —— AGP 8 默认不生成该类）。
+            val ver = try {
+                ctx.appContext?.packageManager
+                    ?.getPackageInfo(ctx.appContext.packageName, 0)?.versionName
+            } catch (_: Throwable) { null } ?: "未知"
+            SlashResult.Notice(
+                "**更新**\n\n" +
+                    "当前版本：`$ver`\n\n" +
+                    "APK 请通过 **Release 页**更新（下载新安装包覆盖安装，数据不丢）：\n" +
+                    "- https://github.com/wzy-20130517/ccm-android/releases\n\n" +
+                    "_CLI 的 `/update` 是镜像下载源码包就地覆盖；APK 是编译产物，没有可覆盖的源码目录，\n" +
+                    "所以走重新安装包的通道（应用私有数据不受影响）。_",
+            )
+        }
+
         else -> null
     }
 }
