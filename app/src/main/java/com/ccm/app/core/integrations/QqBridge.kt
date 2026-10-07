@@ -6,9 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.InetAddress
@@ -180,19 +178,42 @@ class QqBridge(
     //  接收：手写 HTTP（ServerSocket 层）
     // ══════════════════════════════════════════════════════════════
 
+    /**
+     * 处理一条 HTTP 连接。
+     *
+     * ⚠️ **必须用字节流**（2026-10-07 实测踩坑）：
+     * 最初用 BufferedReader（字符流）读 body —— `Content-Length` 是
+     * **字节数**，而 read(CharArray) 读的是**字符数**。body 含中文时
+     * （UTF-8 每字 3 字节）字符数 < 字节数，按 contentLength 循环读
+     * 字符永远读不够 → 卡死在 read → 客户端超时断开 → 「Broken pipe」。
+     * 现在：header 按行读（ASCII 安全），body 按字节精确读满。
+     */
     private fun handleConnection(socket: Socket) {
         try {
             socket.soTimeout = 15_000
-            val input = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
-            val requestLine = input.readLine() ?: return
+            val rawIn = socket.getInputStream()
+
+            /** 按行读 header（读字节到 \n，ASCII 安全）。 */
+            fun readHeaderLine(): String {
+                val sb = StringBuilder()
+                while (true) {
+                    val b = rawIn.read()
+                    if (b < 0) break
+                    if (b == '\n'.code) break
+                    if (b != '\r'.code) sb.append(b.toChar())
+                }
+                return sb.toString()
+            }
+
+            val requestLine = readHeaderLine()
+            if (requestLine.isBlank()) return
             val parts = requestLine.split(" ")
             val method = parts.getOrNull(0) ?: ""
-            val path = parts.getOrNull(1) ?: "/"
 
             // 读 headers 拿 Content-Length
             var contentLength = 0
             while (true) {
-                val line = input.readLine() ?: break
+                val line = readHeaderLine()
                 if (line.isEmpty()) break
                 if (line.startsWith("Content-Length:", ignoreCase = true)) {
                     contentLength = line.substringAfter(":").trim().toIntOrNull() ?: 0
@@ -213,16 +234,16 @@ class QqBridge(
                 return
             }
 
-            // POST → NapCat 上报
+            // POST → NapCat 上报（body 按字节精确读满）
             if (method == "POST" && contentLength > 0) {
-                val buf = CharArray(contentLength)
+                val buf = ByteArray(contentLength)
                 var read = 0
                 while (read < contentLength) {
-                    val n = input.read(buf, read, contentLength - read)
+                    val n = rawIn.read(buf, read, contentLength - read)
                     if (n < 0) break
                     read += n
                 }
-                val body = String(buf, 0, read)
+                val body = String(buf, 0, read, Charsets.UTF_8)
                 respond(socket, 200, """{"ok":true}""")
                 try {
                     handleEvent(body)
