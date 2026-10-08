@@ -29,7 +29,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
@@ -44,7 +43,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ccm.app.ui.theme.CCMText
 import com.ccm.app.ui.theme.CCMTheme
-import kotlinx.coroutines.launch
 
 /**
  * 聊天主界面容器 —— 对齐 Web `MainContent.tsx`（5537 行，全项目最难）。
@@ -234,52 +232,34 @@ fun ChatScreen(
             // 消息区**不需要**再吃一次 ime padding。
             Box(modifier = Modifier.weight(1f)) {
                 val scrollState = rememberScrollState()
+                // 回到底部请求标志（防判定协程把 followBottom 打回，见按钮注释）
+                var scrollRequested by remember { mutableStateOf(false) }
+                // 追底循环：请求期间每帧滚到底（流式增长也追得上），
+                // 连续 40 帧内 max 稳定（或用户主动滚动）就结束。
+                LaunchedEffect(scrollRequested) {
+                    if (!scrollRequested) return@LaunchedEffect
+                    var stable = 0
+                    var lastMax = -1
+                    repeat(120) {
+                        withFrameNanos {}
+                        val max = scrollState.maxValue
+                        if (max == lastMax) stable++ else stable = 0
+                        lastMax = max
+                        scrollState.scrollTo(max)
+                        // 连续 10 帧 max 不变（内容已稳定）且确实在底部 → 完成
+                        if (stable >= 10 && (max - scrollState.value) < 50) {
+                            scrollRequested = false
+                            return@LaunchedEffect
+                        }
+                    }
+                    scrollRequested = false
+                }
 
                 // ★ 2026-09-27：原来没有自动滚动 —— 新消息只画在
                 //   视口外，用户必须手动往下滑，流式回复时看不到内容。
                 //   行为对齐 Web（跟底；用户上翻即停止跟随）。
                 var followBottom by remember { mutableStateOf(true) }
 
-                // ── 回到底部按钮（不在跟随时显示）─────────────────────
-                // followBottom=false = 用户上翻脱离跟随。按钮贴在
-                // 消息区底部中央（椭圆胶囊），点击平滑滚到底并恢复跟随。
-                val btnScope = rememberCoroutineScope()
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = !followBottom,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 14.dp),
-                    enter = androidx.compose.animation.fadeIn(),
-                    exit = androidx.compose.animation.fadeOut(),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50)) // 椭圆胶囊
-                            .background(colors.bgMain.copy(alpha = 0.95f))
-                            .border(1.dp, colors.border, RoundedCornerShape(50))
-                            .shadow(6.dp, RoundedCornerShape(50))
-                            .clickable {
-                                btnScope.launch {
-                                    scrollState.animateScrollTo(scrollState.maxValue)
-                                }
-                                followBottom = true // 点击 = 恢复跟随
-                            }
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        com.ccm.app.ui.common.PainterIcon(
-                            com.ccm.app.R.drawable.ic_chevron_down,
-                            size = 13.dp,
-                            tint = colors.textSecondary,
-                        )
-                        Text(
-                            "回到底部",
-                            style = CCMText.body12,
-                            color = colors.textSecondary,
-                        )
-                    }
-                }
                 // 【2026-10-06 问题46 修复·第六版（最终）—— 对齐 Web 的判定模型】
                 //
                 // 用户反馈：「我手动拉到页面最底下时一次都没触发过跟随」（提了 5 次）。
@@ -333,6 +313,10 @@ fun ChatScreen(
                             //
                             // 且**只在 value 变化时**判定（maxChanged 不改 followBottom
                             // —— 那是流式吐字，不是用户操作）。
+                            // 回到底部请求期间：不打回 followBottom（动画/追底
+                            // 途中的中间位置不代表用户意图）
+                            if (scrollRequested) return@collect
+
                             if (valueChanged && !maxChanged) {
                                 // 纯滚动：用当前 max 判定（用户拖或程序滚）
                                 followBottom = (max - v) < 50
@@ -465,6 +449,50 @@ fun ChatScreen(
                     // （不再是浮层）→ 不需要 154dp 的"给浮层让位"留白。
                     // 只留一点点呼吸空间。
                     Spacer(Modifier.height(12.dp))
+                }
+
+                // ── 回到底部按钮（不在跟随时显示）─────────────────────
+                // 【2026-10-07 修两个问题】
+                //  1. 看不清：原来 bgMain@0.95 + textSecondary，与正文对比度
+                //     太低 → 改 accent 实底 + 反色文字（对比度拉满）+ 更明显阴影。
+                //  2. 点了没反应：点击后判定协程会把 followBottom 打回 false ——
+                //     animateScrollTo 动画途中 (max-v)>50，snapshotFlow 判定
+                //     「用户上翻」；流式期间 max 还在涨，动画永远追不上 →
+                //     按钮反复闪、点了像没反应。修：加 scrollRequested 标志，
+                //     判定协程见到它时不打回；滚动用「追底循环」（每帧滚，
+                //     对齐键盘弹出那段的成熟做法），追到后清标志。
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = !followBottom,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 14.dp),
+                    enter = androidx.compose.animation.fadeIn(),
+                    exit = androidx.compose.animation.fadeOut(),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50)) // 椭圆胶囊
+                            .background(colors.accent)
+                            .shadow(8.dp, RoundedCornerShape(50))
+                            .clickable {
+                                followBottom = true            // 先恢复跟随
+                                scrollRequested = true         // 防判定协程打回
+                            }
+                            .padding(horizontal = 18.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        com.ccm.app.ui.common.PainterIcon(
+                            com.ccm.app.R.drawable.ic_chevron_down,
+                            size = 14.dp,
+                            tint = colors.bgMain,
+                        )
+                        Text(
+                            "回到底部",
+                            style = CCMText.body13.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Medium),
+                            color = colors.bgMain,
+                        )
+                    }
                 }
 
                 // 【2026-10-06「开不开都挡」】浮动看板已删 —— 它浮在右下角
