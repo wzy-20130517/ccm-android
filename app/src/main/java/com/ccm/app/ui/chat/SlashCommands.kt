@@ -105,7 +105,6 @@ val COMMON_SLASH_COMMANDS: List<Pair<String, String>> = listOf(
     "/workspace" to "工作区（/workspace [路径]）",
     "/doctor" to "环境自检",
     "/compact-threshold" to "自动压缩阈值（/compact-threshold <tokens> <messages>）",
-    "/replay" to "历史回放开关（/replay on|off）",
     "/cache" to "Prompt Cache 开关（/cache on|off）",
     "/context7" to "Context7 文档 MCP（setup|enable|disable|status）",
     "/review" to "工作区审查（零 API 调用）",

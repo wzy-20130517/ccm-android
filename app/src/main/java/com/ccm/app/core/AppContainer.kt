@@ -912,11 +912,13 @@ class AppContainer private constructor(
                 keyPoolStateFile = java.io.File(storage.root, "key-pool-state.json"),
                 // 深度思考（audit-core #2：config.effort 原来零消费）
                 effort = provider.effort ?: config.effort,
-                // Prompt Cache（/cache 命令，2026-10-07 接线 —— 此前只写配置
-                // 不消费，开关是假的）。cache key 用 sessionId 派生：
-                // 同会话稳定、跨会话隔离（对齐 CLI sessionCacheKey）。
-                promptCache = config.promptCache,
-                promptCacheRetention = config.promptCacheRetention,
+                // Prompt Cache —— **provider 级**（2026-10-07 层级纠正：
+                // 对齐 CLI，providers[current].promptCacheEnabled）。
+                // 迁移：provider 未设（false）但旧全局字段为 true → 沿用全局
+                // 值（老用户配置不至于静默失效）。
+                promptCache = provider.promptCacheEnabled || config.promptCache,
+                promptCacheRetention = provider.promptCacheRetention
+                    ?: config.promptCacheRetention,
                 sessionCacheKey = provider.id + ":main",
                 // 思考回传（/effort replay，同批接线）
                 replayReasoning = provider.replayReasoning,

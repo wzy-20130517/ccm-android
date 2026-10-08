@@ -2524,50 +2524,12 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
         }
 
         // ── /replay —— 进会话时是否显示历史正文 ──────────────────────────
-        "/replay" -> {
-            val st = com.ccm.app.AppGraph.storage
-            if (st == null) {
-                SlashResult.Notice("存储未初始化。")
-            } else {
-                val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
-                if (loadR.error != null) {
-                    SlashResult.Notice("配置损坏：${loadR.error}")
-                } else {
-                    val a = arg.trim().lowercase()
-                    val cur = loadR.config.replayHistory
-                    when (a) {
-                        "" -> SlashResult.Notice(
-                            "**历史回放**：${if (cur) "✅ 开启（进会话显示历史正文）" else "❌ 关闭（静默进入）"}\n\n" +
-                                "用法：`/replay on` 开 · `/replay off` 关\n\n" +
-                                "_影响：Ctrl+X 重启续接、/resume 进会话时是否铺历史正文。_"
-                        )
-                        "on", "开" -> {
-                            com.ccm.app.core.provider.AppConfig.save(
-                                loadR.config.copy(replayHistory = true), st.configFile,
-                            )
-                            SlashResult.Notice("历史回放已**开启**。")
-                        }
-                        "off", "关" -> {
-                            com.ccm.app.core.provider.AppConfig.save(
-                                loadR.config.copy(replayHistory = false), st.configFile,
-                            )
-                            SlashResult.Notice("历史回放已**关闭**（进会话静默）。")
-                        }
-                        else -> SlashResult.Notice("用法：`/replay on|off`")
-                    }
-                }
-            }
-        }
-
-        // ── /cache —— Prompt Cache 开关 ──────────────────────────────────
-        // ── /cache —— Prompt Cache 扩展字段（2026-10-07 对齐 CLI 四子命令）──
+        // ── /cache —— Prompt Cache 扩展字段（**Provider 级**）────────────
         //
-        // CLI（`cmd-system-config.mjs:51-93`）：show|status / on / off / retention 24h|off。
-        // APK 原来只有 on|off 两个分支，且**落盘字段无消费者**（ApiClient 不读
-        // config.promptCache —— 请求侧没接线）。本次：
-        //   · 补 show/status、retention 两分支（配置层完整对齐）
-        //   · 如实标注「请求侧未接线」的现状，不让用户以为开了就生效
-        //   · retention 24h 会自动带开 promptCache（对齐 CLI 语义）
+        // 【2026-10-07 层级纠正】CLI 是 provider 级：cmd-system-config.mjs
+        // 写 prov.promptCacheEnabled/promptCacheRetention；index.mjs:741 从
+        // providers[current] 读。APK 原来写全局 config，与 CLI 语义不符，
+        // 现改为写当前 Provider（AppConfig.providers[current]）。
         "/cache" -> {
             val st = com.ccm.app.AppGraph.storage
             if (st == null) {
@@ -2578,10 +2540,25 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                     SlashResult.Notice("配置损坏：${loadR.error}")
                 } else {
                     val cfg = loadR.config
+                    val curProv = cfg.providers[cfg.current]
+                    if (curProv == null) {
+                        SlashResult.Notice("当前没有 Provider（先去设置里加一个）。")
+                    } else {
                     val parts = arg.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
                     val sub = parts.firstOrNull() ?: "show"
-                    val cur = cfg.promptCache
-                    val retention = cfg.promptCacheRetention
+                    // 读 provider 级（provider 未设时回退旧全局字段 —— 迁移兼容）
+                    val cur = curProv.promptCacheEnabled || cfg.promptCache
+                    val retention = curProv.promptCacheRetention ?: cfg.promptCacheRetention
+
+                    /** 写当前 provider 的两个字段（读-改-写）。 */
+                    fun saveCache(on: Boolean?, ret: String?): Boolean =
+                        com.ccm.app.core.provider.AppConfig.save(
+                            cfg.copy(providers = cfg.providers + (curProv.id to curProv.copy(
+                                promptCacheEnabled = on ?: curProv.promptCacheEnabled,
+                                promptCacheRetention = ret,
+                            ))),
+                            st.configFile,
+                        )
 
                     when (sub) {
                         "show", "status", "" -> SlashResult.Notice(
@@ -2595,16 +2572,12 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                                 "⚠ 未知兼容网关不要盲开 —— 部分中转站会因未知字段报错。_",
                         )
                         "on", "开", "enable" -> {
-                            com.ccm.app.core.provider.AppConfig.save(
-                                cfg.copy(promptCache = true), st.configFile,
-                            )
-                            SlashResult.Notice("Prompt Cache 扩展字段已**开启**。\n\n⚠ 需重启生效。")
+                            saveCache(on = true, ret = curProv.promptCacheRetention)
+                            SlashResult.Notice("Prompt Cache 扩展字段已**开启**（当前 Provider `${curProv.name.ifBlank { curProv.id }}`）。")
                         }
                         "off", "关", "disable" -> {
                             // 对齐 CLI：off 同时清掉 retention（字段关了就谈不上保留期）
-                            com.ccm.app.core.provider.AppConfig.save(
-                                cfg.copy(promptCache = false, promptCacheRetention = null), st.configFile,
-                            )
+                            saveCache(on = false, ret = null)
                             SlashResult.Notice("Prompt Cache 扩展字段已**关闭**（保留时间同时清空）。")
                         }
                         "retention" -> {
@@ -2612,22 +2585,18 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                             when (v) {
                                 "24h" -> {
                                     // 对齐 CLI：设 24h 自动带开扩展字段
-                                    com.ccm.app.core.provider.AppConfig.save(
-                                        cfg.copy(promptCache = true, promptCacheRetention = "24h"),
-                                        st.configFile,
-                                    )
-                                    SlashResult.Notice("Prompt Cache 保留时间已设为 **24h**（扩展字段同时开启）。\n\n⚠ 需重启生效。")
+                                    saveCache(on = true, ret = "24h")
+                                    SlashResult.Notice("Prompt Cache 保留时间已设为 **24h**（扩展字段同时开启）。")
                                 }
                                 "off", "default", "0" -> {
-                                    com.ccm.app.core.provider.AppConfig.save(
-                                        cfg.copy(promptCacheRetention = null), st.configFile,
-                                    )
+                                    saveCache(on = null, ret = null)
                                     SlashResult.Notice("Prompt Cache 保留时间已恢复**默认**。")
                                 }
                                 else -> SlashResult.Notice("用法：`/cache retention 24h|off`")
                             }
                         }
                         else -> SlashResult.Notice("用法：`/cache show|on|off|retention 24h|off`")
+                    }
                     }
                 }
             }

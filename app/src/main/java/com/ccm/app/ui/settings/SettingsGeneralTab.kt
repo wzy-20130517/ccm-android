@@ -450,125 +450,13 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
             }
         }
 
-        // ── 对话行为（2026-10-07 新增 —— 三个开关原来只有命令入口）──
-        //
-        // Prompt Cache / 思考回传 / 历史回放：分别对应 /cache、/effort replay、
-        // /replay 三个命令。用户在设置页找不到，收拢到这里。
-        SettingsSection(title = "对话行为") {
-            Column(verticalArrangement = Arrangement.spacedBy(SettingsFormGap)) {
-                val cfgStore = com.ccm.app.AppGraph.storage
-
-                // Prompt Cache
-                var cacheOn by remember {
-                    mutableStateOf(
-                        cfgStore?.let { st ->
-                            com.ccm.app.core.provider.AppConfig.load(st.configFile).config.promptCache
-                        } ?: false
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Prompt Cache", style = CCMText.body13, color = CCMTheme.colors.textMain)
-                        Text(
-                            "请求带缓存标记，重复前缀省钱省时。未知网关可能报错，遇到就关掉。",
-                            style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
-                            color = CCMTheme.colors.textSecondary,
-                        )
-                    }
-                    SettingsSwitch(checked = cacheOn, onCheckedChange = { on ->
-                        cacheOn = on
-                        cfgStore?.let { st ->
-                            val r = com.ccm.app.core.provider.AppConfig.load(st.configFile)
-                            if (r.error == null) {
-                                com.ccm.app.core.provider.AppConfig.save(
-                                    r.config.copy(promptCache = on), st.configFile,
-                                )
-                            }
-                        }
-                    })
-                }
-
-                // 思考回传（provider 级 —— 当前 Provider 的字段；
-                // 与 /effort replay 命令同一落点：AppConfig.providers[current]）
-                val cfgNow = cfgStore?.let { st ->
-                    com.ccm.app.core.provider.AppConfig.load(st.configFile).config
-                }
-                val curProvider = cfgNow?.providers?.get(cfgNow.current)
-                var replayOn by remember {
-                    mutableStateOf(curProvider?.replayReasoning == true)
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("思考回传", style = CCMText.body13, color = CCMTheme.colors.textMain)
-                        Text(
-                            "把上轮思考发给模型（模型能看到自己怎么想的）。费 token，默认关。",
-                            style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
-                            color = CCMTheme.colors.textSecondary,
-                        )
-                    }
-                    SettingsSwitch(checked = replayOn, onCheckedChange = { on ->
-                        replayOn = on
-                        val st = cfgStore ?: return@SettingsSwitch
-                        val cfg = com.ccm.app.core.provider.AppConfig.load(st.configFile).config
-                        val p = cfg.providers[cfg.current] ?: return@SettingsSwitch
-                        com.ccm.app.core.provider.AppConfig.save(
-                            cfg.copy(providers = cfg.providers + (p.id to p.copy(replayReasoning = on))),
-                            st.configFile,
-                        )
-                    })
-                }
-
-                // 历史回放（进会话时显不显示历史正文）
-                var replayHist by remember {
-                    mutableStateOf(
-                        cfgStore?.let { st ->
-                            com.ccm.app.core.provider.AppConfig.load(st.configFile).config.replayHistory
-                        } ?: false
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("历史回放", style = CCMText.body13, color = CCMTheme.colors.textMain)
-                        Text(
-                            "恢复会话时把历史正文铺到屏幕上。默认关（不刷屏），对话内容不受影响。",
-                            style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
-                            color = CCMTheme.colors.textSecondary,
-                        )
-                    }
-                    SettingsSwitch(checked = replayHist, onCheckedChange = { on ->
-                        replayHist = on
-                        cfgStore?.let { st ->
-                            val r = com.ccm.app.core.provider.AppConfig.load(st.configFile)
-                            if (r.error == null) {
-                                com.ccm.app.core.provider.AppConfig.save(
-                                    r.config.copy(replayHistory = on), st.configFile,
-                                )
-                            }
-                        }
-                    })
-                }
-            }
-        }
-
         SettingsSection(title = "工作区") {
             // ── 工作区 ────
             // 字段名与 CLI 一致（config.json 的 workspacePath），
             // 但**配置文件是各自独立的**（APK 在应用私有目录）。
             Column {
-                SettingsLabel("工作区")
-                Spacer(Modifier.height(SettingsLabelGap))
+                // 【2026-10-07 整理】删掉重复的「工作区」字段标签（区块标题
+                // 已经是「工作区」，下面再来一个同名的纯属冗余）。
                 Text(
                     // 【2026-10-06 改语义】空 = **没有工作区**（不再是"用默认目录"）——
                     // 相对路径会明确报错，绝对路径不受影响。
@@ -592,7 +480,10 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                 SettingsTextField(
                     value = wsInput,
                     onValueChange = { wsInput = it; wsError = "" },
-                    placeholder = "/sdcard/Download/claude-workspace",
+                    // 【2026-10-07】placeholder 原来是具体路径示例，但输入框
+                    // 空时显示灰字路径 + 下方又写「未设置工作区」—— 矛盾。
+                    // 改中性提示（示例放说明文字里，不放输入框内）。
+                    placeholder = "绝对路径，如 /sdcard/Download/xxx",
                 )
                 Spacer(Modifier.height(3.68.dp))
                 // 显示 Agent 实际在用的目录（问题18：消除「设置与实际不符」）
@@ -684,7 +575,10 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                 // 误导用户以为改这里会同步到 CLI。
                 Text(
                     text = "APK 独立配置（与 CLI / Web 的配置互不影响）。" +
-                        "留空 = 用应用私有目录。改完对**新会话**生效。",
+                        // 【2026-10-07 修矛盾】原文案写「留空 = 用应用私有目录」——
+                        // 那是 2026-10-06 之前的旧行为。resolveWorkspaceDir 现在
+                        // 的语义是「空 = 真的没有工作区」，与顶部描述对齐。
+                        "改完对**新会话**生效。",
                     style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
                     color = CCMTheme.colors.textSecondary,
                 )
@@ -763,12 +657,13 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
             }
         }
 
-        // ── 2. 发送消息 ──────────────────────────────────────────
-        SettingsSection(title = "发送消息") {
+        // ── 2. 对话（原「发送消息」—— 2026-10-07 整理：区块名与字段名
+        //      原来都叫「发送消息」（重复），改为区块「对话」+ 字段「发送键」）──
+        SettingsSection(title = "对话") {
             // 同上：`grid grid-cols-2 gap-6` → 移动端 gap 10.85
             Row(horizontalArrangement = Arrangement.spacedBy(10.85.dp)) {
                 Column(modifier = Modifier.weight(1f)) {
-                    SettingsField(label = "发送消息") {
+                    SettingsField(label = "发送键") {
                         SettingsSelectMenu(
                             value = sendKey,
                             options = SEND_KEY_OPTIONS,
@@ -776,7 +671,7 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                                 sendKey = it
                                 com.ccm.app.ui.theme.UiPrefs.setSendKey(it)
                             },
-                            title = "发送消息",
+                            title = "发送键",
                         )
                     }
                 }

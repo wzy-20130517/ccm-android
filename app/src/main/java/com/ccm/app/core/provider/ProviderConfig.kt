@@ -72,6 +72,18 @@ data class ProviderConfig(
     /** 是否把历史思考回传给模型（默认 false，省上下文）。 */
     @SerialName("replayReasoning") val replayReasoning: Boolean = false,
 
+    /**
+     * Prompt Cache 开关（2026-10-07 从全局挪到 provider 级）。
+     *
+     * 【字段名对齐 CLI】CLI 用 `promptCacheEnabled`（实测 config.json
+     * provider 2 里的字段名），不是 `promptCache` —— 命名不一致的话
+     * 迁移 CLI 配置时读不到。
+     */
+    @SerialName("promptCacheEnabled") val promptCacheEnabled: Boolean = false,
+
+    /** Prompt Cache 保留时间（"24h" = 带 24h retention；null = 默认）。 */
+    @SerialName("promptCacheRetention") val promptCacheRetention: String? = null,
+
     /** 温度。null = 用默认值 1。 */
     @SerialName("temperature") val temperature: Double? = null,
 

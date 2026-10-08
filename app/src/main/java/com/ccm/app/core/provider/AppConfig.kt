@@ -160,18 +160,21 @@ data class AppConfig(
     val replayHistory: Boolean = false,
 
     /**
-     * Prompt Cache 开关（问题40：/cache）。
+     * Prompt Cache 开关 —— 【已废弃，2026-10-07 挪到 ProviderConfig】。
      *
-     * 控制是否发 prompt_cache_key / retention 字段。
-     * 默认 false（未知兼容网关不要盲开）。
+     * 层级纠正：CLI 的 promptCache 是 **provider 级**（cmd-system-config.mjs
+     * 写 prov.promptCacheEnabled；index.mjs:741 从 providers[current] 读）。
+     * APK 最初错做成全局，现挪到 [ProviderConfig.promptCacheEnabled]。
+     *
+     * 本字段仅保留做**迁移读取**（旧配置里是 true 且 provider 未设时迁移），
+     * 新代码不要写它。读取逻辑见 AppContainer.buildApiClient。
      */
     @SerialName("promptCache")
     val promptCache: Boolean = false,
 
     /**
-     * Prompt Cache 保留时间（2026-10-07 对齐 CLI `/cache retention 24h|off`）。
-     *
-     * `"24h"` = 请求带 24h retention；null/其他 = 默认（不带）。
+     * Prompt Cache 保留时间 —— 【已废弃，同 [promptCache] 挪到 provider 级】。
+     * 仅保留做迁移读取。
      */
     @SerialName("promptCacheRetention")
     val promptCacheRetention: String? = null,

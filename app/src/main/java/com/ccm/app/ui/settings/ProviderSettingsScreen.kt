@@ -572,6 +572,106 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         )
                     }
                 }
+
+                // ── 思考回传 / Prompt Cache / 保留时间（2026-10-07 加）──
+                //
+                // 【层级纠正】这三个都是 **Provider 级**字段（对齐 CLI：
+                // cmd-system-config.mjs 的 /cache 写 prov.promptCacheEnabled /
+                // promptCacheRetention；cmd-extensions.mjs:841-842 从
+                // provider 读；index.mjs:741 也是 providers[current]）。
+                // 最初错放在通用 tab 的全局层，已挪到这里 —— 切 Provider
+                // 就跟着切，才是正确语义。
+                val pcfg = remember(selectedId, refreshTick) {
+                    com.ccm.app.AppGraph.storage?.let { st ->
+                        AppConfig.load(st.configFile).config
+                    }
+                }
+                val curProv = pcfg?.providers?.get(selectedId)
+                var replayOn by remember(selectedId, refreshTick) {
+                    mutableStateOf(curProv?.replayReasoning == true)
+                }
+                var cacheOn by remember(selectedId, refreshTick) {
+                    mutableStateOf(curProv?.promptCacheEnabled == true)
+                }
+                var cache24h by remember(selectedId, refreshTick) {
+                    mutableStateOf(curProv?.promptCacheRetention == "24h")
+                }
+
+                /** 统一的 provider 字段写盘（读-改-写，只动自己的 provider）。 */
+                fun saveProvField(block: (com.ccm.app.core.provider.ProviderConfig) -> com.ccm.app.core.provider.ProviderConfig) {
+                    com.ccm.app.AppGraph.storage?.let { st ->
+                        val fresh = AppConfig.load(st.configFile).config
+                        val p0 = fresh.providers[selectedId] ?: return@let
+                        AppConfig.save(
+                            fresh.copy(providers = fresh.providers + (selectedId to block(p0))),
+                            st.configFile,
+                        )
+                    }
+                }
+
+                ProviderField(label = "思考回传") {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.36.dp),
+                    ) {
+                        Text(
+                            "把上轮思考发给模型（费 token，默认关）",
+                            style = CCMText.body12.copy(fontSize = 10.48.sp),
+                            color = colors.textSecondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        SettingsSwitch(checked = replayOn, onCheckedChange = { on ->
+                            replayOn = on
+                            saveProvField { it.copy(replayReasoning = on) }
+                        })
+                    }
+                }
+
+                ProviderField(label = "Prompt Cache") {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.36.dp),
+                    ) {
+                        Text(
+                            "请求带缓存标记，重复前缀省钱省时",
+                            style = CCMText.body12.copy(fontSize = 10.48.sp),
+                            color = colors.textSecondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        SettingsSwitch(checked = cacheOn, onCheckedChange = { on ->
+                            cacheOn = on
+                            saveProvField {
+                                if (on) it.copy(promptCacheEnabled = true)
+                                else it.copy(promptCacheEnabled = false, promptCacheRetention = null)
+                            }
+                            if (!on) cache24h = false
+                        })
+                    }
+                }
+
+                // 保留时间（仅在 cache 开时可用 —— 对齐 CLI：off 时清 retention）
+                if (cacheOn) {
+                    ProviderField(label = "缓存保留") {
+                        Row(horizontalArrangement = Arrangement.spacedBy(7.36.dp)) {
+                            FormatChip(
+                                label = "默认",
+                                selected = !cache24h,
+                                onClick = {
+                                    cache24h = false
+                                    saveProvField { it.copy(promptCacheRetention = null) }
+                                },
+                            )
+                            FormatChip(
+                                label = "24 小时",
+                                selected = cache24h,
+                                onClick = {
+                                    cache24h = true
+                                    saveProvField { it.copy(promptCacheRetention = "24h") }
+                                },
+                            )
+                        }
+                    }
+                }
             }
 
             // ── SettingGroup 3：能力开关 ─────────────────────────
