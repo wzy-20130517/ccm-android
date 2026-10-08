@@ -35,7 +35,7 @@ import androidx.compose.ui.unit.sp
 import com.ccm.app.ui.theme.CCMText
 import com.ccm.app.ui.theme.CCMTheme
 
-/** 下拉选项集合（2026-09-27 加 —— 这些下拉之前全是 onClick 空转）。 */
+/** 下拉选项集合（职业 / 发送键）。 */
 private val WORK_FUNCTION_OPTIONS = listOf(
     "工程师", "设计师", "产品经理", "学生", "教师",
     "写作 / 内容", "运营 / 市场", "科研 / 数据", "其他",
@@ -45,28 +45,15 @@ private val SEND_KEY_OPTIONS = listOf(
     "回车发送（Shift+Enter 换行）",
     "Ctrl+Enter 发送",
 )
-private val NEWLINE_KEY_OPTIONS = listOf("Enter", "Shift+Enter", "Alt+Enter")
 
 /**
- * 设置页 · General tab —— 对齐 `SettingsPage.tsx:515 renderGeneral()`。
+ * 设置页 · General tab —— 对齐 `SettingsPage.tsx` 的 `renderGeneral()`。
  *
- * 源码 6 个小节，顺序：
- *   1. 个人资料（全名 / 称呼 / 职业 / 个人偏好）
- *   2. 默认模型（模型下拉 + 扩展思考开关）  ← 源码在 `<>` 片段里，移动端同样渲染
- *   3. 发送消息（发送键 / 换行键）
- *   4. 外观（颜色模式 3 卡 + 聊天字体 4 卡）
- *   5. 关于（当前版本）
+ * 区块顺序：个人资料 / 默认模型 / 自动压缩 / 工作区 / 对话 / 外观 / 关于。
  *
- * 实测（Playwright，393×852，zoom 0.92）：
- * ```
- * section[0] y=101.3 h=398.6   个人资料
- * section[1] y=517.9 h=119.0   发送消息
- * hr         y=655.0 h=1
- * section[2] y=674.0 h=279.8   外观
- * hr         y=971.9 h=1
- * section[3] y=991.0 h=85.6    关于
- * ```
- * section 间距 = 517.9 - (101.3+398.6) = 18.0（= 实测 19.6 × 0.92，即 `space-y-10` 的一半）
+ * 间距：外层 Column 用 SettingsSectionGap(18.08) 统一间隔；SettingsDivider
+ * 作为**子项**参与该间隔 → 上下各 18.08（对齐 Web：<hr> 本身就是 space-y-10 的子项）。
+ * ⚠️ 分隔线不要再自己包 Spacer —— 会与父容器 spacedBy 叠加成三倍间距。
  */
 @Composable
 fun SettingsGeneralTab(modifier: Modifier = Modifier) {
@@ -80,7 +67,7 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
     var workFunction by remember { mutableStateOf(initialProfile.workFunction) }
     var preferences by remember { mutableStateOf(initialProfile.personalPreferences) }
 
-    // ── 输出风格（2026-09-29 互通：CLI /style ↔ Web 设置 ↔ 这里）────────
+    // 输出风格（与 CLI /style、Web 设置同字段 config.outputStyle）
     var styleRefresh by remember { mutableStateOf(0) }
     val styles = remember(styleRefresh) {
         com.ccm.app.core.output.OutputStyles.all(cwd = null)
@@ -95,12 +82,9 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
         styles.firstOrNull { it.id == currentStyleId }?.name ?: "默认"
     fun styleIdByLabel(label: String): String =
         styles.firstOrNull { it.name == label }?.id ?: "default"
-    // ★ 2026-09-28：落 UiPrefs —— 原来是本地 remember，重启丢 +
-    //   输入框根本不读它（设置是假的）。
+    // 下列三项都落 UiPrefs（SharedPreferences）—— 重启保留，
+    // 且各有消费端：sendKey → InputBar 的 imeAction；theme → CcmApp 的 darkTheme
     var sendKey by remember { mutableStateOf(com.ccm.app.ui.theme.UiPrefs.sendKey.value) }
-    // ★ 2026-09-27：原来是本地 remember —— 选完重启就丢，且主题没有
-    //   消费端。现在读写 UiPrefs（SharedPreferences + MutableState）：
-    //   这里改 → CcmApp 的 darkTheme 自动重组；重启后从磁盘恢复。
     var theme by remember {
         mutableStateOf(
             ThemeMode.entries.firstOrNull {
@@ -121,10 +105,7 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
         // ── 1. 个人资料 ──────────────────────────────────────────
         SettingsSection(title = "个人资料") {
             Column(verticalArrangement = Arrangement.spacedBy(SettingsFormGap)) {
-                // 全名 + 称呼并排（grid-cols-2 gap-6）
-                // ⚠️ gap-6 在移动端被 `.gap-6 { gap: clamp(8px,3vw,15px) }` 覆盖
-                //    （index.css:1210）→ 393px 下 3vw = 11.79 → 屏幕 **10.85**。
-                //    2026-10-01 实测 grid gap = 10.85 确认（原先误用桌面值 22.08）。
+                // 全名 + 称呼并排（grid-cols-2；gap-6 移动端实测 10.85）
                 Row(horizontalArrangement = Arrangement.spacedBy(10.85.dp)) {
                     Column(modifier = Modifier.weight(1f)) {
                         SettingsLabel("全名")
@@ -133,37 +114,32 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(11.04.dp),
                         ) {
-                            // 【2026-10-06 问题5 修复】原来 fullName 空 → 传空串 →
-                            // 头像是个空白圆（用户报「无默认头像」）。
-                            // Web 有兜底：`(fullName || nickname || 'U').charAt(0)`
+                            // 名字为空时头像显示 U（Web 同款兜底）
                             CcmAvatarSmall(fullName.ifBlank { "U" }.take(1).uppercase())
                             SettingsTextField(
                                 value = fullName,
                                 onValueChange = {
-                                fullName = it
-                                profileStore?.setField("full_name", it)
-                            },
+                                    fullName = it
+                                    profileStore?.setField("full_name", it)
+                                },
                                 modifier = Modifier.weight(1f),
                             )
                         }
                     }
                     Column(modifier = Modifier.weight(1f)) {
-                        SettingsLabel("Claude 应该怎么称呼你？")
+                        SettingsLabel("称呼")
                         Spacer(Modifier.height(SettingsLabelGap))
                         SettingsTextField(
                             value = callName,
                             onValueChange = {
-                            callName = it
-                            profileStore?.setField("display_name", it)
-                        },
+                                callName = it
+                                profileStore?.setField("display_name", it)
+                            },
                         )
                     }
                 }
 
-                // 职业
-                SettingsField(label = "你的职业是什么？") {
-                    // ★ 2026-09-27：原注释说「由系统 Dialog 承担」—— 实际没有
-                    //   Dialog，onClick 空转点不开。接 SettingsSelectMenu + 落盘。
+                SettingsField(label = "职业") {
                     SettingsSelectMenu(
                         value = workFunction,
                         options = WORK_FUNCTION_OPTIONS,
@@ -171,22 +147,11 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                             workFunction = it
                             profileStore?.setField("work_function", it)
                         },
-                        title = "你的职业",
                         chevronRotated = true,
                     )
                 }
 
-                // 个人偏好
-                Column {
-                    SettingsLabel("Claude 在回复中应考虑哪些个人偏好？")
-                    Spacer(Modifier.height(SettingsLabelGap))
-                    Text(
-                        text = "你的偏好将应用于所有对话。",
-                        style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
-                        color = CCMTheme.colors.textSecondary,
-                    )
-                    // ★ 2026-09-29 互通：原来这里是「请用 /style」死提示 ——
-                    //   现在真的能选了（写 config.json 的 outputStyle，与 CLI/Web 同字段）。
+                SettingsField(label = "输出风格") {
                     SettingsSelectMenu(
                         value = currentStyleLabel(),
                         options = styleOptions,
@@ -199,31 +164,39 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                                     st.configFile,
                                 )
                             }
-                            // 【2026-10-06 P1-4】换风格 → 提示词缓存失效
+                            // 换风格 → 提示词缓存失效
                             com.ccm.app.core.AppContainer.invalidateSystemPrompt()
                             styleRefresh++
                         },
-                        title = "输出风格",
                     )
-                    Spacer(Modifier.height(7.36.dp))
-                    SettingsTextField(
-                        value = preferences,
-                        onValueChange = {
-                            preferences = it
-                            profileStore?.setField("personal_preferences", it)
-                        },
-                        singleLine = false,
-                        minHeight = 86.6.dp,
-                        placeholder = "例如：回答尽量简洁，使用中文，代码注释用英文",
-                    )
+                }
+
+                SettingsField(label = "回复偏好") {
+                    Column {
+                        SettingsTextField(
+                            value = preferences,
+                            onValueChange = {
+                                preferences = it
+                                profileStore?.setField("personal_preferences", it)
+                            },
+                            singleLine = false,
+                            minHeight = 86.6.dp,
+                            placeholder = "例如：回答尽量简洁，使用中文，代码注释用英文",
+                        )
+                        Spacer(Modifier.height(SettingsLabelGap))
+                        Text(
+                            text = "应用于所有对话。",
+                            style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                            color = CCMTheme.colors.textSecondary,
+                        )
+                    }
                 }
             }
         }
 
-        // ── 1.5 默认模型（源码第 2 节；移动端一直没渲染 —— 2026-09-28 补）──
-        //
-        // 文件头注释写着「2. 默认模型（模型下拉 + 扩展思考开关）」，
-        // 但实际渲染里根本没有这节 —— 模型只能去「模型」tab 配，主 tab 缺位。
+        SettingsDivider()
+
+        // ── 2. 默认模型 ──────────────────────────────────────────
         SettingsSection(title = "默认模型") {
             val pstore = com.ccm.app.AppGraph.storage?.let {
                 com.ccm.app.core.provider.ProviderStore(it)
@@ -233,9 +206,7 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
             val enabledItems = items.filter { it.enabled }
             val current = items.firstOrNull { it.isCurrent }
             var effortOn by remember(modelRefresh) {
-                // 【2026-10-06 修】开关状态要与**消费端同源**（provider.effort
-                // 优先，回退全局）—— 原来只读全局字段，于是「对话页开过
-                // （写 provider）→ 本页显示关」的自相矛盾。
+                // 开关状态与消费端同源（provider.effort 优先，回退全局）
                 val st = com.ccm.app.AppGraph.storage
                 val cfg = st?.let { com.ccm.app.core.provider.AppConfig.load(it.configFile).config }
                 val provEffort = cfg?.currentProvider?.effort
@@ -243,82 +214,65 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                 mutableStateOf(effective.isNotBlank() && effective != "none")
             }
 
-            SettingsField(label = "模型") {
-                SettingsSelectMenu(
-                    value = current?.let { "${it.name} · ${it.model}" } ?: "未配置",
-                    options = enabledItems.map { "${it.name} · ${it.model}" },
-                    onPick = { label ->
-                        val target = enabledItems.firstOrNull {
-                            "${it.name} · ${it.model}" == label
-                        }
-                        if (target != null && pstore != null) {
-                            pstore.setCurrent(target.id)
-                            modelRefresh++
-                            // ApiClient 是会话装配期快照 —— 重建才生效
-                            // （与对话页模型选择器同一机制）
-                            com.ccm.app.AppGraph.openSession(com.ccm.app.AppGraph.sessionId)
-                        }
-                    },
-                    title = "默认模型",
-                )
-            }
-
-            Spacer(Modifier.height(11.04.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    SettingsLabel("扩展思考")
-                    Spacer(Modifier.height(3.68.dp))
-                    Text(
-                        // 【2026-10-06 修文案与行为】原来这里写「与对话页…是同一份
-                        // 配置，在哪调都一样」—— 但实际写的是**两个字段**：
-                        //   对话页 → provider.effort（当前供应商）
-                        //   本页   → config.effort（全局）
-                        // 而消费端是 `provider.effort ?: config.effort`（provider 优先），
-                        // 于是「对话页开过 → 本页关掉」不生效（provider 的值还在）。
-                        // 现在本页也写 provider 级（与对话页一致），文案才成立。
-                        text = "开启后模型先深度思考再回答（对应 effort=high；关闭 = none）。" +
-                            "作用于当前供应商（与对话页的「扩展思考」是同一份配置）。",
-                        style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
-                        color = CCMTheme.colors.textSecondary,
+            Column(verticalArrangement = Arrangement.spacedBy(SettingsFormGap)) {
+                SettingsField(label = "使用的模型") {
+                    SettingsSelectMenu(
+                        value = current?.let { "${it.name} · ${it.model}" } ?: "未配置",
+                        options = enabledItems.map { "${it.name} · ${it.model}" },
+                        onPick = { label ->
+                            val target = enabledItems.firstOrNull {
+                                "${it.name} · ${it.model}" == label
+                            }
+                            if (target != null && pstore != null) {
+                                pstore.setCurrent(target.id)
+                                modelRefresh++
+                                // ApiClient 是会话装配期快照 —— 重建才生效
+                                // （与对话页模型选择器同一机制）
+                                com.ccm.app.AppGraph.openSession(com.ccm.app.AppGraph.sessionId)
+                            }
+                        },
                     )
                 }
-                SettingsSwitch(
-                    checked = effortOn,
-                    onCheckedChange = { on ->
-                        effortOn = on
-                        // 写 provider 级（不是全局）—— 与对话页同一个字段，
-                        // 这样「在哪调都一样」才是真的。
-                        val cur = pstore?.load()?.current.orEmpty()
-                        if (cur.isNotBlank()) {
-                            pstore?.setEffort(cur, if (on) "high" else "none")
-                        } else {
-                            // 没有当前供应商时退回全局（至少存下来）
-                            pstore?.setGlobalEffort(if (on) "high" else "none")
-                        }
-                        com.ccm.app.AppGraph.openSession(com.ccm.app.AppGraph.sessionId)
-                        modelRefresh++
-                    },
-                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        SettingsLabel("扩展思考")
+                        Spacer(Modifier.height(3.68.dp))
+                        Text(
+                            // 与对话页的「扩展思考」是同一份配置（都写 provider.effort）
+                            text = "开启后模型先深度思考再回答（与对话页联动）。",
+                            style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                            color = CCMTheme.colors.textSecondary,
+                        )
+                    }
+                    SettingsSwitch(
+                        checked = effortOn,
+                        onCheckedChange = { on ->
+                            effortOn = on
+                            // 写 provider 级（不是全局）—— 与对话页同一个字段
+                            val cur = pstore?.load()?.current.orEmpty()
+                            if (cur.isNotBlank()) {
+                                pstore?.setEffort(cur, if (on) "high" else "none")
+                            } else {
+                                // 没有当前供应商时退回全局（至少存下来）
+                                pstore?.setGlobalEffort(if (on) "high" else "none")
+                            }
+                            com.ccm.app.AppGraph.openSession(com.ccm.app.AppGraph.sessionId)
+                            modelRefresh++
+                        },
+                    )
+                }
             }
         }
 
-        Spacer(Modifier.height(SettingsHrGap))
         SettingsDivider()
-        Spacer(Modifier.height(SettingsHrGap))
 
-        // ── 工作区（2026-10-06 问题20：从「个人资料」里提出来独立成章）──
-        // 对齐 Web 的章节顺序：个人资料 → 默认模型 → **工作区** → 发送消息。
-        // 原来嵌在个人资料里，用户报「设置页杂乱不堪」。
-        // ── 自动压缩（2026-10-07 从 /compact-threshold 命令提升为设置项）──
-        //
-        // 原来只有命令入口，用户在设置页找不到。默认关闭（用户被自动压缩
-        // 搞丢过记忆，明确反感 —— 只有显式设阈值才启用），所以 UI 上
-        // 要说明白「为什么默认关」。
+        // ── 3. 自动压缩（2026-10-07 从 /compact-threshold 命令提升为设置项）──
+        // 默认关闭（用户被自动压缩搞丢过记忆，明确反感 —— 只有显式设阈值才启用）
         SettingsSection(title = "自动压缩") {
             Column(verticalArrangement = Arrangement.spacedBy(SettingsFormGap)) {
                 val acState = com.ccm.app.AppGraph.container?.autoCompact
@@ -334,35 +288,32 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                 var acSaved by remember { mutableStateOf("") }
 
                 Text(
-                    text = "对话接近上限时自动摘要历史（可能丢细节，默认关闭）。" +
-                        "设了阈值才启用；压缩前自动备份到压缩回收站。",
+                    text = "自动摘要可能丢细节，默认关闭；设了阈值才启用。",
                     style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
                     color = CCMTheme.colors.textSecondary,
                 )
 
-                // Token 阈值
-                SettingsLabel("Token 阈值（0 = 关闭）")
-                Spacer(Modifier.height(SettingsLabelGap))
-                SettingsTextField(
-                    value = if (tokLimit > 0) tokLimit.toString() else "",
-                    onValueChange = { v ->
-                        tokLimit = v.filter { it.isDigit() }.toIntOrNull() ?: 0
-                        acSaved = ""
-                    },
-                    placeholder = "如 600000（60 万 token）",
-                )
+                SettingsField(label = "Token 阈值（0 = 关闭）") {
+                    SettingsTextField(
+                        value = if (tokLimit > 0) tokLimit.toString() else "",
+                        onValueChange = { v ->
+                            tokLimit = v.filter { it.isDigit() }.toIntOrNull() ?: 0
+                            acSaved = ""
+                        },
+                        placeholder = "如 600000（60 万 token）",
+                    )
+                }
 
-                // 消息条数阈值
-                SettingsLabel("消息条数阈值（0 = 不按条数）")
-                Spacer(Modifier.height(SettingsLabelGap))
-                SettingsTextField(
-                    value = if (msgLimit > 0) msgLimit.toString() else "",
-                    onValueChange = { v ->
-                        msgLimit = v.filter { it.isDigit() }.toIntOrNull() ?: 0
-                        acSaved = ""
-                    },
-                    placeholder = "如 500（超过 500 条消息时压）",
-                )
+                SettingsField(label = "消息条数阈值（0 = 不按条数）") {
+                    SettingsTextField(
+                        value = if (msgLimit > 0) msgLimit.toString() else "",
+                        onValueChange = { v ->
+                            msgLimit = v.filter { it.isDigit() }.toIntOrNull() ?: 0
+                            acSaved = ""
+                        },
+                        placeholder = "如 500（超过 500 条消息时压）",
+                    )
+                }
 
                 // 运行态提示（断路器/当前水位）
                 val statusLine = buildString {
@@ -381,140 +332,125 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                         }
                     }
                 }
-                Text(
-                    text = statusLine,
-                    style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
-                    color = if (acState?.isTripped == true) Color(0xFFB45309) else CCMTheme.colors.textSecondary,
-                )
+                // 状态行 + 按钮 + 保存结果 成组（组内紧凑，组间由外层 spacedBy 管）
+                Column(verticalArrangement = Arrangement.spacedBy(3.68.dp)) {
+                    Text(
+                        text = statusLine,
+                        style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                        color = if (acState?.isTripped == true) Color(0xFFB45309) else CCMTheme.colors.textSecondary,
+                    )
 
-                Spacer(Modifier.height(3.68.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    androidx.compose.material3.TextButton(onClick = {
-                        com.ccm.app.AppGraph.storage?.let { st ->
-                            val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
-                            if (loadR.error != null) {
-                                acSaved = "配置损坏：${loadR.error}"
-                            } else {
-                                com.ccm.app.core.provider.AppConfig.save(
-                                    loadR.config.copy(
-                                        compactTokenLimit = tokLimit,
-                                        compactMessageLimit = msgLimit,
-                                    ),
-                                    st.configFile,
-                                )
-                                // 运行态热更新（与 /compact-threshold 同路径）
-                                com.ccm.app.AppGraph.container?.autoCompact?.let { ac ->
-                                    ac.tokenLimit = tokLimit
-                                    ac.messageLimit = msgLimit
-                                }
-                                acSaved = if (tokLimit > 0 || msgLimit > 0) {
-                                    "✅ 已保存并启用（立即生效）"
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        androidx.compose.material3.TextButton(onClick = {
+                            com.ccm.app.AppGraph.storage?.let { st ->
+                                val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                                if (loadR.error != null) {
+                                    acSaved = "配置损坏：${loadR.error}"
                                 } else {
-                                    "✅ 已保存（阈值为 0 = 关闭自动压缩）"
+                                    com.ccm.app.core.provider.AppConfig.save(
+                                        loadR.config.copy(
+                                            compactTokenLimit = tokLimit,
+                                            compactMessageLimit = msgLimit,
+                                        ),
+                                        st.configFile,
+                                    )
+                                    // 运行态热更新（与 /compact-threshold 同路径）
+                                    com.ccm.app.AppGraph.container?.autoCompact?.let { ac ->
+                                        ac.tokenLimit = tokLimit
+                                        ac.messageLimit = msgLimit
+                                    }
+                                    acSaved = if (tokLimit > 0 || msgLimit > 0) {
+                                        "✅ 已保存并启用（立即生效）"
+                                    } else {
+                                        "✅ 已保存（阈值为 0 = 关闭自动压缩）"
+                                    }
                                 }
                             }
+                        }) {
+                            Text("保存", style = CCMText.body13)
                         }
-                    }) {
-                        Text("保存", style = CCMText.body13)
-                    }
-                    // 立即压缩一次（等价 /compact force）——
-                    // 走 handleSlashCommand（send 是发消息给 agent，不是命令入口）
-                    androidx.compose.material3.TextButton(onClick = {
-                        val sess = com.ccm.app.AppGraph.session
-                        if (sess == null) {
-                            acSaved = "无活跃会话"
-                        } else {
-                            com.ccm.app.ui.chat.handleSlashCommand(
-                                "/compact force",
-                                com.ccm.app.ui.chat.SlashContext(
-                                    session = sess,
-                                    appContext = ctx,
-                                    navigate = {},
-                                    newChat = {},
-                                    openPanel = {},
-                                ),
-                            )
-                            acSaved = "已发起手动压缩（结果看对话页）"
+                        // 立即压缩一次（等价 /compact force）——
+                        // 走 handleSlashCommand（send 是发消息给 agent，不是命令入口）
+                        androidx.compose.material3.TextButton(onClick = {
+                            val sess = com.ccm.app.AppGraph.session
+                            if (sess == null) {
+                                acSaved = "无活跃会话"
+                            } else {
+                                com.ccm.app.ui.chat.handleSlashCommand(
+                                    "/compact force",
+                                    com.ccm.app.ui.chat.SlashContext(
+                                        session = sess,
+                                        appContext = ctx,
+                                        navigate = {},
+                                        newChat = {},
+                                        openPanel = {},
+                                    ),
+                                )
+                                acSaved = "已发起手动压缩（结果看对话页）"
+                            }
+                        }) {
+                            Text("立即压缩一次", style = CCMText.body13)
                         }
-                    }) {
-                        Text("立即压缩一次", style = CCMText.body13)
                     }
-                }
-                if (acSaved.isNotEmpty()) {
-                    Text(
-                        text = acSaved,
-                        style = CCMText.body12.copy(fontSize = 10.48.sp),
-                        color = CCMTheme.colors.textSecondary,
-                    )
+                    if (acSaved.isNotEmpty()) {
+                        Text(
+                            text = acSaved,
+                            style = CCMText.body12.copy(fontSize = 10.48.sp),
+                            color = CCMTheme.colors.textSecondary,
+                        )
+                    }
                 }
             }
         }
 
+        SettingsDivider()
+
+        // ── 4. 工作区 ────────────────────────────────────────────
         SettingsSection(title = "工作区") {
-            // ── 工作区 ────
             // 字段名与 CLI 一致（config.json 的 workspacePath），
-            // 但**配置文件是各自独立的**（APK 在应用私有目录）。
-            Column {
-                // 【2026-10-07 整理】删掉重复的「工作区」字段标签（区块标题
-                // 已经是「工作区」，下面再来一个同名的纯属冗余）。
-                Text(
-                    // 【2026-10-06 改语义】空 = **没有工作区**（不再是"用默认目录"）——
-                    // 相对路径会明确报错，绝对路径不受影响。
-                    text = "工具读写文件的根目录。留空 = 不设工作区" +
-                        "（工具用相对路径时会报错，需用绝对路径）。目录必须已存在。",
-                    style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
-                    color = CCMTheme.colors.textSecondary,
-                )
-                Spacer(Modifier.height(7.36.dp))
-                // 输入框显示**实际生效路径**（问题18：不再让用户猜）
-                // 没有工作区时为空串 —— 输入框留空即「未设置」
-                //
-                // 【2026-10-06 修】原来 currentWorkspace() 直接写在 composition 里
-                // —— 它内部走 AppGraph.workspacePath() → 读 config.json（磁盘 IO），
-                // 每次重组都读一次。包 remember，用 wsRefresh 做 key
-                // （保存工作区后 +1 触发刷新）。
-                var wsRefresh by remember { mutableStateOf(0) }
-                val actualWs = remember(wsRefresh) { currentWorkspace() }
-                var wsInput by remember(actualWs) { mutableStateOf(actualWs) }
-                var wsError by remember { mutableStateOf("") }
-                SettingsTextField(
-                    value = wsInput,
-                    onValueChange = { wsInput = it; wsError = "" },
-                    // 【2026-10-07】placeholder 原来是具体路径示例，但输入框
-                    // 空时显示灰字路径 + 下方又写「未设置工作区」—— 矛盾。
-                    // 改中性提示（示例放说明文字里，不放输入框内）。
-                    placeholder = "绝对路径，如 /sdcard/Download/xxx",
-                )
-                Spacer(Modifier.height(3.68.dp))
-                // 显示 Agent 实际在用的目录（问题18：消除「设置与实际不符」）
-                if (actualWs.isNotEmpty()) {
+            // 但配置文件各自独立（APK 在应用私有目录）。
+            Column(verticalArrangement = Arrangement.spacedBy(SettingsFormGap)) {
+                Column {
                     Text(
-                        text = "当前生效：$actualWs",
+                        // 空 = 真的没有工作区（相对路径会报错）；APK 的 config.json
+                        // 在应用私有目录，与 CLI/Web 完全隔离
+                        text = "工具读写文件的根目录，留空 = 不设（需用绝对路径）。" +
+                            "改完对新会话生效，与 CLI / Web 配置独立。",
                         style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
                         color = CCMTheme.colors.textSecondary,
                     )
-                } else {
-                    // 【2026-10-06】空 ≠ 加载失败，明确告知状态
-                    Text(
-                        text = "当前：未设置工作区",
-                        style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
-                        color = CCMTheme.colors.textSecondary,
+                    Spacer(Modifier.height(7.36.dp))
+                    // 输入框显示实际生效路径；currentWorkspace() 走磁盘 IO，
+                    // 用 remember(wsRefresh) 包住（保存后 +1 触发刷新）
+                    var wsRefresh by remember { mutableStateOf(0) }
+                    val actualWs = remember(wsRefresh) { currentWorkspace() }
+                    var wsInput by remember(actualWs) { mutableStateOf(actualWs) }
+                    var wsError by remember { mutableStateOf("") }
+                    SettingsTextField(
+                        value = wsInput,
+                        onValueChange = { wsInput = it; wsError = "" },
+                        placeholder = "绝对路径，如 /sdcard/Download/xxx",
                     )
-                }
-                if (wsError.isNotEmpty()) {
                     Spacer(Modifier.height(3.68.dp))
                     Text(
-                        text = wsError,
-                        style = CCMText.body12.copy(fontSize = 10.48.sp),
-                        color = Color(0xFFB91C1C),
+                        text = if (actualWs.isNotEmpty()) "当前生效：$actualWs" else "当前：未设置工作区",
+                        style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                        color = CCMTheme.colors.textSecondary,
                     )
+                    if (wsError.isNotEmpty()) {
+                        Spacer(Modifier.height(3.68.dp))
+                        Text(
+                            text = wsError,
+                            style = CCMText.body12.copy(fontSize = 10.48.sp),
+                            color = Color(0xFFB91C1C),
+                        )
+                    }
                 }
-                Spacer(Modifier.height(7.36.dp))
                 androidx.compose.material3.TextButton(onClick = {
                     val v = wsInput.trim()
                     when {
                         v.isEmpty() -> {
-                            // 空 = 恢复默认（清掉字段）
+                            // 空 = 恢复默认
                             com.ccm.app.AppGraph.storage?.let { st ->
                                 val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
                                 if (loadR.error != null) {
@@ -544,17 +480,13 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                                     if (!dir.isDirectory && !dir.mkdirs()) {
                                         wsError = "目录不存在且无法创建（检查权限）"
                                     } else {
-                                        // 【2026-10-06 问题18 配套】如果填的就是
-                                        // 默认路径（files/workspace），存空串 ——
-                                        // 保持「未配置」语义，避免把默认值固化进配置
-                                        // （输入框现在显示实际生效路径，用户不动直接
-                                        //   点保存时会走到这）。
+                                        // 填的就是默认路径 → 存 null，保持「未配置」语义
                                         val defaultWs = java.io.File(st.root, "workspace").absolutePath
                                         val toSave = if (v == defaultWs) null else v
                                         com.ccm.app.core.provider.AppConfig.save(
                                             loadR.config.copy(workspacePath = toSave), st.configFile,
                                         )
-                                        wsRefresh++   // 触发 actualWs 重读（见上面的 remember）
+                                        wsRefresh++   // 触发 actualWs 重读
                                         android.widget.Toast.makeText(
                                             ctx,
                                             "已保存（新会话生效）",
@@ -568,25 +500,7 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                 }) {
                     Text("保存工作区", style = CCMText.body13)
                 }
-                // 【2026-10-06 问题4 修复】原文案「与 CLI 的 /workspace、
-                // Web 设置页同一份配置」是**错的** —— APK 的 config.json 在
-                // 应用私有目录（filesDir/config.json），与 CLI
-                // （~/.claude-code-mobile/config.json）完全隔离，互不影响。
-                // 误导用户以为改这里会同步到 CLI。
-                Text(
-                    text = "APK 独立配置（与 CLI / Web 的配置互不影响）。" +
-                        // 【2026-10-07 修矛盾】原文案写「留空 = 用应用私有目录」——
-                        // 那是 2026-10-06 之前的旧行为。resolveWorkspaceDir 现在
-                        // 的语义是「空 = 真的没有工作区」，与顶部描述对齐。
-                        "改完对**新会话**生效。",
-                    style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
-                    color = CCMTheme.colors.textSecondary,
-                )
-                Spacer(Modifier.height(5.52.dp))
-                // 【2026-10-06 问题44 修复】用户设 /sdcard/... 但 App 没权限
-                // （实测 `ls /sdcard/...` → Permission denied）→ 只能退回
-                // 私有目录 → 表现为「Agent 工作区和设置的不一样」。
-                // 这里给「授权所有文件访问」的入口（Android 11+ 需手动授权）。
+                // 「所有文件访问」入口：未授权时填 /sdcard 路径会读写失败
                 val wsCtx = androidx.compose.ui.platform.LocalContext.current
                 var hasAllFiles by remember {
                     mutableStateOf(
@@ -595,14 +509,7 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                         else true
                     )
                 }
-                // 【2026-10-06 修】用户去系统设置授权后返回，警告条不消失 ——
-                // 因为 hasAllFiles 是无 key 的 remember，Activity 从后台回前台
-                // 不会重新求值，用户以为授权没生效。
-                //
-                // 实现方式：**轻量轮询**（未授权时每秒查一次，授权后停）。
-                // 为什么不用 lifecycle-compose 的 LocalLifecycleOwner：
-                // 项目没有 lifecycle-runtime-compose 依赖，加依赖会动 build.gradle；
-                // 而轮询零依赖、行为等价（用户从系统设置回来最多 1 秒后消失）。
+                // 未授权时每秒轮询一次（授权后停）—— 从系统设置返回后警告条最多 1 秒消失
                 if (!hasAllFiles && android.os.Build.VERSION.SDK_INT >= 30) {
                     androidx.compose.runtime.LaunchedEffect(Unit) {
                         while (true) {
@@ -657,38 +564,27 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
             }
         }
 
-        // ── 2. 对话（原「发送消息」—— 2026-10-07 整理：区块名与字段名
-        //      原来都叫「发送消息」（重复），改为区块「对话」+ 字段「发送键」）──
+        SettingsDivider()
+
+        // ── 5. 对话 ──────────────────────────────────────────────
         SettingsSection(title = "对话") {
-            // 同上：`grid grid-cols-2 gap-6` → 移动端 gap 10.85
-            Row(horizontalArrangement = Arrangement.spacedBy(10.85.dp)) {
-                Column(modifier = Modifier.weight(1f)) {
-                    SettingsField(label = "发送键") {
-                        SettingsSelectMenu(
-                            value = sendKey,
-                            options = SEND_KEY_OPTIONS,
-                            onPick = {
-                                sendKey = it
-                                com.ccm.app.ui.theme.UiPrefs.setSendKey(it)
-                            },
-                            title = "发送键",
-                        )
-                    }
-                }
-                // 【2026-10-06 删「换行」下拉】原来这里有个「换行: Enter /
-                // Alt+Enter / Ctrl+Enter」下拉 —— 但 newlineKey **全项目零消费**
-                // （InputBar 只读 sendByEnter；Android 的换行由输入法自身的
-                // 换行键决定，物理键盘修饰键不适用）。用户改了毫无效果，
-                // 属于「假设置」。与其留个骗人的控件，不如去掉 ——
-                // 要换行就按输入法的换行键（或 Alt+Enter / Ctrl+J）。
+            SettingsField(label = "发送键") {
+                SettingsSelectMenu(
+                    value = sendKey,
+                    options = SEND_KEY_OPTIONS,
+                    onPick = {
+                        sendKey = it
+                        com.ccm.app.ui.theme.UiPrefs.setSendKey(it)
+                    },
+                )
             }
+            // 原「换行」下拉已删：newlineKey 全项目零消费（InputBar 只读
+            // sendByEnter，Android 换行由输入法自身决定）—— 留着是假设置。
         }
 
-        Spacer(Modifier.height(SettingsHrGap))
         SettingsDivider()
-        Spacer(Modifier.height(SettingsHrGap))
 
-        // ── 3. 外观 ──────────────────────────────────────────────
+        // ── 6. 外观 ──────────────────────────────────────────────
         SettingsSection(title = "外观") {
             Column(verticalArrangement = Arrangement.spacedBy(SettingsFormGap)) {
                 // 颜色模式
@@ -727,12 +623,10 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                             )
                         }
                     }
-                    // 诚实标注：选择已落盘，但正文消费端还没接
-                    // （需要先对照 Web 实测 4 个选项的真实字体映射，
-                    //   瞎猜会做出「和 Web 不一样」的字体）。
+                    // 字体选择已落盘，但正文消费端尚未接（待对齐 Web 的字体映射）
                     Spacer(Modifier.height(5.52.dp))
                     Text(
-                        text = "选择会保存；应用到聊天正文的字体映射待对齐 Web 后接入。",
+                        text = "选择暂未应用到聊天正文。",
                         style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
                         color = CCMTheme.colors.textSecondary,
                     )
@@ -740,16 +634,12 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
             }
         }
 
-        Spacer(Modifier.height(SettingsHrGap))
         SettingsDivider()
-        Spacer(Modifier.height(SettingsHrGap))
 
-        // ── 4. 关于 ──────────────────────────────────────────────
-        //   ⚠️ 这节的 `<h3>` 用 `mb-3`（不是 mb-5）—— 实测 marginBottom 12 → 屏幕 11.04。
+        // ── 7. 关于 ──────────────────────────────────────────────
+        // 这节的 `<h3>` 用 `mb-3`（不是 mb-5）—— 实测 marginBottom 12 → 屏幕 11.04
         SettingsSection(title = "关于", titleGap = SettingsTitleGapTight) {
-            // ★ 版本号走 PackageManager 真值 —— 原来写死 "v0.8.100"，
-            //   那是 CLI（claude-code-mobile）的版本，APK 自己是 0.1.x。
-            //   记得 CI 每次构建会 bump versionName（workflow 里 0.1.run_number）。
+            // 版本号走 PackageManager 真值（APK 是 0.1.x，不是 CLI 的版本号）
             SettingsInfoRow(label = "当前版本", value = appVersion())
         }
     }

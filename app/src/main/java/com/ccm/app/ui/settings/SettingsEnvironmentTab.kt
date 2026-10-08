@@ -42,11 +42,11 @@ import androidx.compose.runtime.setValue
  * 数据来自 Kotlin 桥接服务器（127.0.0.1:3457），反映 Shizuku / rootfs / proot
  * 的真实状态 —— 用户偶尔来看一眼「手机操作为什么不 work」。
  *
- * ## 源码结构
- * 1. 头部：图标 + 标题「CCM 原生环境」+ 副标题 + 右侧「刷新」按钮
- * 2. Section「原生能力桥」：Shizuku / Linux 环境 / proot / Node / 内核 / Android SDK
- * 3. Section「运行时」：运行模式 / Node 版本 / 平台 / 家目录 / 工作区 / 已运行
- * 4. 底部说明卡（4 条）
+ * ## 结构（2026-10-08 重排：统一为 SettingsSection）
+ * 1. 头部（区块外）：标题「CCM 原生环境」+ 副标题 + 右侧「刷新」按钮
+ * 2. Section「环境状态」：Shizuku / Linux 环境 / 安装入口 / proot / Android SDK / 外接 Termux
+ * 3. Section「运行时」：运行模式 / 平台 / 家目录 / 已运行
+ * 4. Section「说明」：4 条短解释
  *
  * ## 实测（Tailwind × 0.92）
  * - Section 容器：`rounded-xl border p-4 space-y-2` → 圆角 11.04 / 内距 14.72
@@ -112,9 +112,9 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
         }
     }
 
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(22.08.dp)) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(SettingsSectionGap)) {
 
-        // ── 头部 ─────────────────────────────────────────────────
+        // ── 头部（区块外，与其他 tab 层级一致）──────────────────────
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -158,8 +158,8 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
             }
         }
 
-        // ── 原生能力桥 ───────────────────────────────────────────
-        EnvSection(title = "原生能力桥") {
+        // ── 环境状态 ─────────────────────────────────────────────
+        SettingsSection(title = "环境状态") {
             EnvRow(
                 label = "Shizuku",
                 ok = env.shizuku,
@@ -285,7 +285,7 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
         }
 
         // ── 运行时 ───────────────────────────────────────────────
-        EnvSection(title = "运行时") {
+        SettingsSection(title = "运行时") {
             // ★ audit-settings #5：原写死 "native"（rootfs 装了也显示 native）
             EnvRow(
                 label = "运行模式",
@@ -297,65 +297,13 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
             EnvRow(label = "已运行", ok = true, value = formatUptime(env.uptimeMs))
         }
 
-        // ── 说明卡 ───────────────────────────────────────────────
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(7.36.dp))
-                .background(colors.btnHover.copy(alpha = 0.4f))
-                .padding(14.72.dp),
-            verticalArrangement = Arrangement.spacedBy(3.68.dp),
-        ) {
-            Text(
-                text = "关于这些状态",
-                style = CCMText.body12.copy(
-                    fontSize = 11.04.sp,
-                    fontWeight = FontWeight.Medium,
-                ),
-                color = colors.textMain,
-            )
-            EnvNoteLine("Shizuku", "手机操作（点击/输入/读界面）的主力通道，跑在虚拟副屏上不占物理屏。未授权时在 App 主界面点授权。")
-            EnvNoteLine("Linux 环境", "AI 的工具链（git/python/ffmpeg 等）跑在这里面。")
-            EnvNoteLine("proot 运行时", "让 Linux 环境无需 root 就能跑。")
-            Text(
-                text = "· 装更多工具（Python/Rust/PHP/SSH 等）在 App 的「工具链」界面里勾选。",
-                style = CCMText.body12.copy(fontSize = 11.04.sp, lineHeight = 16.56.sp),
-                color = colors.textSecondary,
-            )
+        // ── 说明 ─────────────────────────────────────────────────
+        SettingsSection(title = "说明") {
+            EnvNoteLine("Shizuku", "手机操作通道，未授权时在 App 主界面点授权。")
+            EnvNoteLine("Linux 环境", "AI 工具链（git/python 等）的运行环境。")
+            EnvNoteLine("proot 运行时", "让 Linux 环境无需 root 即可运行。")
+            EnvNoteLine("更多工具", "在 App 的「工具链」界面勾选安装。")
         }
-    }
-}
-
-/**
- * 环境面板小节 —— 对应源码
- * `<div className="rounded-xl border border-claude-border p-4 space-y-2">`。
- * 移动端实测（Tailwind × 0.92）：圆角 11.04 · 内距 14.72 · 间距 7.36。
- */
-@Composable
-private fun EnvSection(
-    title: String,
-    modifier: Modifier = Modifier,
-    content: @Composable () -> Unit,
-) {
-    val colors = CCMTheme.colors
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(11.04.dp))
-            .border(1.dp, colors.border, RoundedCornerShape(11.04.dp))
-            .padding(14.72.dp),
-        verticalArrangement = Arrangement.spacedBy(7.36.dp),
-    ) {
-        Text(
-            text = title,
-            style = CCMText.body14.copy(
-                fontSize = 11.96.sp,
-                fontWeight = FontWeight.Medium,
-            ),
-            color = colors.textMain,
-            modifier = Modifier.padding(bottom = 7.36.dp),     // mb-2
-        )
-        content()
     }
 }
 

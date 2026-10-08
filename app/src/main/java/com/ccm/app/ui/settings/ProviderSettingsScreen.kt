@@ -262,7 +262,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                 //   WorkBuddy / sharellm / 英伟达 三个假项，点了只改 selected。
                 if (items.isEmpty()) {
                     Text(
-                        text = "还没有配置供应商。点上方「添加」建一个。",
+                        text = "还没有供应商，点上方「添加」新建。",
                         style = CCMText.body12,
                         color = colors.textSecondary,
                         modifier = Modifier.padding(vertical = 8.dp),
@@ -305,8 +305,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                     hint = "添加一个才能开始对话",
                 ) {
                     Text(
-                        "点上方「+ 添加」按钮新建 —— 需要填 API 地址、模型名和密钥" +
-                            "（从你的中转站或官方后台获取）。",
+                        "填地址、模型和密钥即可开始。",
                         style = CCMText.body12,
                         color = colors.textSecondary,
                     )
@@ -317,7 +316,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
             // ── SettingGroup 1：连接信息 ─────────────────────────
             ProviderSettingGroup(
                 title = "连接信息",
-                hint = "这个供应商怎么连、用什么身份",
+                hint = "怎么连、用什么身份",
             ) {
                 // ★ 接真实数据：key/url 从选中的 Provider 读，
                 //   remember(selectedId) 保证切换 Provider 时重新初始化
@@ -384,7 +383,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                             // key 的明文。
                             // 现在：池模式**不读 apiKey**，直接渲染固定文案。
                             value = if (keyPoolMode) {
-                                "轮换池 · ${selected?.keyCount ?: 0} 个 key（编辑会清空整组）"
+                                "轮换池 · ${selected?.keyCount ?: 0} 个 key（只读）"
                             } else if (showKey) {
                                 apiKey
                             } else {
@@ -421,11 +420,9 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         // 把占位文本写进 apiKey —— 那是上面明文回显 bug 的一环
                         // （占位文本靠它、而它不跟 refreshTick）。现在显示值直接
                         // 由 value 表达式算，不需要往 state 里塞展示文本。
-                        Text(
-                            text = if (keyPoolMode) "池 · ${selected?.keyCount} 个" else "",
-                            style = CCMText.body11.copy(fontSize = 10.12.sp),
-                            color = colors.textSecondary,
-                        )
+                        //
+                        // 【2026-10-08 重排】原来这里还有一段 Text("池 · N 个")
+                        // —— 与输入框里的「轮换池 · N 个 key」完全重复，已删。
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(7.36.dp))
@@ -475,10 +472,50 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
             // ── SettingGroup 2：模型行为 ─────────────────────────
             ProviderSettingGroup(
                 title = "模型行为",
-                hint = "这个供应商的默认模型怎么工作",
+                hint = "默认模型怎么工作",
             ) {
-                // ★ 2026-09-27：原来是写死的 "继承全局" + onClick 空转 ——
-                //   点不开、选了也不存。改成读真实值 + 落盘。
+                // ── 区块内 5 项：思考强度 / 思考回传 / API 格式 / Prompt Cache / 缓存保留 ──
+                //
+                // 顺序按「思考类 → 协议与缓存类」排：思考强度与思考回传相邻，
+                // API 格式与两个缓存项相邻。
+                //
+                // 思考回传 / Prompt Cache / 缓存保留 三项都是 **Provider 级**字段
+                // （对齐 CLI：cmd-system-config.mjs 的 /cache 写
+                // prov.promptCacheEnabled / promptCacheRetention；
+                // cmd-extensions.mjs:841-842 从 provider 读；index.mjs:741 也是
+                // providers[current]）。最初错放在通用 tab 的全局层，已挪到这里
+                // —— 切 Provider 就跟着切，才是正确语义。
+                //
+                // ★ 2026-09-27：思考强度原来是写死的 "继承全局" + onClick 空转
+                //   —— 点不开、选了也不存。改成读真实值 + 落盘。
+                val pcfg = remember(selectedId, refreshTick) {
+                    com.ccm.app.AppGraph.storage?.let { st ->
+                        AppConfig.load(st.configFile).config
+                    }
+                }
+                val curProv = pcfg?.providers?.get(selectedId)
+                var replayOn by remember(selectedId, refreshTick) {
+                    mutableStateOf(curProv?.replayReasoning == true)
+                }
+                var cacheOn by remember(selectedId, refreshTick) {
+                    mutableStateOf(curProv?.promptCacheEnabled == true)
+                }
+                var cache24h by remember(selectedId, refreshTick) {
+                    mutableStateOf(curProv?.promptCacheRetention == "24h")
+                }
+
+                /** 统一的 provider 字段写盘（读-改-写，只动自己的 provider）。 */
+                fun saveProvField(block: (com.ccm.app.core.provider.ProviderConfig) -> com.ccm.app.core.provider.ProviderConfig) {
+                    com.ccm.app.AppGraph.storage?.let { st ->
+                        val fresh = AppConfig.load(st.configFile).config
+                        val p0 = fresh.providers[selectedId] ?: return@let
+                        AppConfig.save(
+                            fresh.copy(providers = fresh.providers + (selectedId to block(p0))),
+                            st.configFile,
+                        )
+                    }
+                }
+
                 var effort by remember(selectedId, refreshTick) {
                     val st = com.ccm.app.AppGraph.storage
                     mutableStateOf(
@@ -543,14 +580,40 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                             )
                         }
                     }
+                    // 与对话页「扩展思考」共用同一份配置（Provider.effort）
+                    Text(
+                        "与对话页「扩展思考」共用同一份配置。",
+                        style = CCMText.body11.copy(fontSize = 9.48.sp),
+                        color = colors.textSecondary.copy(alpha = 0.7f),
+                    )
                 }
 
-            // 【2026-10-06 问题8】说明与其它入口的关系（同一份配置）
-            Text(
-                "与对话页模型选择器的「扩展思考」、通用设置页的开关是同一份配置（Provider 的 effort 字段），在哪调都一样。",
-                style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
-                color = colors.textSecondary,
-            )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "思考回传",
+                            style = CCMText.body13.copy(
+                                fontSize = 11.21.sp,
+                                fontWeight = FontWeight.Medium,
+                            ),
+                            color = colors.textMain,
+                        )
+                        Text(
+                            text = "把上轮思考发给模型，费 token",
+                            style = CCMText.body11.copy(fontSize = 9.48.sp),
+                            color = colors.textSecondary.copy(alpha = 0.7f),
+                        )
+                    }
+                    Spacer(Modifier.width(7.36.dp))
+                    SettingsSwitch(checked = replayOn, onCheckedChange = { on ->
+                        replayOn = on
+                        saveProvField { it.copy(replayReasoning = on) }
+                    })
+                }
 
                 ProviderField(label = "API 格式") {
                     Row(horizontalArrangement = Arrangement.spacedBy(7.36.dp)) {
@@ -573,80 +636,35 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                     }
                 }
 
-                // ── 思考回传 / Prompt Cache / 保留时间（2026-10-07 加）──
-                //
-                // 【层级纠正】这三个都是 **Provider 级**字段（对齐 CLI：
-                // cmd-system-config.mjs 的 /cache 写 prov.promptCacheEnabled /
-                // promptCacheRetention；cmd-extensions.mjs:841-842 从
-                // provider 读；index.mjs:741 也是 providers[current]）。
-                // 最初错放在通用 tab 的全局层，已挪到这里 —— 切 Provider
-                // 就跟着切，才是正确语义。
-                val pcfg = remember(selectedId, refreshTick) {
-                    com.ccm.app.AppGraph.storage?.let { st ->
-                        AppConfig.load(st.configFile).config
-                    }
-                }
-                val curProv = pcfg?.providers?.get(selectedId)
-                var replayOn by remember(selectedId, refreshTick) {
-                    mutableStateOf(curProv?.replayReasoning == true)
-                }
-                var cacheOn by remember(selectedId, refreshTick) {
-                    mutableStateOf(curProv?.promptCacheEnabled == true)
-                }
-                var cache24h by remember(selectedId, refreshTick) {
-                    mutableStateOf(curProv?.promptCacheRetention == "24h")
-                }
-
-                /** 统一的 provider 字段写盘（读-改-写，只动自己的 provider）。 */
-                fun saveProvField(block: (com.ccm.app.core.provider.ProviderConfig) -> com.ccm.app.core.provider.ProviderConfig) {
-                    com.ccm.app.AppGraph.storage?.let { st ->
-                        val fresh = AppConfig.load(st.configFile).config
-                        val p0 = fresh.providers[selectedId] ?: return@let
-                        AppConfig.save(
-                            fresh.copy(providers = fresh.providers + (selectedId to block(p0))),
-                            st.configFile,
-                        )
-                    }
-                }
-
-                ProviderField(label = "思考回传") {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(7.36.dp),
-                    ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            "把上轮思考发给模型（费 token，默认关）",
-                            style = CCMText.body12.copy(fontSize = 10.48.sp),
-                            color = colors.textSecondary,
-                            modifier = Modifier.weight(1f),
+                            text = "Prompt Cache",
+                            style = CCMText.body13.copy(
+                                fontSize = 11.21.sp,
+                                fontWeight = FontWeight.Medium,
+                            ),
+                            color = colors.textMain,
                         )
-                        SettingsSwitch(checked = replayOn, onCheckedChange = { on ->
-                            replayOn = on
-                            saveProvField { it.copy(replayReasoning = on) }
-                        })
-                    }
-                }
-
-                ProviderField(label = "Prompt Cache") {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(7.36.dp),
-                    ) {
                         Text(
-                            "请求带缓存标记，重复前缀省钱省时",
-                            style = CCMText.body12.copy(fontSize = 10.48.sp),
-                            color = colors.textSecondary,
-                            modifier = Modifier.weight(1f),
+                            text = "请求带缓存标记，省钱省时",
+                            style = CCMText.body11.copy(fontSize = 9.48.sp),
+                            color = colors.textSecondary.copy(alpha = 0.7f),
                         )
-                        SettingsSwitch(checked = cacheOn, onCheckedChange = { on ->
-                            cacheOn = on
-                            saveProvField {
-                                if (on) it.copy(promptCacheEnabled = true)
-                                else it.copy(promptCacheEnabled = false, promptCacheRetention = null)
-                            }
-                            if (!on) cache24h = false
-                        })
                     }
+                    Spacer(Modifier.width(7.36.dp))
+                    SettingsSwitch(checked = cacheOn, onCheckedChange = { on ->
+                        cacheOn = on
+                        saveProvField {
+                            if (on) it.copy(promptCacheEnabled = true)
+                            else it.copy(promptCacheEnabled = false, promptCacheRetention = null)
+                        }
+                        if (!on) cache24h = false
+                    })
                 }
 
                 // 保留时间（仅在 cache 开时可用 —— 对齐 CLI：off 时清 retention）
@@ -677,7 +695,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
             // ── SettingGroup 3：能力开关 ─────────────────────────
             ProviderSettingGroup(
                 title = "能力开关",
-                hint = "联网搜索与图片识别，决定模型能做什么",
+                hint = "模型能做什么",
             ) {
                 // ★ 第24批（2026-09-28）：三个控件原来是纯本地 remember ——
                 //   开关拨了、key 填了，重启全丢，而且 buildSettings 根本
@@ -713,7 +731,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                             color = colors.textMain,
                         )
                         Text(
-                            text = "模型可调用搜索引擎查最新信息",
+                            text = "可联网查询最新信息",
                             style = CCMText.body11.copy(fontSize = 9.48.sp),
                             color = colors.textSecondary.copy(alpha = 0.7f),
                         )
@@ -785,8 +803,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         //   关 → 用备用识图 Provider（/config vision set 指定）
                         //        转述图片后交主模型；没配备用则直接带图
                         Text(
-                            text = "本模型能否直接看图；关闭时用备用识图 Provider" +
-                                "（/config vision set 指定）",
+                            text = "本模型直接看图；关闭时走备用识图",
                             style = CCMText.body11.copy(fontSize = 9.48.sp),
                             color = colors.textSecondary.copy(alpha = 0.7f),
                         )
@@ -805,7 +822,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
             // ── SettingGroup 4：模型清单 ─────────────────────────
             ProviderSettingGroup(
                 title = "模型清单",
-                hint = "下拉框里能选到哪些模型（不勾选的不出现）",
+                hint = "下拉框里可选哪些模型",
             ) {
                 // ★ 第24批：原三行是写死的假数据（deepseek flash/pro/lite
                 //   + 「日常档/主力档」装饰标签），关页即丢。改为读写
@@ -861,12 +878,12 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                                 containerColor = Color.Transparent,
                                 contentColor = colors.accent,
                             ),
-                        ) { Text(if (fetchingModels) "获取中…" else "一键获取模型列表", style = CCMText.body12) }
+                        ) { Text(if (fetchingModels) "获取中…" else "获取模型列表", style = CCMText.body12) }
                         modelFetchMessage?.let { Text(it, style = CCMText.body11, color = colors.textSecondary) }
                     }
                     if (modelPool.isEmpty()) {
                         Text(
-                            text = "清单为空 —— 下拉仅显示当前模型",
+                            text = "清单为空，下拉仅显示当前模型",
                             style = CCMText.body12,
                             color = colors.textSecondary,
                         )
@@ -938,7 +955,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
             if (selected != null) {
                 ProviderSettingGroup(
                     title = "危险区",
-                    hint = "删除后不可撤销（当前在用的 Provider 不能删）",
+                    hint = "删除不可撤销",
                 ) {
                     val isCurrent = items.firstOrNull { it.id == selectedId }?.isCurrent == true
                     Row(
@@ -954,7 +971,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            text = if (isCurrent) "删除供应商（当前在用，不可删）" else "删除这个供应商",
+                            text = if (isCurrent) "当前在用，不可删除" else "删除此供应商",
                             style = CCMText.body13,
                             color = if (isCurrent) colors.textSecondary else Color(0xFFDC2626),
                         )
@@ -1005,7 +1022,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                     // 现在保持对话框打开 + 明确提示原因。
                     android.widget.Toast.makeText(
                         ctx,
-                        "添加失败：编号「${id.ifBlank { "(自动)" }}」已被占用，或保存出错 —— 换个编号再试",
+                        "编号「${id.ifBlank { "(自动)" }}」已被占用或保存失败，换个编号再试",
                         android.widget.Toast.LENGTH_LONG,
                     ).show()
                 }
@@ -1038,7 +1055,7 @@ fun ProviderSettingsScreen(modifier: Modifier = Modifier) {
                     // 数量），但用户在弹窗里看到的是**勾选总数**（含主模型）——
                     // 勾了 5 个显示「已保存 4 个」，用户报「计数错误」。
                     // 现在报总数（= 用户实际勾的数量），与弹窗的「已选 N」一致。
-                    modelFetchMessage = "已保存 ${modelPicked.size} 个模型（含当前模型）"
+                    modelFetchMessage = "已保存 ${modelPicked.size} 个模型"
                     refresh()
                 }
                 showModelPicker = false
@@ -1095,7 +1112,7 @@ private fun AddProviderDialog(
                 color = colors.textMain,
             )
 
-            ProviderField(label = "编号（可留空，自动分配）") {
+            ProviderField(label = "编号（可选）") {
                 SettingsTextField(value = id, onValueChange = { id = it }, placeholder = "1")
             }
             ProviderField(label = "显示名") {
@@ -1334,7 +1351,7 @@ private fun ProviderListItem(
                 horizontalArrangement = Arrangement.spacedBy(5.52.dp),
             ) {
                 Text(
-                    text = "$modelCount models",
+                    text = "$modelCount 个模型",
                     style = CCMText.body10.copy(fontSize = 9.2.sp),
                     color = colors.textSecondary.copy(alpha = 0.5f),
                 )

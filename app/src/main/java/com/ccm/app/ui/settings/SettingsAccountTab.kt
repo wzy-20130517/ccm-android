@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -52,7 +51,8 @@ fun SettingsAccountTab(modifier: Modifier = Modifier) {
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(SettingsSectionGap)) {
         SettingsSection(title = "账号") {
-            Column(verticalArrangement = Arrangement.spacedBy(18.4.dp)) {   // space-y-5
+            Column(verticalArrangement = Arrangement.spacedBy(SettingsFormGap)) {
+                // 邮箱（只读展示）
                 Column {
                     SettingsLabel("邮箱地址")
                     Spacer(Modifier.height(SettingsLabelGap))
@@ -63,54 +63,46 @@ fun SettingsAccountTab(modifier: Modifier = Modifier) {
                         style = CCMText.body14.copy(fontSize = SettingsBody14Sp),
                         color = colors.textMain,
                     )
-                    Spacer(Modifier.height(14.72.dp))       // mt-4
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(14.72.dp),   // gap-4
-                    ) {
-                        Text(
-                            text = "修改密码",
-                            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
-                            color = colors.textSecondary,
-                            modifier = Modifier.clickable { showPwdForm = true },
-                        )
-                        Box(
-                            modifier = Modifier
-                                .width(1.dp)
-                                .height(2.76.dp)            // h-3
-                                .background(colors.border),
-                        )
-                        Text(
-                            text = "注销账号",
-                            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
-                            color = Color(0xFFB9382C),
-                            modifier = Modifier.clickable { showDeleteAccount = true },
-                        )
-                    }
                 }
-
-                // 登录设备列表（源码是 table，移动端横向挤压 → 改为纵向卡片）
-                SettingsLabel("登录设备")
-                Column(verticalArrangement = Arrangement.spacedBy(7.36.dp)) {
-                    // ★ audit-settings #1：原写死机型/地点/日期（日期永久停在某天）。
-                    //   机型取 Build.MODEL 真值；地点无来源不显示；
-                    //   时间改为语义状态（无首装时间记录）。
-                    SessionRow(
-                        device = android.os.Build.MODEL,
-                        location = "本机",
-                        created = "单机运行",
-                        lastActive = "活跃中",
-                        isCurrent = true,
+                // 账号操作
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.72.dp),   // gap-4
+                ) {
+                    Text(
+                        text = "修改密码",
+                        style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
+                        color = colors.textSecondary,
+                        modifier = Modifier.clickable { showPwdForm = true },
+                    )
+                    Box(
+                        modifier = Modifier
+                            .width(1.dp)
+                            .height(2.76.dp)            // h-3
+                            .background(colors.border),
+                    )
+                    Text(
+                        text = "注销账号",
+                        style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
+                        color = Color(0xFFB9382C),
+                        modifier = Modifier.clickable { showDeleteAccount = true },
                     )
                 }
-                Text(
-                    text = "",   // 原 "No active sessions" 与上面的设备行自相矛盾（写死遗留）
-
-                    style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
-                    color = colors.textSecondary,
-                    modifier = Modifier.padding(vertical = 3.68.dp),
-                )
             }
+        }
+
+        // 登录设备（源码是 table，移动端横向挤压 → 改为纵向卡片）
+        SettingsSection(title = "登录设备") {
+            // ★ audit-settings #1：原写死机型/地点/日期（日期永久停在某天）。
+            //   机型取 Build.MODEL 真值；地点无来源不显示；
+            //   时间改为语义状态（无首装时间记录）。
+            SessionRow(
+                device = android.os.Build.MODEL,
+                location = "本机",
+                created = "单机运行",
+                lastActive = "活跃中",
+                isCurrent = true,
+            )
         }
     }
 
@@ -342,174 +334,85 @@ private fun CcmDeleteAccountDialog(onDismiss: () -> Unit) {
 fun SettingsUsageTab(modifier: Modifier = Modifier) {
     val colors = CCMTheme.colors
 
+    // ★ 2026-10-01：从「无配额」占位改为**真数据** ——
+    //   APK 能拿到的：会话数 / 存储占用 / 最近一轮 token。
+    //   原来三行全是"请到系统设置查看"式甩锅文案，用户白点进来。
+    val usageStats = remember {
+        try {
+            val st = com.ccm.app.AppGraph.storage
+            if (st == null) null else {
+                val sessDir = java.io.File(st.root, "sessions")
+                val files = sessDir.listFiles() ?: emptyArray()
+                val bytes = files.sumOf { it.length() }
+                Triple(files.size, bytes, com.ccm.app.AppGraph.session)
+            }
+        } catch (_: Throwable) { null }
+    }
+
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(SettingsSectionGap)) {
         SettingsSection(title = "用量") {
-            Column(verticalArrangement = Arrangement.spacedBy(18.4.dp)) {
-
-                // ★ 2026-10-01：从「无配额」占位改为**真数据** ——
-                //   APK 能拿到的：会话数 / 存储占用 / 最近一轮 token。
-                //   原来三行全是"请到系统设置查看"式甩锅文案，用户白点进来。
-                val usageStats = remember {
-                    try {
-                        val st = com.ccm.app.AppGraph.storage
-                        if (st == null) null else {
-                            val sessDir = java.io.File(st.root, "sessions")
-                            val files = sessDir.listFiles() ?: emptyArray()
-                            val bytes = files.sumOf { it.length() }
-                            Triple(files.size, bytes, com.ccm.app.AppGraph.session)
-                        }
-                    } catch (_: Throwable) { null }
-                }
-
-                // 会话数
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "会话数",
-                            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
-                            color = colors.textMain,
-                        )
-                        Text(
-                            text = usageStats?.let { "${it.first} 个" } ?: "—",
-                            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
-                            color = colors.textSecondary,
-                        )
-                    }
-                    Spacer(Modifier.height(7.36.dp))
-                }
-
-                // 存储占用（会话文件）
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "会话存储",
-                            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
-                            color = colors.textMain,
-                        )
-                        Text(
-                            text = usageStats?.let { (_, b, _) ->
-                                if (b < 1024) "${b} B"
-                                else if (b < 1024 * 1024) "%.1f KB".format(b / 1024.0)
-                                else "%.1f MB".format(b / 1024.0 / 1024.0)
-                            } ?: "—",
-                            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
-                            color = colors.textSecondary,
-                        )
-                    }
-                    Spacer(Modifier.height(7.36.dp))
-                }
-
-                // 最近一轮 token
-                Column {
-                    val sess = usageStats?.third
-                    val st = sess?.state?.value
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "最近一轮 token",
-                            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
-                            color = colors.textMain,
-                        )
-                        Text(
-                            text = st?.let {
-                                "入 ${it.inputTokens} / 出 ${it.outputTokens}"
-                            } ?: "—（本会话还没请求）",
-                            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
-                            color = colors.textSecondary,
-                        )
-                    }
-                    Spacer(Modifier.height(7.36.dp))
-                }
-
-                // 额度说明（保留诚实告知：自部署无配额）
+            Column(verticalArrangement = Arrangement.spacedBy(SettingsFormGap)) {
+                UsageRow(
+                    label = "会话数",
+                    value = usageStats?.let { "${it.first} 个" } ?: "—",
+                )
+                UsageRow(
+                    label = "会话存储",
+                    value = usageStats?.let { (_, b, _) ->
+                        if (b < 1024) "${b} B"
+                        else if (b < 1024 * 1024) "%.1f KB".format(b / 1024.0)
+                        else "%.1f MB".format(b / 1024.0 / 1024.0)
+                    } ?: "—",
+                )
+                UsageRow(
+                    label = "最近一轮 token",
+                    value = usageStats?.third?.state?.value?.let {
+                        "入 ${it.inputTokens} / 出 ${it.outputTokens}"
+                    } ?: "—（本会话还没请求）",
+                )
+                UsageRow(label = "当前计划", value = "本机自部署")
+                // 诚实告知：自部署无服务端配额
                 Text(
                     text = "自部署模式不走服务端额度，以上为本机真实统计。",
                     // 10.21.sp = SettingsLabelSizeSp(11.21) - 1（TextUnit 不能直接减 Int）
                     style = CCMText.body12.copy(fontSize = 10.21.sp),
                     color = colors.textSecondary,
                 )
+            }
+        }
 
-                // 计划卡片
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(11.04.dp))     // rounded-xl
-                        .background(colors.input)
-                        .border(1.dp, colors.border, RoundedCornerShape(11.04.dp))
-                        .padding(11.04.dp),
-                    verticalArrangement = Arrangement.spacedBy(3.68.dp),
-                ) {
-                    Text(
-                        text = "本机自部署",
-                        style = CCMText.body16.copy(
-                            fontSize = 12.29.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        ),
-                        color = colors.textMain,
-                    )
-                    Text(
-                        text = "当前计划",
-                        style = CCMText.body12.copy(fontSize = 10.48.sp),
-                        color = colors.textSecondary,
-                    )
-                }
-
-                // 消息统计（两列）
-                Row(horizontalArrangement = Arrangement.spacedBy(11.04.dp)) {
-                    // ★ audit-settings #2：原 12/348 假数据。改为可得真值：
-                    //   历史会话数（SessionStore）+ 当前会话消息数（live state）。
-                    val stStore = com.ccm.app.AppGraph.storage?.let { com.ccm.app.core.session.SessionStore(it) }
-                    val historyCount = remember(stStore) { stStore?.list()?.size ?: 0 }
-                    val liveMsgs = com.ccm.app.AppGraph.session?.state?.value?.bubbles?.size ?: 0
-                    StatCard(value = "$historyCount", label = "历史会话", modifier = Modifier.weight(1f))
-                    StatCard(value = "$liveMsgs", label = "本会话消息", modifier = Modifier.weight(1f))
-                }
+        // ★ audit-settings #2：原 12/348 假数据。改为可得真值：
+        //   历史会话数（SessionStore）+ 当前会话消息数（live state）。
+        SettingsSection(title = "统计") {
+            val stStore = com.ccm.app.AppGraph.storage?.let { com.ccm.app.core.session.SessionStore(it) }
+            val historyCount = remember(stStore) { stStore?.list()?.size ?: 0 }
+            val liveMsgs = com.ccm.app.AppGraph.session?.state?.value?.bubbles?.size ?: 0
+            Row(horizontalArrangement = Arrangement.spacedBy(11.04.dp)) {
+                StatCard(value = "$historyCount", label = "历史会话", modifier = Modifier.weight(1f))
+                StatCard(value = "$liveMsgs", label = "本会话消息", modifier = Modifier.weight(1f))
             }
         }
     }
 }
 
-/**
- * 用量进度条 —— 对应源码
- * `<div className="h-2 bg-claude-border rounded-full overflow-hidden">
- *    <div className="h-full rounded-full transition-all duration-500 ease-out"
- *         style={{ width: `${Math.min(percent,100)}%`, backgroundColor: ... }}/>
- *  </div>`
- *
- * 三档颜色：>90% `#D93025` / >70% `#F9AB00` / 否则 `#D97757`。
- */
+/** 用量行 —— 标签左、值右的紧凑键值对（对齐设置页 `justify-between` 行）。 */
 @Composable
-private fun UsageBar(percent: Float, fixedColor: Color? = null) {
+private fun UsageRow(label: String, value: String) {
     val colors = CCMTheme.colors
-    val fill = fixedColor ?: when {
-        percent > 90f -> Color(0xFFD93025)
-        percent > 70f -> Color(0xFFF9AB00)
-        else -> Color(0xFFD97757)
-    }
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(7.36.dp)                        // h-2
-            .clip(CircleShape)
-            .background(colors.border),
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth((percent / 100f).coerceIn(0f, 1f))
-                .height(7.36.dp)
-                .clip(CircleShape)
-                .background(fill),
+        Text(
+            text = label,
+            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
+            color = colors.textMain,
+        )
+        Text(
+            text = value,
+            style = CCMText.body13.copy(fontSize = SettingsLabelSizeSp),
+            color = colors.textSecondary,
         )
     }
 }
