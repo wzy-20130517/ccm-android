@@ -1334,6 +1334,47 @@ private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): S
             }
         }
 
+        // ── /style：输出风格（= 回复偏好，同一件事，2026-10-08 合并）─────────────
+        //   历史：9-27 造了「回复偏好」（user-profile 的自由文本），9-29 又造了
+        //   「输出风格」（config.outputStyle 的下拉预设）—— 两者都回答「希望 AI
+        //   怎么回复」，是重复造轮子。现已合并：/style 直接读写回复偏好字段，
+        //   config.outputStyle 字段保留（CLI 侧设过的风格仍生效，互通不断）。
+        "style" -> {
+            val store = com.ccm.app.AppGraph.userProfileStore
+                ?: return SlashResult.Notice("无法读取用户资料：应用尚未就绪。")
+            val v = arg.trim()
+            when {
+                // 无参 → 显示当前偏好
+                v.isBlank() -> {
+                    val cur = store.load().personalPreferences
+                    if (cur.isBlank()) {
+                        SlashResult.Notice(
+                            "**回复偏好**（未设置）\n\n" +
+                                "用 `/style <你的偏好>` 设置，例如：\n" +
+                                "- `/style 回答尽量简洁，使用中文`\n" +
+                                "- `/style 不用 emoji，代码注释用英文`\n\n" +
+                                "_也可以去 设置 → 通用 → 回复偏好 填写。_",
+                        )
+                    } else {
+                        SlashResult.Notice(
+                            "**回复偏好**\n\n$cur\n\n" +
+                                "修改：`/style <新偏好>` · 清空：`/style clear`",
+                        )
+                    }
+                }
+                v == "clear" || v == "off" || v == "清空" -> {
+                    store.setField("personal_preferences", "")
+                    com.ccm.app.core.AppContainer.invalidateSystemPrompt()
+                    SlashResult.Notice("回复偏好已清空。")
+                }
+                else -> {
+                    store.setField("personal_preferences", v)
+                    com.ccm.app.core.AppContainer.invalidateSystemPrompt()
+                    SlashResult.Notice("已设置回复偏好：\n\n$v")
+                }
+            }
+        }
+
         // ── /markdown：APK 用 Compose 原生渲染，无终端 ANSI 样式可切 ────────────────
         "markdown" -> SlashResult.Notice(
             "Markdown 样式切换是 **CLI 终端专属**（控制 ANSI 配色）。\n\n" +

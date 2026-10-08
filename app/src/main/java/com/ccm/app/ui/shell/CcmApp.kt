@@ -490,7 +490,6 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                                 navigate(CcmRoute.CHAT)
                                 showSwitcher = true
                             }
-                            "style" -> navigate(CcmRoute.SETTINGS)
                         }
                     },
                     refreshSessions = { refreshSessions() },
@@ -527,7 +526,6 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                                 navigate(CcmRoute.CHAT)
                                 showSwitcher = true
                             }
-                            "style" -> navigate(CcmRoute.SETTINGS)
                         }
                     }
                     is com.ccm.app.ui.chat.SlashResult.Toast ->
@@ -574,7 +572,9 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                 "/new" -> { newChat(); return }
                 "/stop" -> { activeSession?.stop(); navigate(CcmRoute.CHAT); return }
                 "/retry" -> { activeSession?.retryLast(); navigate(CcmRoute.CHAT); return }
-                "/style" -> { navigate(CcmRoute.SETTINGS); return }
+                // 【2026-10-08 合并】/style 原来在这里硬编码跳设置页；
+                // 现在 handler 里有真实现（直接读写回复偏好），先过 handler →
+                // 这行成了死代码，已删。
                 "/context" -> {
                     // 2026-10-06 对齐 CLI：进度条 + 水位提示 + 估算兜底
                     val sess = activeSession
@@ -1034,9 +1034,6 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                                 showSwitcher = true
                             },
                             onNewChat = newChat,          // /new（2026-09-30 slash 扩充）
-                            onOpenStyle = {               // /style → 设置页输出风格
-                                navigate(CcmRoute.SETTINGS)
-                            },
                             onNavigate = { r ->           // slash handler 导航
                                 // ★ B1（findbugs 2026-10-01）：原来二元 if ——
                                 //   "delete-current" 落 else 跳设置页、deleteChat

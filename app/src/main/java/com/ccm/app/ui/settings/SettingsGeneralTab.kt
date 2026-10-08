@@ -67,21 +67,10 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
     var workFunction by remember { mutableStateOf(initialProfile.workFunction) }
     var preferences by remember { mutableStateOf(initialProfile.personalPreferences) }
 
-    // 输出风格（与 CLI /style、Web 设置同字段 config.outputStyle）
-    var styleRefresh by remember { mutableStateOf(0) }
-    val styles = remember(styleRefresh) {
-        com.ccm.app.core.output.OutputStyles.all(cwd = null)
-    }
-    val styleOptions = styles.map { it.name }
-    val currentStyleId = remember(styleRefresh) {
-        com.ccm.app.AppGraph.storage?.let { st ->
-            com.ccm.app.core.provider.AppConfig.load(st.configFile).config.outputStyle
-        }?.takeIf { it.isNotBlank() } ?: "default"
-    }
-    fun currentStyleLabel(): String =
-        styles.firstOrNull { it.id == currentStyleId }?.name ?: "默认"
-    fun styleIdByLabel(label: String): String =
-        styles.firstOrNull { it.name == label }?.id ?: "default"
+    // 【2026-10-08 合并】原「输出风格」下拉已撤 —— 它与「回复偏好」是同一件事
+    // （都回答「希望 AI 怎么回复我」），重复造轮子。设置页只留回复偏好文本框。
+    // config.outputStyle 字段保留（与 CLI /style、Web 互通不断），只是 APK
+    // 不再单独暴露 UI；CLI 侧设过的风格仍会经 assembleSystemPrompt 生效。
     // 下列三项都落 UiPrefs（SharedPreferences）—— 重启保留，
     // 且各有消费端：sendKey → InputBar 的 imeAction；theme → CcmApp 的 darkTheme
     var sendKey by remember { mutableStateOf(com.ccm.app.ui.theme.UiPrefs.sendKey.value) }
@@ -148,26 +137,6 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                             profileStore?.setField("work_function", it)
                         },
                         chevronRotated = true,
-                    )
-                }
-
-                SettingsField(label = "输出风格") {
-                    SettingsSelectMenu(
-                        value = currentStyleLabel(),
-                        options = styleOptions,
-                        onPick = { label ->
-                            val id = styleIdByLabel(label)
-                            com.ccm.app.AppGraph.storage?.let { st ->
-                                val cfg = com.ccm.app.core.provider.AppConfig.load(st.configFile).config
-                                com.ccm.app.core.provider.AppConfig.save(
-                                    cfg.copy(outputStyle = id),
-                                    st.configFile,
-                                )
-                            }
-                            // 换风格 → 提示词缓存失效
-                            com.ccm.app.core.AppContainer.invalidateSystemPrompt()
-                            styleRefresh++
-                        },
                     )
                 }
 

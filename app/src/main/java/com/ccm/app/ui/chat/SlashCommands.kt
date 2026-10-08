@@ -61,7 +61,7 @@ val COMMON_SLASH_COMMANDS: List<Pair<String, String>> = listOf(
     "/check" to "环境自检",
     // ── 配置 ──
     "/model" to "选择模型",
-    "/style" to "选择输出风格",
+    "/style" to "输出风格（已并入设置页回复偏好）",
     "/effort" to "思考强度（/effort high）",
     "/temperature" to "采样温度（/temperature 0.7）",
     "/greeting" to "开场白开关（/greeting on|off）",

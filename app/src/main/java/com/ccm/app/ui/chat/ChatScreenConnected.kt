@@ -69,8 +69,6 @@ fun ChatScreenConnected(
     onSwitchClick: () -> Unit = {},
     /** /new 新建会话（第 2026-09-30 批 slash 扩充）。 */
     onNewChat: () -> Unit = {},
-    /** /style 打开输出风格选择。 */
-    onOpenStyle: () -> Unit = {},
     /** slash handler 的导航请求（如 /delete 后回 "home"）。 */
     onNavigate: (String) -> Unit = {},
 ) {
@@ -127,7 +125,6 @@ fun ChatScreenConnected(
             when (p) {
                 "model" -> onModelClick()
                 "switcher" -> onSwitchClick()
-                "style" -> onOpenStyle()
             }
         },
         // 【2026-10-06 问题40】goal 模式（/goal）——
@@ -176,7 +173,6 @@ fun ChatScreenConnected(
                 when (res.panel) {
                     "model" -> onModelClick()
                     "switcher" -> onSwitchClick()
-                    "style" -> onOpenStyle()
                 }
             is com.ccm.app.ui.chat.SlashResult.Toast ->
                 android.widget.Toast.makeText(ctx, res.text, android.widget.Toast.LENGTH_SHORT).show()
@@ -556,7 +552,9 @@ fun ChatScreenConnected(
                         }
                     }
                     text == "/new" -> onNewChat()
-                    text == "/style" -> onOpenStyle()
+                    // 【2026-10-08 合并】/style 原来在这里硬编码跳设置页；
+                    // 现在 handler 里有真实现（直接读写回复偏好），命令先过
+                    // handler → 这行成了死代码，已删。
                     // ★ 2026-09-29 未支持命令兜底：/config /style /undo 这类
                     //   CLI 命令原来从 else 溜过去**发给模型**（模型回
                     //   「我不是这样用的」，白烧一轮）。
@@ -628,7 +626,6 @@ private val SUPPORTED_SLASH = setOf(
 
 /** 常见 CLI 命令的去处提示（别让用户以为坏了）。 */
 private val SLASH_HINTS = mapOf(
-    "/style" to "风格选择在 设置 → 通用 → 输出风格（与 CLI /style 同字段互通）。",
     "/config" to "Provider 配置在 设置 → 模型。",
     "/model" to "",   // 已支持，不会走到这
     "/undo" to "回退在 CLI 侧；APK 暂未接入撤销栈。",
