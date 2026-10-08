@@ -410,6 +410,17 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
             // 字段名与 CLI 一致（config.json 的 workspacePath），
             // 但配置文件各自独立（APK 在应用私有目录）。
             Column(verticalArrangement = Arrangement.spacedBy(SettingsFormGap)) {
+                // 【2026-10-08 修：变量提到外层 Column】工作区状态变量原来定义在
+                // 下面的内层 Column 里，但「保存工作区」TextButton 在外层 ——
+                // 作用域隔开，CI 报 8 个 Unresolved reference（wsInput/wsError/wsRefresh）。
+                // 重排结构时挪动了 TextButton 的层级，忘了变量也要跟着提。
+                //
+                // 输入框显示实际生效路径；currentWorkspace() 走磁盘 IO，
+                // 用 remember(wsRefresh) 包住（保存后 +1 触发刷新）
+                var wsRefresh by remember { mutableStateOf(0) }
+                val actualWs = remember(wsRefresh) { currentWorkspace() }
+                var wsInput by remember(actualWs) { mutableStateOf(actualWs) }
+                var wsError by remember { mutableStateOf("") }
                 Column {
                     Text(
                         // 空 = 真的没有工作区（相对路径会报错）；APK 的 config.json
@@ -420,12 +431,6 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                         color = CCMTheme.colors.textSecondary,
                     )
                     Spacer(Modifier.height(7.36.dp))
-                    // 输入框显示实际生效路径；currentWorkspace() 走磁盘 IO，
-                    // 用 remember(wsRefresh) 包住（保存后 +1 触发刷新）
-                    var wsRefresh by remember { mutableStateOf(0) }
-                    val actualWs = remember(wsRefresh) { currentWorkspace() }
-                    var wsInput by remember(actualWs) { mutableStateOf(actualWs) }
-                    var wsError by remember { mutableStateOf("") }
                     SettingsTextField(
                         value = wsInput,
                         onValueChange = { wsInput = it; wsError = "" },
