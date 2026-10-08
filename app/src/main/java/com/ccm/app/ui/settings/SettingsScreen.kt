@@ -222,9 +222,9 @@ private fun SettingsTabButton(label: String, active: Boolean, onClick: () -> Uni
 
 /** 设置页的 tab —— 对应源码的 `tab` 状态值 */
 enum class SettingsTab(val key: String, val label: String) {
-    GENERAL("general", "General"),
-    MODELS("models", "Models"),
-    ACCOUNT("account", "Account"),
-    USAGE("usage", "Usage"),
+    GENERAL("general", "通用"),
+    MODELS("models", "模型"),
+    ACCOUNT("account", "账号"),
+    USAGE("usage", "用量"),
     ENVIRONMENT("environment", "环境"),
 }

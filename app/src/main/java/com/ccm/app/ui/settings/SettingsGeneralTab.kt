@@ -314,6 +314,254 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
         // ── 工作区（2026-10-06 问题20：从「个人资料」里提出来独立成章）──
         // 对齐 Web 的章节顺序：个人资料 → 默认模型 → **工作区** → 发送消息。
         // 原来嵌在个人资料里，用户报「设置页杂乱不堪」。
+        // ── 自动压缩（2026-10-07 从 /compact-threshold 命令提升为设置项）──
+        //
+        // 原来只有命令入口，用户在设置页找不到。默认关闭（用户被自动压缩
+        // 搞丢过记忆，明确反感 —— 只有显式设阈值才启用），所以 UI 上
+        // 要说明白「为什么默认关」。
+        SettingsSection(title = "自动压缩") {
+            Column(verticalArrangement = Arrangement.spacedBy(SettingsFormGap)) {
+                val acState = com.ccm.app.AppGraph.container?.autoCompact
+                val cfgForAc = com.ccm.app.AppGraph.storage?.let { st ->
+                    com.ccm.app.core.provider.AppConfig.load(st.configFile).config
+                }
+                var tokLimit by remember {
+                    mutableStateOf(acState?.tokenLimit ?: cfgForAc?.compactTokenLimit ?: 0)
+                }
+                var msgLimit by remember {
+                    mutableStateOf(acState?.messageLimit ?: cfgForAc?.compactMessageLimit ?: 0)
+                }
+                var acSaved by remember { mutableStateOf("") }
+
+                Text(
+                    text = "对话接近上限时自动摘要历史（可能丢细节，默认关闭）。" +
+                        "设了阈值才启用；压缩前自动备份到压缩回收站。",
+                    style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                    color = CCMTheme.colors.textSecondary,
+                )
+
+                // Token 阈值
+                SettingsLabel("Token 阈值（0 = 关闭）")
+                Spacer(Modifier.height(SettingsLabelGap))
+                SettingsTextField(
+                    value = if (tokLimit > 0) tokLimit.toString() else "",
+                    onValueChange = { v ->
+                        tokLimit = v.filter { it.isDigit() }.toIntOrNull() ?: 0
+                        acSaved = ""
+                    },
+                    placeholder = "如 600000（60 万 token）",
+                )
+
+                // 消息条数阈值
+                SettingsLabel("消息条数阈值（0 = 不按条数）")
+                Spacer(Modifier.height(SettingsLabelGap))
+                SettingsTextField(
+                    value = if (msgLimit > 0) msgLimit.toString() else "",
+                    onValueChange = { v ->
+                        msgLimit = v.filter { it.isDigit() }.toIntOrNull() ?: 0
+                        acSaved = ""
+                    },
+                    placeholder = "如 500（超过 500 条消息时压）",
+                )
+
+                // 运行态提示（断路器/当前水位）
+                val statusLine = buildString {
+                    val en = acState?.isEnabled ?: (tokLimit > 0 || msgLimit > 0)
+                    append("当前：")
+                    append(if (en) "已启用" else "关闭")
+                    if (acState?.isTripped == true) {
+                        append("（⚠ 断路器跳闸，连续失败 ${acState.failures} 次 —— 手动 /compact 可恢复）")
+                    }
+                    // 当前上下文占用（给用户一个「离阈值多远」的参考）——
+                    // 从 session 的 State 读（最近一次请求的 prompt_tokens）
+                    com.ccm.app.AppGraph.session?.let { sess ->
+                        val used = sess.state.value.inputTokens
+                        if (used > 0 && tokLimit > 0) {
+                            append("；当前 ${used / 1000}K / 阈值 ${tokLimit / 1000}K")
+                        }
+                    }
+                }
+                Text(
+                    text = statusLine,
+                    style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                    color = if (acState?.isTripped == true) Color(0xFFB45309) else CCMTheme.colors.textSecondary,
+                )
+
+                Spacer(Modifier.height(3.68.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    androidx.compose.material3.TextButton(onClick = {
+                        com.ccm.app.AppGraph.storage?.let { st ->
+                            val loadR = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                            if (loadR.error != null) {
+                                acSaved = "配置损坏：${loadR.error}"
+                            } else {
+                                com.ccm.app.core.provider.AppConfig.save(
+                                    loadR.config.copy(
+                                        compactTokenLimit = tokLimit,
+                                        compactMessageLimit = msgLimit,
+                                    ),
+                                    st.configFile,
+                                )
+                                // 运行态热更新（与 /compact-threshold 同路径）
+                                com.ccm.app.AppGraph.container?.autoCompact?.let { ac ->
+                                    ac.tokenLimit = tokLimit
+                                    ac.messageLimit = msgLimit
+                                }
+                                acSaved = if (tokLimit > 0 || msgLimit > 0) {
+                                    "✅ 已保存并启用（立即生效）"
+                                } else {
+                                    "✅ 已保存（阈值为 0 = 关闭自动压缩）"
+                                }
+                            }
+                        }
+                    }) {
+                        Text("保存", style = CCMText.body13)
+                    }
+                    // 立即压缩一次（等价 /compact force）——
+                    // 走 handleSlashCommand（send 是发消息给 agent，不是命令入口）
+                    androidx.compose.material3.TextButton(onClick = {
+                        val sess = com.ccm.app.AppGraph.session
+                        if (sess == null) {
+                            acSaved = "无活跃会话"
+                        } else {
+                            com.ccm.app.ui.chat.handleSlashCommand(
+                                "/compact force",
+                                com.ccm.app.ui.chat.SlashContext(
+                                    session = sess,
+                                    appContext = ctx,
+                                    navigate = {},
+                                    newChat = {},
+                                    openPanel = {},
+                                ),
+                            )
+                            acSaved = "已发起手动压缩（结果看对话页）"
+                        }
+                    }) {
+                        Text("立即压缩一次", style = CCMText.body13)
+                    }
+                }
+                if (acSaved.isNotEmpty()) {
+                    Text(
+                        text = acSaved,
+                        style = CCMText.body12.copy(fontSize = 10.48.sp),
+                        color = CCMTheme.colors.textSecondary,
+                    )
+                }
+            }
+        }
+
+        // ── 对话行为（2026-10-07 新增 —— 三个开关原来只有命令入口）──
+        //
+        // Prompt Cache / 思考回传 / 历史回放：分别对应 /cache、/effort replay、
+        // /replay 三个命令。用户在设置页找不到，收拢到这里。
+        SettingsSection(title = "对话行为") {
+            Column(verticalArrangement = Arrangement.spacedBy(SettingsFormGap)) {
+                val cfgStore = com.ccm.app.AppGraph.storage
+
+                // Prompt Cache
+                var cacheOn by remember {
+                    mutableStateOf(
+                        cfgStore?.let { st ->
+                            com.ccm.app.core.provider.AppConfig.load(st.configFile).config.promptCache
+                        } ?: false
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Prompt Cache", style = CCMText.body13, color = CCMTheme.colors.textMain)
+                        Text(
+                            "请求带缓存标记，重复前缀省钱省时。未知网关可能报错，遇到就关掉。",
+                            style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                            color = CCMTheme.colors.textSecondary,
+                        )
+                    }
+                    SettingsSwitch(checked = cacheOn, onCheckedChange = { on ->
+                        cacheOn = on
+                        cfgStore?.let { st ->
+                            val r = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                            if (r.error == null) {
+                                com.ccm.app.core.provider.AppConfig.save(
+                                    r.config.copy(promptCache = on), st.configFile,
+                                )
+                            }
+                        }
+                    })
+                }
+
+                // 思考回传（provider 级 —— 当前 Provider 的字段；
+                // 与 /effort replay 命令同一落点：AppConfig.providers[current]）
+                val cfgNow = cfgStore?.let { st ->
+                    com.ccm.app.core.provider.AppConfig.load(st.configFile).config
+                }
+                val curProvider = cfgNow?.providers?.get(cfgNow.current)
+                var replayOn by remember {
+                    mutableStateOf(curProvider?.replayReasoning == true)
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("思考回传", style = CCMText.body13, color = CCMTheme.colors.textMain)
+                        Text(
+                            "把上轮思考发给模型（模型能看到自己怎么想的）。费 token，默认关。",
+                            style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                            color = CCMTheme.colors.textSecondary,
+                        )
+                    }
+                    SettingsSwitch(checked = replayOn, onCheckedChange = { on ->
+                        replayOn = on
+                        val st = cfgStore ?: return@SettingsSwitch
+                        val cfg = com.ccm.app.core.provider.AppConfig.load(st.configFile).config
+                        val p = cfg.providers[cfg.current] ?: return@SettingsSwitch
+                        com.ccm.app.core.provider.AppConfig.save(
+                            cfg.copy(providers = cfg.providers + (p.id to p.copy(replayReasoning = on))),
+                            st.configFile,
+                        )
+                    })
+                }
+
+                // 历史回放（进会话时显不显示历史正文）
+                var replayHist by remember {
+                    mutableStateOf(
+                        cfgStore?.let { st ->
+                            com.ccm.app.core.provider.AppConfig.load(st.configFile).config.replayHistory
+                        } ?: false
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("历史回放", style = CCMText.body13, color = CCMTheme.colors.textMain)
+                        Text(
+                            "恢复会话时把历史正文铺到屏幕上。默认关（不刷屏），对话内容不受影响。",
+                            style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                            color = CCMTheme.colors.textSecondary,
+                        )
+                    }
+                    SettingsSwitch(checked = replayHist, onCheckedChange = { on ->
+                        replayHist = on
+                        cfgStore?.let { st ->
+                            val r = com.ccm.app.core.provider.AppConfig.load(st.configFile)
+                            if (r.error == null) {
+                                com.ccm.app.core.provider.AppConfig.save(
+                                    r.config.copy(replayHistory = on), st.configFile,
+                                )
+                            }
+                        }
+                    })
+                }
+            }
+        }
+
         SettingsSection(title = "工作区") {
             // ── 工作区 ────
             // 字段名与 CLI 一致（config.json 的 workspacePath），
