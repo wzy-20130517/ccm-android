@@ -29,6 +29,16 @@ enum class ClawdState(val svg: String, val label: String) {
     /** 思考中：头顶冒思考气泡（对应 spinner 的 "Thinking…"）。 */
     THINKING("clawd-working-thinking.svg", "思考中"),
 
+    /**
+     * 深度思考：头上顶着 "ultrathink" 字样发光（2026-10-09 加）。
+     *
+     * 与 [THINKING] 随机切换 —— 用户要求「思考和深度思考随机着使用」。
+     * 真实区分「浅想/深思」需要模型侧信号（thinking budget 之类），
+     * 而我们只有「在思考」这一个事实。所以随机是**刻意的表演**：
+     * 一只活的螃蟹本来就会偶尔显得「想得特别用力」。
+     */
+    THINKING_DEEP("clawd-working-ultrathink.svg", "深度思考"),
+
     /** 打字：螃蟹敲键盘 + 屏幕代码滚动（对应 Bash / Write / Edit 类工具）。 */
     TYPING("clawd-working-typing.svg", "写代码"),
 
@@ -95,7 +105,10 @@ enum class ClawdState(val svg: String, val label: String) {
          * 另行更新，这里只返回状态。
          */
         fun forEvent(ev: AgentEvent): ClawdState? = when (ev) {
-            is AgentEvent.ReasoningDelta -> THINKING
+            // 思考：随机在「普通思考 / 深度思考」之间选（用户要求随机使用）。
+            // 用 Math.random() 而不是固定值 —— 每次思考的动画都不一样，
+            // 螃蟹看起来才有「在想不同的事」的感觉。
+            is AgentEvent.ReasoningDelta -> if (Math.random() < DEEP_THINK_CHANCE) THINKING_DEEP else THINKING
             is AgentEvent.TextDelta -> SPEAKING
             is AgentEvent.ToolStart -> forTool(ev.name)
             is AgentEvent.ToolProgress -> null   // 工具进行中，保持当前状态
@@ -106,5 +119,8 @@ enum class ClawdState(val svg: String, val label: String) {
             is AgentEvent.Usage -> null
             AgentEvent.Done -> HAPPY
         }
+
+        /** 深度思考出现概率（0.35 = 约三分之一的思考会「想得特别用力」）。 */
+        private const val DEEP_THINK_CHANCE = 0.35
     }
 }

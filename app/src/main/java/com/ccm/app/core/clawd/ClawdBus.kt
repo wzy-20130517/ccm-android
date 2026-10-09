@@ -69,6 +69,28 @@ object ClawdBus {
     val pulse: SharedFlow<ClawdPulse> = _pulse.asSharedFlow()
 
     /**
+     * 物理动作事件（phone_use 深度适配，2026-10-09）。
+     *
+     * 与 [pulse] 同为一次性事件，但**携带坐标** —— 悬浮窗收到后会先
+     * 平滑移动到目标位置，再播对应动作动画（见 ClawdOverlayService）。
+     *
+     * 缓冲 16 个：一次手机操作可能连发（点击 → 等待 → 截图 → 再点击），
+     * 而悬浮窗的移动动画有 ~300ms，缓冲不够会丢动作。
+     */
+    private val _actions = MutableSharedFlow<ClawdAction>(extraBufferCapacity = 16)
+    val actions: SharedFlow<ClawdAction> = _actions.asSharedFlow()
+
+    /**
+     * 发一个物理动作（phone 工具调用）。
+     *
+     * 悬浮窗没开时静默丢弃 —— 动作是「表演给用户看」的，没有观众时
+     * 不需要排队补播（用户回前台时再飘过去点一下反而莫名其妙）。
+     */
+    fun emitAction(action: ClawdAction) {
+        _actions.tryEmit(action)
+    }
+
+    /**
      * 更新状态（悬浮窗未开时静默，值仍然保留）。
      *
      * @param bubble 非 null 时同时更新气泡文本；null = 不动气泡。
@@ -140,7 +162,21 @@ object ClawdBus {
             return
         }
         val next = ClawdState.forEvent(ev) ?: return
-        setState(next)
+
+        // ══════════════════════════════════════════════════════════
+        //  【防闪烁】同「类」状态不重复下发
+        // ══════════════════════════════════════════════════════════
+        //
+        // ReasoningDelta 是逐块流式的（一次思考几十上百个 chunk），
+        // 每个 chunk 都调 forEvent。而 forEvent 里对思考做了**随机**
+        //（THINKING / THINKING_DEEP 二选一，用户要求随机）——
+        // 不拦的话每来一个 chunk 就翻一次动画，螃蟹头顶疯狂闪烁。
+        //
+        // 判据用「同族」而非「相等」：两个思考态算同一族，
+        // 切到别的族（如开始输出正文）才真正下发。
+        val sameFamily = isSameFamily(_state.value, next)
+        if (!sameFamily) setState(next)
+
         // 终态脉冲：悬浮窗收到后播几秒再收回（收回条件看 running，
         // 由 ChatSession 的 setRunning(false) 在整轮结束时置位）
         when (ev) {
@@ -148,6 +184,19 @@ object ClawdBus {
             com.ccm.app.core.agent.AgentEvent.Done -> emitPulse(ClawdPulse.COMPLETED)
             else -> {}
         }
+    }
+
+    /**
+     * 两个状态是否属于「同一族」（族内切换不需要重下发动画）。
+     *
+     * 目前只有一族：两种思考态。其余状态各自独立。
+     * 这样设计是因为随机选择只发生在思考族内 —— 如果将来别的状态也
+     * 加了随机变体，在这里加一条即可。
+     */
+    private fun isSameFamily(a: ClawdState, b: ClawdState): Boolean {
+        val thinking = setOf(ClawdState.THINKING, ClawdState.THINKING_DEEP)
+        if (a in thinking && b in thinking) return true
+        return a == b
     }
 }
 

@@ -21,6 +21,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import com.ccm.app.core.clawd.ClawdAction
 import com.ccm.app.core.clawd.ClawdBus
 import com.ccm.app.core.clawd.ClawdPulse
 import com.ccm.app.core.clawd.ClawdState
@@ -281,11 +282,21 @@ class ClawdOverlayService : Service() {
     }
 
     /**
-     * 拖动 + 点击手势。
+     * 拖动 + 点击手势（2026-10-09 重做）。
      *
-     * 【为什么不用 setOnClickListener】悬浮窗需要「拖动」和「点击」共存：
-     * 按下→移动超过阈值 = 拖动，按下→抬起没怎么动 = 点击（打开 App）。
-     * 用 OnClickListener 会把拖动也识别成点击。
+     * ## 变更历史
+     * 初版：整个窗口都能接收触摸，点击 = 打开 App。
+     * 问题（用户反馈）：「点某些地方会自动打开 ccm，但我又没有碰到 clawd」——
+     * 窗口是 132×178dp，但螃蟹只占下半部分，上半部分是**气泡预留空间**。
+     * 没有气泡时那片区域是透明的，却仍然吃触摸。
+     *
+     * ## 现在
+     * 1. **碰撞箱缩小**：只有螃蟹所在的矩形区域接收触摸（[inHitBox]），
+     *    其余区域 return false → 触摸穿透到下层应用。
+     * 2. **点击 = 撒娇**（不再是打开 App）：随机播一个反应动画 + 随机台词。
+     *    用户明确要求「不要让它点开 CCM」。
+     * 3. **拖动 = react-drag 动画**：用户拖着它走时，螃蟹做出「被拖着走」
+     *    的动作（用户要求「被拖动作改成用户拖动它时的动作」）。
      */
     private inner class DragListener(
         private val p: WindowManager.LayoutParams,
@@ -300,6 +311,8 @@ class ClawdOverlayService : Service() {
         override fun onTouch(v: View, e: MotionEvent): Boolean {
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    // 【碰撞箱】触摸点不在螃蟹身上 → 不消费，让事件穿透
+                    if (!inHitBox(v, e.x, e.y)) return false
                     downX = e.rawX; downY = e.rawY
                     startX = p.x; startY = p.y
                     moved = false
@@ -310,6 +323,9 @@ class ClawdOverlayService : Service() {
                     val dy = e.rawY - downY
                     if (!moved && (kotlin.math.abs(dx) > TOUCH_SLOP || kotlin.math.abs(dy) > TOUCH_SLOP)) {
                         moved = true
+                        // 开始拖动 → 播「被拖着走」动画（用户要求）
+                        setSvg("clawd-react-drag.svg")
+                        currentActionSvg = "clawd-react-drag.svg"
                     }
                     if (moved) {
                         p.x = startX + dx.toInt()
@@ -321,25 +337,79 @@ class ClawdOverlayService : Service() {
                 MotionEvent.ACTION_UP -> {
                     if (moved) {
                         savePosition(p.x, p.y)
+                        // 拖动结束 → 回落 Agent 状态动画
+                        currentActionSvg = null
+                        setSvg(ClawdBus.state.value.svg)
                     } else {
-                        openApp()
+                        onPetTapped()
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    if (moved) {
+                        currentActionSvg = null
+                        setSvg(ClawdBus.state.value.svg)
                     }
                     return true
                 }
             }
             return false
         }
+
+        /**
+         * 触摸点是否落在螃蟹身上（碰撞箱）。
+         *
+         * 窗口布局（overlay.html）：
+         * ```
+         * ┌─────────────┐  ← 顶部 26%：气泡预留空间（透明，不该吃触摸）
+         * │   (bubble)  │
+         * ├─────────────┤  ← 下面 74%：螃蟹图片（SVG 500×500 等比缩放到窗口宽）
+         * │    🦀       │     螃蟹视觉中心在窗口高度的 62% 处
+         * └─────────────┘
+         * ```
+         *
+         * 碰撞箱取「水平居中 72% 宽 × 纵向 42%~96%」—— 比螃蟹本身略大
+         *（好点），但远小于整个窗口（不误触）。
+         */
+        private fun inHitBox(v: View, x: Float, y: Float): Boolean {
+            val w0 = v.width.toFloat()
+            val h0 = v.height.toFloat()
+            if (w0 <= 0f || h0 <= 0f) return false
+            val left = w0 * HITBOX_LEFT_RATIO
+            val right = w0 * HITBOX_RIGHT_RATIO
+            val top = h0 * HITBOX_TOP_RATIO
+            val bottom = h0 * HITBOX_BOTTOM_RATIO
+            return x in left..right && y in top..bottom
+        }
     }
 
-    /** 点击悬浮窗 → 打开 App（回到对话页）。 */
-    private fun openApp() {
+    /**
+     * 点击螃蟹 → 随机反应 + 撒娇台词（2026-10-09）。
+     *
+     * 用户需求：「点击之后随机触发动作，并从词库里调一句话对主人撒娇什么的。」
+     *
+     * 原实现是「点击打开 App」—— 已删除。用户要的是一只**有性格的宠物**，
+     * 不是一个快捷方式。
+     */
+    private fun onPetTapped() {
         try {
-            val i = Intent(this, com.ccm.app.MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            // ① 随机反应动画
+            val svg = com.ccm.app.core.clawd.ClawdTalk.randomReaction()
+            setSvg(svg)
+            currentActionSvg = svg
+            // ② 随机撒娇台词
+            setBubbleText(com.ccm.app.core.clawd.ClawdTalk.randomLine())
+            // ③ 播一会儿回落到 Agent 状态
+            scope.launch {
+                delay(TAP_REACTION_HOLD_MS)
+                if (currentActionSvg == svg) {
+                    currentActionSvg = null
+                    setSvg(ClawdBus.state.value.svg)
+                    setBubbleText("")
+                }
             }
-            startActivity(i)
         } catch (t: Throwable) {
-            Log.w(TAG, "打开 App 失败: ${t.message}")
+            Log.w(TAG, "点击反应失败: ${t.message}")
         }
     }
 
@@ -368,6 +438,7 @@ class ClawdOverlayService : Service() {
             }
         }
         observeBubble()
+        observeActions()
         // 脉冲事件（完成/失败动画播完自动回 IDLE）
         //
         // ⚠️ 用 collectLatest 而不是 collect：collect 是顺序的，
@@ -388,6 +459,156 @@ class ClawdOverlayService : Service() {
                     ClawdPulse.STOPPED -> ClawdBus.setState(ClawdState.IDLE)
                 }
             }
+        }
+    }
+
+    /**
+     * 物理动作订阅（phone_use 深度适配，2026-10-09）。
+     *
+     * ## 用户需求
+     * 「当 Agent 点击时，Clawd 会流畅地来到点击处摆个动作，滑动时，
+     *   Clawd 也有相应动作。」
+     *
+     * ## 实现要点
+     *
+     * 1. **平滑移动**：用 ValueAnimator 把 WindowManager 的 x/y 从当前位置
+     *    插值到目标位置（不是瞬移）。瞬移会让螃蟹"闪现"，看起来像 bug。
+     *
+     * 2. **移动的是窗口不是页面**：改变的是 [WindowManager.LayoutParams].x/y，
+     *    螃蟹在页面内位置不变 —— 这样 SVG 动画不会因为页面重排而重启。
+     *
+     * 3. **坐标换算**：动作坐标是「目标点的屏幕像素」，窗口坐标要减去
+     *    窗口尺寸的一半（让螃蟹中心对准目标点），再减去螃蟹在窗口内的偏移
+     *    （螃蟹不在窗口正中 —— 气泡占顶部，见 [PET_CENTER_Y_RATIO]）。
+     *
+     * 4. **动作播完自动复位**：动作是临时的，播 [ACTION_HOLD_MS] 后回到
+     *    当前 Agent 状态对应的动画（不能永远停在「探头看」）。
+     *
+     * 5. **副屏操作不带坐标**：`hasPosition == false` 时原地播动作。
+     */
+    private fun observeActions() {
+        scope.launch {
+            ClawdBus.actions.collectLatest { action ->
+                // ① 播动作动画
+                setSvg(svgForAction(action))
+                // ② 有坐标就飘过去（副屏操作没有主屏坐标，不移动）
+                if (action.hasPosition) {
+                    flyTo(action.x, action.y)
+                }
+                // ③ 动作是临时的：播一会儿回落到当前 Agent 状态
+                delay(ACTION_HOLD_MS)
+                // 只有当前动画仍是「动作动画」时才回落 —— 若期间 Agent 切了
+                // 状态（如开始输出正文），那个状态优先级更高，不要覆盖它。
+                if (currentActionSvg != null) {
+                    currentActionSvg = null
+                    setSvg(ClawdBus.state.value.svg)
+                }
+            }
+        }
+    }
+
+    /**
+     * 动作 → SVG。
+     *
+     * 素材库没有相机/点击专用素材，用语义最近的替代：
+     * - 点击 → 探头看（左右按落点定朝向）
+     * - 滑动 → **搬运**（用户指定：「它滑动可以使用搬运」）——
+     *   螃蟹扛着东西跟着滑，比「被拖」更贴合「Agent 在划屏」的语义
+     * - 截图 → 放大镜（"看"的最近语义）
+     * - 拖动螃蟹本身 → 走 [DragListener] 的 react-drag，不经过这里
+     */
+    private fun svgForAction(action: ClawdAction): String = when (action.type) {
+        // 点击：探头看（左右按落点在屏幕哪半边决定朝向）
+        ClawdAction.Type.TAP ->
+            if (action.hasPosition && action.x > screenWidth() / 2) {
+                "clawd-react-right.svg"
+            } else {
+                "clawd-react-left.svg"
+            }
+        // 滑动：扛着东西跟着滑（用户指定用搬运动作）
+        ClawdAction.Type.SWIPE -> "clawd-working-carrying.svg"
+        // 截图：举放大镜观察（素材无相机，这是「看」的最近语义）
+        ClawdAction.Type.SCREENSHOT -> "clawd-working-debugger.svg"
+        // 读元素树：左右张望
+        ClawdAction.Type.SNAPSHOT -> "clawd-idle-look.svg"
+        // 输入文字：打字
+        ClawdAction.Type.TYPE_TEXT -> "clawd-working-typing.svg"
+        // 启动应用：施法变出一个 App
+        ClawdAction.Type.LAUNCH_APP -> "clawd-working-wizard.svg"
+    }.also { currentActionSvg = it }
+
+    /** 当前正在播的「动作动画」文件（null = 没有动作，显示 Agent 状态动画）。 */
+    private var currentActionSvg: String? = null
+
+    private fun screenWidth(): Int {
+        return try {
+            val metrics = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            (getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getMetrics(metrics)
+            metrics.widthPixels
+        } catch (_: Throwable) { 1080 }
+    }
+
+    private fun screenHeight(): Int {
+        return try {
+            val metrics = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            (getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getMetrics(metrics)
+            metrics.heightPixels
+        } catch (_: Throwable) { 2400 }
+    }
+
+    /**
+     * 平滑飞到目标点（螃蟹中心对准目标）。
+     *
+     * 用 ValueAnimator 而不是直接设值：瞬移会让螃蟹"闪现"，看起来像 bug。
+     * 插值曲线用 Decelerate（先快后慢）—— 像真的"飞过去刹住"。
+     */
+    private fun flyTo(targetX: Int, targetY: Int) {
+        val p = params ?: return
+        val w = view ?: return
+        val wmLocal = wm ?: return
+
+        // 窗口中心要对准目标点 → 窗口左上角 = 目标 - 窗口尺寸/2
+        // 但螃蟹不在窗口正中（顶部有气泡空间），所以纵向要补偿
+        val winW = p.width
+        val winH = p.height
+        val destX = targetX - winW / 2
+        val destY = targetY - (winH * PET_CENTER_Y_RATIO).toInt()
+
+        // 夹取到屏幕内（别飞出去）
+        val maxX = (screenWidth() - winW).coerceAtLeast(0)
+        val maxY = (screenHeight() - winH).coerceAtLeast(0)
+        val toX = destX.coerceIn(0, maxX)
+        val toY = destY.coerceIn(0, maxY)
+
+        val fromX = p.x
+        val fromY = p.y
+        if (fromX == toX && fromY == toY) return   // 已在目标点
+
+        try {
+            val anim = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = FLY_DURATION_MS
+                interpolator = android.view.animation.DecelerateInterpolator()
+                addUpdateListener { a ->
+                    val f = a.animatedFraction
+                    p.x = (fromX + (toX - fromX) * f).toInt()
+                    p.y = (fromY + (toY - fromY) * f).toInt()
+                    try { wmLocal.updateViewLayout(w, p) } catch (_: Throwable) {}
+                }
+                // 动画结束落点可能因取整有 1~2px 偏差，校准一次
+                addListener(object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: android.animation.Animator) {
+                        p.x = toX; p.y = toY
+                        try { wmLocal.updateViewLayout(w, p) } catch (_: Throwable) {}
+                    }
+                })
+            }
+            anim.start()
+        } catch (t: Throwable) {
+            // 动画失败就直接瞬移（降级，不影响功能）
+            p.x = toX; p.y = toY
+            try { wmLocal.updateViewLayout(w, p) } catch (_: Throwable) {}
         }
     }
 
@@ -500,3 +721,48 @@ private const val REACTION_HOLD_MS = 2600L
 
 /** 悬浮窗边长（dp）。132dp ≈ 屏幕上不到两指宽，不挡操作又不至于看不清动画。 */
 private const val SIZE_DP = 132
+
+/**
+ * 螃蟹中心在窗口内的纵向比例（0 = 顶，1 = 底）。
+ *
+ * 窗口是 132×178dp（气泡占顶部），螃蟹实际画在下半部分。
+ * 「飞到某个坐标」时要把窗口左上角算成 `目标 - 窗口尺寸 × 这个比例`，
+ * 否则螃蟹会落在目标点上方一大截。
+ *
+ * 0.62 是实测值：窗口高 178dp，螃蟹视觉中心约在 110dp 处 → 110/178 ≈ 0.62。
+ */
+private const val PET_CENTER_Y_RATIO = 0.62f
+
+/** 飞行动画时长（ms）。太快像瞬移，太慢跟不上连续操作。 */
+private const val FLY_DURATION_MS = 320L
+
+/** 动作动画停留时长（ms）—— 播完回落到当前 Agent 状态。 */
+private const val ACTION_HOLD_MS = 1200L
+
+/** 点击反应的停留时长（ms）—— 比工具动作长一点，让用户看清台词。 */
+private const val TAP_REACTION_HOLD_MS = 2200L
+
+// ══════════════════════════════════════════════════════════════════
+//  碰撞箱（2026-10-09 加）
+// ══════════════════════════════════════════════════════════════════
+//
+// 窗口是 132×178dp，但螃蟹只占下半部分（上半是气泡预留空间）。
+// 没有气泡时上半区透明却仍吃触摸 → 用户点"空处"也触发点击反应。
+//
+// 现在只有这个矩形接收触摸（比例相对于窗口尺寸）：
+//   横向 14%~86%（居中 72% 宽）
+//   纵向 42%~96%（下半部分，避开气泡区）
+//
+// 为什么纵向到 96% 而不是 100%：底部留 4% 边距，避免和屏幕边缘手势冲突。
+
+/** 碰撞箱左边界（窗口宽度比例）。 */
+private const val HITBOX_LEFT_RATIO = 0.14f
+
+/** 碰撞箱右边界（窗口宽度比例）。 */
+private const val HITBOX_RIGHT_RATIO = 0.86f
+
+/** 碰撞箱上边界（窗口高度比例）。 */
+private const val HITBOX_TOP_RATIO = 0.42f
+
+/** 碰撞箱下边界（窗口高度比例）。 */
+private const val HITBOX_BOTTOM_RATIO = 0.96f

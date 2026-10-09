@@ -177,6 +177,54 @@ class PhoneTools(
         .trim()
 
     // ══════════════════════════════════════════════════════════════
+    //  Clawd 悬浮窗联动（2026-10-09）
+    // ══════════════════════════════════════════════════════════════
+    //
+    // 手机操作时让 Clawd 吉祥物「在场」：点击时飘到落点探头，滑动时被拖着
+    // 走，截图时举放大镜。用户看不到副屏上的操作，所以副屏模式下不传坐标
+    //（原地播动作表示「我在干活」）。
+
+    /**
+     * 发一个带坐标的动作（仅前台/主屏模式有效）。
+     *
+     * @param x/y 主屏物理像素坐标
+     */
+    private fun emitClawdAt(type: com.ccm.app.core.clawd.ClawdAction.Type, x: Int, y: Int) {
+        // 副屏操作（background）时坐标不在主屏坐标系里，飘过去没有意义
+        if (PhoneMode.sessionMode != PhoneMode.FOREGROUND) {
+            com.ccm.app.core.clawd.ClawdBus.emitAction(
+                com.ccm.app.core.clawd.ClawdAction.here(type),
+            )
+            return
+        }
+        com.ccm.app.core.clawd.ClawdBus.emitAction(
+            com.ccm.app.core.clawd.ClawdAction.at(type, x, y),
+        )
+    }
+
+    /** 发一个原地动作（不知道坐标 / 副屏模式）。 */
+    private fun emitClawdHere(type: com.ccm.app.core.clawd.ClawdAction.Type) {
+        com.ccm.app.core.clawd.ClawdBus.emitAction(
+            com.ccm.app.core.clawd.ClawdAction.here(type),
+        )
+    }
+
+    /**
+     * 发一个滑动动作（带方向分量，悬浮窗据此让螃蟹往反方向倾）。
+     *
+     * @param x/y 滑动起点（主屏物理像素）
+     * @param dx/dy 滑动位移（终点减起点）
+     */
+    private fun emitClawdSwipe(x: Int, y: Int, dx: Int, dy: Int) {
+        val action = if (PhoneMode.sessionMode == PhoneMode.FOREGROUND) {
+            com.ccm.app.core.clawd.ClawdAction.swipe(dx, dy, x, y)
+        } else {
+            com.ccm.app.core.clawd.ClawdAction.swipe(dx, dy)
+        }
+        com.ccm.app.core.clawd.ClawdBus.emitAction(action)
+    }
+
+    // ══════════════════════════════════════════════════════════════
     //  1. phone_snapshot
     // ══════════════════════════════════════════════════════════════
 
@@ -204,6 +252,8 @@ class PhoneTools(
             val svc = service().getOrElse {
                 return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
             }
+            // Clawd 联动：读元素树 → 左右张望（「我在看界面」）
+            emitClawdHere(com.ccm.app.core.clawd.ClawdAction.Type.SNAPSHOT)
             return try {
                 val tree = svc.dumpTree(
                     input.bool("interactive_only") ?: true,
@@ -262,6 +312,8 @@ class PhoneTools(
                     if (xy == null || xy.size < 2) {
                         ToolResult.failed("节点已失效（#$ref）。界面刷新过，请重新 phone_snapshot 再试。")
                     } else {
+                        // Clawd 联动：长按也走 TAP 动作（飘过去探头看）
+                        emitClawdAt(com.ccm.app.core.clawd.ClawdAction.Type.TAP, xy[0], xy[1])
                         val ok = svc.longPress(xy[0], xy[1], 600)
                         if (ok) {
                             ToolResult.ok(
@@ -277,6 +329,8 @@ class PhoneTools(
                     if (xy == null || xy.size < 2) {
                         ToolResult.failed("节点已失效（#$ref）。界面刷新过，请重新 phone_snapshot 再点。")
                     } else {
+                        // Clawd 联动：飘到点击处探头看（用户要的「点击时来到点击处摆动作」）
+                        emitClawdAt(com.ccm.app.core.clawd.ClawdAction.Type.TAP, xy[0], xy[1])
                         val ok = svc.tap(xy[0], xy[1])
                         if (ok) {
                             ToolResult.ok(
@@ -349,6 +403,8 @@ class PhoneTools(
             // 模型以为长按成功、实际只是单击（静默失败，比报错更难查）。
             val longPress = input.bool("long_press") == true
             val what = if (longPress) "长按" else "点击"
+            // Clawd 联动：飘到坐标处探头看
+            emitClawdAt(com.ccm.app.core.clawd.ClawdAction.Type.TAP, x, y)
             return try {
                 val ok = if (longPress) svc.longPress(x, y, 600) else svc.tap(x, y)
                 if (ok) {
@@ -396,6 +452,8 @@ class PhoneTools(
             val text = input.str("text") ?: ""
             val target = input.str("ref")?.let { normalizeRef(it) } ?: ""
 
+            // Clawd 联动：输入文字 → 打字动作
+            emitClawdHere(com.ccm.app.core.clawd.ClawdAction.Type.TYPE_TEXT)
             return try {
                 val raw = svc.typeTextAt(text, target)
                 val obj = try {
@@ -479,6 +537,8 @@ class PhoneTools(
             val x2 = input.int("x2"); val y2 = input.int("y2")
             if (x1 != null && y1 != null && x2 != null && y2 != null) {
                 return try {
+                    // Clawd 联动：从起点飘到终点方向（拖拽动作）
+                    emitClawdSwipe(x1, y1, x2 - x1, y2 - y1)
                     val ok = svc.swipe(x1, y1, x2, y2, duration)
                     if (ok) {
                         ToolResult.ok(
@@ -513,6 +573,8 @@ class PhoneTools(
                     else -> return ToolResult.failed("direction 必须是 up/down/left/right")
                 }
                 return try {
+                    // Clawd 联动：滑到起点处拖拽
+                    emitClawdSwipe(fx, fy, tx - fx, ty - fy)
                     val ok = svc.swipe(fx, fy, tx, ty, duration)
                     if (ok) {
                         ToolResult.ok(
@@ -625,6 +687,9 @@ class PhoneTools(
             val svc = service().getOrElse {
                 return ToolResult.Error(it.message ?: "服务不可用", ToolResult.INTERNAL)
             }
+            // Clawd 联动：截图 → 举放大镜观察（最接近「看」的素材动作；
+            // 素材库没有相机动作，见 ClawdAction 的说明）
+            emitClawdHere(com.ccm.app.core.clawd.ClawdAction.Type.SCREENSHOT)
             return try {
                 // 帧缓存可能还没刷新（刚触发建屏/首帧未到）——空帧重试 3 次。
                 // 失败文案要带「已重试」字样（对齐 CLI T:1029），让模型知道已尽力过。
@@ -785,6 +850,10 @@ class PhoneTools(
             }
 
             return try {
+                // Clawd 联动：启动应用 → 施法动作（「变出一个 App」的语义最贴切）
+                if (action == "launch") {
+                    emitClawdHere(com.ccm.app.core.clawd.ClawdAction.Type.LAUNCH_APP)
+                }
                 // labels 只影响 list 的展示（读缓存），AIDL 签名固定三个 String ——
                 // 所以把 labels 标志编进 action 传给服务侧（约定值 list_labels，同文件内）。
                 val serviceAction = if (action == "list" && wantLabels) "list_labels" else action
