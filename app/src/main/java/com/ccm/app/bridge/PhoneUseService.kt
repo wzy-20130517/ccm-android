@@ -616,11 +616,25 @@ class PhoneUseService : IPhoneUseService.Stub {
         }
 
         // 冷启动：am start --display
-        val out = runShell(
+        //
+        // 【2026-10-09 修「unable to resolve Intent」】不能用 `-p <pkg>` 隐式
+        // LAUNCHER intent —— 实测（红米 Note 15 Pro / QQ）解析失败：
+        //   Error: Activity not started, unable to resolve Intent {... pkg=com.tencent.mobileqq}
+        // 而 `cmd package resolve-activity` 能拿到显式组件
+        // （com.tencent.mobileqq/.activity.SplashActivity），`am start -n` 一次成功。
+        // 所以：先 resolve 拿显式组件，拿到了用 -n 启动；拿不到再退回 -p。
+        val resolve = runShell(
+            "cmd package resolve-activity --brief -c android.intent.category.LAUNCHER $pkg 2>/dev/null",
+            10000,
+        ).substringAfter('\n').trim().lines().lastOrNull { it.isNotBlank() } ?: ""
+        val component = resolve.takeIf { it.startsWith(pkg) }   // 形如 pkg/.activity.X
+        val startCmd = if (component != null) {
+            "am start --display $id --user 0 -n $component 2>&1"
+        } else {
             "am start --display $id --user 0 -a android.intent.action.MAIN " +
-                "-c android.intent.category.LAUNCHER -p $pkg 2>&1; echo \"__exit=$?\"",
-            20000,
-        )
+                "-c android.intent.category.LAUNCHER -p $pkg 2>&1"
+        }
+        val out = runShell("$startCmd; echo \"__exit=$?\"", 20000)
         val body = out.substringAfter('\n')
         val exit = Regex("""__exit=(\d+)""").find(body)?.groupValues?.get(1)?.toIntOrNull() ?: -1
         val started = body.contains("Starting: Intent") || body.contains("Status: ok")

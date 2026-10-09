@@ -710,17 +710,25 @@ class PhoneTools(
             return try {
                 var bytes: ByteArray? = null
                 var via = ""
+                var lastErr = ""
                 if (targetIsMain) {
                     // 主屏：screencap -d <displayId=0> 落盘 → base64 读回
                     val tmp = "/data/local/tmp/ccm-shot-${System.currentTimeMillis()}.png"
                     val r1 = svc.runShell("screencap -p $tmp && chmod 644 $tmp", 20_000)
                     val exit = r1.substringBefore("\n---\n", "").trim().toIntOrNull() ?: -1
-                    if (exit == 0) {
+                    if (exit != 0) {
+                        // 【2026-10-09 修「误以为息屏」】失败要报真实原因，
+                        // 不能 fall through 到笼统的「屏幕已关闭」——
+                        // Agent 会信以为真去 WAKEUP、去折腾副屏（实测路径）。
+                        lastErr = "screencap 退出码 $exit：${r1.substringAfter("\n---\n", "").trim().take(200)}"
+                    } else {
                         val b64 = svc.runShell("base64 -w0 $tmp && rm -f $tmp", 30_000)
                         val payload = b64.substringAfter("\n---\n", "").trim()
                         if (payload.isNotEmpty()) {
                             bytes = android.util.Base64.decode(payload, android.util.Base64.DEFAULT)
                             via = "主屏 screencap"
+                        } else {
+                            lastErr = "screencap 成功但 base64 读回为空"
                         }
                     }
                 } else {
@@ -734,7 +742,17 @@ class PhoneTools(
                     via = "副屏帧缓存"
                 }
                 if (bytes == null || bytes.isEmpty()) {
-                    return ToolResult.failed(SCREEN_OFF_HINT)
+                    // 【2026-10-09】主屏失败报具体错误；只有副屏路径才提息屏
+                    //（副屏帧缓存空在亮屏时也会发生——首帧未到，笼统报息屏同样误导）。
+                    return ToolResult.failed(
+                        if (targetIsMain) {
+                            "主屏截图失败：$lastErr"
+                        } else {
+                            "副屏帧缓存为空（重试 3 次）—— 可能是副屏刚建首帧未到，" +
+                                "或屏幕息屏中（息屏时系统不给虚拟屏合成画面）。" +
+                                "可 phone_vd restart 后再试。"
+                        },
+                    )
                 }
                 val frame = bytes
                 val ext = if (targetIsMain) "png" else "jpg"
