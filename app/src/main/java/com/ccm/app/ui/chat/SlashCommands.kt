@@ -61,11 +61,11 @@ val COMMON_SLASH_COMMANDS: List<Pair<String, String>> = listOf(
     "/check" to "环境自检",
     // ── 配置 ──
     "/model" to "选择模型",
-    "/style" to "输出风格（已并入设置页回复偏好）",
+    "/style" to "回复偏好（/style <自由文本>；与 /me 同字段）",
     "/effort" to "思考强度（/effort high）",
     "/temperature" to "采样温度（/temperature 0.7）",
     "/greeting" to "开场白开关（/greeting on|off）",
-    "/me" to "用户资料（/me set 字段 值）",
+    "/me" to "用户资料（称呼/职业/偏好；偏好与 /style 同字段）",
     "/markdown" to "markdown 样式说明",
     "/voice" to "正文朗读（/voice on|off）",
     "/plan" to "计划模式（/plan on|off）",

@@ -69,8 +69,8 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
 
     // 【2026-10-08 合并】原「输出风格」下拉已撤 —— 它与「回复偏好」是同一件事
     // （都回答「希望 AI 怎么回复我」），重复造轮子。设置页只留回复偏好文本框。
-    // config.outputStyle 字段保留（与 CLI /style、Web 互通不断），只是 APK
-    // 不再单独暴露 UI；CLI 侧设过的风格仍会经 assembleSystemPrompt 生效。
+    // config.outputStyle 字段保留（老配置不报错、与旧版互通），但已不再读取 ——
+    // assembleSystemPrompt 现在读 profile.personalPreferences（2026-10-09 对齐 CLI）。
     // 下列三项都落 UiPrefs（SharedPreferences）—— 重启保留，
     // 且各有消费端：sendKey → InputBar 的 imeAction；theme → CcmApp 的 darkTheme
     var sendKey by remember { mutableStateOf(com.ccm.app.ui.theme.UiPrefs.sendKey.value) }

@@ -536,17 +536,21 @@ class AppContainer private constructor(
                     sb.append(toc)
                 } catch (_: Throwable) {}
             }
-            // 输出风格（与 CLI/Web 的 outputStyle 同字段互通）
+            // 回复偏好（原「输出风格」，2026-10-08 与 CLI 同批合并）
             //
             // ⚠️ **替换而非追加**（CLI 的教训，见 prompts.mjs 的 outputStyleSection）：
-            // 模板里 {{OUTPUT_STYLE}} 的位置就是风格段的位置。设了风格就整段
-            // 换掉 —— 若改成 append，默认段「直接、简洁」和用户选的「详细讲解」
+            // 模板里 {{OUTPUT_STYLE}} 的位置就是偏好段的位置。设了就整段
+            // 换掉 —— 若改成 append，默认段「直接、简洁」和用户写的「详细讲解」
             // 会同时留在提示词里打架，模型无所适从。
+            //
+            // 【2026-10-09 对齐 CLI 合并】原来读 config.outputStyle（下拉预设），
+            // 但 CLI 已把它并入 profile.personal_preferences（回复偏好）——
+            // 两者本就回答同一个问题「希望 AI 怎么回复我」。
+            // 现在同源：优先读回复偏好，没填才用默认段。
+            // config.outputStyle 字段保留（老配置不报错、与旧版互通），只是不再读。
             try {
-                val styleId = com.ccm.app.core.provider.AppConfig
-                    .load(storage.configFile).config.outputStyle
-                val styleText = com.ccm.app.core.output.OutputStyles.promptFor(styleId)
-                    ?: DEFAULT_OUTPUT_STYLE
+                val pref = prof.personalPreferences.trim()
+                val styleText = pref.ifEmpty { DEFAULT_OUTPUT_STYLE }
                 sb.replace(0, sb.length, sb.toString().replace("{{OUTPUT_STYLE}}", styleText))
             } catch (_: Throwable) {
                 sb.replace(0, sb.length, sb.toString().replace("{{OUTPUT_STYLE}}", DEFAULT_OUTPUT_STYLE))
