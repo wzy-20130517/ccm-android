@@ -157,6 +157,19 @@ class PhoneUseService : IPhoneUseService.Stub {
     }
 
     /**
+     * display id → 中文屏名（给模型的输出里用）。
+     *
+     * 【2026-10-09 加】模型看不到物理屏幕，只能靠文字判断操作的是哪块屏。
+     * 输出里带「主屏/副屏」字样，每次操作都在纠正它的认知
+     * （原来只报裸 id，模型把 0 也当副屏 —— 实测把它带偏去搬 App）。
+     */
+    private fun screenNameOf(id: Int): String = when {
+        id == 0 -> "主屏"
+        id > 0 -> "副屏"
+        else -> "副屏（未建）"
+    }
+
+    /**
      * 目标屏的尺寸（宽, 高）。
      *
      * 主屏模式从 WindowManager 现取（用户可能改过显示设置/旋转）；
@@ -837,7 +850,7 @@ class PhoneUseService : IPhoneUseService.Stub {
      */
     private fun collectTreeFlat(interactiveOnly: Boolean, maxNodes: Int, noSystemUi: Boolean): String {
         val id = targetDisplayId()
-        if (id < 0) return "错误：副屏未就绪（display_id=$id；后台模式需要虚拟屏，或切前台模式）"
+        if (id < 0) return "错误：目标屏未就绪（display_id=$id；后台模式需要虚拟屏，或切前台模式）"
 
         var windows: List<*>? = null
         // ⚠️ 不能用 repeat(3) { ... return@repeat }：那是 continue 不是 break，
@@ -852,9 +865,9 @@ class PhoneUseService : IPhoneUseService.Stub {
             append("错误：拿不到窗口列表（display_id=$id）")
             append("\n原因：")
             append(lastWindowError ?: lastUiError ?: "UiAutomation 可能没连上")
-            append("\n排查：1) Shizuku 是否在运行 2) CCM 是否已授权 3) 副屏是否就绪")
+            append("\n排查：1) Shizuku 是否在运行 2) CCM 是否已授权 3) 后台模式下副屏是否就绪")
         }
-        if (ws.isEmpty()) return "display=$id 副屏上没有窗口（应用还没起来）"
+        if (ws.isEmpty()) return "display=$id ${screenNameOf(id)}上没有窗口（应用还没起来）"
 
         val rows = ArrayList<NodeRow>()
         var idSeq = 0
@@ -872,7 +885,7 @@ class PhoneUseService : IPhoneUseService.Stub {
             idSeq = walkCollect(root, rows, idSeq, 0, interactiveOnly)
         }
 
-        if (rows.isEmpty()) return "display=$id 副屏上暂时没有可交互元素"
+        if (rows.isEmpty()) return "display=$id ${screenNameOf(id)}上暂时没有可交互元素"
 
         // 排序：可点的排前面（模型从上往下读，先看到能用的）
         // 排序仿 agent-mobile-use 的 priorityOf + Ranked：
@@ -900,7 +913,12 @@ class PhoneUseService : IPhoneUseService.Stub {
         for (r in capped) if (r.clickable || r.editable) actSent++
 
         val sb = StringBuilder()
-        sb.append("# display=").append(id).append(" ").append(dispW).append('x').append(dispH)
+        // 【2026-10-09 修「Agent 永远认为该用副屏」】首行标注屏名 ——
+        // 原来只有 `display=171` 这种裸 id，Agent 看到 0 也以为是副屏
+        // （它的先验认知里 phone 工具=副屏），据此判断"该去副屏"。
+        // 现在直接写「主屏」「副屏」，snapshot 每次都在纠正它的认知。
+        sb.append("# display=").append(id).append("（").append(screenNameOf(id)).append("） ")
+            .append(dispW).append('x').append(dispH)
         if (!frontPkg.isNullOrBlank()) sb.append(" pkg=").append(frontPkg)
         sb.append(" count=").append(capped.size)
         if (total > capped.size) {

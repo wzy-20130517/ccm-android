@@ -79,6 +79,33 @@ class PhoneTools(
          */
         @Volatile
         var recentShotScale: Pair<Float, Float>? = null
+
+        /**
+         * 界面操作命令的正则（phone_shell 用）。
+         *
+         * 【2026-10-09 加】手写 am start / input tap 会绕过模式的目标屏，
+         * 检测到就附加提示（**不拦截**：诊断场景仍可能合法使用）。
+         */
+        private val UI_OP_CMD_RE = Regex(
+            """(?:^|[\s;&|])(?:am\s+start|am\s+force-stop|monkey|input\s+(?:tap|swipe|text|keyevent|roll)|screencap|cmd\s+activity\s+display\s+move-stack)\b""",
+        )
+
+        /**
+         * phone_shell 结果尾部的界面操作提示（无命中返回空串）。
+         *
+         * 为什么不拦截：命令是不是「界面操作」光看字符串不完全可靠
+         * （比如 am start 也可能出现在引号内的诊断命令里），误拦会挡住
+         * 合法诊断；提示是零风险的。
+         */
+        internal fun uiOpHint(cmd: String): String =
+            if (UI_OP_CMD_RE.containsMatchIn(cmd)) {
+                "\n\n⚠️ 检测到界面操作命令 —— 点击/输入/滑动/启动 App 请优先用专用工具" +
+                    "（phone_app / phone_click / phone_type / phone_screenshot），" +
+                    "它们遵循当前模式的目标屏（前台=主屏 / 后台=副屏），不会搞错屏。" +
+                    "phone_shell 建议只用于诊断（pm list / run-as / settings / dumpsys / pkill）。"
+            } else {
+                ""
+            }
     }
 
     /**
@@ -115,9 +142,14 @@ class PhoneTools(
                     ),
                 )
             // 把模式同步给 Service（失败不影响——Service 默认副屏）
-            try {
-                svc.setTargetDisplay(PhoneMode.targetDisplayArg(PhoneMode.sessionMode))
-            } catch (_: Throwable) {}
+            // 【2026-10-09 修「Agent 永远认为该用副屏」】skipGate（phone_shell）不同步 ——
+            // 它不操作界面，而调用时 sessionMode 可能还是 null（未定），
+            // targetDisplayArg(null) = -1（副屏）会把服务侧目标屏污染成副屏。
+            if (!skipGate) {
+                try {
+                    svc.setTargetDisplay(PhoneMode.targetDisplayArg(PhoneMode.sessionMode))
+                } catch (_: Throwable) {}
+            }
             Result.success(svc)
         }
 
@@ -997,11 +1029,14 @@ class PhoneTools(
     inner class PhoneShellTool : Tool() {
         override val name = "phone_shell"
         override val description =
-            "在 Android 系统里跑任意 shell 命令（uid=2000 shell，可 am/pm/dumpsys/input/screencap/run-as）。" +
-                "与 Bash 的分工：Bash 跑在 Termux/proot 里（读写文件），本工具跑在 Android 里（操作手机）。" +
-                "典型用途：pkill 重启进程、am start 指定屏启动、pm list packages 找包名、" +
+            "在 Android 系统里跑任意 shell 命令（uid=2000 shell）。" +
+                "**这是诊断通道，不是界面操作通道** —— 点击/输入/滑动/启动 App 等界面操作" +
+                "一律用专用工具（phone_click / phone_type / phone_app / phone_screenshot），" +
+                "它们遵循当前模式的目标屏（前台=主屏 / 后台=副屏），不会搞错屏；" +
+                "不要在这里手写 am start / input tap 这类命令。" +
+                "典型用途：pkill 重启进程、pm list packages 找包名、" +
                 "run-as 读应用私有文件、settings/dumpsys 诊断。" +
-                "通道卡住、副屏没起来、要找包名/读日志时先想到它。"
+                "通道卡住、副屏没起来、要找包名/读日志时用它。"
         override val isReadOnly = false
         override val isDestructive = true
         override val isConcurrencySafe = false
@@ -1028,6 +1063,8 @@ class PhoneTools(
             }
             val cmd = input.str("command")!!
             val timeout = (input.int("timeout") ?: 30_000).coerceIn(1_000, 120_000)
+            // 【2026-10-09】界面操作命令检测 —— 命中则在结果尾部附加提示（不拦截）
+            val hint = uiOpHint(cmd)
 
             return try {
                 val out = svc.runShell(cmd, timeout)
@@ -1037,10 +1074,10 @@ class PhoneTools(
                     // 否则模型分不清「命令没输出」和「工具坏了」。
                     // 服务侧 runShell 用 redirectErrorStream 合并了 stderr，
                     // 没有独立 [stderr] 可分流 —— 至少把命令回显出来。
-                    if (stdout.isEmpty()) ToolResult.ok("（命令已执行，无输出）\n\$ $cmd")
-                    else ToolResult.ok(stdout)
+                    if (stdout.isEmpty()) ToolResult.ok("（命令已执行，无输出）\n\$ $cmd$hint")
+                    else ToolResult.ok(stdout + hint)
                 } else {
-                    ToolResult.failed("exit=$code\n$stdout\n命令：$cmd")
+                    ToolResult.failed("exit=$code\n$stdout\n命令：$cmd$hint")
                 }
             } catch (e: Throwable) {
                 ToolResult.Error("执行失败：${e.message}\n命令：$cmd", ToolResult.INTERNAL)
@@ -1176,14 +1213,35 @@ class PhoneTools(
                 // 【2026-10-09 加】当前模式/目标屏 —— 原来只报副屏状态，
                 // Agent 看不到「现在操作的是哪块屏」，前台模式下被其他工具
                 // 的「副屏」字样误导后无从纠正（实测踩过）。
-                val mode = PhoneMode.sessionMode
-                val targetId = try { svc.targetDisplayId() } catch (_: Throwable) { -1 }
-                sb.append("当前模式: ${PhoneMode.label(mode)}\n")
-                sb.append("操作目标屏: ").append(
+                //
+                // 【2026-10-09 再修「Agent 永远认为该用副屏」】上面那版有两个洞：
+                //   · sessionMode 是内存值，进程重启后为 null → 明明设了偏好却报「未选」
+                //   · 裸读 svc.targetDisplayId() —— 服务侧默认 -1（副屏），从未操作过
+                //     手机时它永远报「副屏」，把 Agent 带偏（真机会话实证：
+                //     Agent 据此把 QQ 搬去副屏）。
+                // 修法（对齐 CLI tools-phone.mjs:1708-1721）：
+                //   · 模式：sessionMode 为空时回退读偏好，并标注来源
+                //   · 目标屏：**按模式推算**，不裸读服务侧残留值
+                val sessionMode = PhoneMode.sessionMode
+                val pref = PhoneMode.preference(context)
+                val effectiveMode = sessionMode
+                    ?: pref?.takeIf { it == PhoneMode.FOREGROUND || it == PhoneMode.BACKGROUND }
+                sb.append("当前模式: ").append(
                     when {
-                        targetId == 0 -> "主屏（display 0）"
-                        targetId > 0 -> "副屏（display $targetId）"
-                        else -> "副屏（未建；后台模式需要虚拟屏）"
+                        sessionMode != null -> PhoneMode.label(sessionMode)
+                        pref == PhoneMode.ASK -> "每次询问（下次调用手机工具时弹框）"
+                        effectiveMode != null -> "${PhoneMode.label(effectiveMode)}（偏好，下次调用生效）"
+                        else -> "未定（首次用手机工具时会弹框询问）"
+                    }
+                ).append("\n")
+                sb.append("操作目标屏: ").append(
+                    when (effectiveMode) {
+                        PhoneMode.FOREGROUND -> "主屏（display 0）"
+                        PhoneMode.BACKGROUND -> {
+                            val vdId = try { svc.displayId() } catch (_: Throwable) { -1 }
+                            if (vdId > 0) "副屏（display $vdId）" else "副屏（未建；后台模式需要虚拟屏）"
+                        }
+                        else -> "未定"
                     }
                 ).append("\n")
 
@@ -1273,11 +1331,11 @@ class PhoneTools(
         override val name = "phone_handoff"
         override val description =
             "跨屏接力：把某个屏上正在运行的 App **整体搬到**另一个屏（状态完整保留）。\n" +
-                "【典型场景】用户在主屏开着某个 App，你要操作它但不想占他屏幕 —— " +
+                "【典型场景】后台模式（操作副屏）时，用户主屏开着某个 App，你要操作它但不想占他屏幕 —— " +
                 "先 phone_handoff 把它迁到副屏，再在副屏操作。\n" +
                 "【与 phone_app 的区别】phone_app 是「在新屏重新启动」（会重走启动流程、可能丢状态）；" +
                 "phone_handoff 是「把正在跑的 task 整体搬过去」（状态完整保留）。\n" +
-                "【参数】省略 from/to 时：from 默认主屏(0)，to 默认副屏。"
+                "【参数】省略 from/to 时：from 默认主屏(0)，to 默认跟随当前模式（前台=主屏 / 后台=副屏）。"
         override val isReadOnly = false
         override val isDestructive = false
         override val isConcurrencySafe = false
@@ -1285,7 +1343,7 @@ class PhoneTools(
 
         override val inputSchema: JsonObject = ToolSchema.objectSchema(
             "from" to ToolSchema.integer("源屏 display id（默认 0 = 主屏）", minimum = 0),
-            "to" to ToolSchema.integer("目标屏 display id（默认 = 副屏）", minimum = 0),
+            "to" to ToolSchema.integer("目标屏 display id（默认跟随当前模式：前台=主屏 / 后台=副屏）", minimum = 0),
             "package" to ToolSchema.string("可选：指定搬哪个包（该屏有多个 task 时用）"),
         )
 
@@ -1302,26 +1360,47 @@ class PhoneTools(
                 return ToolResult.invalidInput("包名格式非法：$wantPkg")
             }
 
-            // ── 目标屏：默认副屏（从服务拿 displayId）────────────────
+            // ── 目标屏默认值：跟随当前模式 ────────────────────────────
+            // 【2026-10-09 修「Agent 永远认为该用副屏」】原来无脑默认副屏 ——
+            // 前台模式下 Agent 调 handoff 也会把 App 往副屏搬（真机会话实证：
+            // 用户设的主屏，Agent 还是 phone_handoff to:171 把 QQ 搬去了副屏）。
+            // 现在：前台模式 → 目标屏 = 主屏 0（与默认 from=0 相同 →
+            // 走下方「无需接力」分支并给出明确解释）；后台/未定 → 副屏（原行为）。
             var to = input.int("to")
             if (to == null) {
-                val displayId = try {
-                    // status() 返回 JSON：{running, display_id, ...}
-                    val raw = svc.status()
-                    JSONObject(raw).optInt("display_id", -1)
-                } catch (_: Throwable) {
-                    -1
+                val sessionMode = PhoneMode.sessionMode
+                val pref = PhoneMode.preference(context)
+                val effectiveMode = sessionMode
+                    ?: pref?.takeIf { it == PhoneMode.FOREGROUND || it == PhoneMode.BACKGROUND }
+                if (effectiveMode == PhoneMode.FOREGROUND) {
+                    to = 0
+                } else {
+                    val displayId = try {
+                        // status() 返回 JSON：{running, display_id, ...}
+                        val raw = svc.status()
+                        JSONObject(raw).optInt("display_id", -1)
+                    } catch (_: Throwable) {
+                        -1
+                    }
+                    if (displayId < 0) {
+                        return ToolResult.failed(
+                            "副屏未运行，无法接力。先用 phone_vd start 启动副屏，或显式传 to 参数。",
+                        )
+                    }
+                    to = displayId
                 }
-                if (displayId < 0) {
-                    return ToolResult.failed(
-                        "副屏未运行，无法接力。先用 phone_vd start 启动副屏，或显式传 to 参数。",
-                    )
-                }
-                to = displayId
             }
 
             if (from == to) {
-                return ToolResult.ok("源屏和目标屏相同（$from），无需接力。")
+                // 前台模式下 from/to 都是 0 —— 给出「不需要搬运」的明确解释
+                val fg = (PhoneMode.sessionMode ?: PhoneMode.preference(context)) == PhoneMode.FOREGROUND
+                return ToolResult.ok(
+                    "源屏和目标屏相同（$from），无需接力。" +
+                        if (fg) {
+                            "\n当前是前台模式（操作主屏）—— 直接在主屏上用 phone_snapshot / phone_click " +
+                                "操作即可，不需要搬运。确实要搬到副屏请显式传 to。"
+                        } else "",
+                )
             }
 
             return try {

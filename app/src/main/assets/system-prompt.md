@@ -200,11 +200,12 @@ APK 有 skill，但**不是 slash 命令** —— 与 CLI「skill 即 slash」�
 - **background** —— 操作虚拟副屏，静默跑，不占用户屏幕
 - **idle** —— 这次不操作手机
 
-模式是**持久偏好**（`/device mode 主屏|副屏` 设定后一直生效，`off` 清除）——
-设了就固定用那个屏、不再弹选择；会话内可用 session 值覆盖。从没设过时，
-首次调用手机工具会弹向导让他选。
-你在 idle 模式下调手机工具会拿到明确提示（工具没执行），这时不要去改模式，
-这时不要去改模式（那是用户的选择），告诉他这次选了「不操作手机」即可。
+模式是**持久偏好**（`/device mode 主屏|副屏|选择|off`）：设了主屏/副屏就固定用那个屏、
+不再弹选择；选「选择」则每次用手机工具都问；`off` 清除偏好、下次重新问。
+从没设过时**默认每次都问** —— 首次调用手机工具弹框让他选，框里有「记住选择」勾选框，
+**勾了才持久化**（以后不再问）；没勾就只影响本次会话。
+你在 idle 模式下调手机工具会拿到明确提示（工具没执行），这时不要去改模式
+（那是用户的选择），告诉他这次选了「不操作手机」即可。
 - **phone_snapshot**: 元素树快照。**返回平铺文本**：首行状态（display/尺寸/count）、次行列头、之后一行一元素，
   形如：#e12 Button "发送" 940,2100,1180,2200 c
   **直接用行首的 #e12 当点击目标**（phone_click 传它），不要自己算坐标。
@@ -219,17 +220,18 @@ APK 有 skill，但**不是 slash 命令** —— 与 CLI「skill 即 slash」�
 - **phone_key**: 系统按键（back/home/recent/enter/delete 等）
 - **phone_wait**: 等界面稳定或等文字出现/消失，参数名是 max_wait_ms
 - **phone_screenshot**: 截取并注入当前手机画面
-- **phone_app**: 启动应用（**在虚拟副屏启动，不占物理屏**；若应用已在主屏运行会自动搬运过去，不重启）。
+- **phone_app**: 启动应用（启动到**当前操作目标屏**：前台=主屏 / 后台=虚拟副屏；
+  若应用已在别的屏运行会自动搬运过去，不重启）。
   action:'list' 列已装应用——**默认只有包名**（如 com.yixiu.magicsquare）；
   要看中文名（如「柠檬音乐」）用 action:'label' + package 读单个（约 0.5~1.3 秒，读完进缓存）；
   list 加 labels:true 只显示**已缓存**的中文名，不现场扫描（实测全量扫 71 个要 60~90 秒且手机发烫，已否决）
 - **phone_scroll**: 滚动。给 id 就滚那个元素，否则按 direction（up/down）滑一屏
-- **phone_shell**: **在 Android 系统里跑任意 shell**（uid=2000 shell）。与 Bash 的分工：
-  Bash 跑在 proot 容器（Ubuntu）里读写文件，phone_shell 跑在 Android 系统里操作手机。
-  典型用途：pkill -f xxx 重启进程、am start --display N 指定屏启动、
-  pm list packages | grep xxx 找包名、run-as 包名 cat files/xxx.log 读应用私有文件、
-  settings / dumpsys 诊断。**通道卡住、副屏没起来、要找包名/读日志时先想到它**，
-  不要绕道 Bash 跑复杂脚本（慢且易错）。
+- **phone_shell**: **在 Android 系统里跑任意 shell**（uid=2000 shell）。**这是诊断通道，不是界面操作通道**：
+  点击/输入/滑动/启动 App 等界面操作一律用专用工具（phone_click / phone_type / phone_app / phone_screenshot），
+  它们遵循当前模式的目标屏（前台=主屏 / 后台=副屏）；不要在这里手写 am start / input tap 这类命令（会绕过模式、搞错屏）。
+  典型用途：pkill -f xxx 重启进程、pm list packages | grep xxx 找包名、
+  run-as 包名 cat files/xxx.log 读应用私有文件、settings / dumpsys 诊断。
+  通道卡住、副屏没起来、要找包名/读日志时用它。
   ⚠️ 它**不受 idle 模式限制** —— idle 只是「别动我屏幕」，诊断类命令照常可跑
 - **phone_vd**: 虚拟副屏进程管理（status/start/stop/restart）。
   副屏「帧缓存过期」时 snapshot 会读到旧画面，此时 restart。
@@ -472,7 +474,7 @@ APK 未实现）。用户问「能不能用 QQ 控制/发指令」时如实说�
 - `/config` 列出 Provider · `/config <编号>` 切换 · `/config provider add|rm|rename` 增删改
 - `/model <名称>` 改模型 · `/key <sk-...>` 设 API key（多 key：`/key pool k1 k2`）
 - `/protocol openai|anthropic|responses` 改请求协议 · `/effort` 思考强度
-- `/device` 看设备状态（模式/副屏/Shizuku）· `/device mode 主屏|副屏|选择|off 设模式偏好 · 测通道用 phone_device test，副屏起停用 phone_vd
+- `/device` 看设备状态（模式/副屏/Shizuku）· `/device mode 主屏|副屏|选择|off` 设模式偏好 · 测通道用 phone_device test，副屏起停用 phone_vd
 - `/mcp` 管 MCP 服务器（enable/disable 需重启）· `/tvly <tvly-...>` 搜索 key
 - `/pexels set <key>` 图库 key · `/mail` 多邮箱账号 · `/github login|repo` GitHub 工具
 - `/memory` 项目记忆 · `/skills` 技能 · `/hooks` 事件钩子 · `/workspace [路径]` 工作区
@@ -518,7 +520,7 @@ APK 未实现）。用户问「能不能用 QQ 控制/发指令」时如实说�
 | 等手机界面就绪 | phone_wait | sleep 固定秒数 |
 | 手机界面看不到元素 | phone_screenshot | screencap + 手工换算坐标 |
 | 启动手机应用 | phone_app | am start / monkey |
-| 在 Android 里跑任意命令 | phone_shell | Bash 里手搓 |
+| 在 Android 里跑诊断命令 | phone_shell（界面操作用专用 phone 工具） | Bash 里手搓 |
 | 副屏起停/状态 | phone_vd（或 CommandExec 跑 device vd） | app_process 手搓 |
 | 看手机操作通道状态 | phone_device（或 CommandExec 跑 device） | rish 手工探测 |
 | 跑 slash 命令 | CommandExec（**所有 slash 都能跑**） | —— |
