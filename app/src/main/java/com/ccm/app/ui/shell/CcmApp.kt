@@ -807,10 +807,17 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
     // → 这里弹框 → 用户选 → AppGraph.answerPhoneMode(mode)。
     //
     // 三种选项语义（CLI tools-phone.mjs:55）：
-    //   前台 —— 操作主屏，用户看得见；记偏好，以后不再问
-    //   后台 —— 虚拟副屏，静默；记偏好，以后不再问
-    //   这次不操作 —— idle，**不记偏好**（一次性的「别动」）
+    //   前台 —— 操作主屏，用户看得见
+    //   后台 —— 虚拟副屏，静默
+    //   这次不操作 —— idle（一次性的「别动」）
+    //
+    // 【2026-10-09】默认每次都问；勾「记住选择」才持久化（见下方勾选框）。
     if (com.ccm.app.AppGraph.pendingPhoneMode.value) {
+        // 【2026-10-09 加勾选框】默认每次都问；勾了「记住选择」才不再问。
+        // 原来的行为是「选了前台/后台就永久记住」—— 那是错的（用户
+        // 这次想用主屏不代表永远不再需要选择）。
+        // 变量名不能用 `remember`（遮蔽 Compose 的 remember 函数，有编译风险）
+        var rememberChoice by remember { androidx.compose.runtime.mutableStateOf(false) }
         androidx.compose.ui.window.Dialog(
             onDismissRequest = { com.ccm.app.AppGraph.answerPhoneMode(null) },
         ) {
@@ -830,20 +837,22 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     color = colors.textMain,
                 )
                 Text(
-                    "Agent 要用手机工具，选择这次怎么操作（选前两项会记住，以后不再问）",
+                    "Agent 要用手机工具，选择这次怎么操作",
                     style = CCMText.body12,
                     color = colors.textSecondary,
                 )
                 listOf(
                     Triple("foreground", "前台", "操作主屏 —— 你能看到它在点什么"),
                     Triple("background", "后台", "虚拟副屏 —— 静默运行，不占你屏幕"),
-                    Triple("idle", "这次不操作", "仅本次会话有效，下次还会问"),
+                    Triple("idle", "这次不操作", "仅本次会话有效"),
                 ).forEach { (value, title, desc) ->
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(7.36.dp))
-                            .clickable { com.ccm.app.AppGraph.answerPhoneMode(value) }
+                            .clickable {
+                                com.ccm.app.AppGraph.answerPhoneMode(value, rememberChoice)
+                            }
                             .background(colors.input)
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                     ) {
@@ -858,6 +867,26 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                             color = colors.textSecondary,
                         )
                     }
+                }
+                // 「记住选择」勾选框 —— 默认不勾（每次问）
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(7.36.dp))
+                        .clickable { rememberChoice = !rememberChoice }
+                        .padding(horizontal = 4.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    androidx.compose.material3.Checkbox(
+                        checked = rememberChoice,
+                        onCheckedChange = { rememberChoice = it },
+                    )
+                    Text(
+                        "记住这个选择（以后不再问）",
+                        style = CCMText.body12,
+                        color = colors.textSecondary,
+                    )
                 }
             }
         }

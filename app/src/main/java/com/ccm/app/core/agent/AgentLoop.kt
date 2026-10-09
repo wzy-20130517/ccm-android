@@ -1459,7 +1459,18 @@ class AgentLoop(
         }
 
         if (blocks.isNotEmpty()) {
-            messages += Message(Message.ROLE_USER, blocks)
+            // 【2026-10-09 修「空白用户气泡」】这条消息是**拼给模型看的元信息**
+            //（图片 + 缩放提示/不支持提示），不是用户说的话 —— 必须标 hidden。
+            //
+            // 不标的后果（用户报「重启 APP 后老有空白用户气泡」的根因）：
+            //   重启 → loadHistory 看到 role=user、text 非空（notice 文本）
+            //   → 生成用户气泡 → UI 渲染时剥掉 <image_resize_notice> 标签
+            //   → 文本空、图片路径也恢复不出来 → 一个纯空白气泡。
+            // 每次截图/vision 工具调用都注入一条，所以「老有」。
+            //
+            // hidden 只影响 loadHistory 的气泡生成，**不影响 API 请求** ——
+            // buildApiMessages 不跳过 hidden 消息，模型照样看得到图和提示。
+            messages += Message(Message.ROLE_USER, blocks, hidden = true)
         }
     }
 

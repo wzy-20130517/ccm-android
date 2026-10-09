@@ -786,8 +786,22 @@ class ChatSession(
                         toolCards = cards,
                     )
                 }
-                Message.ROLE_USER -> message.text.takeIf { it.isNotBlank() }?.let {
-                    Bubble(role = Message.ROLE_USER, text = it, messageId = "history-${message.timestamp}")
+                Message.ROLE_USER -> {
+                    // 【2026-10-09 修「重启 APP 后老有空白用户气泡」】
+                    //
+                    // 判据必须与渲染一致 —— 渲染侧（MessageBubble）会把
+                    // <image_resize_notice> 这类元信息标签剥掉再显示。
+                    // 原来这里只看 `text.isNotBlank()`：vision 旁路注入的
+                    // 「图片 + 缩放提示」消息（role=user）文本非空 → 生成气泡
+                    // → 渲染时剥空 → 空白气泡。每次截图注入一条，所以「老有」。
+                    //
+                    // 现在用 stripMetaTags 剥完再判 —— 剥完还有内容才生成气泡。
+                    // 另外：这类消息带 Image 块但没有本地路径（历史里不存），
+                    // 恢复不出缩略图，所以图片本身不还原（与 Bubble.images 注释一致）。
+                    val visible = com.ccm.app.core.session.stripMetaTags(message.text)
+                    visible.takeIf { it.isNotBlank() }?.let {
+                        Bubble(role = Message.ROLE_USER, text = it, messageId = "history-${message.timestamp}")
+                    }
                 }
                 else -> null
             }
@@ -1043,6 +1057,14 @@ class ChatSession(
                     is AgentEvent.TextDelta -> {
                         // 新 messageId 代表模型新一次响应（工具往返或重试）。
                         // 工具往返是同一轮，前面的正文必须并入累计，不能丢。
+                        //
+                        // 【2026-10-09 核对】TurnEnd 分支做了：
+                        //   accumulatedText += streaming; streaming = "";
+                        //   state.streaming = accumulatedText
+                        // 之后 streaming 局部变量是**空串**（不是 accumulatedText）。
+                        // 所以这里 `accumulatedText += streaming` 加的是空串 —— 无害。
+                        // 真正要防的是**新 messageId 到来时 streaming 里有未并入内容**
+                        //（上一轮 API 输出到一半就被新响应顶替的罕见情况）。
                         if (ev.messageId != currentMessageId) {
                             currentMessageId = ev.messageId
                             accumulatedText += streaming

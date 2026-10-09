@@ -235,10 +235,31 @@ fun ChatScreenConnected(
     var wasRunning by remember { mutableStateOf(false) }
 
     // ── 流式内容变化 → 记账 ──────────────────────────────────────────
+    //
+    // 【2026-10-09 修「正文被吃掉」】用户报：
+    //   「Agent 中途说了正文，最开始会显示到正文区，但短暂过后就被吃了，
+    //     重启 APP 后才能看到。」
+    //
+    // 机制：StreamingMarkdown.feed() 在「全文被替换」（长度变短，或不是
+    // 旧全文的前缀扩展）时会**内部 reset()** —— stable 清空 → 这里拿到的
+    // r.stable 是空串 → 正文区瞬间空白。
+    //
+    // 什么情况会替换全文：
+    //   · 工具往返：TurnEnd 后 core 层把 streaming 换成「累计全文」，
+    //     紧接着新一轮 TextDelta 又追加 → 期间文本序列不单调
+    //   · 重试/切会话：全文被整体换掉
+    //
+    // 修法：**reset 不等于「内容消失了」** —— 它只是「记账下标要重来」。
+    // 旧内容仍然有效（只是暂时还没被新下标重新吃掉）。
+    // 所以 reset 发生时保留上一次的 stableStreaming，别让正文区闪空。
+    // 等 feed 重新累积出内容后自然覆盖。
     LaunchedEffect(uiState.streaming) {
         if (uiState.streaming.isNotBlank()) {
             val r = md.feed(uiState.streaming)
-            stableStreaming = r.stable
+            // r.stable 为空 = 刚 reset 还没重新累积 → 保留旧值（不闪空）
+            if (r.stable.isNotEmpty() || stableStreaming.isEmpty()) {
+                stableStreaming = r.stable
+            }
         }
     }
 
@@ -259,10 +280,32 @@ fun ChatScreenConnected(
             // 注意：气泡定型发生在 core 层的 `TurnEnd`，此后 `streaming` 被清空、
             // 内容进了 `bubbles`。所以 flush 的结果通常「已没必要渲染」，
             // 但**仍然必须调用** —— 它同时负责重置内部状态供下一轮使用。
-            // 这里不把结果写回 stableStreaming，否则会与 bubbles 重复显示。
-            md.flush()
+            //
+            // 【2026-10-09 修「正文被吃掉」】原来无条件 `stableStreaming = ""`。
+            // 如果本轮内容**没有**进 bubbles（core 层 Done 分支的定型条件
+            // 没满足，或收尾路径异常），这一清就让正文彻底消失 ——
+            // 用户看到「说了一半的话不见了」，重启 App 从历史恢复才又能看到
+            //（历史里其实有，只是 UI 状态被清了）。
+            //
+            // 现在：只有内容确实已经定型成气泡时才清 —— 判据是「最后一条
+            // 助手气泡的文本里包含我们流式渲染过的内容」（用尾部若干字符
+            // 比对，避免全量比较的开销）。没进气泡就保留，等下一轮开始
+            // （!wasRunning && nowRunning 分支）再清。
+            //
+            // 保留时用 flush() 的返回值（不是旧 stableStreaming）—— flush
+            // 会把 pending（未完成的行）和 tail 也并入，内容比之前更完整，
+            // 不能丢。
+            val lastAssistant = uiState.bubbles.lastOrNull { !it.isUser }?.text.orEmpty()
+            val streamedTail = stableStreaming.takeLast(24).trim()
+            val alreadyBubbled = streamedTail.isEmpty() ||
+                lastAssistant.contains(streamedTail)
+            val flushed = md.flush()
             md.reset()
-            stableStreaming = ""
+            if (alreadyBubbled) {
+                stableStreaming = ""
+            } else {
+                stableStreaming = flushed
+            }
 
             // ── 【2026-10-06 问题40】正文自动朗读（/voice）────────────
             //

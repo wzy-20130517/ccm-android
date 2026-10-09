@@ -124,11 +124,14 @@ class PhoneTools(
     /**
      * 模式闸门（2026-10-06 加，对齐 CLI 的 ensurePhoneMode）。
      *
-     * 规则：
+     * 规则（2026-10-09 调整）：
      *   · 本次会话已有生效值 → 放行
-     *   · 偏好是 foreground/background → 直接用它，不弹
-     *   · 偏好是 ask 或从没设过 → **需要弹选择**
+     *   · 用户勾过「记住选择」（或敲过 /device mode）→ 直接用偏好，不弹
+     *   · 其余情况 → **弹框问**（框里有「记住选择」勾选框）
      *   · idle → 明确拒绝（不是错误，是用户的选择）
+     *
+     * 改动点：原来弹框选完前台/后台就**无条件**写偏好（永久不再问），
+     * 现在只有勾了「记住选择」才写 —— 没勾就只影响本次会话。
      *
      * @return null = 放行；非 null = 给模型的拒绝说明
      */
@@ -140,32 +143,33 @@ class PhoneTools(
         }
         if (session != null) return null   // 已定 → 放行
 
-        val pref = PhoneMode.preference(context)
-        when (pref) {
-            PhoneMode.FOREGROUND, PhoneMode.BACKGROUND -> {
-                PhoneMode.setSession(pref)   // 偏好即生效值，不弹
+        // 用户明确勾过「记住选择」（或敲过 /device mode）→ 用偏好，不弹
+        if (PhoneMode.isRemembered(context)) {
+            val pref = PhoneMode.preference(context)
+            if (pref == PhoneMode.FOREGROUND || pref == PhoneMode.BACKGROUND) {
+                PhoneMode.setSession(pref)
                 return null
             }
-            else -> {
-                // 'ask' 或从没设过 → 需要 UI 弹选择
-                val picked = com.ccm.app.AppGraph.phoneModePrompter?.invoke()
-                if (picked == null) {
-                    // 非交互环境（子 agent / 无 UI）→ idle，不动手机
-                    PhoneMode.setSession(PhoneMode.IDLE)
-                    return "当前环境无法弹出模式选择（子 Agent 或界面未就绪）—— " +
-                        "本次会话按 idle 处理，手机工具不会执行。\n" +
-                        "请在主对话里操作手机，或用 /device mode 主屏|后台 预设模式。"
-                }
-                PhoneMode.setSession(picked)
-                // 选了前台/后台/每次都问 → 记住（idle 不记，那是一次性的）
-                if (picked == PhoneMode.FOREGROUND || picked == PhoneMode.BACKGROUND) {
-                    PhoneMode.setPreference(context, picked)
-                }
-                return if (picked == PhoneMode.IDLE) {
-                    "用户选择「这次不操作手机」—— 手机工具不执行。"
-                } else null
-            }
         }
+
+        // 需要问 —— 弹框
+        val answer = com.ccm.app.AppGraph.phoneModePrompter?.invoke()
+        if (answer == null) {
+            // 非交互环境（子 agent / 无 UI）→ idle，不动手机
+            PhoneMode.setSession(PhoneMode.IDLE)
+            return "当前环境无法弹出模式选择（子 Agent 或界面未就绪）—— " +
+                "本次会话按 idle 处理，手机工具不会执行。\n" +
+                "请在主对话里操作手机，或用 /device mode 主屏|后台 预设模式。"
+        }
+        val picked = answer.mode
+        PhoneMode.setSession(picked)
+        // 【2026-10-09】只有勾了「记住选择」才持久化（没勾 = 只影响本次会话）
+        if (answer.remember && (picked == PhoneMode.FOREGROUND || picked == PhoneMode.BACKGROUND)) {
+            PhoneMode.setPreference(context, picked, remember = true)
+        }
+        return if (picked == PhoneMode.IDLE) {
+            "用户选择「这次不操作手机」—— 手机工具不执行。"
+        } else null
     }
 
     private fun screenshotDir(): File = File(saveDir, "phone-shots").apply { if (!exists()) mkdirs() }

@@ -129,6 +129,15 @@ fun UserBubble(
     timestampMs: Long = 0L,
 ) {
     val colors = CCMTheme.colors
+
+    // 【2026-10-09 最后一道防线】文本和图片都空 → 什么都不画。
+    //
+    // 这类气泡来自历史里的元信息消息（vision 旁路注入的「图片+缩放提示」，
+    // 见 stripMetaTags 注释）。正常路径已在 loadHistory / 上面的剥离
+    // 双重拦截，但这里再兜一层：无论如何都不该在屏幕上出现一个
+    // 纯空白的背景块 —— 用户看到只会困惑「这是什么」。
+    if (text.isBlank() && images.isEmpty()) return
+
     val uCtx = androidx.compose.ui.platform.LocalContext.current
     val copyUser: (String) -> Unit = { txt ->
         if (txt.isNotBlank()) {
@@ -405,13 +414,15 @@ fun MessageList(
         bubbles.forEachIndexed { index, bubble ->
             if (bubble.isUser) {
                 UserBubble(
-                    // <image_resize_notice> 是 AgentLoop 拼给**模型**的
-                    // 元信息（告知缩放），不是用户输入 —— 渲染前剥掉，
+                    // <image_resize_notice> / <vision_unsupported> 是 AgentLoop
+                    // 拼给**模型**的元信息，不是用户输入 —— 渲染前剥掉，
                     // 否则用户在自己气泡里看到一坨 XML 标签。
-                    text = bubble.text.replace(
-                        Regex("<image_resize_notice>[\\s\\S]*?</image_resize_notice>"),
-                        "",
-                    ).trim(),
+                    //
+                    // 【2026-10-09】改用共享的 stripMetaTags —— 原来这里
+                    // 只剥 image_resize_notice、且与 loadHistory 的判据各写
+                    // 各的，导致「判断时有文本 → 生成气泡 → 渲染时剥空 →
+                    // 空白气泡」。现在两处共用同一个函数，不会再错位。
+                    text = com.ccm.app.core.session.stripMetaTags(bubble.text),
                     images = bubble.images,
                     onResend = onResend?.let { fn -> { fn(bubble.messageId) } },
                     timestampMs = bubble.timestamp,

@@ -82,7 +82,19 @@ class StreamingMarkdown {
      */
     fun feed(fullText: String): Result {
         // 重试/切会话时全文可能被替换；不能沿用旧文本的 consumed 下标。
-        if (fullText.length < consumed || !fullText.startsWith(previousFullText)) reset()
+        //
+        // 【2026-10-09 修「正文被吃掉」】原来是 `reset()` —— 连 stable
+        // 一起清空。后果：全文被替换的那一刻（工具往返期间 core 层的
+        // streaming 序列不单调），已经显示在屏幕上的正文**瞬间消失**，
+        // 直到新下标重新吃掉同样多的行才恢复。用户看到的就是
+        // 「正文先显示，短暂过后被吃了」。
+        //
+        // 现在用 [restartAccounting]：只重置**记账下标**（consumed /
+        // previousFullText / tail / 未闭合结构），**保留 stable** ——
+        // 已定型的内容本来就是终态，全文被替换不代表那些话没说过。
+        if (fullText.length < consumed || !fullText.startsWith(previousFullText)) {
+            restartAccounting()
+        }
         previousFullText = fullText
         val lastNl = fullText.lastIndexOf('\n')
 
@@ -167,7 +179,7 @@ class StreamingMarkdown {
         return stable.toString()
     }
 
-    /** 重置（新一轮开始） */
+    /** 重置（新一轮开始）—— 连已定型内容一起清空。 */
     fun reset() {
         stable.setLength(0)
         pending.setLength(0)
@@ -176,6 +188,38 @@ class StreamingMarkdown {
         previousFullText = ""
         inFence = false
         fenceMarker = ""
+    }
+
+    /**
+     * 只重置**记账下标**，保留已定型内容（2026-10-09 加）。
+     *
+     * ## 什么时候用
+     * [feed] 检测到「全文被替换」（长度变短 / 不是旧全文的前缀扩展）时。
+     *
+     * ## 为什么不直接用 [reset]
+     * 全文被替换 ≠ 说过的话没说过。典型场景是**工具往返**：
+     * ```
+     * 第 1 轮：模型说 "我先看看代码" → streaming = "我先看看代码"
+     * TurnEnd：core 层 streaming 换成累计全文（同一个值）
+     * 第 2 轮：新 TextDelta 追加 → streaming = "我先看看代码找到了…"
+     * ```
+     * 期间 core 层的 `state.streaming` 序列**不单调**（可能短暂变短，
+     * 或与上一帧不构成前缀关系）。用 [reset] 的话，已经显示在屏幕上的
+     * 「我先看看代码」会瞬间消失 —— 用户看到的就是「正文被吃了」。
+     *
+     * ## 保留 stable 的代价
+     * 如果全文真的被整体换掉（重试/切会话），旧内容会留在屏幕上。
+     * 这是**可接受的**：那些内容确实显示过，而且下一轮 [reset]（由
+     * ChatScreenConnected 的 running 跃迁触发）会把它清掉。
+     */
+    private fun restartAccounting() {
+        pending.setLength(0)
+        tail = ""
+        consumed = 0
+        previousFullText = ""
+        inFence = false
+        fenceMarker = ""
+        // ⚠️ 不清 stable —— 这是与 reset 的唯一区别
     }
 
     /** 当前是否在未闭合的代码块内 */

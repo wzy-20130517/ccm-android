@@ -354,19 +354,28 @@ object AppGraph {
     // 区别是这里选项固定三项（前台/后台/不操作），且**不超时**
     // —— 用户可能离开手机，超时会让「选了后台」变成「静默不操作」。
 
-    private var modeDeferred: kotlinx.coroutines.CompletableDeferred<String?>? = null
+    private var modeDeferred: kotlinx.coroutines.CompletableDeferred<PhoneModeAnswer?>? = null
 
     /** 待选模式的可见状态（UI 读它决定要不要弹框）。 */
     val pendingPhoneMode = androidx.compose.runtime.mutableStateOf<Boolean>(false)
 
     /**
+     * 用户对模式弹框的回答（2026-10-09 加）。
+     *
+     * @param mode 'foreground' | 'background' | 'idle'
+     * @param remember 用户是否勾了「记住选择」—— 勾了才持久化偏好，
+     *   否则只影响本次会话（见 PhoneMode 的「记住选择」段）。
+     */
+    data class PhoneModeAnswer(val mode: String, val remember: Boolean)
+
+    /**
      * 工具侧调用：请求用户选模式并挂起等待。
      *
-     * @return 'foreground' | 'background' | 'idle'；null = 无法弹（无 UI）
+     * @return 用户的回答；null = 无法弹（无 UI / 已在问）
      */
-    suspend fun requestPhoneModeBlocking(): String? {
+    suspend fun requestPhoneModeBlocking(): PhoneModeAnswer? {
         if (pendingPhoneMode.value) return null   // 已在问 → 不嵌套
-        val d = kotlinx.coroutines.CompletableDeferred<String?>()
+        val d = kotlinx.coroutines.CompletableDeferred<PhoneModeAnswer?>()
         modeDeferred = d
         pendingPhoneMode.value = true
         return try {
@@ -377,9 +386,13 @@ object AppGraph {
         }
     }
 
-    /** UI 侧调用：用户选了模式（取消传 null → 按 idle 处理）。 */
-    fun answerPhoneMode(mode: String?) {
-        modeDeferred?.complete(mode)
+    /**
+     * UI 侧调用：用户选了模式（取消传 null → 按 idle 处理）。
+     *
+     * @param remember 勾选框状态（默认 false = 只影响本次会话）
+     */
+    fun answerPhoneMode(mode: String?, remember: Boolean = false) {
+        modeDeferred?.complete(mode?.let { PhoneModeAnswer(it, remember) })
     }
 
     /**
@@ -392,7 +405,7 @@ object AppGraph {
      * PhoneTools 的工具执行都在 Dispatchers.IO 上，安全。
      */
     @Volatile
-    var phoneModePrompter: (() -> String?)? = null
+    var phoneModePrompter: (() -> PhoneModeAnswer?)? = null
 
     /** 已注册工具名清单（供设置页展示与自检）。 */
     @Volatile

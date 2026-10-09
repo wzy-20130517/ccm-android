@@ -99,6 +99,42 @@ data class Message(
 }
 
 /**
+ * 元信息标签剥离 —— 判断「这条消息剥掉拼给模型的元信息后还剩什么」。
+ *
+ * 【2026-10-09 加，修「重启 APP 后老有空白用户气泡」】
+ *
+ * AgentLoop 会在给模型喂图时注入 `<image_resize_notice>`（缩放提示）、
+ * `<vision_unsupported>`（端点不支持图）这类**拼给模型看的标签**，
+ * 它们混在 user 消息的文本里。这类消息如果被当作用户发言恢复成气泡，
+ * UI 又会把标签剥掉 → 只剩空字符串 → 一个纯空白气泡。
+ *
+ * 本函数是**剥标签的唯一实现**：loadHistory 用它判断该不该生成气泡，
+ * MessageBubble 用它渲染正文 —— 两处共用，不会漂移。
+ *
+ * 注意：只剥「整条文本仅由元信息构成」的情况不成立 —— 这里剥的是标签本身，
+ * 标签前后可能还有真实文本（如工具注入的 `[附件: xxx]`），剥完保留。
+ */
+fun stripMetaTags(text: String): String {
+    if (text.isEmpty()) return text
+    var t = text
+    for (re in META_TAG_REGEXES) {
+        t = t.replace(re, "")
+    }
+    return t.trim()
+}
+
+/**
+ * 拼给模型看的元信息标签（开始/结束标签成对）。
+ *
+ * 预编译 Regex：stripMetaTags 在 Compose 渲染路径上被每个气泡每帧调用，
+ * 每次现场构造 Regex 对象是纯浪费。
+ */
+private val META_TAG_REGEXES = listOf(
+    Regex("<image_resize_notice>[\\s\\S]*?</image_resize_notice>"),
+    Regex("<vision_unsupported>[\\s\\S]*?</vision_unsupported>"),
+)
+
+/**
  * 消息内容块。
  *
  * 四种形态对应 Node 版 message.content 数组里的元素类型。

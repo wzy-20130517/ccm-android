@@ -69,20 +69,7 @@ object PhoneMode {
         }
     }
 
-    /** 写偏好（持久）。传 null 清掉，回到「从没设过」。 */
-    fun setPreference(ctx: Context, v: String?) {
-        val ok = v?.takeIf { it in setOf(FOREGROUND, BACKGROUND, ASK) }
-        try {
-            val f = configFile(ctx)
-            val obj = if (f.exists()) JSONObject(f.readText()) else JSONObject()
-            if (ok == null) obj.remove("phoneMode") else obj.put("phoneMode", ok)
-            f.writeText(obj.toString(2))
-        } catch (_: Throwable) { /* 存不下不影响本次会话 */ }
-        cachedPref = ok
-        loaded = true
-        // 偏好改变 → 本次生效值作废（下次按新偏好重新决定）
-        sessionMode = if (ok == FOREGROUND || ok == BACKGROUND) ok else null
-    }
+    // setPreference 已移到下方「记住选择」段（含 remember 参数）
 
     /**
      * 本次会话的生效模式。
@@ -99,6 +86,49 @@ object PhoneMode {
     /** 重置本次会话（下次调用重新按偏好决定）。 */
     fun resetSession() {
         sessionMode = null
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  「记住选择」勾选框（2026-10-09 加）
+    // ══════════════════════════════════════════════════════════════
+    //
+    // 原设计：用户在弹框里选了前台/后台 → **无条件永久记住，以后再也不问**。
+    // 现在改成：弹框里给一个「记住选择」勾选框，**勾了才持久化**；
+    // 没勾就只影响本次会话（下次用手机工具还会问）。
+    //
+    // 与 /device mode 的关系：那个命令仍然直接设持久偏好（用户显式
+    // 敲命令，意图明确，不需要再问），语义不变。
+
+    /** 用户是否勾过「记住选择」（决定要不要继续弹框）。 */
+    fun isRemembered(ctx: Context): Boolean {
+        return try {
+            val f = configFile(ctx)
+            if (!f.exists()) return false
+            JSONObject(f.readText()).optBoolean("phoneModeRemembered", false)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * 写入偏好 + 记忆标志。
+     *
+     * @param v 'foreground' | 'background' | 'ask' | null（null = 清掉）
+     * @param remember true = 以后不再问（用户勾了记住，或敲了 /device mode）
+     */
+    fun setPreference(ctx: Context, v: String?, remember: Boolean = true) {
+        val ok = v?.takeIf { it in setOf(FOREGROUND, BACKGROUND, ASK) }
+        try {
+            val f = configFile(ctx)
+            val obj = if (f.exists()) JSONObject(f.readText()) else JSONObject()
+            if (ok == null) obj.remove("phoneMode") else obj.put("phoneMode", ok)
+            obj.put("phoneModeRemembered", remember && ok != null)
+            f.writeText(obj.toString(2))
+        } catch (_: Throwable) { /* 存不下不影响本次会话 */ }
+        cachedPref = ok
+        loaded = true
+        // 偏好改变 → 本次生效值作废（下次按新偏好重新决定）
+        sessionMode = if (ok == FOREGROUND || ok == BACKGROUND) ok else null
     }
 
     /** 中文标签（给模型/用户看）。 */
