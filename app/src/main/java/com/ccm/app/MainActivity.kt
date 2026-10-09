@@ -181,6 +181,33 @@ class MainActivity : ComponentActivity() {
             Log.i(TAG, if (ok) "截屏授权成功" else "截屏授权失败")
         }
     }
+
+    // ══════════════════════════════════════════════════════════════
+    //  Clawd 悬浮窗：App 退后台时显示，回前台时隐藏（2026-10-09）
+    // ══════════════════════════════════════════════════════════════
+    //
+    // 【为什么用 onStop/onStart 而不是 ProcessLifecycleOwner】
+    // 本项目没有引入 lifecycle-process 依赖，而 Activity 的 onStart/onStop
+    // 在这个单 Activity 应用里语义等价（只有一个 Activity，没有
+    // 「Activity A 停但 B 起」的多窗口场景）。
+    //
+    // 【为什么退后台才显示】用户原话：「当 ccm 退到后台的时候，会有一个 Clawd」。
+    // 前台时用户直接看对话界面，再飘一个吉祥物是干扰。
+    //
+    // 【权限】需要 SYSTEM_ALERT_WINDOW。没授权时 ClawdOverlayService.show()
+    // 内部静默跳过（不弹窗骚扰）—— 引导申请放在设置页。
+
+    override fun onStart() {
+        super.onStart()
+        // 回前台：收起悬浮窗（用户在看界面，不需要吉祥物）
+        try { com.ccm.app.service.ClawdOverlayService.hide(this) } catch (_: Throwable) {}
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // 退后台：显示悬浮窗（内部自检权限，没有权限时静默跳过）
+        try { com.ccm.app.service.ClawdOverlayService.show(this) } catch (_: Throwable) {}
+    }
 }
 
 /**

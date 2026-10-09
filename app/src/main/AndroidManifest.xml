@@ -22,6 +22,9 @@
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- 悬浮窗（Clawd 吉祥物，2026-10-09）。Android 6+ 需用户在系统设置里
+         手动授权（Settings.ACTION_MANAGE_OVERLAY_PERMISSION）。 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
@@ -110,6 +113,29 @@
             android:name=".service.CcmService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!--
+          Clawd 悬浮窗服务（2026-10-09）。
+
+          【为什么 foregroundServiceType=specialUse】
+          Android 14+（targetSdk 34+）要求所有前台服务声明类型。
+          悬浮窗既不是 dataSync 也不是 mediaPlayback —— 它属于
+          「其他用途」，官方归类是 specialUse（需在 manifest 里
+          用 PROPERTY_SPECIAL_USE_FGS_SUBTYPE 说明理由，见下）。
+
+          【为什么用前台服务而不是普通 Service】
+          Android 8+ 后台服务限制：App 退到后台后普通 Service 几秒内
+          就会被系统冻结。悬浮窗必须持续存活（用户可能切走十几分钟），
+          所以必须走 startForeground + 常驻通知。
+        -->
+        <service
+            android:name=".service.ClawdOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Desktop-pet style status overlay showing AI agent progress" />
+        </service>
 
         <!-- Shizuku user service：在 shell uid 下操作虚拟副屏 -->
         <service

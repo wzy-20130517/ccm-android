@@ -558,6 +558,73 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
 
         SettingsDivider()
 
+        // ── 5.5 Clawd 悬浮窗（2026-10-09）──────────────────────────
+        // 用户需求：「当 ccm 退到后台的时候，会有一个 Clawd（欢迎页那个吉祥物），
+        // 有各种动画，按 spinner 来（思考/打字/说话气泡）」。
+        SettingsSection(title = "后台悬浮窗") {
+            val overlayCtx = androidx.compose.ui.platform.LocalContext.current
+            // 权限状态：从系统设置返回后要刷新（与上面「所有文件访问」同款轮询）
+            var canOverlay by remember {
+                mutableStateOf(com.ccm.app.service.ClawdOverlayService.canDrawOverlays(overlayCtx))
+            }
+            androidx.compose.runtime.LaunchedEffect(Unit) {
+                while (true) {
+                    kotlinx.coroutines.delay(1000)
+                    val now = com.ccm.app.service.ClawdOverlayService.canDrawOverlays(overlayCtx)
+                    if (now != canOverlay) canOverlay = now
+                }
+            }
+            if (!canOverlay) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(7.36.dp))
+                        .background(Color(0x1AD97757))
+                        .clickable {
+                            try {
+                                overlayCtx.startActivity(
+                                    android.content.Intent(
+                                        android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        android.net.Uri.parse("package:${overlayCtx.packageName}"),
+                                    )
+                                )
+                            } catch (_: Throwable) {
+                                try {
+                                    overlayCtx.startActivity(
+                                        android.content.Intent(
+                                            android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        )
+                                    )
+                                } catch (_: Throwable) {}
+                            }
+                        }
+                        .padding(horizontal = 10.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        "⚠ 未授权「悬浮窗」—— 退到后台看不到 Clawd 动画",
+                        style = CCMText.body12.copy(fontSize = 10.48.sp),
+                        color = Color(0xFFD97757),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "去授权",
+                        style = CCMText.body12.copy(fontSize = 10.48.sp, fontWeight = FontWeight.Medium),
+                        color = Color(0xFFD97757),
+                    )
+                }
+            } else {
+                Text(
+                    "已授权。App 退到后台时会显示 Clawd 吉祥物，动画跟随 Agent 状态" +
+                        "（思考 / 打字 / 读文件 / 说话气泡），点击可回到 App，可拖动位置。",
+                    style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                    color = CCMTheme.colors.textSecondary,
+                )
+            }
+        }
+
+        SettingsDivider()
+
         // ── 6. 外观 ──────────────────────────────────────────────
         SettingsSection(title = "外观") {
             Column(verticalArrangement = Arrangement.spacedBy(SettingsFormGap)) {

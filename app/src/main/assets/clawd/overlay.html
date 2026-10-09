@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<!--
+  Clawd 悬浮窗渲染页（2026-10-09）
+
+  ## 为什么用 WebView 而不是原生 View
+  素材 SVG 自带 CSS @keyframes 动画（打字动作有 body-bounce / arm-type /
+  code-line 等多组关键帧）。用 WebView 加载 SVG，动画**白拿**；
+  换成 AndroidSVG 之类的解析库只能得到静态图，动画得用 Kotlin 重写一遍
+  （22 个文件、上百组关键帧）。
+
+  ## 通信协议
+  Kotlin 侧通过 evaluateJavascript 调用：
+    setState('clawd-working-typing.svg')  切状态（同值不重载，避免动画重启）
+    setBubble('文本')                      设气泡（空串 = 隐藏）
+
+  ## 为什么状态用「同值不重载」判断
+  <img src> 每次赋值都会重新加载 SVG → 动画从头播。
+  如果每帧都重设（如 SPEAKING 状态持续期间），螃蟹的呼吸动画会不停重启，
+  看起来像抽搐。所以同值直接 return。
+-->
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: transparent; overflow: hidden;
+    -webkit-user-select: none; user-select: none;
+    font-family: -apple-system, "Noto Sans CJK SC", "PingFang SC", sans-serif;
+  }
+  #stage {
+    position: relative; width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+    justify-content: flex-end; align-items: center;
+  }
+  #bubble {
+    max-width: 94%;
+    margin-bottom: 2px;
+    padding: 7px 10px;
+    background: rgba(22, 22, 30, .9);
+    color: #f2f2f7;
+    font-size: 11px; line-height: 1.45;
+    border-radius: 12px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .35);
+    word-break: break-word;
+    white-space: pre-wrap;
+    /* 最多 3 行，超出省略 —— 悬浮窗空间有限，长正文没有显示价值 */
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  #bubble:not(.show) { display: none; }
+  #pet {
+    width: 100%; height: auto;
+    display: block;
+    pointer-events: none;
+    transform-origin: center bottom;
+    /* ══════════════════════════════════════════════════════════
+       为什么需要 scale(1.75)
+       ══════════════════════════════════════════════════════════
+       素材的 viewBox 是 `-15 -25 45 45`（45×45），但螃蟹本体只占
+       约 x: 0~14, y: 5~16 —— 留白率 85%，原样显示螃蟹只有指甲盖大
+       （实测：132dp 窗口里螃蟹不到 40dp）。
+
+       scale 1.75 是实测值：螃蟹填到窗口约一半宽度，同时留出足够
+       空间给「思考气泡 / 打字屏幕 / 表情符号」这些向外扩展的动画元素
+       （再大会被裁掉头顶的思考气泡）。
+       ══════════════════════════════════════════════════════════ */
+    transform: scale(1.75);
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="bubble"></div>
+  <img id="pet" src="clawd-idle-follow.svg" alt="">
+</div>
+<script>
+(function () {
+  var pet = document.getElementById('pet');
+  var bubble = document.getElementById('bubble');
+  var curSvg = 'clawd-idle-follow.svg';
+
+  window.setState = function (svg) {
+    if (!svg || svg === curSvg) return;
+    curSvg = svg;
+    pet.src = svg;
+  };
+
+  window.setBubble = function (text) {
+    if (!text) {
+      bubble.classList.remove('show');
+      bubble.textContent = '';
+      return;
+    }
+    bubble.textContent = text;
+    bubble.classList.add('show');
+  };
+
+  // 通知 Kotlin 侧页面就绪（避免 JS 注入早于页面加载完成）
+  window.__ready = true;
+})();
+</script>
+</body>
+</html>

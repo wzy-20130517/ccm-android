@@ -614,6 +614,9 @@ class ChatSession(
         saveForced()   // 用户消息立即落盘，进程被回收时不丢首条输入
 
         runningJob = scope.launch {
+            // 【2026-10-09】通知 Clawd 悬浮窗：任务开始了（切 THINKING、清上轮气泡）。
+            // 放在 launch 内而不是 send 里，保证与 events 转发同协程 —— 顺序确定。
+            try { com.ccm.app.core.clawd.ClawdBus.setRunning(true) } catch (_: Throwable) {}
             // 【2026-10-06 问题40】UserPromptSubmit hook ——
             // 输出 `INJECT: 内容` 会把额外上下文注入到用户消息。
             // 原来 APK 完全不触发这个事件（用户报「hooks 也缺了」）。
@@ -1029,6 +1032,13 @@ class ChatSession(
 
         try {
             events.collect { ev ->
+                // 【2026-10-09】转发给 Clawd 悬浮窗总线（后台运行时显示吉祥物动画）。
+                // 放在最前：任何分支提前 return/continue 都不影响它收到事件。
+                // 总线内部对每个事件只做一次 enum 映射 + StateFlow 赋值，开销可忽略；
+                // 没有悬浮窗时（App 在前台）只是更新几个内存值，无副作用。
+                try {
+                    com.ccm.app.core.clawd.ClawdBus.onAgentEvent(ev)
+                } catch (_: Throwable) {}
                 when (ev) {
                     is AgentEvent.TextDelta -> {
                         // 新 messageId 代表模型新一次响应（工具往返或重试）。
@@ -1184,6 +1194,11 @@ class ChatSession(
                         // → 用户看到「工具栏重复两排」。
                         // 工具卡已随 Bubble 定型，这里必须保持空。
                         _state.value = _state.value.copy(running = false)
+
+                        // 【2026-10-09】Clawd 悬浮窗：整轮真正结束 → running=false。
+                        // 悬浮窗据此决定「完成后自动收回 IDLE」（见 ClawdOverlayService
+                        // 的 pulse 收集：HAPPY 播几秒，running 为 false 才回 IDLE）。
+                        try { com.ccm.app.core.clawd.ClawdBus.setRunning(false) } catch (_: Throwable) {}
 
                         // 【2026-10-06 问题40】Stop hook —— 输出 `BLOCK: 原因` 会
                         // 阻止 agent 结束（注入原因后继续跑一轮）。
