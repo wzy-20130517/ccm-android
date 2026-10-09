@@ -603,14 +603,14 @@ class PhoneUseService : IPhoneUseService.Stub {
         if (stack != null) {
             val (stackId, stackDisplay) = stack
             if (stackDisplay == id) {
-                return """{"ok":true,"message":"$pkg 已在$screenName运行","display_id":$id,"stack_id":$stackId,"already":true}"""
+                return """{"ok":true,"message":"$pkg 已在${screenName}运行","display_id":$id,"stack_id":$stackId,"already":true}"""
             }
             // 在别的屏 → 搬过来
             val mv = runShell("cmd activity display move-stack $stackId $id 2>&1; echo \"__exit=$?\"", 20000)
             val mb = mv.substringAfter('\n')
             val mExit = Regex("""__exit=(\d+)""").find(mb)?.groupValues?.get(1)?.toIntOrNull() ?: -1
             if (mExit == 0) {
-                return """{"ok":true,"message":"已把 $pkg 从 display $stackDisplay 平滑移到$screenName（未重启）","display_id":$id,"stack_id":$stackId,"moved":true}"""
+                return """{"ok":true,"message":"已把 $pkg 从 display $stackDisplay 平滑移到${screenName}（未重启）","display_id":$id,"stack_id":$stackId,"moved":true}"""
             }
             // 搬运失败就继续走冷启动，别把路堵死
         }
@@ -626,9 +626,9 @@ class PhoneUseService : IPhoneUseService.Stub {
         val started = body.contains("Starting: Intent") || body.contains("Status: ok")
         if (exit != 0 || !started) {
             val firstErr = body.lines().firstOrNull { it.isNotBlank() && !it.startsWith("Warning") } ?: body
-            return errJson("在$screenName启动 $pkg 失败：${firstErr.take(200)}")
+            return errJson("在${screenName}启动 $pkg 失败：${firstErr.take(200)}")
         }
-        return """{"ok":true,"message":"已在$screenName启动 $pkg","display_id":$id}"""
+        return """{"ok":true,"message":"已在${screenName}启动 $pkg","display_id":$id}"""
     }
 
     /**
