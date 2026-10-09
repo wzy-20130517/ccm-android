@@ -694,27 +694,58 @@ class PhoneTools(
             // Clawd 联动：截图 → 举放大镜观察（最接近「看」的素材动作；
             // 素材库没有相机动作，见 ClawdAction 的说明）
             emitClawdHere(com.ccm.app.core.clawd.ClawdAction.Type.SCREENSHOT)
+
+            // 【2026-10-09 修「前台模式截到副屏画面」】
+            //
+            // 原来不管什么模式都走 svc.latestFrame() —— 那是**副屏
+            // VirtualDisplay 的帧缓存**，跟 targetDisplay 无关。前台模式下
+            // 截出来的还是副屏（用户报「Agent 在我选择前台的情况下仍去用副屏」
+            // 的直接原因之一：Agent 从截图看到副屏画面，就以为该用副屏）。
+            //
+            // 现在按目标屏分流：
+            //   · 副屏（后台模式）→ latestFrame() 帧缓存（~60ms，快）
+            //   · 主屏（前台模式）→ screencap -d 0（服务侧 runShell，
+            //     shell uid 有截屏权限；慢 ~1.8s 但截的是用户真在看的屏）
+            val targetIsMain = try { svc.targetDisplayId() == 0 } catch (_: Throwable) { false }
             return try {
-                // 帧缓存可能还没刷新（刚触发建屏/首帧未到）——空帧重试 3 次。
-                // 失败文案要带「已重试」字样（对齐 CLI T:1029），让模型知道已尽力过。
                 var bytes: ByteArray? = null
-                for (attempt in 1..3) {
-                    bytes = svc.latestFrame()
-                    if (bytes != null && bytes.isNotEmpty()) break
-                    if (attempt < 3) withContext(Dispatchers.IO) { Thread.sleep(300) }
+                var via = ""
+                if (targetIsMain) {
+                    // 主屏：screencap -d <displayId=0> 落盘 → base64 读回
+                    val tmp = "/data/local/tmp/ccm-shot-${System.currentTimeMillis()}.png"
+                    val r1 = svc.runShell("screencap -p $tmp && chmod 644 $tmp", 20_000)
+                    val exit = r1.substringBefore("\n---\n", "").trim().toIntOrNull() ?: -1
+                    if (exit == 0) {
+                        val b64 = svc.runShell("base64 -w0 $tmp && rm -f $tmp", 30_000)
+                        val payload = b64.substringAfter("\n---\n", "").trim()
+                        if (payload.isNotEmpty()) {
+                            bytes = android.util.Base64.decode(payload, android.util.Base64.DEFAULT)
+                            via = "主屏 screencap"
+                        }
+                    }
+                } else {
+                    // 副屏：帧缓存可能还没刷新（刚触发建屏/首帧未到）——空帧重试 3 次。
+                    // 失败文案要带「已重试」字样（对齐 CLI T:1029），让模型知道已尽力过。
+                    for (attempt in 1..3) {
+                        bytes = svc.latestFrame()
+                        if (bytes != null && bytes.isNotEmpty()) break
+                        if (attempt < 3) withContext(Dispatchers.IO) { Thread.sleep(300) }
+                    }
+                    via = "副屏帧缓存"
                 }
                 if (bytes == null || bytes.isEmpty()) {
                     return ToolResult.failed(SCREEN_OFF_HINT)
                 }
                 val frame = bytes
-                val target = File(screenshotDir(), "shot-${System.currentTimeMillis()}.jpg")
+                val ext = if (targetIsMain) "png" else "jpg"
+                val target = File(screenshotDir(), "shot-${System.currentTimeMillis()}.$ext")
                 withContext(Dispatchers.IO) { target.writeBytes(frame) }
 
                 val hint = input.str("prompt")?.takeIf { it.isNotBlank() }
                     ?.let { "（关注：$it）" } ?: ""
                 ToolResult.okWithImages(
-                    "手机屏幕截图$hint —— ${target.absolutePath}",
-                    listOf(Attachment.ImageFile(target.absolutePath, "image/jpeg")),
+                    "手机屏幕截图$via$hint —— ${target.absolutePath}",
+                    listOf(Attachment.ImageFile(target.absolutePath, if (targetIsMain) "image/png" else "image/jpeg")),
                 )
             } catch (e: Throwable) {
                 ToolResult.Error("截屏失败（已重试）：${e.message}", ToolResult.INTERNAL)
@@ -817,7 +848,11 @@ class PhoneTools(
     inner class PhoneAppTool : Tool() {
         override val name = "phone_app"
         override val description =
-            "启动/切换应用（在虚拟副屏启动，不占物理屏；若应用已在主屏运行会自动搬运过去，不重启），" +
+            // 【2026-10-09】描述里不再硬编码「副屏」—— 启动目标跟随当前模式
+            //（前台=主屏 / 后台=副屏）。原来写死「在虚拟副屏启动」，
+            // 前台模式下 Agent 读到会误以为自己应该去操作副屏（实测踩过）。
+            "启动/切换应用（启动到当前操作目标屏：前台模式=主屏、后台模式=虚拟副屏；" +
+                "若应用已在别的屏运行会自动搬运过去，不重启），" +
                 "或列已安装应用。" +
                 "list 加 labels:true 可显示中文名（只显示缓存里已有的，不现场扫描）。" +
                 "要看某个应用的中文名用 action:label + package（读单个很快，读完进缓存）。"
@@ -1119,6 +1154,21 @@ class PhoneTools(
                 sb.append("phone 服务: 未就绪（${ShizukuBridge.lastPhoneError ?: "未绑定"}）\n")
             } else {
                 sb.append("phone 服务: 已连接 ✓\n")
+
+                // 【2026-10-09 加】当前模式/目标屏 —— 原来只报副屏状态，
+                // Agent 看不到「现在操作的是哪块屏」，前台模式下被其他工具
+                // 的「副屏」字样误导后无从纠正（实测踩过）。
+                val mode = PhoneMode.sessionMode
+                val targetId = try { svc.targetDisplayId() } catch (_: Throwable) { -1 }
+                sb.append("当前模式: ${PhoneMode.label(mode)}\n")
+                sb.append("操作目标屏: ").append(
+                    when {
+                        targetId == 0 -> "主屏（display 0）"
+                        targetId > 0 -> "副屏（display $targetId）"
+                        else -> "副屏（未建；后台模式需要虚拟屏）"
+                    }
+                ).append("\n")
+
                 try {
                     sb.append("副屏状态: ${svc.status()}\n")
                     val m = svc.displayMetrics()
@@ -1135,7 +1185,12 @@ class PhoneTools(
                 sb.append(
                     try {
                         val tree = svc?.dumpTree(true, 5, true) ?: "(无服务)"
-                        if (tree.isBlank()) SCREEN_OFF_HINT else "元素树采样成功（${tree.length} 字符）"
+                        // 【2026-10-09 修假阳性】dumpTree 失败时返回的是**错误字符串**
+                        //（如「错误：拿不到窗口列表…already registered!」），非空但不是树。
+                        // 原来按 isBlank() 判成功，把错误消息当成了采样结果。
+                        if (tree.isBlank()) SCREEN_OFF_HINT
+                        else if (tree.startsWith("错误") || tree.startsWith("ui_unavailable")) tree
+                        else "元素树采样成功（${tree.length} 字符）\n${tree.take(120)}"
                     } catch (e: Throwable) {
                         "失败：${e.message}"
                     },
