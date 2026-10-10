@@ -135,11 +135,13 @@ fun SidebarDrawer(
             modifier = Modifier
                 .width(SidebarWidth)
                 .fillMaxHeight()
-                // 抽屉顶部让开状态栏：侧栏打开后顶部的
-                // 「聊天/协作/代码」胶囊也在 y=0 起画，同样会被
-                // StatusBar 窗口 (0,0,1280,152) 的触摸区吃掉（2026-09-27）。
-                // 只给抽屉加，遮罩保持全屏 —— 点状态栏区域外要能关闭。
-                .windowInsetsPadding(WindowInsets.statusBars)
+                // 【2026-10-10 修「侧边栏显示不完全」】原来
+                // `windowInsetsPadding(WindowInsets.statusBars)` 加在这里 ——
+                // 它把**整个抽屉（含背景）**都让开了状态栏，于是顶部那条
+                // 露出遮罩灰，看起来像「没铺满屏幕」（用户拍照红框标注）。
+                // Web 的侧边栏是**全高**的（从 y=0 到屏幕底），Android 上
+                // 对应「背景全高 + 内容让开状态栏」——所以让开的 padding
+                // 移到下面的内容层（见内层 Box），背景保持 fillMaxHeight。
                 .graphicsLayer {
                     // Web: translateX(-100%) 收起；宽度保留（为动画平滑）
                     translationX = -widthPx * (1f - progress)
@@ -148,10 +150,14 @@ fun SidebarDrawer(
                 .background(colors.bgSidebar),
         ) {
             // 内容（占满，右边留 1dp 给边框，避免被内容盖住）
+            // ★ 让开状态栏的是**这里**：侧栏打开后顶部的「聊天/协作/代码」
+            //   胶囊若画在 y=0 起，会被 StatusBar 窗口 (0,0,1280,152) 的
+            //   触摸区吃掉（2026-09-27）—— 内容需要 padding，背景不需要。
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(end = 1.dp),
+                    .padding(end = 1.dp)
+                    .windowInsetsPadding(WindowInsets.statusBars),
             ) {
                 SidebarContent(
                     activePill = activePill,
