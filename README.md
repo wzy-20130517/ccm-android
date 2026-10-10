@@ -1,38 +1,114 @@
-# CCM · Claude Code Mobile Android 原生外壳
+# CCM · Claude Code Mobile 的 Android 原生版
 
-把 `claude-code-mobile`（Termux 上的 Node CLI + Web）封装成**原生 Android App**，
-用 proot 内嵌 Ubuntu 提供执行环境，用无障碍服务替代 Shizuku 做手机操作。
+把 [claude-code-mobile](https://github.com/wzy-20130517/Claude-Code-Mobile) 的能力
+装进一个**原生 Android App**：Agent 内核全部用 Kotlin 重写（不跑 Node），
+手机操作走 Shizuku + 虚拟副屏，Bash 环境可选内置 proot 或外接 Termux。
+
+> 与 CLI 的关系：**独立实现、能力对齐**。会话 JSON 格式兼容（可跨端搬移），
+> 但代码零共享 —— CLI 是 Node，这里是 Kotlin。
 
 ---
 
 ## 架构
 
 ```
-┌────────────────────────────────────────────────────────┐
-│  Kotlin 原生层（App 进程）                              │
-│  ├─ CcmService          前台服务 + 桥接服务器 :3457      │
-│  ├─ CcmAccessibilityService   手机操作（点击/输入/读树） │
-│  ├─ RootfsManager       rootfs 下载/解压/校验            │
-│  ├─ ProotRuntime        proot 命令构造 + 环境处理        │
-│  ├─ PtySession          PTY 会话（AI 的 Bash 后端）      │
-│  ├─ NativeBridge        原生能力分发（路由）             │
-│  ├─ ScreenCapture       MediaProjection 截图            │
-│  ├─ NativeTts           系统 TTS                        │
-│  └─ MainActivity        Compose UI + WebView            │
-├────────────────────────────────────────────────────────┤
-│  proot Ubuntu 24.04（内嵌执行环境）                     │
-│  └─ Node.js 18.19.1                                     │
-│     ├─ ccm-start.mjs     启动器                         │
-│     ├─ ccm-bridge.mjs    → 调 Kotlin 桥                 │
-│     ├─ ccm-adapters.mjs  工具适配（原生替换）            │
-│     ├─ core/             内核（130 模块）                │
-│     └─ web/              Web 服务 :3456 + React 前端     │
-└────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  UI 层（Jetpack Compose，全原生）                        │
+│  ├─ CcmApp           对话页 / 侧栏 / 设置（对齐 Web 布局）│
+│  ├─ ClawdOverlay     退后台时的悬浮吉祥物（WebView 渲染   │
+│  │                   SVG，因为素材自带 CSS 动画）        │
+│  └─ 页面：对话/会话列表/市场/协作/自定义/设置            │
+├─────────────────────────────────────────────────────────┤
+│  Agent 内核（Kotlin，对应 Node 版 core/）                │
+│  ├─ core/agent/      AgentLoop（工具循环/流式/子 Agent）  │
+│  ├─ core/api/        三协议客户端（OpenAI/Anthropic/     │
+│  │                   Responses）                         │
+│  ├─ core/session/    会话存储（格式与 Node 版兼容）       │
+│  ├─ core/tools/      工具实现（53 个文件）               │
+│  └─ core/*           记忆/压缩/MCP/插件/市场/追踪…       │
+├─────────────────────────────────────────────────────────┤
+│  桥接层                                                  │
+│  ├─ bridge/ShizukuBridge    Shizuku 连接管理            │
+│  ├─ bridge/PhoneUseService  shell uid 下的副屏服务       │
+│  │   （VirtualDisplay + UiAutomation + 帧缓存）          │
+│  └─ bridge/NativeBridge     原生能力路由                 │
+├─────────────────────────────────────────────────────────┤
+│  运行环境（Bash 工具的后端，可选）                        │
+│  ├─ runtime/ProotRuntime    内置 proot（免装 Termux）    │
+│  └─ 外接 Termux             RUN_COMMAND Intent           │
+└─────────────────────────────────────────────────────────┘
 ```
 
-**通信**：
-- UI：WebView → `http://127.0.0.1:3456`（React）
-- 原生能力：Node → `http://127.0.0.1:3457/native/call`
+**关于 proot**：它不是 Agent 的运行环境 —— Agent 内核本身就是 Kotlin 原生跑的。
+proot 只服务一件事：Bash 工具执行命令（装了个 Ubuntu rootfs 提供完整工具链）。
+不想用可以切外接 Termux，或干脆不装（Bash 工具不可用，其余功能照常）。
+
+---
+
+## 功能
+
+- **完整 Agent 能力**：与 CLI 对齐的 100+ 工具（文件/搜索/网络/手机/任务/团队/Goal…）
+- **手机操作（phone use）**：看屏幕（元素树快照）、点按、输入、滑动、启动应用；
+  支持主屏（前台可见）/ 副屏（虚拟屏静默）两种模式
+- **虚拟副屏**：Shizuku 起 shell 服务 → VirtualDisplay → UiAutomation，
+  元素树以平铺文本返回，模型直接读文本操作（不用截图识图）
+- **多模态**：截图 / 发图 / 看视频抽帧，原生多模态注入
+- **语音**：Edge TTS 播报、正文朗读、语音输入
+- **Clawd 悬浮窗**：退后台时的桌面宠物，随 Agent 状态做动画
+- **市场**：从远端装 skill / MCP / DSH 插件
+- **QQ 桥**：通过 QQ 私聊给 Agent 下指令
+
+---
+
+## 与 CLI 版的差异
+
+| | CLI（claude-code-mobile） | 本仓库（APK） |
+|---|---|---|
+| 内核 | Node（.mjs） | **Kotlin 原生** |
+| 界面 | 终端全屏 TUI | **Compose 原生 UI** |
+| 手机操作 | rish + dumpsys 走 shell | **Shizuku 服务 + UiAutomation**（更快更稳） |
+| Bash 环境 | Termux 原生（开箱即用） | 内置 proot（要装 rootfs）或外接 Termux |
+| 悬浮窗 | 无 | **Clawd 吉祥物** |
+| 会话数据 | `~/.claude-code-mobile/` | App 私有目录（`files/`） |
+| 部署 | git clone 即用 | 编译 APK 安装 |
+
+两边**会话 JSON 格式兼容**，可以把 CLI 的会话搬进 App（反之亦然）。
+
+---
+
+## 构建
+
+**CI 构建（推荐）**：push 到 main 自动触发 GitHub Actions，
+产物在 Actions 页面的 artifact（`ccm-debug`）。
+
+**本地构建**：需要完整 Android SDK + Gradle（不推荐在手机上跑，太慢）。
+
+```
+./gradlew assembleDebug
+```
+
+版本号由 CI 注入（`CCM_VERSION_NAME` / `CCM_VERSION_CODE` 环境变量），
+本地构建默认 `0.1.0`。
+
+---
+
+## 权限说明
+
+| 权限 | 用途 |
+|---|---|
+| `SYSTEM_ALERT_WINDOW` | Clawd 悬浮窗（退后台时显示） |
+| `FOREGROUND_SERVICE` + `_DATA_SYNC` + `_SPECIAL_USE` | 常驻服务（Agent 运行时保活 + 悬浮窗） |
+| `POST_NOTIFICATIONS` | 前台服务通知 |
+| `INTERNET` / `ACCESS_NETWORK_STATE` | 调模型 API + 市场下载 |
+| `MANAGE_EXTERNAL_STORAGE` | 读写工作区文件（可选，不授权也能用） |
+| `CAMERA` / `RECORD_AUDIO` | 拍照/录音（语音输入、相机相关工具） |
+| `ACCESS_COARSE/FINE_LOCATION` | Location 工具（可选） |
+| `RECEIVE_BOOT_COMPLETED` | 开机自启服务（可选） |
+| `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | 申请电池白名单（防后台被杀） |
+| `WAKE_LOCK` / `VIBRATE` | 保活 / 震动反馈 |
+| `QUERY_ALL_PACKAGES` | 列已装应用（phone_app list） |
+| `moe.shizuku.manager.permission.API_V23` | Shizuku 授权（手机操作） |
+| `com.termux.permission.RUN_COMMAND` | 外接 Termux 跑 Bash（可选） |
 
 ---
 
@@ -40,215 +116,29 @@
 
 ```
 ccm-android/
-├── app/src/main/
-│   ├── java/com/ccm/app/
-│   │   ├── MainActivity.kt              Compose UI + 安装流程
-│   │   ├── runtime/
-│   │   │   ├── RootfsManager.kt         rootfs 生命周期
-│   │   │   ├── TarExtractor.kt          纯 Kotlin tar.gz 解压
-│   │   │   ├── ProotRuntime.kt          ⭐ proot 参数（含 10 个实测坑）
-│   │   │   └── PtySession.kt            PTY 会话
-│   │   ├── service/
-│   │   │   ├── CcmService.kt            前台服务 + HTTP 桥
-│   │   │   ├── CcmAccessibilityService.kt  手机操作
-│   │   │   └── BootReceiver.kt          开机自启
-│   │   ├── bridge/NativeBridge.kt       原生能力路由
-│   │   └── tools/
-│   │       ├── ScreenCapture.kt         MediaProjection 截图
-│   │       └── NativeTts.kt             系统 TTS
-│   ├── jniLibs/arm64-v8a/               proot 二进制（patched）
-│   └── res/xml/accessibility_service_config.xml
-├── node/                                Node 侧桥接（打进内核包）
-│   ├── ccm-bridge.mjs                   桥客户端
-│   ├── ccm-env.mjs                      环境探测 + 降级
-│   ├── ccm-adapters.mjs                 工具适配层
-│   └── tools-native.mjs                 原生版工具定义
-└── .github/workflows/build.yml          云端编译
+├── app/src/main/java/com/ccm/app/
+│   ├── core/          Agent 内核（63 个文件）
+│   │   ├── agent/     AgentLoop / 子 Agent / 任务 / 团队 / Goal / 自动记忆
+│   │   ├── api/       三协议 API 客户端
+│   │   ├── tools/     工具实现（53 个文件）
+│   │   ├── session/   会话存储与消息模型
+│   │   ├── mcp/       MCP 客户端
+│   │   ├── plugin/    DSH 插件对接
+│   │   ├── market/    市场（skill/MCP/插件安装）
+│   │   └── …          记忆/压缩/追踪/提示词/用户资料…
+│   ├── bridge/        Shizuku 桥 + 副屏服务 + 原生能力路由
+│   ├── runtime/       proot 环境（rootfs/PTY/解压）
+│   ├── service/       前台服务 / 开机自启 / Clawd 悬浮窗
+│   ├── tools/         工具宿主（权限/输出/钩子/引导）
+│   └── ui/            Compose 界面（对话/设置/市场/协作…）
+└── app/src/main/assets/   系统提示词 / Clawd 素材 / mermaid
 ```
 
 ---
 
-## 编译
+## 许可
 
-**本地（Termux）不推荐** —— CPU 打满，2~7 分钟，编 Compose 会卡死。
+与上游 [claude-code-mobile](https://github.com/wzy-20130517/Claude-Code-Mobile) 一致：
+**MIT**。
 
-**用 GitHub Actions（推荐）**：
-
-```bash
-git push   # 自动触发
-# 4 分钟后在 Release 里拿 APK
-```
-
-**workflow 关键点**（`android-actions/setup-android@v3` 已坏，必须手装）：
-
-```yaml
-- name: Setup Android SDK
-  run: |
-    mkdir -p $HOME/android-sdk/cmdline-tools
-    cd $HOME/android-sdk
-    curl -sL -o cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-    unzip -q cmdline-tools.zip -d cmdline-tools
-    mv cmdline-tools/cmdline-tools cmdline-tools/latest
-    echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
-    echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
-```
-
-**本地环境**（已装好，用于小改动验证）：
-
-```
-~/android-sdk          604MB   Android SDK 35
-gradle 9.7.1                   pkg install gradle
-kotlin 2.4.20                  pkg install kotlin
-aapt2                          pkg install aapt2（AGP 自带的跑不了）
-patchelf                       pkg install patchelf
-```
-
-`gradle.properties` 必须加（AGP 自带的 aapt2 是 x86-64，Termux 跑不了）：
-```properties
-android.aapt2FromMavenOverride=/data/data/com.termux/files/usr/bin/aapt2
-```
-
----
-
-## ⚠️ proot 的 10 个坑（真机实测，改前必读）
-
-全部在 `ProotRuntime.kt` 的注释里，这里列摘要：
-
-| # | 坑 | 现象 | 解法 |
-|---|---|---|---|
-| 1 | **LD_PRELOAD** | `execve: Function not implemented` | 子进程环境 `remove("LD_PRELOAD")` |
-| 2 | **绝对路径 rootfs** | `can't chmod/chdir: Function not implemented` | 用 `--rootfs=.` + `directory(rootfs)` |
-| 3 | **PROOT_L2S_DIR** | 并发会话冲突 | 设成 `<rootfs>/.l2s`，预先 mkdir |
-| 4 | **硬链接** | 解压/运行失败 | 必须 `--link2symlink` |
-| 5 | **lstat 语义** | dpkg 报 symlink 警告 | 必须 `-L` |
-| 6 | **残留进程** | 退出后阻塞 | 必须 `--kill-on-exit` |
-| 7 | **kernel-release 格式** | `can't find hwcap field` | 用完整格式（见源码常量） |
-| 8 | **执行权限** | apt 报 `Permission denied` | 解压后恢复可执行位 |
-| 9 | **apt https** | `Method https did not start` | 源用 `http://` 而非 `https://` |
-| 10 | **Android 路径绑定** | 动态链接失败 | 绑 `/linkerconfig/ld.config.txt` 等 |
-
-**另外**：proot 二进制的 `RUNPATH` 原本硬编码 Termux 路径，必须 patchelf：
-```bash
-patchelf --set-rpath '$ORIGIN' libproot.so
-patchelf --set-rpath '$ORIGIN' libtalloc.so.2
-patchelf --set-rpath '$ORIGIN' libandroid-shmem.so
-```
-
----
-
-## 资源
-
-**GitHub Release `rootfs-v1`**：
-- `ubuntu-base-24.04-arm64.tar.gz`（28MB）— Ubuntu 24.04 base rootfs
-- `ccm-node-kernel.tar.gz`（14MB）— Node 内核（core + web + 前端）
-
-**APK**：Release `build-N` 里，约 16MB
-
----
-
-## 验证状态
-
-| 环节 | 状态 |
-|---|---|
-| 云端编译 | ✅ 4 分钟 |
-| APK 含 proot | ✅ 16MB |
-| Ubuntu proot 启动 | ✅ 24.04.3 LTS |
-| apt update | ✅ 清华 http 源 |
-| Node.js 安装 | ✅ 18.19.1 |
-| PTY | ✅ /dev/pts/2 |
-| CCM 内核启动 | ✅ |
-| Web 服务 :3456 | ✅ HTTP 200 |
-| React 前端 | ✅ HTML + 874KB JS |
-| Node → 桥 | ✅ 桥可用 |
-| phone.snapshot | ✅ 返回元素 |
-| phone.click | ✅ 执行成功 |
-
----
-
-## 已知缺口
-
-1. **rootfs 首次安装要联网**（28MB + Node 约 50MB）
-2. **无障碍服务需用户手动开启**（系统设置 → 无障碍 → CCM）
-3. **MediaProjection 需用户授权一次**（弹「开始录制」确认框）
-4. **首次安装约 3~8 分钟**（取决于网速）
-
----
-
-## 内核侧的自适应改造（2026-09-23）
-
-为了让 `claude-code-mobile` 的 36k 行内核能在 proot Ubuntu 里跑，做了这些改造
-（**同一份代码，Termux / CCM 两种环境都能用，不 fork**）：
-
-### 新增 `core/shell-path.mjs`
-
-统一 shell 探测，优先级：
-```
-$SHELL → $PREFIX/bin/sh → /bin/bash → /usr/bin/bash → /bin/sh → /system/bin/sh
-```
-
-**为什么需要**：原 `core/pty.mjs` 硬编码 `shell: '/system/bin/sh'` —— 那是 Android 的
-shell，在 proot Ubuntu 里要么不存在，要么行为不同（缺 PATH 等）。
-实测：不修的话 proot 里跑 `ls` 都报 "command not found"。
-
-`bg-bash.mjs` / `hooks.mjs` 也改用同一模块。
-
-### Termux 路径去硬编码
-
-`edge-tts.mjs` / `voice-read.mjs` / `env-secrets.mjs` 里的
-`/data/data/com.termux/files/home` 改成 `homedir()` —— proot 里自动是 `/root`。
-
-### Termux 命令缺失时的明确提示
-
-`termux-tools.mjs` 的 `termuxExec` 加了路径探测，找不到时给出指引：
-```
-termux-notification 不可用。
-  · Termux 模式：需要安装 termux-api（pkg install termux-api）
-  · CCM 模式：应走原生桥（检查 CCM 核心服务是否启动、无障碍是否开启）
-```
-而不是含糊的 ENOENT。
-
-### 适配层的多轮替换
-
-`ccm-adapters.mjs` 的 `applyNativeAdapters` 改成**多轮替换**，
-兼容 `tools()` 每次返回新数组的 toolkit 实现
-（真实的 `registry.list()` 返回稳定实例，但防御性处理更好）。
-
----
-
-## 实测记录（2026-09-23）
-
-| 测试项 | 结果 |
-|---|---|
-| proot Ubuntu 启动 | ✅ 24.04.3 LTS |
-| apt update（清华 http 源） | ✅ 全部 Hit |
-| Node.js 安装 | ✅ 18.19.1 |
-| PTY（`script -qfc`） | ✅ `/dev/pts/2` |
-| **shell 探测（proot 里）** | ✅ `shell=/bin/bash`（不是 Android 的 sh） |
-| CCM 内核启动 | ✅ |
-| Web 服务 :3456 | ✅ HTTP 200 |
-| **真实对话** | ✅ "测试成功" |
-| **工具调用（Bash）** | ✅ `echo hello-ccm` → 结果回传 → AI 回复 |
-| linker 警告 | ✅ 绑定 `/linkerconfig` 后消失 |
-| **Node → Kotlin 桥** | ✅ 桥可用 |
-| **适配层替换工具** | ✅ `phone_snapshot` / `Notify` 换成原生实现 |
-
----
-
-## 与 Termux 模式的关系
-
-**同一份内核，两种运行环境**：
-
-```
-Termux 模式（现状）          CCM 模式（新增）
-─────────────────           ─────────────────
-rish + dumpsys              AccessibilityService
-termux-notification         NotificationManager
-termux-clipboard-*          ClipboardManager
-静音音频保活                 前台服务
-```
-
-**Node 侧用适配层自动切换**（`ccm-adapters.mjs`）：
-- 检测到桥（3457 可达）→ 用原生实现
-- 检测不到 → 保持原实现（Termux 兼容）
-
-所以 `claude-code-mobile` 的代码**不需要 fork**，两边共用。
+本项目是独立实现，与 Anthropic 无隶属关系，也不是官方 Claude Code 的移动端。
