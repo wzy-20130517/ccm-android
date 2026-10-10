@@ -341,31 +341,61 @@ class VisionTools(
         /**
          * 截主屏。
          *
-         * 复用现有 `bridge/ShizukuBridge` 的 shell 通道跑 `screencap`，
-         * 再 `cat` 出文件（因为 screencap 写到 /sdcard 需要权限，
-         * 而 shell uid 可以直接写）。
+         * 复用现有 `bridge/ShizukuBridge` 的 shell 通道跑 `screencap`。
+         *
+         * 【2026-10-10 修「截屏失败」——两处根因，与 phone_screenshot 同款】
+         *
+         * 1. **解析格式错**：原来用 `r.contains("\n---\n")` 判断成功，
+         *    但服务侧 runShell 实际返回 `"exitCode\nstdout"`（**没有分隔符**）
+         *    —— `contains` 恒为 false → `return false` → 永远报失败。
+         *    修：改用 parseShellResult（工具里其他地方一直用它）。
+         *
+         * 2. **base64 超 Binder 上限**：主屏 PNG 1.7MB → base64 2.3MB，
+         *    Binder 事务上限 1MB —— runShell 传这个字符串必抛异常。
+         *    修：截图落盘 /data/local/tmp（shell 可写、App 可读，实测验证），
+         *    App 侧直接 File 读；清理由服务侧负责（App 删不了 sticky bit
+         *    目录里 shell 的文件）。
          */
         private fun captureMainScreen(target: File): Boolean {
             return try {
-                val svc = com.ccm.app.bridge.ShizukuBridge.phoneService(context)
-                // 用 phone 服务的 runShell 以 shell 身份截屏
+                val svc = com.ccm.app.bridge.ShizukuBridge.phoneService(context) ?: return false
                 val tmp = "/data/local/tmp/ccm-screencap-${System.currentTimeMillis()}.png"
-                val r = svc?.runShell("screencap -p $tmp && chmod 644 $tmp", 15_000) ?: return false
-                if (!r.contains("\n---\n")) return false
-                val exit = r.substringBefore("\n---\n").trim().toIntOrNull() ?: -1
-                if (exit != 0) return false
+                // 截图前先清旧文件（服务侧删，见上）
+                val r = svc.runShell(
+                    "rm -f /data/local/tmp/ccm-screencap-*.png; " +
+                        "screencap -p $tmp && chmod 644 $tmp && echo OK",
+                    20_000,
+                )
+                val (exit, out) = parseShellResult(r)
+                if (exit != 0 || !out.contains("OK")) return false
 
-                // 读回文件（shell uid 写的，app 读不了 → 用 cat 转 base64 再过 adb）
-                val b64 = svc.runShell("base64 -w0 $tmp && rm -f $tmp", 30_000)
-                val payload = b64.substringAfter("\n---\n", "").trim()
-                if (payload.isEmpty()) return false
-                val bytes = android.util.Base64.decode(payload, android.util.Base64.DEFAULT)
+                // App 直接读文件（本地文件不经 Binder，多大都行）
+                val f = java.io.File(tmp)
+                if (!f.exists() || f.length() == 0L) return false
+                val bytes = f.readBytes()
                 target.parentFile?.mkdirs()
                 target.writeBytes(bytes)
                 true
             } catch (_: Throwable) {
                 false
             }
+        }
+
+        /**
+         * 解析 runShell 返回值 —— 支持 `"exitCode\n---\nstdout"`（AIDL 承诺）
+         * 与 `"exitCode\nstdout"`（服务侧实际）两种格式。
+         *
+         * 与 PhoneTools.parseShellResult 同款逻辑（那个是 private，这里复制一份
+         * 免得跨类暴露；两处改动要同步 —— 已在两边都注明）。
+         */
+        private fun parseShellResult(raw: String): Pair<Int?, String> {
+            if (raw.contains("\n---\n")) {
+                val parts = raw.split("\n---\n", limit = 2)
+                return parts[0].trim().toIntOrNull() to (parts.getOrNull(1) ?: "")
+            }
+            val idx = raw.indexOf('\n')
+            if (idx < 0) return raw.trim().toIntOrNull() to ""
+            return raw.substring(0, idx).trim().toIntOrNull() to raw.substring(idx + 1)
         }
     }
 

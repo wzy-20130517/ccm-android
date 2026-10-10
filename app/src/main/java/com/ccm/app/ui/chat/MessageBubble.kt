@@ -477,6 +477,20 @@ fun MessageList(
                 //  工具已在时间线里显示，这里只补正文段（不重复放工具卡）。
                 // ══════════════════════════════════════════════════════════
                 if (bubble.thinking.isNotBlank()) {
+                    // 【2026-10-10 修「思维链被吃」】这里必须渲染思考链 ——
+                    // 上一轮重构交错渲染时误删了 AssistantThinkingChain 调用，
+                    // 只剩条件判断 + 正文 → 任务完成后（Done 定型）思考链
+                    // 直接不显示（用户报「任务完成后，思维链直接被吃了」）。
+                    // 流式路径（下面 550 行附近）没删到所以流式时正常 ——
+                    // 这个不对称正是「流式有、完成就没」症状的来源。
+                    AssistantThinkingChain(
+                        thinking = bubble.thinking,
+                        isThinking = false,
+                        // 工具卡传进去 —— 合成到时间线里
+                        toolCards = bubble.toolCards,
+                        modifier = Modifier.fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
                     // 正文全文（工具已在时间线里，不重复）
                     if (bubble.text.isNotBlank()) AssistantBubble(text = bubble.text)
                 } else if (bubble.toolCards.isNotEmpty() &&
