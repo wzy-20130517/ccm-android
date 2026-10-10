@@ -477,18 +477,21 @@ fun MessageList(
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                     )
                 }
-                // 【2026-10-06】正文区只显示**最后一个工具之后**的那段 ——
-                // 工具期间的正文已由各工具卡的 textBefore 显示，不切的话
-                // 同一段文字出现两遍（工具区一遍、正文区一遍）。
-                // 对齐 Web `MainContent.tsx:1136` 的 workText/finalText 切分。
-                // offset 为 0 或越界 = 显示全文（兜底：没有工具，或旧数据）。
-                val offset = bubble.toolTextEndOffset
-                val finalBody = if (offset in 1 until bubble.text.length) {
-                    bubble.text.substring(offset).trim()
-                } else {
-                    bubble.text
-                }
-                if (finalBody.isNotBlank()) AssistantBubble(text = finalBody)
+                // 【2026-10-10 修正文一消失】正文区永远显示全文 ——
+                // 不再按 toolTextEndOffset 切分（工具前的正文不在工具区兜底）。
+                //
+                // 原设计（对齐 Web）：工具前的正文由工具卡的 textBefore 显示，
+                // 正文区只显示最后一个工具之后的正文 —— 避免同一段文字两遍。
+                // 但 APK 有两条路径让「工具前的正文」不可见：
+                //   · thinking 非空时走思考时间线，时间线的工具事件不渲染 textBefore
+                //   · 工具组定型后默认折叠（调用处没传 isStreaming → allDone → 折叠）
+                // 结果：正文一（工具前）从正文区被切走后、在工具区也看不见 ——
+                // 用户报「正文一突然消失，只显示正文二；重启 App 后又都显示」。
+                // （重启后历史恢复不存 textBefore/toolTextEndOffset → 显示全文。）
+                //
+                // 现在统一为「正文区永远全文」——实时与重启后一致，正文永不消失。
+                // 代价：工具前的正文不再在工具卡内渲染（textBefore 渲染已移除）。
+                if (bubble.text.isNotBlank()) AssistantBubble(text = bubble.text)
             }
         }
 
@@ -555,18 +558,12 @@ fun MessageList(
             // Web `MainContent.tsx:1186` 把一条消息的所有 toolCalls 包进一个
             // `<div className="mb-4">`，组头显示去重后的工具名摘要，展开后左竖线内列。
             if (streaming.isNotBlank()) {
-                // 【2026-10-06】流式期间同样只显示「最后一个工具之后」的正文 ——
-                // 工具前的正文已由工具卡渲染（textBefore），不切会重复。
-                // 与 Web `MainContent.tsx:1164` 的 pendingWorkText 逻辑一致：
-                //   consumedLen = 各工具 textBefore 之和（= 最后一个的，因为累计）
-                //   正文区 = fullText.drop(consumedLen)
-                val consumed = toolCards.lastOrNull()?.textBefore?.length ?: 0
-                val pendingBody = if (consumed in 1 until streaming.length) {
-                    streaming.substring(consumed).trim()
-                } else {
-                    streaming
-                }
-                if (pendingBody.isNotBlank()) AssistantBubble(text = pendingBody)
+                // 【2026-10-10 修正文一消失】流式正文同样显示全文 ——
+                // 原来按 toolCards.lastOrNull()?.textBefore?.length 切分，
+                // 工具调用一发生正文一就从正文区消失（移进工具卡），
+                // 而工具卡在时间线路径/折叠态下又不渲染它 → 正文一不可见。
+                // 现在不切分：正文区始终是完整的流式文本。
+                AssistantBubble(text = streaming)
             }
         } else if (toolCards.isNotEmpty()) {
             // 没有流式文本但工具在跑（例如纯工具轮次）

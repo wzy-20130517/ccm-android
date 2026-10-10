@@ -433,8 +433,11 @@ class ClawdOverlayService : Service() {
         scope.launch {
             ClawdBus.state.collect { st ->
                 setSvg(st.svg)
-                // 离开 SPEAKING 时清气泡（Bus 侧也会清，这里保证 UI 同步）
-                if (st != ClawdState.SPEAKING) setBubbleText("")
+                // 【2026-10-10 修正】这里原来直接 setBubbleText("") 清气泡 ——
+                // 它绕开了 observeBubble 的「最短展示时间」保护（那个保护依赖
+                // ClawdBus.bubbleText 流的清空事件）。删掉这行：气泡清空统一
+                // 走 observeBubble（Bus 侧离开 SPEAKING 会发空串，经保护逻辑
+                // 延迟清空）。状态切换只负责换 SVG。
             }
         }
         observeBubble()
@@ -467,7 +470,7 @@ class ClawdOverlayService : Service() {
      *
      * ## 用户需求
      * 「当 Agent 点击时，Clawd 会流畅地来到点击处摆个动作，滑动时，
-     *   Clawd 也有相应动作。」
+     *   Clawd 也有相应动作。」+ 【2026-10-10】「让它过去之后再回到最初的位置。」
      *
      * ## 实现要点
      *
@@ -483,8 +486,13 @@ class ClawdOverlayService : Service() {
      *
      * 4. **动作播完自动复位**：动作是临时的，播 [ACTION_HOLD_MS] 后回到
      *    当前 Agent 状态对应的动画（不能永远停在「探头看」）。
+     *    【2026-10-10】同时**飞回原位**（用户设定位置 savedPosition）——
+     *    原来只复位动画、位置留在操作点，连续操作后螃蟹越飘越远。
      *
      * 5. **副屏操作不带坐标**：`hasPosition == false` 时原地播动作。
+     *
+     * 6. **连续动作不错乱**：collectLatest —— 新动作到来会取消旧协程，
+     *    旧动作的回位不会执行（序列结束时才回位，不会来回横跳）。
      */
     private fun observeActions() {
         scope.launch {
@@ -492,7 +500,8 @@ class ClawdOverlayService : Service() {
                 // ① 播动作动画
                 setSvg(svgForAction(action))
                 // ② 有坐标就飘过去（副屏操作没有主屏坐标，不移动）
-                if (action.hasPosition) {
+                val moved = action.hasPosition
+                if (moved) {
                     flyTo(action.x, action.y)
                 }
                 // ③ 动作是临时的：播一会儿回落到当前 Agent 状态
@@ -502,6 +511,12 @@ class ClawdOverlayService : Service() {
                 if (currentActionSvg != null) {
                     currentActionSvg = null
                     setSvg(ClawdBus.state.value.svg)
+                }
+                // ④ 【2026-10-10 加】飞回原位 —— 用户设定位置（拖动后即更新）。
+                // 若期间有新动作，本协程已被 collectLatest 取消，不会误回位。
+                if (moved) {
+                    val (homeX, homeY) = savedPosition()
+                    flyToWindow(homeX, homeY)
                 }
             }
         }
@@ -566,19 +581,30 @@ class ClawdOverlayService : Service() {
      */
     private fun flyTo(targetX: Int, targetY: Int) {
         val p = params ?: return
+        val winW = p.width
+        val winH = p.height
+        // 窗口中心要对准目标点 → 窗口左上角 = 目标 - 窗口尺寸/2
+        // 但螃蟹不在窗口正中（顶部有气泡空间），所以纵向要补偿
+        val destX = targetX - winW / 2
+        val destY = targetY - (winH * PET_CENTER_Y_RATIO).toInt()
+        flyToWindow(destX, destY)
+    }
+
+    /**
+     * 平滑飞到目标**窗口坐标**（左上角位置）—— 回位用（2026-10-10 加）。
+     *
+     * 与 [flyTo] 的区别：那个收「屏幕目标点」（螃蟹中心对准它），
+     * 这个直接收「窗口左上角坐标」—— 回位时位置本来就是窗口坐标
+     * （savedPosition 存的是窗口 x/y），直接飞不需要反向换算。
+     */
+    private fun flyToWindow(destX: Int, destY: Int) {
+        val p = params ?: return
         val w = view ?: return
         val wmLocal = wm ?: return
 
-        // 窗口中心要对准目标点 → 窗口左上角 = 目标 - 窗口尺寸/2
-        // 但螃蟹不在窗口正中（顶部有气泡空间），所以纵向要补偿
-        val winW = p.width
-        val winH = p.height
-        val destX = targetX - winW / 2
-        val destY = targetY - (winH * PET_CENTER_Y_RATIO).toInt()
-
         // 夹取到屏幕内（别飞出去）
-        val maxX = (screenWidth() - winW).coerceAtLeast(0)
-        val maxY = (screenHeight() - winH).coerceAtLeast(0)
+        val maxX = (screenWidth() - p.width).coerceAtLeast(0)
+        val maxY = (screenHeight() - p.height).coerceAtLeast(0)
         val toX = destX.coerceIn(0, maxX)
         val toY = destY.coerceIn(0, maxY)
 
@@ -613,7 +639,7 @@ class ClawdOverlayService : Service() {
     }
 
     /**
-     * 气泡文本订阅 —— **立即显示 + 冷却期合并**的节流。
+     * 气泡文本订阅 —— **立即显示 + 冷却期合并 + 最短展示时间**。
      *
      * ## 为什么不能直接 collectLatest { delay(300); inject() }
      *
@@ -632,22 +658,57 @@ class ClawdOverlayService : Service() {
      * - 冷却期内的更新：记下来，等冷却结束补发一次（不丢最后一帧）
      *
      * 这样注入频率被压到 ≤ 3.3 次/秒，同时保证用户总能看到最新的文字。
+     *
+     * ## 【2026-10-10】最短展示时间（用户报「气泡一闪而过看不清」）
+     *
+     * 问题：Agent 干活时状态频繁切换（说话 → 调工具 → 思考 → 说话），
+     * `ClawdBus.setState` 在离开 SPEAKING 时**立即清空**气泡 ——
+     * 工具调用（ToolStart）一来，刚显示 0.3 秒的话就被抹掉，
+     * 用户根本来不及读。
+     *
+     * 修法：清空请求延迟执行 —— 气泡显示不足 [BUBBLE_MIN_SHOW_MS] 时，
+     * 排一个延时清空任务；期间若有新气泡文本到来则取消它（继续展示新的）。
+     * 只有真的超过最短展示时间、且没有新内容，才真正清空。
      */
     private fun observeBubble() {
         scope.launch {
             var lastInject = 0L
             var pending: String? = null
             var flushJob: kotlinx.coroutines.Job? = null
+            // 气泡最近一次「变成非空」的时间（最短展示时间的基准）
+            var bubbleShownAt = 0L
+            // 延迟清空任务（新气泡到来时取消）
+            var clearJob: kotlinx.coroutines.Job? = null
 
             ClawdBus.bubbleText.collect { text ->
                 if (text.isEmpty()) {
                     flushJob?.cancel()
                     flushJob = null
                     pending = null
-                    setBubbleText("")
+                    // 【最短展示时间】刚显示不足 BUBBLE_MIN_SHOW_MS → 延迟清空
+                    val shownFor = System.currentTimeMillis() - bubbleShownAt
+                    if (bubbleShownAt > 0 && shownFor < BUBBLE_MIN_SHOW_MS) {
+                        if (clearJob?.isActive != true) {
+                            clearJob = scope.launch {
+                                delay(BUBBLE_MIN_SHOW_MS - shownFor)
+                                // 延时期间没有新气泡（clearJob 未被取消）→ 真清空
+                                setBubbleText("")
+                                bubbleShownAt = 0L
+                            }
+                        }
+                    } else {
+                        setBubbleText("")
+                        bubbleShownAt = 0L
+                    }
                     return@collect
                 }
+                // 新气泡文本 → 取消待执行的清空
+                clearJob?.cancel()
+                clearJob = null
                 val now = System.currentTimeMillis()
+                // 基准 = 「最后一次更新」而非「首次显示」：流式内容滚动时
+                // 用户需要时间读**最后**那一段，而不是从首字开始计时。
+                bubbleShownAt = now
                 val elapsed = now - lastInject
                 if (elapsed >= BUBBLE_THROTTLE_MS) {
                     // 冷却期已过 → 立即注入
@@ -717,6 +778,16 @@ private const val DEFAULT_X_DP = 24
 private const val DEFAULT_Y_DP = 260
 private const val TOUCH_SLOP = 12f
 private const val BUBBLE_THROTTLE_MS = 300L
+
+/**
+ * 气泡最短展示时间（ms）—— 【2026-10-10 加】。
+ *
+ * 用户报「消息气泡一闪而过，看不清在说什么」：Agent 干活时状态频繁
+ * 切换（说话 → 工具 → 思考），原来 setState 离开 SPEAKING 就立即清空。
+ * 现在气泡至少展示这么久才允许被清空（期间有新内容则继续刷新）。
+ */
+private const val BUBBLE_MIN_SHOW_MS = 3000L
+
 private const val REACTION_HOLD_MS = 2600L
 
 /** 悬浮窗边长（dp）。132dp ≈ 屏幕上不到两指宽，不挡操作又不至于看不清动画。 */
