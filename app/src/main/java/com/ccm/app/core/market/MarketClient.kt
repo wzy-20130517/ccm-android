@@ -88,7 +88,12 @@ object MarketClient {
         }
 
         // 2. 拉网络
-        val own = fetchOwnRegistry()
+        // 【2026-10-10】自有源也加超时封顶（12s）—— 它内部直连+镜像
+        // 两轮各 15+30s 超时，最坏情况会等 90 秒。超时当空结果，
+        // 让外部源的结果照常显示（fetchRegistry 的合并逻辑支持 own=null）。
+        val own = try {
+            kotlinx.coroutines.withTimeoutOrNull(12_000L) { fetchOwnRegistry() }
+        } catch (_: Throwable) { null }
         val external = try { MarketSources.fetchAll() } catch (_: Throwable) { emptyList() }
         // own 可空（自有源挂了）→ 用 orEmpty 兜底，别让整个市场跟着失败
         val merged = own.orEmpty() + external

@@ -625,6 +625,50 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
 
         SettingsDivider()
 
+        // ── 5.6 手机操作（phone use 模式，2026-10-10 加）──────────
+        // 用户需求：「设置页里加个 phone_use 模式选择」。
+        // 与 /device mode 命令同一数据源（PhoneMode，存 device.json）。
+        SettingsSection(title = "手机操作") {
+            val phoneCtx = androidx.compose.ui.platform.LocalContext.current
+            var phoneMode by remember {
+                mutableStateOf(com.ccm.app.tools.phone.PhoneMode.preference(phoneCtx))
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(SettingsFormGap)) {
+                Text(
+                    "Agent 操作手机时用哪块屏。主屏 = 你能看到它在点什么；" +
+                        "副屏 = 虚拟屏静默运行，不占你屏幕；选择 = 每次用时弹框问你。",
+                    style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                    color = CCMTheme.colors.textSecondary,
+                )
+                SettingsField(label = "操作模式") {
+                    SettingsSelectMenu(
+                        value = when (phoneMode) {
+                            com.ccm.app.tools.phone.PhoneMode.FOREGROUND -> "主屏（前台，你能看到）"
+                            com.ccm.app.tools.phone.PhoneMode.BACKGROUND -> "副屏（后台，静默）"
+                            com.ccm.app.tools.phone.PhoneMode.ASK -> "每次询问"
+                            else -> "未设置（默认每次询问）"
+                        },
+                        options = listOf(
+                            "主屏（前台，你能看到）",
+                            "副屏（后台，静默）",
+                            "每次询问",
+                        ),
+                        onPick = { label ->
+                            val v = when (label) {
+                                "主屏（前台，你能看到）" -> com.ccm.app.tools.phone.PhoneMode.FOREGROUND
+                                "副屏（后台，静默）" -> com.ccm.app.tools.phone.PhoneMode.BACKGROUND
+                                else -> com.ccm.app.tools.phone.PhoneMode.ASK
+                            }
+                            com.ccm.app.tools.phone.PhoneMode.setPreference(phoneCtx, v)
+                            phoneMode = v
+                        },
+                    )
+                }
+            }
+        }
+
+        SettingsDivider()
+
         // ── 6. 外观 ──────────────────────────────────────────────
         SettingsSection(title = "外观") {
             Column(verticalArrangement = Arrangement.spacedBy(SettingsFormGap)) {

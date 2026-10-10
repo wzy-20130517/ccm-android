@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -258,10 +259,20 @@ object MarketSources {
         // 实测 dsh-plugin.org TLS 直接失败要等 16s 超时 —— 一个坏源
         // 拖死整页。三源并发，坏源只拖自己（每个源内部 try-catch，
         // 失败返回空列表，不传染）。
+        //
+        // 【2026-10-10 加独立超时 —— 修「市场一直加载不出来」】
+        // 实测 dsh-plugin.org 的 plugins.zh.json（12MB）**60 秒只下了
+        // 106KB**（curl 超时中断）—— 而代码里 readMs=15s 超时后还会
+        // fallback 到 npm 备源再等一轮。fetchAll 的 await() 要求全部
+        // 完成才返回，于是这一个慢源把整页拖死（用户看到的「一直加载」）。
+        //
+        // 修法：每源 withTimeoutOrNull 封顶（技能/MCP 源 12s、DSH 源 10s），
+        // 超时当空结果处理 —— 该源的内容这次不出现，但不拖累其他源。
+        // 总等待上限 = max(各源超时) ≈ 12s，进页面最多等这么久。
         coroutineScope {
-            val skills = async { fetchAnthropicSkills() }
-            val mcp = async { fetchMcpRegistry() }
-            val dsh = async { fetchDshPlugins() }
+            val skills = async { withTimeoutOrNull(12_000L) { fetchAnthropicSkills() } ?: emptyList() }
+            val mcp = async { withTimeoutOrNull(12_000L) { fetchMcpRegistry() } ?: emptyList() }
+            val dsh = async { withTimeoutOrNull(10_000L) { fetchDshPlugins() } ?: emptyList() }
             // 按固定顺序拼（保持 UI 分组稳定，与顺序拉一致）
             skills.await() + mcp.await() + dsh.await()
         }
