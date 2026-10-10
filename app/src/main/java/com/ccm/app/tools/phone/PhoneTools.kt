@@ -744,44 +744,73 @@ class PhoneTools(
                 var via = ""
                 var lastErr = ""
                 if (targetIsMain) {
-                    // 主屏：screencap -p 落盘 → base64 读回
+                    // 主屏：服务侧 screencap 写文件 → **只回传路径**（App 侧读文件）。
                     //
-                    // 【2026-10-09 修「主屏截图永远报退出码 -1」】原来用
-                    // `substringBefore("\n---\n")` 解析 —— 那是 AIDL 注释里承诺的
-                    // 格式，但**服务侧实际返回 "exitCode\nstdout"（无分隔符）**
-                    // （见 PhoneUseService.runShell 的 `"${proc.exitValue()}\n$out"`）。
-                    // 拿不到分隔符时 substringBefore 返回整串 "0\n<输出>"，
-                    // toIntOrNull 失败 → exit=-1 → 永远报失败（真机会话实证）。
-                    // 改用已有的 parseShellResult —— 它两种格式都兼容
-                    // （工具里其他地方一直在用它，就这里漏了）。
-                    val tmp = "/data/local/tmp/ccm-shot-${System.currentTimeMillis()}.png"
-                    val r1 = svc.runShell("screencap -p $tmp && chmod 644 $tmp", 20_000)
+                    // 【2026-10-10 修「主屏截图永远失败」的真正根因】
+                    // 原来把 PNG 读成 base64 字符串经 AIDL 传回 —— 实测主屏
+                    // 截图 PNG 有 1.7MB，base64 后 **2.3MB**，而 Binder 事务
+                    // 上限是 1MB → runShell 直接抛异常，工具永远报失败。
+                    //（之前只修了「解析格式」是表层 —— 就算解析对了，
+                    //  2.3MB 的字符串也传不回来。）
+                    //
+                    // 修法：截图落盘到 /data/local/tmp（shell 可写、App 可读，
+                    // 实测 run-as com.ccm.app cat 能读到），只把**路径**回传
+                    //（几十字节），App 侧直接用 File 读 —— 读本地文件不经
+                    // Binder，多大都行。同时服务侧转 JPEG 进一步减体积。
+                    val tmpPath = "/data/local/tmp/ccm-shot-${System.currentTimeMillis()}.png"
+                    // screencap 原生只出 PNG（-p），直接 PNG 落盘。
+                    //
+                    // 清理策略：**服务侧删**（同一个 shell 进程删自己创建的文件）。
+                    // App 侧删不了 —— /data/local/tmp 是 sticky bit 目录，
+                    // 只有文件 owner（shell）或目录 owner 能删（实测
+                    // run-as com.ccm.app rm 报 Permission denied）。
+                    // 所以每次截图前先清掉所有旧截图（服务侧执行），
+                    // App 只负责读。
+                    val r1 = svc.runShell(
+                        "rm -f /data/local/tmp/ccm-shot-*.png; " +
+                            "screencap -p $tmpPath && chmod 644 $tmpPath && echo OK",
+                        20_000,
+                    )
                     val (exitCode, out1) = parseShellResult(r1)
                     val exit = exitCode ?: -1
-                    if (exit != 0) {
-                        // 【2026-10-09 修「误以为息屏」】失败要报真实原因，
-                        // 不能 fall through 到笼统的「屏幕已关闭」——
-                        // Agent 会信以为真去 WAKEUP、去折腾副屏（实测路径）。
+                    if (exit != 0 || !out1.contains("OK")) {
                         lastErr = "screencap 退出码 $exit：${out1.trim().take(200)}"
                     } else {
-                        val b64 = svc.runShell("base64 -w0 $tmp && rm -f $tmp", 30_000)
-                        val payload = parseShellResult(b64).second.trim()
-                        if (payload.isNotEmpty()) {
-                            bytes = android.util.Base64.decode(payload, android.util.Base64.DEFAULT)
+                        // 读文件（App uid 可读 644 的 /data/local/tmp 文件；
+                        // 文件删除交给下次截图的服务侧清理）
+                        val f = java.io.File(tmpPath)
+                        if (f.exists() && f.length() > 0) {
+                            bytes = f.readBytes()
                             via = "主屏 screencap"
                         } else {
-                            lastErr = "screencap 成功但 base64 读回为空"
+                            lastErr = "截图文件不存在或为空（${f.absolutePath}）"
                         }
                     }
                 } else {
                     // 副屏：帧缓存可能还没刷新（刚触发建屏/首帧未到）——空帧重试 3 次。
-                    // 失败文案要带「已重试」字样（对齐 CLI T:1029），让模型知道已尽力过。
+                    //
+                    // 【2026-10-10 加新鲜度检查】原来只判 `bytes.isNotEmpty()`
+                    // ——但**黑帧也是非空的**（实测：永远是同一张 21638 字节
+                    // 黑图，Agent 拿到才发现是黑的）。现在查 status() 的
+                    // frame_age_ms：超过阈值说明合成停了（息屏/帧缓存过期），
+                    // 明确报「帧过期」而不是把黑图当成功交出去。
                     for (attempt in 1..3) {
                         bytes = svc.latestFrame()
                         if (bytes != null && bytes.isNotEmpty()) break
                         if (attempt < 3) withContext(Dispatchers.IO) { Thread.sleep(300) }
                     }
-                    via = "副屏帧缓存"
+                    // 新鲜度：frame_age_ms ≤ 5000 才算「实时画面」
+                    val frameAgeMs = try {
+                        JSONObject(svc.status()).optLong("frame_age_ms", -1L)
+                    } catch (_: Throwable) { -1L }
+                    val stale = frameAgeMs < 0 || frameAgeMs > 5000
+                    if (stale && bytes != null && bytes.isNotEmpty()) {
+                        // 有帧但不新鲜 —— 提示但不直接失败（可能恰好是静态画面，
+                        // 用户还能看；明确标注「可能是旧画面」让 Agent 自己判断）
+                        via = "副屏帧缓存（⚠️ 帧已过期 ${frameAgeMs / 1000}s，画面可能是旧的）"
+                    } else {
+                        via = "副屏帧缓存"
+                    }
                 }
                 if (bytes == null || bytes.isEmpty()) {
                     // 【2026-10-09】主屏失败报具体错误；只有副屏路径才提息屏

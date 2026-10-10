@@ -1187,7 +1187,28 @@ class PhoneUseService : IPhoneUseService.Stub {
             }
         }, Handler(drainThread.looper))
 
-        // 0x609 = PUBLIC | OWN_CONTENT_ONLY | SHOULD_SHOW_SYSTEM_DECORATIONS | TRUSTED
+        // ══════════════════════════════════════════════════════════════
+        //  flags 组成 —— 【2026-10-10 修「副屏截图全黑、帧缓存从不更新」】
+        //
+        //  原来只有 1545 = 0x609（PUBLIC | OWN_CONTENT_ONLY |
+        //  SHOULD_SHOW_SYSTEM_DECORATIONS | TRUSTED），缺了三个关键 flag，
+        //  导致 onImageAvailable 一次都没触发（frame_bytes=0、frame_age_ms=-1），
+        //  截图永远是同一张 21638 字节的黑图（真机会话实证：所有截图文件
+        //  大小完全相同）。
+        //
+        //  对照 CLI 版（tools/vd/src/vd/VdCore.java，实测可用）的 flags：
+        //    0x001 PUBLIC                       别的应用也能投到这个屏
+        //    0x008 OWN_CONTENT_ONLY             只显示本进程内容
+        //    0x200 SHOULD_SHOW_SYSTEM_DECORATIONS  显示状态栏/导航栏
+        //    0x400 TRUSTED                      可显示 secure 内容
+        //    0x040 NEVER_BLANK  ★ 屏幕关闭也不停合成（修「息屏后变黑」）
+        //    0x800 ALWAYS_UNLOCKED ★ 锁屏下也可用
+        //    0x2000 OWN_FOCUS   ★ 不依赖主屏焦点，独立参与合成
+        //       （CLI 注释：「只加 NEVER_BLANK 后 display 可见了但仍 frame_bytes=0
+        //        —— OWN_FOCUS 让它独立参与合成」）
+        //
+        //  APK 版漏的正是后三个 —— 症状与 CLI 版当时踩的坑一模一样。
+        // ══════════════════════════════════════════════════════════════
         //
         // ⚠️ DisplayManager 必须用【调用进程自己的包名】构造。
         //
@@ -1198,8 +1219,9 @@ class PhoneUseService : IPhoneUseService.Stub {
         //
         // 修法：查当前进程 uid 对应的包名（shell 是 com.android.shell），用它建一个 Context，
         // 拿到的 DisplayManager 才会带对包名。实测这是 Android 16 上建 TRUSTED 虚拟屏的硬要求。
+        val flags = 0x001 or 0x008 or 0x200 or 0x400 or 0x040 or 0x800 or 0x2000
         val dm = displayManagerForSelf(context)
-        display = dm.createVirtualDisplay("CCMVirtualDisplay", w, h, dpi, reader?.surface, 1545)
+        display = dm.createVirtualDisplay("CCMVirtualDisplay", w, h, dpi, reader?.surface, flags)
     }
 
     /**
