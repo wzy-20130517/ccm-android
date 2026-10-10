@@ -229,14 +229,34 @@ class PhoneUseService : IPhoneUseService.Stub {
         return input("swipe", x.toString(), y.toString(), x.toString(), y.toString(), d.toString())
     }
 
+    /**
+     * ref 归一化：refTable 的 key 是 "e<序号>"，而调用方可能传
+     * "e16" / "16" / "node:16" 三种写法（对齐 AIDL 注释与 CLI VdCore 的做法）。
+     *
+     * 【2026-10-09 修「phone_click 永远报失效」】原来 tapRef/tapRefAt/scroll
+     * 直接拿传入字符串查表 —— 工具侧 normalizeRef 把 "e16" 剥成了 "16"，
+     * 查 refTable["16"] 必然 null → 永远报「节点已失效」。
+     * 根因在**两侧各剥/各查、没有一处负责重组**：CLI 端 VdCore 是
+     * 解析出数字后重组 "e"+id 再查（tools/vd/src/vd/VdCore.java:565），
+     * APK 端漏了这一步。在服务侧做归一化比改工具侧更彻底 ——
+     * 不管调用方传哪种写法都能命中。
+     */
+    private fun normalizeRefKey(ref: String): String {
+        var s = ref.trim()
+        if (s.startsWith("node:")) s = s.substring(5).trim()
+        if (s.startsWith("e")) s = s.substring(1)
+        val id = s.toIntOrNull() ?: return ref.trim()   // 非数字：原样查（交给 null 处理）
+        return "e$id"
+    }
+
     override fun tapRef(ref: String): Boolean {
-        val e = synchronized(refLock) { refTable[ref] } ?: return false
+        val e = synchronized(refLock) { refTable[normalizeRefKey(ref)] } ?: return false
         return tap(e.cx, e.cy)
     }
 
     /** 取节点中心坐标（不点击）—— 长按用，见 AIDL 注释。 */
     override fun tapRefAt(ref: String): IntArray {
-        val e = synchronized(refLock) { refTable[ref] } ?: return IntArray(0)
+        val e = synchronized(refLock) { refTable[normalizeRefKey(ref)] } ?: return IntArray(0)
         return intArrayOf(e.cx, e.cy)
     }
 
@@ -271,7 +291,8 @@ class PhoneUseService : IPhoneUseService.Stub {
      */
     override fun scroll(ref: String, direction: String): Boolean {
         if (ref.isNotEmpty()) {
-            val e = synchronized(refLock) { refTable[ref] }
+            // 【2026-10-09】同样归一化 —— 原来 "16" 查不到 "e16"（见 normalizeRefKey）
+            val e = synchronized(refLock) { refTable[normalizeRefKey(ref)] }
             if (e != null) {
                 val node = e.raw?.takeIf { it.isScrollable } ?: findScrollableAt(e.cx to e.cy) ?: return false
                 val action = if (direction.lowercase() == "up")

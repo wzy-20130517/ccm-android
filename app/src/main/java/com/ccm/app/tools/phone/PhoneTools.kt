@@ -744,18 +744,28 @@ class PhoneTools(
                 var via = ""
                 var lastErr = ""
                 if (targetIsMain) {
-                    // 主屏：screencap -d <displayId=0> 落盘 → base64 读回
+                    // 主屏：screencap -p 落盘 → base64 读回
+                    //
+                    // 【2026-10-09 修「主屏截图永远报退出码 -1」】原来用
+                    // `substringBefore("\n---\n")` 解析 —— 那是 AIDL 注释里承诺的
+                    // 格式，但**服务侧实际返回 "exitCode\nstdout"（无分隔符）**
+                    // （见 PhoneUseService.runShell 的 `"${proc.exitValue()}\n$out"`）。
+                    // 拿不到分隔符时 substringBefore 返回整串 "0\n<输出>"，
+                    // toIntOrNull 失败 → exit=-1 → 永远报失败（真机会话实证）。
+                    // 改用已有的 parseShellResult —— 它两种格式都兼容
+                    // （工具里其他地方一直在用它，就这里漏了）。
                     val tmp = "/data/local/tmp/ccm-shot-${System.currentTimeMillis()}.png"
                     val r1 = svc.runShell("screencap -p $tmp && chmod 644 $tmp", 20_000)
-                    val exit = r1.substringBefore("\n---\n", "").trim().toIntOrNull() ?: -1
+                    val (exitCode, out1) = parseShellResult(r1)
+                    val exit = exitCode ?: -1
                     if (exit != 0) {
                         // 【2026-10-09 修「误以为息屏」】失败要报真实原因，
                         // 不能 fall through 到笼统的「屏幕已关闭」——
                         // Agent 会信以为真去 WAKEUP、去折腾副屏（实测路径）。
-                        lastErr = "screencap 退出码 $exit：${r1.substringAfter("\n---\n", "").trim().take(200)}"
+                        lastErr = "screencap 退出码 $exit：${out1.trim().take(200)}"
                     } else {
                         val b64 = svc.runShell("base64 -w0 $tmp && rm -f $tmp", 30_000)
-                        val payload = b64.substringAfter("\n---\n", "").trim()
+                        val payload = parseShellResult(b64).second.trim()
                         if (payload.isNotEmpty()) {
                             bytes = android.util.Base64.decode(payload, android.util.Base64.DEFAULT)
                             via = "主屏 screencap"
