@@ -37,19 +37,32 @@
   #bubble {
     max-width: 94%;
     margin-bottom: 2px;
-    padding: 7px 10px;
     background: rgba(22, 22, 30, .9);
-    color: #f2f2f7;
-    font-size: 11px; line-height: 1.45;
     border-radius: 12px;
     box-shadow: 0 2px 10px rgba(0, 0, 0, .35);
+    /* ══════════════════════════════════════════════════════════
+       【2026-10-10 修「DeepSeek 显示成 Deep」】
+       原来直接对文本用 `-webkit-line-clamp: 3`（显示**前** 3 行）——
+       文本超长时最新内容全被裁掉，且词跨在第 3/4 行边界时
+       会被从中间切断（「DeepSeek」→「Deep」）。
+       现在：JS 侧截取**尾部**（见 setBubble，保留最后 ~90 字符、
+       词边界起切），CSS 这里用 flex 底部对齐作保险 —— 即使
+       内容仍超 3 行，裁切也发生在**顶部**（保住最新内容）。
+       ══════════════════════════════════════════════════════════ */
+    max-height: 4.35em;              /* 3 行 × 1.45 行高，保险用 */
+    overflow: hidden;
+    display: flex;
+    align-items: flex-end;           /* 内层从底部对齐 → 溢出裁顶部 */
+  }
+  /* 内层：文本本体（padding 跟着它，底部对齐后 padding-top 被裁无妨） */
+  #bubbleText {
+    display: block;
+    width: 100%;
+    padding: 7px 10px;
+    color: #f2f2f7;
+    font-size: 11px; line-height: 1.45;
     word-break: break-word;
     white-space: pre-wrap;
-    /* 最多 3 行，超出省略 —— 悬浮窗空间有限，长正文没有显示价值 */
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
   }
   #bubble:not(.show) { display: none; }
   #pet {
@@ -74,13 +87,14 @@
 </head>
 <body>
 <div id="stage">
-  <div id="bubble"></div>
+  <div id="bubble"><span id="bubbleText"></span></div>
   <img id="pet" src="clawd-idle-follow.svg" alt="">
 </div>
 <script>
 (function () {
   var pet = document.getElementById('pet');
   var bubble = document.getElementById('bubble');
+  var bubbleText = document.getElementById('bubbleText');
   var curSvg = 'clawd-idle-follow.svg';
 
   window.setState = function (svg) {
@@ -89,13 +103,42 @@
     pet.src = svg;
   };
 
+  /**
+   * 设气泡文本。
+   *
+   * 【2026-10-10 修「DeepSeek 显示成 Deep」】用户看到的是被切断的词。
+   * 两个问题叠加：
+   *  1. 显示的是文本**开头**（旧内容），最新的内容看不到 ——
+   *     气泡的用途是「它刚说了什么」，应该显示**尾部**
+   *  2. 截断点落在词中间 —— 「DeepSeek」跨在边界上被切一半
+   *
+   * 修法：只保留尾部 MAX_CHARS 个字符；截断时**从词边界起切**
+   *（向前找到最近的空白/标点，中文按字符切，英文词不拆）。
+   * 前缀加「…」提示还有前文。
+   */
+  var BUBBLE_MAX_CHARS = 90;
   window.setBubble = function (text) {
     if (!text) {
       bubble.classList.remove('show');
-      bubble.textContent = '';
+      bubbleText.textContent = '';
       return;
     }
-    bubble.textContent = text;
+    var shown = text;
+    if (shown.length > BUBBLE_MAX_CHARS) {
+      shown = shown.slice(shown.length - BUBBLE_MAX_CHARS);
+      // 词边界：向前找最近的空白/标点（限 12 字符内），避免把英文词切两半。
+      // 中文没有空格，找不到就按字符切（中文单字独立，不算拆词）。
+      var cut = -1;
+      for (var i = 0; i < Math.min(12, shown.length); i++) {
+        if (/[\s\u3000，。！？、；：,.!?;:)\]}】」』]/.test(shown.charAt(i))) {
+          cut = i + 1;
+          break;
+        }
+      }
+      if (cut > 0) shown = shown.slice(cut);
+      shown = '…' + shown;
+    }
+    bubbleText.textContent = shown;
     bubble.classList.add('show');
   };
 

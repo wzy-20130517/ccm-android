@@ -767,17 +767,36 @@ class ChatSession(
             if (message.hidden) return@mapNotNull null
             when (message.role) {
                 Message.ROLE_ASSISTANT -> {
-                    val cards = message.content.filterIsInstance<ContentBlock.ToolUse>().map { use ->
-                        val result = resultsById[use.id]
-                        ToolCard(
-                            id = use.id,
-                            name = use.name,
-                            preview = use.input.toString().take(180),
-                            input = use.input.toString(),
-                            running = result == null,
-                            result = result?.content.orEmpty(),
-                            isError = result?.isError ?: false,
-                        )
+                    // 【2026-10-10 修正文/工具交错】按 content 的真实顺序算 textBefore。
+                    //
+                    // message.content 本来就是有序的 [Text, ToolUse, Text, ToolUse, …]
+                    // （AgentLoop.appendToolResults 按输出顺序写入）——
+                    // 遍历时累计正文，每个 ToolUse 记下「到它为止的正文」，
+                    // 就是该工具的 textBefore。UI 据此把正文/工具切成
+                    // 「正文1 → 工具1 → 正文2 → 工具2 → …」交错渲染。
+                    //
+                    // 原来这里用 filterIsInstance 直接抽 ToolUse（丢顺序信息），
+                    // textBefore 永远空 → 历史恢复后只能「工具堆一起 + 正文全文」。
+                    val cards = mutableListOf<ToolCard>()
+                    var accumulated = ""
+                    message.content.forEach { block ->
+                        when (block) {
+                            is ContentBlock.Text -> accumulated += block.text
+                            is ContentBlock.ToolUse -> {
+                                val result = resultsById[block.id]
+                                cards += ToolCard(
+                                    id = block.id,
+                                    name = block.name,
+                                    preview = block.input.toString().take(180),
+                                    input = block.input.toString(),
+                                    running = result == null,
+                                    result = result?.content.orEmpty(),
+                                    isError = result?.isError ?: false,
+                                    textBefore = accumulated,
+                                )
+                            }
+                            else -> {}
+                        }
                     }
                     if (message.text.isBlank() && cards.isEmpty()) null else Bubble(
                         role = Message.ROLE_ASSISTANT,
@@ -1092,9 +1111,18 @@ class ChatSession(
                     is AgentEvent.ToolStart -> {
                         toolCards += ToolCard(
                             id = ev.id, name = ev.name, preview = ev.inputPreview,
-                            // 工具前的正文（对齐 Web 的 textBefore）——
-                            // UI 渲染在工具卡上方，还原正文/工具的交错顺序
-                            textBefore = ev.textBefore,
+                            // 【2026-10-10 交错渲染】工具前的正文 —— 转成**全局累积值**。
+                            //
+                            // ev.textBefore 是**本轮**（本次 API 响应）的正文快照
+                            //（AgentLoop.textSoFar，每轮新建 textSb）。但 bubble.text
+                            // 是跨轮累积的全文 —— 两者坐标系不同，直接存会让 UI 的
+                            // 「增量切分」算错（第二轮的工具拿到的是轮内值，减第一轮
+                            // 的全局值会得到负数或错位）。
+                            //
+                            // 全局值 = 之前轮已定格的正文（accumulatedText）+ 本轮快照。
+                            // UI 据此按 `textBefore 增量` 把正文/工具切成交错段：
+                            //   正文1 → 工具1 → 正文2 → 工具2 → … → 正文N+1
+                            textBefore = accumulatedText + ev.textBefore,
                             // 同理带上思考 —— 思维链的时间线靠它排序。
                             //
                             // ⚠️ 用**本类的 thinkingBuf**（跨轮累积），不是

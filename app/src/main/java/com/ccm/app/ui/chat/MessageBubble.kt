@@ -461,37 +461,53 @@ fun MessageList(
                 // （MainContent.tsx:1186）；APK 问题27 把独立组删了却没有兜底。
                 // 修：thinking 有 → 时间线（工具合成进去）；
                 //     thinking 空但有工具 → 退回独立 ToolCallGroup（Web 的另一条路径）。
+                // ══════════════════════════════════════════════════════════
+                //  【2026-10-10 用户要的交错布局：正文1 → 工具1 → 正文2 → 工具2 …】
+                //
+                //  数据一直都在：每个工具卡带 textBefore（该工具前累积的正文，
+                //  ChatSession 存的是跨轮全局值）。之前渲染成「工具全堆一起 +
+                //  正文全堆一起」，是因为没用它切分。
+                //
+                //  切分算法（逐段还原）：
+                //    正文段_i = textBefore_i - textBefore_(i-1)（增量）
+                //    最后一段 = 全文 - textBefore_last（工具后的收尾正文）
+                //  然后按「正文段 → 工具卡 → 正文段 → 工具卡 → …」交错输出。
+                //
+                //  thinking 非空时：思考链（含工具时间线）在前，正文在后 ——
+                //  工具已在时间线里显示，这里只补正文段（不重复放工具卡）。
+                // ══════════════════════════════════════════════════════════
                 if (bubble.thinking.isNotBlank()) {
-                    AssistantThinkingChain(
-                        thinking = bubble.thinking,
-                        isThinking = false,
-                        // ★ 关键：把工具卡传进去 —— 合成到时间线里
-                        toolCards = bubble.toolCards,
-                        modifier = Modifier.fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                    )
+                    // 正文全文（工具已在时间线里，不重复）
+                    if (bubble.text.isNotBlank()) AssistantBubble(text = bubble.text)
+                } else if (bubble.toolCards.isNotEmpty() &&
+                    bubble.toolCards.any { it.textBefore.isNotBlank() }
+                ) {
+                    // ── 交错渲染：正文段 ↔ 工具卡 ──────────────────────
+                    val segs = buildInterleavedSegments(bubble.text, bubble.toolCards)
+                    segs.forEach { seg ->
+                        when (seg) {
+                            is InterleavedSeg.Text ->
+                                if (seg.text.isNotBlank()) AssistantBubble(text = seg.text)
+                            is InterleavedSeg.Tool ->
+                                ToolCallGroup(
+                                    cards = listOf(seg.card),
+                                    modifier = Modifier.fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 2.dp),
+                                )
+                        }
+                    }
                 } else if (bubble.toolCards.isNotEmpty()) {
+                    // 旧数据（textBefore 缺失）：工具组 + 正文全文（原行为）
                     ToolCallGroup(
                         cards = bubble.toolCards,
                         modifier = Modifier.fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                     )
+                    if (bubble.text.isNotBlank()) AssistantBubble(text = bubble.text)
+                } else if (bubble.text.isNotBlank()) {
+                    // 纯正文（无工具）
+                    AssistantBubble(text = bubble.text)
                 }
-                // 【2026-10-10 修正文一消失】正文区永远显示全文 ——
-                // 不再按 toolTextEndOffset 切分（工具前的正文不在工具区兜底）。
-                //
-                // 原设计（对齐 Web）：工具前的正文由工具卡的 textBefore 显示，
-                // 正文区只显示最后一个工具之后的正文 —— 避免同一段文字两遍。
-                // 但 APK 有两条路径让「工具前的正文」不可见：
-                //   · thinking 非空时走思考时间线，时间线的工具事件不渲染 textBefore
-                //   · 工具组定型后默认折叠（调用处没传 isStreaming → allDone → 折叠）
-                // 结果：正文一（工具前）从正文区被切走后、在工具区也看不见 ——
-                // 用户报「正文一突然消失，只显示正文二；重启 App 后又都显示」。
-                // （重启后历史恢复不存 textBefore/toolTextEndOffset → 显示全文。）
-                //
-                // 现在统一为「正文区永远全文」——实时与重启后一致，正文永不消失。
-                // 代价：工具前的正文不再在工具卡内渲染（textBefore 渲染已移除）。
-                if (bubble.text.isNotBlank()) AssistantBubble(text = bubble.text)
             }
         }
 
@@ -541,29 +557,47 @@ fun MessageList(
                     modifier = Modifier.fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                 )
-            } else if (streaming.isNotBlank() && toolCards.isNotEmpty()) {
-                // 【2026-10-06 同上】思考空但工具在跑 + 正文已开始：
-                // 时间线渲染不了（thinking 空 → 合成返回空），必须走独立
-                // 工具组，否则工具在这段流式里完全不显示（原来被 if/else if
-                // 结构甩到够不着的分支）。
+            }
+            // ══════════════════════════════════════════════════════════
+            //  【2026-10-10 交错渲染】与定型气泡同一套逻辑（用户要的
+            //  「正文1 → 工具1 → 正文2 → 工具2」在流式期间就成立）。
+            //
+            //  工具卡带 textBefore（该工具前累积的正文）——
+            //  ChatSession 在 ToolStart 时填的是「之前轮已定格正文 +
+            //  本轮快照」的全局值，与 streaming（= accumulatedText + 当前
+            //  轮增量）同一坐标系，可直接做前缀差切分。
+            //
+            //  thinking 非空：工具已在时间线里，这里只补正文段。
+            //  thinking 空：正文段与工具卡完整交错。
+            // ══════════════════════════════════════════════════════════
+            if (streamingThinking.isNotBlank()) {
+                if (streaming.isNotBlank()) AssistantBubble(text = streaming)
+            } else if (toolCards.isNotEmpty() && toolCards.any { it.textBefore.isNotBlank() }) {
+                val segs = buildInterleavedSegments(streaming, toolCards)
+                segs.forEach { seg ->
+                    when (seg) {
+                        is InterleavedSeg.Text ->
+                            if (seg.text.isNotBlank()) AssistantBubble(text = seg.text)
+                        is InterleavedSeg.Tool ->
+                            ToolCallGroup(
+                                cards = listOf(seg.card),
+                                isStreaming = streamingRunning,
+                                isStale = !streamingRunning,
+                                modifier = Modifier.fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                            )
+                    }
+                }
+            } else if (streaming.isNotBlank()) {
+                AssistantBubble(text = streaming)
+            } else if (toolCards.isNotEmpty()) {
+                // 纯工具轮次（正文还没开始）
                 ToolCallGroup(
                     cards = toolCards,
                     isStreaming = streamingRunning,
                     isStale = !streamingRunning,
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
-            }
-
-            // 本轮工具调用 —— 对齐 Web：**聚合成一个折叠组**（不是单卡平铺）。
-            // Web `MainContent.tsx:1186` 把一条消息的所有 toolCalls 包进一个
-            // `<div className="mb-4">`，组头显示去重后的工具名摘要，展开后左竖线内列。
-            if (streaming.isNotBlank()) {
-                // 【2026-10-10 修正文一消失】流式正文同样显示全文 ——
-                // 原来按 toolCards.lastOrNull()?.textBefore?.length 切分，
-                // 工具调用一发生正文一就从正文区消失（移进工具卡），
-                // 而工具卡在时间线路径/折叠态下又不渲染它 → 正文一不可见。
-                // 现在不切分：正文区始终是完整的流式文本。
-                AssistantBubble(text = streaming)
             }
         } else if (toolCards.isNotEmpty()) {
             // 没有流式文本但工具在跑（例如纯工具轮次）
@@ -640,6 +674,78 @@ data class ChatBubble(
 
     /** 列表 key —— 加 role 前缀防极端情况撞号（dev-core 建议） */
     val key: String get() = "$role-$messageId"
+}
+
+/**
+ * 交错渲染的一段（2026-10-10 加）—— 正文段或工具卡，按真实输出顺序排列。
+ */
+sealed class InterleavedSeg {
+    /** 正文段（工具前/工具间/工具后说的一段话）。 */
+    data class Text(val text: String) : InterleavedSeg()
+
+    /** 工具卡（带完整数据，UI 直接渲染）。 */
+    data class Tool(val card: ChatToolCard) : InterleavedSeg()
+}
+
+/**
+ * 把一条助手消息切成「正文段 ↔ 工具卡」交错序列（2026-10-10 加）。
+ *
+ * ## 用户要的观感
+ * `正文1 → 工具1 → 正文2 → 工具2 → … → 正文N+1`（真实输出顺序），
+ * 而不是「工具全堆一起、正文全堆一起」。
+ *
+ * ## 切分算法
+ * 每个工具卡带 [ChatToolCard.textBefore]（该工具前累积的正文，全局值）：
+ * ```
+ * 正文段_0 = textBefore_0                              （第一个工具前）
+ * 正文段_i = textBefore_i - textBefore_(i-1)           （两工具之间）
+ * 正文段_N = 全文 - textBefore_last                    （最后一个工具后）
+ * ```
+ * 用 `removePrefix` 做减法（textBefore 是累计值、且是全文前缀）。
+ *
+ * ## 容错
+ * · textBefore 不是前一个的前缀（数据异常）→ 该段按整段 textBefore 显示
+ * · 差值算出来为空 → 跳过该正文段（只有工具卡）
+ * · 全文比最后一个 textBefore 还短 → 最后一段为空
+ *
+ * @param fullText 气泡的完整正文（跨轮累积）
+ * @param cards 工具卡列表（按调用顺序）
+ */
+private fun buildInterleavedSegments(
+    fullText: String,
+    cards: List<ChatToolCard>,
+): List<InterleavedSeg> {
+    if (cards.isEmpty()) {
+        return if (fullText.isBlank()) emptyList() else listOf(InterleavedSeg.Text(fullText))
+    }
+    // ⚠️ 两侧都 trim 再比较 —— bubble.text 在 core 定型时被 trim 过
+    //（Done 分支 `(accumulatedText + streaming).trim()`），而 textBefore
+    // 没有。模型输出常以换行开头（markdown 习惯），不 trim 会前缀匹配失败
+    // → 走「整段兜底」→ 正文重复显示。这是实测过的隐患，不是理论担心。
+    val full = fullText.trim()
+    val out = mutableListOf<InterleavedSeg>()
+    var prevBefore = ""
+    cards.forEach { card ->
+        val before = card.textBefore.trim()
+        // 本段增量 = before - prevBefore（都是累计值，做前缀差）
+        val delta = when {
+            before.isBlank() -> ""                       // 无正文（历史旧数据/纯工具）
+            before.startsWith(prevBefore) -> before.removePrefix(prevBefore)
+            else -> before                                // 数据异常（不是前缀）→ 整段
+        }
+        if (delta.isNotBlank()) out += InterleavedSeg.Text(delta.trim())
+        out += InterleavedSeg.Tool(card)
+        if (before.isNotBlank()) prevBefore = before
+    }
+    // 最后一个工具之后的收尾正文
+    val tail = when {
+        full.isBlank() -> ""
+        prevBefore.isBlank() -> full                      // 所有工具都没有 textBefore
+        full.startsWith(prevBefore) -> full.removePrefix(prevBefore)
+        else -> full                                      // 数据异常 → 整段
+    }
+    if (tail.isNotBlank()) out += InterleavedSeg.Text(tail.trim())
+    return out
 }
 
 /**
