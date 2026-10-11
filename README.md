@@ -70,25 +70,18 @@ proot 只服务一件事：Bash 工具执行命令（装了个 Ubuntu rootfs 提
 | Bash 环境 | Termux 原生（开箱即用） | 内置 proot（要装 rootfs）或外接 Termux |
 | 悬浮窗 | 无 | **Clawd 吉祥物** |
 | 会话数据 | `~/.claude-code-mobile/` | App 私有目录（`files/`） |
-| 部署 | git clone 即用 | 编译 APK 安装 |
+| 部署 | git clone 即用 | 下载 APK 安装 |
 
 两边**会话 JSON 格式兼容**，可以把 CLI 的会话搬进 App（反之亦然）。
 
 ---
 
-## 构建
+## 下载安装
 
-**CI 构建（推荐）**：push 到 main 自动触发 GitHub Actions，
-产物在 Actions 页面的 artifact（`ccm-debug`）。
+去 [Releases](https://github.com/wzy-20130517/ccm-android/releases) 下载最新的
+`CCM-<build号>.apk`，直接安装即可（每次 CI 构建都会自动发一个）。
 
-**本地构建**：需要完整 Android SDK + Gradle（不推荐在手机上跑，太慢）。
-
-```
-./gradlew assembleDebug
-```
-
-版本号由 CI 注入（`CCM_VERSION_NAME` / `CCM_VERSION_CODE` 环境变量），
-本地构建默认 `0.1.0`。
+首次启动会让你配 API Provider（地址 + Key + 模型），并可选安装 proot 环境（Bash 工具用）。
 
 ---
 
