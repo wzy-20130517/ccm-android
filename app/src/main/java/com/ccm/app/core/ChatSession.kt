@@ -803,7 +803,10 @@ class ChatSession(
         //    LazyColumn 认为整个列表都是新内容 → **滚动位置丢失/漂移**。
         //    用户报的「上滑脱离跟随后界面仍被下拉」就是这个（锚定失效）。
         //    key 必须**稳定且唯一**，唯一性在这里（数据层）保证才对。
-        val restored = messages.mapIndexedNotNull { histIdx, message ->
+        // 【显式标注类型】mapIndexedNotNull 的 lambda 里是 `when` 表达式，
+        // 分支返回 Bubble / null / `if (…) Bubble`（无 else）——
+        // Kotlin 推断不出 T，会推成 Any。显式写 <Message, Bubble> 即可。
+        val restored: List<Bubble> = messages.mapIndexedNotNull<Message, Bubble> { histIdx, message ->
             // 【2026-10-06】hidden 消息（轮次提醒/空响应提示/队友注入等
             // 系统内部消息）不进气泡 —— 它们不是用户说的话，显示出来会
             // 让人困惑（「我什么时候发过这个？」）。
