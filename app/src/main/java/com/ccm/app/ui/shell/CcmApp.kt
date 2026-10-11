@@ -300,13 +300,40 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
     // 从对话页进设置，关闭后跳首页 → 用户报「切页回来变首页样式」。
     var routeBeforeSettings by remember { mutableStateOf<CcmRoute?>(null) }
 
+    // 【2026-10-11 修「进市场再返回变首页」】
+    //
+    // 市场 / 定制页的 onBack 原来硬编码 `navigate(CcmRoute.HOME)` ——
+    // 从对话页进去、返回时跳首页，用户丢上下文。
+    //
+    // 与 routeBeforeSettings 同一模式，但抽成通用的「来源页」：
+    // 凡是**二级页面**（市场/定制这类从别处钻进去的）都记一下从哪来，
+    // 返回时回去。主页面之间（首页↔对话↔列表）不走这套 —— 那些是
+    // 平级切换，回哪个由用户点哪个决定。
+    var backRoute by remember { mutableStateOf<CcmRoute?>(null) }
+
+    /** 哪些是「二级页面」（进入时该记住来源） */
+    fun isSecondaryPage(r: CcmRoute): Boolean =
+        r == CcmRoute.SETTINGS || r == CcmRoute.MARKET || r == CcmRoute.CUSTOMIZE
+
     /** 切页 —— 对齐 Web：路由变化时自动收起抽屉（`App.tsx:378`） */
     fun navigate(to: CcmRoute) {
         // 【2026-10-06 问题21】进设置页前记住当前页（关闭时回去）
         if (to == CcmRoute.SETTINGS && route != CcmRoute.SETTINGS) {
             routeBeforeSettings = route
         }
+        // 【2026-10-11】二级页面记来源（返回时回去，而不是无脑跳首页）
+        if (isSecondaryPage(to) && !isSecondaryPage(route)) {
+            backRoute = route
+        }
         route = to
+        sidebarOpen = false
+    }
+
+    /** 二级页面返回 —— 回来源页；没记到就回首页（兜底） */
+    fun navigateBack() {
+        val target = backRoute ?: CcmRoute.HOME
+        backRoute = null
+        route = target
         sidebarOpen = false
     }
 
@@ -1339,7 +1366,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
 
                     CcmRoute.MARKET -> {
                         com.ccm.app.ui.pages.MarketScreen(
-                            onBack = { navigate(CcmRoute.HOME) },
+                            onBack = { navigateBack() },
                         )
                     }
 
@@ -1398,7 +1425,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         }
                         CustomizeScreen(
                             sections = skills,
-                            onBack = { navigate(CcmRoute.HOME) },
+                            onBack = { navigateBack() },
                         )
                     }
 
@@ -1534,6 +1561,20 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         if (sidebarOpen) {
             androidx.activity.compose.BackHandler(enabled = true) {
                 sidebarOpen = false
+            }
+        }
+
+        // 【2026-10-11 加】二级页面（市场 / 定制）拦截返回键。
+        //
+        // 原来没有这个 —— 在市场页按系统返回键，Activity 收到返回事件后
+        // 没有 Compose 层拦截 → 直接 finish() 退出 App。用户从对话页
+        // 进市场、按返回想回对话，结果**整个 App 关掉了**（比跳首页更糟）。
+        //
+        // 优先级：抽屉 > 设置 > 二级页面 —— 所以这个判断放在抽屉之后，
+        // 且只在「抽屉关着 且 不在设置覆盖层」时才拦截。
+        if (!sidebarOpen && !showSettings && (route == CcmRoute.MARKET || route == CcmRoute.CUSTOMIZE)) {
+            androidx.activity.compose.BackHandler(enabled = true) {
+                navigateBack()
             }
         }
         SidebarDrawer(

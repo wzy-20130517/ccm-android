@@ -257,8 +257,21 @@ internal fun documentHeightRuntime(): String = """
 internal fun wrapDocumentSvg(svg: String): String =
     """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 html,body{margin:0;padding:0;background:transparent}
-body{display:flex;align-items:center;justify-content:center;padding:8px;box-sizing:border-box}
-svg{max-width:100%;height:auto;display:block}
+/* ⚠️ 不要用 display:flex 居中 —— flex 容器里 body 的 scrollHeight
+   计算方式不同（flex 项可能不撑开父容器），导致高度上报不准 →
+   容器高度不对 → SVG 被裁。用普通块级布局 + margin:auto 居中更稳。 */
+body{padding:8px;box-sizing:border-box;text-align:center}
+/* 【2026-10-11 修「svg 显示不全」】
+   SVG 常自带固定尺寸属性（如 width="400" height="300"）——
+   那个**属性**的优先级高于 CSS 的 height:auto，导致：
+     · 400px 宽 > 屏幕宽 → 被裁（要手动滑）
+     · height:auto 失效 → 高度按 300px 硬撑，与容器不匹配
+   用 `!important` 强制覆盖两个属性：
+     · width:100% → 撑满容器宽度
+     · height:auto → 高度按 viewBox 比例自适应（关键：有了它，
+       SVG 会按宽度等比缩放，不再被固定尺寸卡住）
+   注意 `max-height:none` 也要加 —— 有些 SVG 自带 style 里限制了高度。 */
+svg{width:100%!important;height:auto!important;max-width:100%!important;max-height:none!important;display:block}
 </style>${documentHeightRuntime()}</head><body>$svg</body></html>"""
 
 /**

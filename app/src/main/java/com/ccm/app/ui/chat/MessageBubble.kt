@@ -85,27 +85,16 @@ fun AssistantBubble(
             .padding(horizontal = 16.dp, vertical = 15.72.dp),
     ) {
         // ★ 2026-09-27：死 Text → MarkdownRenderer（690 行组件首秀）。
-        // ★ 第37批：超长折叠（助手长回复同理，Web 有 Show more/less）。
-        var expanded by remember(text) { mutableStateOf(false) }
-        val longText = text.length > 2000   // 助手阈值放宽（正文本来就长）
-        val shownText = if (longText && !expanded) text.take(2000) + "\n\n…" else text
+        //
+        // 【2026-10-11 去掉折叠】原来超 2000 字截断 + 「展开全文」按钮 ——
+        // 用户指出「助手气泡本就不该折叠」（它是 AI 的正式输出，截断等于
+        // 藏信息）。用户气泡的折叠保留（那是用户自己发的内容，长粘贴
+        // 确实会撑爆页面）。
         Column {
             MarkdownRenderer(
-                content = shownText,
+                content = text,
                 modifier = Modifier.fillMaxWidth(),
             )
-            if (longText) {
-                Text(
-                    text = if (expanded) "收起" else "展开全文（共 ${text.length} 字）",
-                    style = CCMText.body12.copy(fontWeight = FontWeight.Medium),
-                    color = colors.textSecondary,
-                    modifier = Modifier
-                        .padding(top = 4.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .clickable { expanded = !expanded }
-                        .padding(vertical = 2.dp, horizontal = 2.dp),
-                )
-            }
         }
     }
 }
