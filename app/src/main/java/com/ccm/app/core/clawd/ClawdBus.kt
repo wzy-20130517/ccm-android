@@ -1,5 +1,11 @@
 package com.ccm.app.core.clawd
 
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -55,6 +61,25 @@ object ClawdBus {
     /**
      * 任务是否正在跑（决定「用户手动关掉悬浮窗后要不要自动弹回来」）。
      */
+    /**
+     * 兜底收回定时器的协程作用域（2026-10-11 加）。
+     *
+     * 【为什么 Bus 自己需要 scope】HAPPY/ERROR 的收回原来完全依赖悬浮窗
+     * 的脉冲订阅 —— 而 SharedFlow 无重放，订阅者缺失/被杀/重建时脉冲
+     * 直接丢失，状态永远卡住。修法是在 Bus 内部自建定时器（不依赖任何
+     * 外部订阅者）。
+     *
+     * 用 SupervisorJob + Dispatchers.Default：单个任务失败不影响其它，
+     * 且不占主线程（delay 不需要 UI 线程）。
+     */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** 当前挂起的「延迟收回」任务（新任务到来时取消旧的）。 */
+    private var holdJob: Job? = null
+
+    /** HAPPY/ERROR 的展示时长（与悬浮窗的 REACTION_HOLD_MS 保持一致）。 */
+    private const val REACTION_HOLD_MS = 2600L
+
     private val _running = MutableStateFlow(false)
     val running: StateFlow<Boolean> = _running.asStateFlow()
 
@@ -146,7 +171,33 @@ object ClawdBus {
             // 立刻回 IDLE。
             when (_state.value) {
                 ClawdState.HAPPY, ClawdState.ERROR -> {
-                    // 交给悬浮窗的脉冲延迟收回（2.6s 后），这里不抢
+                    // 【2026-10-11 二修】原来这里「不抢，交给悬浮窗的脉冲
+                    // 延迟收回」—— 但那条路径**依赖脉冲送达**：
+                    //   · SharedFlow 无重放，悬浮窗在 2.6s 延迟期间被杀/
+                    //     重建 → 脉冲已消费 → 永远不会再收回
+                    //   · 悬浮窗没开时脉冲直接丢弃（无订阅者）
+                    //   · 协程被取消（collectLatest 遇到新脉冲）
+                    // 任一情况 → **螃蟹永远卡在 HAPPY/ERROR**
+                    //（用户报的「任务完成后卡在开心动画上不回到空闲」）。
+                    //
+                    // 修法：这里**自己起一个兜底定时器** —— 不依赖任何
+                    // 外部订阅者。到点后如果状态还是 HAPPY/ERROR（说明
+                    // 没有新任务接管），强制回 IDLE。
+                    //
+                    // 为什么还保留 HAPPY/ERROR 不立即清除：那是给用户的
+                    // 「完成/失败」反馈，立即抹掉太突兀。等 2.6s 再看。
+                    holdJob?.cancel()
+                    holdJob = scope.launch {
+                        delay(REACTION_HOLD_MS)
+                        // 期间没有新任务接管（running 仍 false）且状态没变
+                        // （还是那个 HAPPY/ERROR）才收回 —— 否则说明新一轮
+                        // 已经开始，别抢它的状态。
+                        if (!_running.value &&
+                            (_state.value == ClawdState.HAPPY || _state.value == ClawdState.ERROR)
+                        ) {
+                            _state.value = ClawdState.IDLE
+                        }
+                    }
                 }
                 else -> _state.value = ClawdState.IDLE
             }

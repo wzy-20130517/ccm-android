@@ -549,7 +549,16 @@ class ChatSession(
      * 要打断当前任务用 [stop]。
      */
     fun send(text: String, imagePaths: List<String> = emptyList()) {
-        if (text.isBlank()) return
+        // 【2026-10-11 修「仅带一张图无文本无法发送」】
+        //
+        // 原来只判 `text.isBlank()` 就 return —— 纯图消息被静默丢弃。
+        // 而 UI 层（InputBar 的发送键 enabled）是
+        // `value.isNotBlank() || attachedPaths.isNotEmpty()` —— **允许纯图**。
+        // 两层判据不一致：按钮亮着、点了没反应（最糟的一种不一致）。
+        //
+        // 修法：有图也算有效输入。对齐 Web（那边 `runMessage` 只在
+        // `!trimmed && !attachments.length` 时才拒绝）。
+        if (text.isBlank() && imagePaths.isEmpty()) return
         // 【2026-10-06 mid-turn steering】运行中不再**静默丢弃** ——
         // 入 steering 队列，AgentLoop 下一轮调用前注入（不打断当前工具批次）。
         // 对齐 CLI/Web：用户长任务中想补充/纠偏时不用先打断再重说。

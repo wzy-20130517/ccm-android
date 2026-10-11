@@ -635,7 +635,12 @@ private fun InputCard(
                             onValueChange(if (value.isBlank()) text else "$value $text")
                         },
                     )
-                    val canSend = input.isNotBlank()
+                    // 【2026-10-11 修「仅带图无文本无法发送」】
+                    // 原来只判文本 —— 而 Web 是 `canSend` 包含附件
+                    // （`MainContent.tsx` 的发送键 enabled 逻辑）。
+                    // 纯图消息是常见用法（「这是什么？」都不用打），
+                    // 只贴图应该能发。
+                    val canSend = input.isNotBlank() || pendingImages.isNotEmpty()
                     if (canSend) {
                         // 发送按钮 —— 对应 `landingSendButtonClass`：
                         // `flex h-[32px] w-[40px] rounded-[8px] bg-[#efcbc0] text-white`
@@ -978,7 +983,9 @@ private fun sendWithImages(
     images: List<String>,
     onSent: () -> Unit,
 ) {
-    if (text.isBlank()) return
+    // 【2026-10-11】原来 `if (text.isBlank()) return` —— 纯图消息被拦。
+    // 与 ChatSession.send / InputBar 的判据统一：有图也算有效输入。
+    if (text.isBlank() && images.isEmpty()) return
     onSend(text, images)
     onSent()   // 清 pendingImages（input 的清空在 onSend 成功路径由外层做）
 }

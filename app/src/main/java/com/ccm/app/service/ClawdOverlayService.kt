@@ -442,6 +442,7 @@ class ClawdOverlayService : Service() {
         }
         observeBubble()
         observeActions()
+        startIdleWatchdog()
         // 脉冲事件（完成/失败动画播完自动回 IDLE）
         //
         // ⚠️ 用 collectLatest 而不是 collect：collect 是顺序的，
@@ -460,6 +461,77 @@ class ClawdOverlayService : Service() {
                         }
                     }
                     ClawdPulse.STOPPED -> ClawdBus.setState(ClawdState.IDLE)
+                }
+            }
+        }
+    }
+
+    /**
+     * 空闲看门狗 —— 周期性检查「任务已结束但状态没回 IDLE」的僵尸状态。
+     *
+     * ## 为什么需要（2026-10-11 加）
+     *
+     * HAPPY/ERROR 的收回逻辑原来完全依赖 `ClawdBus.pulse` —— 而 SharedFlow
+     * **无重放**，脉冲在以下情况会静默丢失：
+     *   · 悬浮窗在 2.6s 延迟期间被杀/重建（脉冲已消费）
+     *   · 协程被 collectLatest 的新脉冲取消
+     *   · 订阅建立前脉冲已发（比如服务刚启动）
+     *
+     * 任一情况 → 螃蟹**永远卡在那个动画上**（用户报「任务完成后卡在开心
+     * 动画上不回到空闲」）。
+     *
+     * ClawdBus 侧已加了自建定时器兜底，但那只覆盖「setRunning(false) 被
+     * 调到」的情况。如果 setRunning 本身没被调（进程异常、App 被杀），
+     * 还是需要这一层。
+     *
+     * ## 判据
+     *
+     * `running == false` 且状态**不在** {IDLE, SLEEPING} → 说明任务早结束
+     * 了但动画还停在工作中/完成态 → 强制收回。
+     *
+     * 每 5 秒检查一次：足够及时，又不会频繁唤醒 CPU（服务本来就在跑，
+     * 一次 StateFlow 读几乎零成本）。
+     */
+    /** HAPPY/ERROR 连续停留的 tick 数（看门狗用，见 [startIdleWatchdog]）。 */
+    private var reactionStuckTicks = 0
+
+    private fun startIdleWatchdog() {
+        scope.launch {
+            while (true) {
+                delay(5_000)
+                try {
+                    if (!ClawdBus.running.value) {
+                        val st = ClawdBus.state.value
+                        // running=false 时**合法**的状态只有两个：
+                        //   · IDLE / SLEEPING —— 空闲本来就是目标态
+                        //
+                        // 其余全部是僵尸态，分两档处理：
+                        //   · HAPPY / ERROR —— 完成/失败反馈，**正常**只停留
+                        //     2.6s（ClawdBus 的定时器收回）。这里给 3 倍宽限
+                        //     （8 秒），避免和 Bus 的定时器抢。
+                        //   · THINKING/SPEAKING/TYPING/… —— 任务已结束却还在
+                        //     「工作」，**绝不该出现**，立即收回。
+                        val isWorking = st != ClawdState.IDLE && st != ClawdState.SLEEPING
+                        val isReaction = st == ClawdState.HAPPY || st == ClawdState.ERROR
+                        if (isWorking) {
+                            if (isReaction) {
+                                // HAPPY/ERROR：宽限 8 秒（3 次 tick）
+                                reactionStuckTicks += 1
+                                if (reactionStuckTicks >= 3) {
+                                    ClawdBus.setState(ClawdState.IDLE)
+                                    reactionStuckTicks = 0
+                                }
+                            } else {
+                                // 工作态僵尸：立即收回
+                                ClawdBus.setState(ClawdState.IDLE)
+                                reactionStuckTicks = 0
+                            }
+                        } else {
+                            reactionStuckTicks = 0
+                        }
+                    }
+                } catch (_: Throwable) {
+                    // 看门狗自己绝不能崩
                 }
             }
         }
