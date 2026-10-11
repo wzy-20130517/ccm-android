@@ -37,7 +37,7 @@ object ChatAdapter {
         toolTextEndOffset = bubble.toolTextEndOffset,
         toolCards = bubble.toolCards.map(::toUi),
         images = bubble.images,
-        presentItems = bubble.presentItems,
+        documents = bubble.documents,
     )
 
     /** core 待办 → UI 待办 */
@@ -69,7 +69,6 @@ object ChatAdapter {
         streaming = state.streaming,
         streamingThinking = state.thinking,
         todos = state.todos.map(::toUi),
-        presentItems = state.presentItems,
         running = state.running,
         toolCards = state.toolCards.map(::toUi),
         error = state.error,
@@ -91,7 +90,6 @@ data class UiChatState(
     val streamingThinking: String = "",
     /** 当前待办清单（TodoPanel 渲染）。 */
     val todos: List<com.ccm.app.ui.common.TodoItem> = emptyList(),
-    val presentItems: List<ChatSession.PresentItem> = emptyList(),
     val running: Boolean = false,
     val toolCards: List<ChatToolCard> = emptyList(),
     val error: String? = null,

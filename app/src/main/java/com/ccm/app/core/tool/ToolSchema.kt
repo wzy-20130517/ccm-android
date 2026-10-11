@@ -155,7 +155,7 @@ object ToolSchema {
     /**
      * 浮点数参数。
      *
-     * 与 [integer] 分开：Present 的滑块参数 min/max/step/value 天然是小数
+     * 与 [integer] 分开：滑块类参数（min/max/step/value）天然是小数
      * （`0.1` 步长、`1.5` 倍速），用 integer 会误导模型只给整数。
      */
     fun number(description: String, minimum: Double? = null, maximum: Double? = null): JsonObject =

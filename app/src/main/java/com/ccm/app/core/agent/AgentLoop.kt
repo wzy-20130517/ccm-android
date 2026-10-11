@@ -1267,17 +1267,6 @@ class AgentLoop(
             override suspend fun onContent(text: String) {
                 emit(AgentEvent.TextDelta(text, messageId))
             }
-
-            override suspend fun onPresent(
-                kind: String,
-                title: String?,
-                caption: String?,
-                content: String,
-                paths: List<String>,
-                params: List<com.ccm.app.core.tool.PresentParam>,
-            ) {
-                emit(AgentEvent.Present(kind, title, caption, content, paths, params))
-            }
         }
 
     /** 权限判断：plan 模式只放行只读；default/acceptEdits 放行非破坏性。 */

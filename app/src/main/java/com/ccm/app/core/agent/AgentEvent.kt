@@ -123,21 +123,8 @@ sealed class AgentEvent {
     /** 工具执行中的进度（覆盖式显示，不进历史）。 */
     data class ToolProgress(val id: String, val text: String) : AgentEvent()
 
-    /** Present 富内容展示事件。 */
-    data class Present(
-        val kind: String,
-        val title: String?,
-        val caption: String?,
-        val content: String,
-        val paths: List<String>,
-        /**
-         * 可调参数（滑块）。
-         *
-         * 对齐 Web 端 `msg.presents[].params`（server.mjs:731 从 tool_use.input 反解）。
-         * 空列表 = 无滑块 —— 老会话/不传 params 的调用保持原样。
-         */
-        val params: List<com.ccm.app.core.tool.PresentParam> = emptyList(),
-    ) : AgentEvent()
+    // 【2026-10-11】Present 事件已删 —— 可视内容不再由工具「推」给 UI，
+    // 改为 UI 从 Write/Edit 工具调用**推导**文档卡片（见 ChatSession.deriveDocuments）。
 
     /** 工具执行完成。[result] 是已截断的结果文本。 */
     data class ToolResult(

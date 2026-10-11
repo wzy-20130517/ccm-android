@@ -90,7 +90,6 @@ fun ChatScreen(
     toolCards: List<ChatToolCard> = emptyList(),
     streamingThinking: String = "",
     todos: List<com.ccm.app.ui.common.TodoItem> = emptyList(),
-    presentItems: List<com.ccm.app.core.ChatSession.PresentItem> = emptyList(),
     input: String = "",
     running: Boolean = false,
     title: String = "新对话",
@@ -123,6 +122,12 @@ fun ChatScreen(
     val imeBottomDp = with(density) { WindowInsets.ime.getBottom(this).toDp() }
     // todo 看板折叠态（提升到这里 —— 折叠时面板不渲染，标题栏显徽标）
     var todoCollapsed by remember { mutableStateOf(true) }
+    // 文档预览面板（点文档卡片打开；null = 未打开）。
+    // 状态放这里而不是 DocumentPanel 内部 —— 点卡片的地方在 MessageList 深处，
+    // 得由上层持有才能在两个 composable 之间传递。
+    var openDoc by remember {
+        mutableStateOf<com.ccm.app.core.ChatSession.DocumentEntry?>(null)
+    }
 
     Box(
         modifier = modifier
@@ -443,7 +448,7 @@ fun ChatScreen(
                         streamingThinking = streamingThinking,
                         streamingRunning = running,
                         todos = emptyList(),
-                        presentItems = presentItems,
+                        onOpenDocument = { openDoc = it },
                     )
                     // 【2026-10-06 问题45 修复·第三版】输入栏已移进 Column
                     // （不再是浮层）→ 不需要 154dp 的"给浮层让位"留白。
@@ -670,6 +675,20 @@ fun ChatScreen(
             }
         }
 
+        // ── 文档全屏预览（点消息里的文档卡片打开）─────────────────────
+        // 挂在最外层 Box 末尾 → 盖住整屏（含标题栏/输入栏），与 Web 的全屏抽屉一致。
+        openDoc?.let { doc ->
+            DocumentPanel(
+                filename = doc.filename,
+                content = doc.content,
+                format = com.ccm.app.ui.common.DocumentMeta.resolveDocumentFormat(
+                    format = "",
+                    filename = doc.filename,
+                    content = doc.content,
+                ),
+                onDismiss = { openDoc = null },
+            )
+        }
     }
 }
 

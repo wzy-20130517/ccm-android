@@ -86,7 +86,7 @@ object ToolTimeouts {
         "EnterPlanMode" to FAST, "ExitPlanMode" to FAST,
         "EnterDeepMode" to FAST, "ExitDeepMode" to FAST,
         "EnterWatch" to FAST, "ExitWatch" to FAST,
-        "Skill" to FAST, "Present" to FAST,
+        "Skill" to FAST,
 
         // ── Android 装饰类（NORMAL）──
         "Toast" to NORMAL, "Notify" to NORMAL, "Vibrate" to NORMAL, "TTS" to NORMAL,

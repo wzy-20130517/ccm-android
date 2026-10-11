@@ -4,7 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,7 +14,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.clickable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,8 +22,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -302,207 +298,6 @@ fun UserBubble(
     //   showMenu 状态保留（长按仍弹菜单的逻辑被按钮行替代，但长按保留复制行为）。
 }
 
-/**
- * 渲染一组 Present 展示块。
- *
- * 【2026-10-11 从 MessageList 提取】原来是内联在 MessageList 顶部的全局渲染，
- * 位置错误（展示块跑到整个消息流顶部）。现在提取成独立函数，由两处调用：
- *   · MessageList 的 assistant 分支 —— 渲染 `bubble.presentItems`（定型后）
- *   · 流式气泡 —— 渲染 `state.presentItems`（当前正在生成的，见 ChatScreen）
- *
- * 渲染分支：
- *   · html / svg → WebView（禁 JS，防外跳）
- *   · mermaid    → WebView + assets/mermaid.min.js（JS on，离线渲染流程图）
- *   · image 等   → ThumbImage 缩略图
- *   · video      → VideoView 播放
- */
-@Composable
-fun PresentBlock(
-    items: List<com.ccm.app.core.ChatSession.PresentItem>,
-    modifier: Modifier = Modifier,
-) {
-    if (items.isEmpty()) return
-    Column(modifier = modifier.fillMaxWidth()) {
-        items.forEach { item ->
-            // 参数当前值（滑块状态）。初始值来自 item.params，拖动只改这里 ——
-            // PresentFrame 内部区分「首帧（用初始值构建 HTML）」与「热更新
-            // （postMessage 进 WebView，不重建）」，见 PresentFrame 文档。
-            var paramValues by remember(item.content) {
-                mutableStateOf(item.params.associate { it.name to it.value })
-            }
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
-                    .clip(RoundedCornerShape(10.dp)).background(CCMTheme.colors.input).padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                // 标题行 + 复制按钮（对齐 Web 的「复制源码」—— 用户明确要过）
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        item.title ?: "展示 · ${item.kind}",
-                        style = CCMText.body14.copy(fontWeight = FontWeight.Medium),
-                        color = CCMTheme.colors.textMain,
-                        modifier = Modifier.weight(1f),
-                    )
-                    // 源码类才有内容可复制（image/video 只有路径）
-                    if (item.content.isNotBlank()) {
-                        val ctx = androidx.compose.ui.platform.LocalContext.current
-                        var copied by remember(item.content) { mutableStateOf(false) }
-                        Text(
-                            text = if (copied) "已复制" else "复制",
-                            style = CCMText.body12,
-                            color = CCMTheme.colors.accent,
-                            modifier = Modifier
-                                .clickable {
-                                    try {
-                                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                                            as? android.content.ClipboardManager
-                                        cm?.setPrimaryClip(android.content.ClipData.newPlainText("CCM", item.content))
-                                        copied = true
-                                    } catch (_: Throwable) {}
-                                }
-                                .padding(start = 8.dp),
-                        )
-                    }
-                }
-                item.caption?.let { Text(it, style = CCMText.body12, color = CCMTheme.colors.textSecondary) }
-                // 【2026-10-11 重构】html / svg / mermaid 的渲染抽到 PresentFrame
-                // （独立文件，含完整的四层安全模型文档 + 参数热更新 + 速度参数接管）。
-                // 原来内联在这里，参数滑块加不进来（WebView 的 JS 桥、首帧/热更新
-                // 区分、高度上报都挤在一个 composable 里会失控）。
-                if (item.kind in setOf("html", "svg", "mermaid") && item.content.isNotBlank()) {
-                    var webHeight by remember(item.content) { mutableStateOf(260.dp) }
-                    var expanded by remember(item.content) { mutableStateOf(false) }
-                    val maxH = 1200.dp
-                    PresentFrame(
-                        kind = item.kind,
-                        content = item.content,
-                        params = item.params,
-                        values = paramValues,
-                        height = if (expanded) maxH else webHeight,
-                        onHeightChanged = { webHeight = it.coerceIn(160.dp, maxH) },
-                    )
-                    // 展开/收起：内容比 260dp 高时给入口（contentHeight 不准时也能救）
-                    if (webHeight > 260.dp || expanded) {
-                        Text(
-                            text = if (expanded) "收起" else "展开全部",
-                            style = CCMText.body12,
-                            color = CCMTheme.colors.accent,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { expanded = !expanded }
-                                .padding(vertical = 4.dp),
-                        )
-                    }
-                } else if (item.content.isNotBlank()) {
-                    Text(item.content.take(4000), style = CCMText.body12.copy(fontFamily = FontFamily.Monospace), color = CCMTheme.colors.textSecondary)
-                }
-                // 参数滑块（对齐 Web 的 params 区）—— 拖动热更新，不重建 WebView
-                if (item.params.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        item.params.forEach { param ->
-                            val v = paramValues[param.name] ?: param.value
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    param.label,
-                                    style = CCMText.body12,
-                                    color = CCMTheme.colors.textSecondary,
-                                    modifier = Modifier.width(72.dp),
-                                )
-                                androidx.compose.material3.Slider(
-                                    value = v.toFloat(),
-                                    onValueChange = { nv ->
-                                        paramValues = paramValues + (param.name to nv.toDouble())
-                                    },
-                                    valueRange = param.min.toFloat()..param.max.toFloat(),
-                                    steps = if (param.step > 0) {
-                                        (((param.max - param.min) / param.step).toInt() - 1).coerceAtLeast(0)
-                                    } else 0,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                Text(
-                                    presentFormatNumber(v),
-                                    style = CCMText.body12.copy(fontFamily = FontFamily.Monospace),
-                                    color = CCMTheme.colors.textMain,
-                                    modifier = Modifier.width(48.dp),
-                                )
-                            }
-                        }
-                    }
-                }
-                item.paths.forEach { path ->
-                    when (item.kind) {
-                        "image", "images" -> {
-                            // 【2026-10-11 修两个内容问题】
-                            //  1. 原来 ContentScale.Crop —— 裁掉图片边缘。展示场景要
-                            //     看完整内容（长图/图表/截图），改成 Fit（完整、按比例）。
-                            //  2. 原来固定 220dp 高 —— 竖图被压、横图留白。改成按
-                            //     图片原始宽高比算高度（对齐 Web 的 `w-full h-auto`）。
-                            val aspect = remember(path) {
-                                try {
-                                    val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                                    android.graphics.BitmapFactory.decodeFile(path, o)
-                                    if (o.outWidth > 0 && o.outHeight > 0) o.outWidth.toFloat() / o.outHeight else 0f
-                                } catch (_: Throwable) { 0f }
-                            }
-                            // 用 BoxWithConstraints 拿实际可用宽度（比猜屏幕宽可靠，
-                            // 也自动适配横竖屏/分屏）。高度 = 宽度 / 宽高比。
-                            BoxWithConstraints(
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                val w = maxWidth
-                                val h = if (aspect > 0f) {
-                                    (w / aspect).coerceIn(120.dp, 900.dp)
-                                } else 220.dp
-                                com.ccm.app.ui.common.ThumbImage(
-                                    path,
-                                    Modifier.fillMaxWidth().height(h),
-                                    8.dp,
-                                    contentScale = ContentScale.Fit,
-                                )
-                            }
-                        }
-                        "video" -> {
-                            // 【2026-10-11】原来固定 240dp —— 竖屏视频被压、宽屏留白。
-                            // 改成用 MediaMetadataRetriever 读真实宽高比算高度
-                            // （对齐 Web 的 `w-full` + 视频自身比例）。
-                            val vAspect = remember(path) {
-                                try {
-                                    val mmr = android.media.MediaMetadataRetriever()
-                                    mmr.setDataSource(path)
-                                    val w = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
-                                    val h = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
-                                    mmr.release()
-                                    if (w > 0 && h > 0) w.toFloat() / h else 0f
-                                } catch (_: Throwable) { 0f }
-                            }
-                            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                                val w = maxWidth
-                                val h = if (vAspect > 0f) (w / vAspect).coerceIn(160.dp, 900.dp) else 240.dp
-                                AndroidView(
-                                    modifier = Modifier.fillMaxWidth().height(h),
-                                    factory = { context -> android.widget.VideoView(context).apply {
-                                        setVideoPath(path)
-                                        setMediaController(android.widget.MediaController(context).also { it.setAnchorView(this) })
-                                    } },
-                                )
-                            }
-                        }
-                        else -> Text(path, style = CCMText.body11.copy(fontFamily = FontFamily.Monospace), color = CCMTheme.colors.textSecondary)
-                    }
-                }
-            }
-        }
-    }
-}
 
 /**
  * 消息列表 —— 按 [ChatBubble] 类型分发到对应气泡。
@@ -523,7 +318,8 @@ fun MessageList(
     streamingRunning: Boolean = false,
     /** 待办清单（TodoWrite 维护，渲染在消息流顶部）。 */
     todos: List<com.ccm.app.ui.common.TodoItem> = emptyList(),
-    presentItems: List<com.ccm.app.core.ChatSession.PresentItem> = emptyList(),
+    /** 点文档卡片（打开 DocumentPanel；null = 不响应，卡片仍显示）。 */
+    onOpenDocument: ((com.ccm.app.core.ChatSession.DocumentEntry) -> Unit)? = null,
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
         // 待办面板 —— Web 行为：清单挂在消息流顶部，随 TodoWrite 更新
@@ -536,10 +332,9 @@ fun MessageList(
         }
 
 
-        // 【2026-10-11 位置修正】原来这里渲染 presentItems（全局态）→ 展示块
-        // 跑到整个消息流顶部。现在改挂到 bubble 上内联渲染（见下方 bubbles 循环
-        // 的 assistant 分支）。state.presentItems 只在**流式期间**用（当前正在
-        // 生成的那条），定型后清空 —— 见 ChatSession 的 Done 处理。
+        // 【2026-10-11】原来这里渲染 presentItems（全局态）→ 展示块跑到整个
+        // 消息流顶部。Present 下线后，文档卡片改挂到 bubble 上内联渲染
+        // （见下方 bubbles 循环的 assistant 分支）。
 
         bubbles.forEachIndexed { index, bubble ->
             if (bubble.isUser) {
@@ -653,10 +448,16 @@ fun MessageList(
                     AssistantBubble(text = bubble.text)
                 }
 
-                // 【2026-10-11 位置修正】Present 展示块内联在**本条消息内**渲染
-                // （原来挂在消息流顶部，Agent 展示的东西会跑到所有历史上面）。
-                // 对齐 Web 的做法（MainContent.tsx:1341 的 msg.presents）。
-                PresentBlock(items = bubble.presentItems)
+                // 【2026-10-11】文档卡片内联在**本条消息内**渲染（正文之后）。
+                // 数据由 ChatSession.deriveDocuments 从 toolCards 推导（Write/Edit
+                // 写过的、扩展名可预览的文件）。点卡片 → DocumentPanel 全屏预览。
+                // 对齐 Web 的做法（MainContent.tsx:1355-1375）。
+                if (bubble.documents.isNotEmpty() && onOpenDocument != null) {
+                    DocumentCardList(
+                        documents = bubble.documents,
+                        onOpen = onOpenDocument,
+                    )
+                }
             }
         }
 
@@ -758,16 +559,14 @@ fun MessageList(
             )
         }
 
-        // 【2026-10-11】流式期间的 Present 展示块 —— 用全局 state.presentItems
-        // （当前正在生成的这条还没定型成 bubble，拿不到 bubble.presentItems）。
-        // 定型后 ChatSession 会清空全局态，改由上面的 bubble 分支渲染，
-        // 不会重复。
-        PresentBlock(items = presentItems)
+        // 【2026-10-11】流式期间**不**推导文档卡片：toolCards 里已能看到
+        // Write/Edit 的调用，再叠一张卡片等于同一件事显示两遍；而且流式过程中
+        // 文件还在写，卡片内容会反复变。等 Done 定型进 bubble 后一次性渲染。
     }
 }
 
 /**
- * mermaid 源码 → 可渲染 HTML（Present 升级，2026-10-06）。
+ * mermaid 源码 → 可渲染 HTML（对齐 Web 的 mermaid 分支）。
  *
  * 模板要点：
  * · `<script src="mermaid.min.js">` 是**相对路径** —— 配合 loadDataWithBaseURL
@@ -818,12 +617,13 @@ data class ChatBubble(
     /** 附带图片路径（用户消息；渲染缩略图，第20批）。 */
     val images: List<String> = emptyList(),
     /**
-     * 该消息展示的可视内容（Present 工具产出）。
+     * 该消息里被**写过**的文件（从 toolCards 推导）。
      *
-     * 【2026-10-11】从全局态改挂消息上（对齐 Web 的 msg.presents）——
-     * 原来渲染在整个消息流顶部，展示块会跑到所有历史上面。
+     * 【2026-10-11】替代原来的 presentItems。Present 工具下线后，可视内容
+     * 不再是「工具推给 UI 的一段富文本」，而是「Agent 写的文件」——
+     * UI 渲染成文档卡片（[DocumentCardList]），点开全屏预览（[DocumentPanel]）。
      */
-    val presentItems: List<com.ccm.app.core.ChatSession.PresentItem> = emptyList(),
+    val documents: List<com.ccm.app.core.ChatSession.DocumentEntry> = emptyList(),
 ) {
     val isUser: Boolean get() = role == "user"
 

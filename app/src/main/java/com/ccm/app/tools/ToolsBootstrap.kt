@@ -25,7 +25,6 @@ import com.ccm.app.tools.dev.DevTools
 import com.ccm.app.tools.net.GitHubTools
 import com.ccm.app.tools.net.ImageTools
 import com.ccm.app.tools.net.LookupTools
-import com.ccm.app.tools.net.PresentTools
 import com.ccm.app.tools.net.VisionTools
 import com.ccm.app.tools.net.WebTools
 import com.ccm.app.tools.phone.PhoneTools
@@ -238,8 +237,6 @@ class ToolsBootstrap(
         // ImageTools 始终创建 —— 内部工具各自判断 key 配置
         val imageTools = ImageTools(settings, defaultCwd)
         val lookupTools = LookupTools(storage.rootDir)
-        // Present：把可视内容落盘 + 返回路径（APK 端无内联渲染通道，见类注释）
-        val presentTools = PresentTools(storage.rootDir)
         val visionTools = VisionTools(context, storage.rootDir)
         val phoneTools = PhoneTools(context, storage.rootDir)
         val systemTools = SystemTools(bridge)
@@ -466,9 +463,8 @@ class ToolsBootstrap(
             add(hashlineTools.HashlineEditTool())
             add(hashlineTools.HashlineGrepTool())
 
-            // P2：Skill / Present
+            // P2：Skill
             add(skillTools.SkillTool())
-            add(presentTools.PresentTool())
 
             // P2：GitHub（未配 token 时工具会提示怎么配）
             add(ghTools.GitHubRepoTool())

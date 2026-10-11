@@ -682,7 +682,6 @@ private val ToolLabels = mapOf(
     "GitHubComment" to "发评论",
     "GitHubCreateIssue" to "建 issue",
     // 模式工具（手机操作模式）
-    "Present" to "展示内容",
 )
 
 /** 工具显示名（未知工具回退到原名，空名回退 `Tool`） */

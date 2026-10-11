@@ -113,7 +113,6 @@ enum class ClawdState(val svg: String, val label: String) {
             is AgentEvent.ToolStart -> forTool(ev.name)
             is AgentEvent.ToolProgress -> null   // 工具进行中，保持当前状态
             is AgentEvent.ToolResult -> null
-            is AgentEvent.Present -> null
             is AgentEvent.Error -> ERROR
             is AgentEvent.TurnEnd -> null        // 一轮结束但任务可能继续
             is AgentEvent.Usage -> null

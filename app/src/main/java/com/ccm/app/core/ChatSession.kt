@@ -803,6 +803,10 @@ class ChatSession(
                         text = message.text,
                         messageId = "history-${message.timestamp}",
                         toolCards = cards,
+                        // 历史消息同样推导文档 —— 否则重启后老会话里的
+                        // Write/Edit 卡片全都不见了（对齐 Web：那边是从
+                        // 消息对象的 toolCalls 实时算，不依赖额外落盘字段）
+                        documents = deriveDocuments(cards),
                     )
                 }
                 Message.ROLE_USER -> {
@@ -1057,8 +1061,6 @@ class ChatSession(
 
     private suspend fun collectEvents(events: Flow<AgentEvent>) {
         val toolCards = mutableListOf<ToolCard>()
-        // 本轮 Present 产出（与 toolCards 同机制：Done 时定型进 bubble）
-        val presentBuf = mutableListOf<PresentItem>()
         var streaming = ""
         var accumulatedText = ""
         var currentMessageId = ""
@@ -1158,17 +1160,6 @@ class ChatSession(
                         }
                     }
 
-                    is AgentEvent.Present -> {
-                        // 【2026-10-11】累积到 presentBuf（与 toolCards 同机制），
-                        // Done 时随 bubble 定型。不再写全局 state.presentItems ——
-                        // 那会让展示块跑到整个消息流顶部（见 Bubble.presentItems 注释）。
-                        val item = PresentItem(ev.kind, ev.title, ev.caption, ev.content, ev.paths, ev.params)
-                        presentBuf += item
-                        // 流式期间也要能看到 —— 挂到 state 上供「当前正在生成的这条」渲染。
-                        // 定型后 presentBuf 清空、state.presentItems 也清空（避免重复渲染）。
-                        _state.value = _state.value.copy(presentItems = presentBuf.toList())
-                    }
-
                     is AgentEvent.ToolProgress -> {
                         val i = toolCards.indexOfFirst { it.id == ev.id }
                             .takeIf { it >= 0 }
@@ -1213,18 +1204,17 @@ class ChatSession(
                     AgentEvent.Done -> {
                         // 收尾时同时定型正文和思维链；有些 Provider 只回传 reasoning，
                         // 若只检查正文，思维链会在 Done 时被清空并永久丢失。
-                        if (accumulatedText.isNotBlank() || streaming.isNotBlank() || thinkingBuf.isNotBlank() || toolCards.isNotEmpty() || presentBuf.isNotEmpty()) {
+                        if (accumulatedText.isNotBlank() || streaming.isNotBlank() || thinkingBuf.isNotBlank() || toolCards.isNotEmpty()) {
                             val finalText = (accumulatedText + streaming).trim()
                             val finalThinking = thinkingBuf
                             val finalTools = toolCards.toList()
-                            val finalPresents = presentBuf.toList()
                             // 【2026-10-06】工具后的正文起点（对齐 Web 的 toolTextEndOffset）：
                             // 最后一个工具的 textBefore 长度 = 工具区显示的正文总量，
                             // 正文区从这里往后显示 —— 否则工具前的正文会显示两遍。
                             // 没有工具 → 0（正文区显示全文，兜底）。
                             val textEndOffset = finalTools.lastOrNull()?.textBefore?.length ?: 0
                             val nextState = _state.value.copy(
-                                bubbles = if (finalText.isNotBlank() || finalThinking.isNotBlank() || finalTools.isNotEmpty() || finalPresents.isNotEmpty()) {
+                                bubbles = if (finalText.isNotBlank() || finalThinking.isNotBlank() || finalTools.isNotEmpty()) {
                                     _state.value.bubbles + Bubble(
                                         role = Message.ROLE_ASSISTANT,
                                         text = finalText,
@@ -1232,20 +1222,17 @@ class ChatSession(
                                         toolTextEndOffset = textEndOffset,
                                         thinking = finalThinking,
                                         toolCards = finalTools,
-                                        presentItems = finalPresents,
+                                        documents = deriveDocuments(finalTools),
                                     )
                                 } else _state.value.bubbles,
                                 streaming = "",
                                 thinking = "",
                                 toolCards = emptyList(),
-                                // presentBuf 已定型进 bubble → 清空全局态，避免重复渲染
-                                presentItems = emptyList(),
                             )
                             _state.value = nextState
                             streaming = ""
                             accumulatedText = ""
                             thinkingBuf = ""
-                            presentBuf.clear()
                         }
                         saveForced()   // 每轮完成即落盘，避免切页/进程回收丢失最近一轮
                         // 【2026-10-06 问题14 修复】原来这里是
@@ -1385,28 +1372,31 @@ class ChatSession(
          * 存在 todos.json（TodoWriteTool 自己落盘），进程重启可从那恢复。
          */
         val todos: List<TodoEntry> = emptyList(),
-        val presentItems: List<PresentItem> = emptyList(),
     ) {
         /** 是否为空对话（UI 据此显示欢迎页）。 */
         val isEmpty: Boolean get() = bubbles.isEmpty() && streaming.isBlank()
     }
 
-    /** Present 工具提交给聊天 UI 的富内容项。 */
-    data class PresentItem(
-        val kind: String,
-        val title: String?,
-        val caption: String?,
+    /**
+     * 从一条消息的工具调用里**推导**出的文档（对齐 Web 的 `normalizeMessageDocuments`）。
+     *
+     * ## 为什么是「推导」而不是「工具主动推」
+     * 老设计（Present 工具）要模型把完整 SVG/HTML 源码塞进工具参数 ——
+     * 费 token、手机端容易截断。新设计与 Web 一致：
+     * **Agent 只管写文件**（Write / Edit），前端扫一遍 toolCards 就知道
+     * 哪些文件被写过、内容是什么，渲染成可点开的卡片。
+     *
+     * @property path 文件路径（卡片标题取它的文件名）
+     * @property content 最终内容（Write 的原文 + 后续 Edit 的替换结果）
+     */
+    data class DocumentEntry(
+        val path: String,
         val content: String,
-        val paths: List<String>,
-        /**
-         * 可调参数（滑块）。
-         *
-         * 对齐 Web 端 `msg.presents[].params` —— 三种读取方式（CSS 变量 /
-         * window.PARAMS + onParamChange / `{{name}}` 占位符）见 [com.ccm.app.core.tool.PresentParam]。
-         * 空 = 无滑块。
-         */
-        val params: List<com.ccm.app.core.tool.PresentParam> = emptyList(),
-    )
+    ) {
+        /** 文件名（取路径最后一段，兼容 `/` 与 `\`）。 */
+        val filename: String
+            get() = path.split('/', '\\').lastOrNull()?.takeIf { it.isNotBlank() } ?: path
+    }
 
     /** 一条待办（TodoWrite 的 todos 数组元素，core 侧形态）。 */
     data class TodoEntry(
@@ -1444,17 +1434,15 @@ class ChatSession(
          */
         val images: List<String> = emptyList(),
         /**
-         * 该消息展示的可视内容（Present 工具产出）。
+         * 该消息里被**写过**的文件（从 toolCards 推导，见 [deriveDocuments]）。
          *
-         * 【2026-10-11 从全局态改挂消息上】原来 `state.presentItems` 是全局的，
-         * MessageList 把它渲染在**整个消息流顶部** —— 于是 Agent 展示一张图，
-         * 它会跑到所有历史对话的最上面，而不是出现在当前回复的位置。
+         * 【2026-10-11】替代原来的 `presentItems`。Present 工具下线后，
+         * 可视内容不再是「工具推给 UI 的一段富文本」，而是「Agent 写的文件」——
+         * UI 渲染成文档卡片，点开全屏预览（[com.ccm.app.ui.chat.DocumentPanel]）。
          *
-         * Web 的做法（MainContent.tsx:1341）是挂在消息对象上（`msg.presents`），
-         * 渲染时在**该条消息内**内联。现在对齐：Present 事件累积到 presentBuf，
-         * Done 时随 toolCards 一起定型进 bubble。
+         * 对齐 Web 的 `msg.documents`（MainContent.tsx 的 normalizeMessageDocuments）。
          */
-        val presentItems: List<PresentItem> = emptyList(),
+        val documents: List<DocumentEntry> = emptyList(),
     ) {
         val isUser: Boolean get() = role == Message.ROLE_USER
     }
@@ -1492,6 +1480,151 @@ class ChatSession(
     )
 
     companion object {
+        /**
+         * 可预览的扩展名 —— 与 Web 的 `previewExts` 逐字对齐
+         * （`MainContent.tsx` 的 `normalizeMessageDocuments`）。
+         *
+         * 不在这个集合里的（如 `.kt` / `.mjs` / `.py`）不生成卡片 ——
+         * 它们内容太长，卡片点开也是纯文本墙，没必要占位。
+         */
+        private val PREVIEW_EXTS = setOf(
+            "md", "txt", "html", "json", "xml", "yaml", "yml", "csv",
+        )
+
+        /**
+         * 从工具卡列表推导文档（对齐 Web 的 `normalizeMessageDocuments`）。
+         *
+         * ## 算法（两遍扫描，与 Web 完全一致）
+         * 1. **第一遍**：收集每个路径的 Write 内容（`file_path` + `content`），
+         *    用 [LinkedHashMap] 记住首次出现的顺序（决定卡片顺序）。
+         * 2. **第二遍**：把后续的 Edit / MultiEdit 应用到已收集的内容上
+         *    （`replace(old, new)`，对齐 JS 的 `replaceAll`）。
+         * 3. 按扩展名过滤后产出 [DocumentEntry]。
+         *
+         * ## 为什么必须两遍
+         * 模型常写成「Write 建文件 → Edit 改几处」，只扫 Write 会拿到**初始版本**
+         * （用户点开看到的是没改过的内容）。反过来只扫 Edit 更糟 ——
+         * 没有 Write 垫底，Edit 无处可施。
+         *
+         * ## 为什么只认已 Write 过的路径
+         * Edit 一个**没在本条消息里 Write 过**的文件（改的是历史遗留文件）时，
+         * 我们手里没有它的完整内容 —— 拿 `old_string` 反推全量是不现实的。
+         * Web 的做法就是跳过（`if (current != null)`），这里保持一致：
+         * 宁可少一张卡，不要给用户看残缺内容。
+         *
+         * ## MultiEdit 的两种入参形态都要认
+         * - **`edits` 数组**（APK 自己的 schema：`{file_path, edits:[{old_string, new_string}]}`）
+         * - **顶层 `old_string` / `new_string`**（Web / 其它端可能这么传）
+         *
+         * 只认其中一种的话，另一种形态的编辑会被静默漏掉 —— 卡片显示的还是
+         * 改之前的旧内容，且没有任何报错。
+         *
+         * @param cards 一条消息的全部工具卡（含进行中的；只看 `input` 字段）
+         */
+        fun deriveDocuments(cards: List<ToolCard>): List<DocumentEntry> {
+            if (cards.isEmpty()) return emptyList()
+
+            // 路径 → 当前内容（LinkedHashMap = 保插入序，卡片按 Write 顺序排）
+            val fileContents = LinkedHashMap<String, String>()
+
+            // 第一遍：Write 的初始内容
+            for (c in cards) {
+                if (c.name != "Write") continue
+                val fp = toolInputString(c.input, "file_path")
+                if (fp.isBlank()) continue
+                // content 允许是空字符串（写空文件是合法操作），但字段必须存在 ——
+                // 用 hasField 判断，不能只看取值（取不到值时 "" 和「不存在」同形）
+                if (!toolInputHasField(c.input, "content")) continue
+                // 同一路径多次 Write = 覆盖写，后来的赢（对齐 Web 的 set）
+                fileContents[fp] = toolInputString(c.input, "content")
+            }
+            if (fileContents.isEmpty()) return emptyList()
+
+            // 第二遍：Edit / MultiEdit 应用到已有内容上
+            for (c in cards) {
+                if (c.name != "Edit" && c.name != "MultiEdit") continue
+                val fp = toolInputString(c.input, "file_path")
+                val current = fileContents[fp] ?: continue
+                fileContents[fp] = applyEditsTo(current, c.input)
+            }
+
+            // 按扩展名过滤 + 生成条目
+            val out = mutableListOf<DocumentEntry>()
+            for ((fp, content) in fileContents) {
+                val name = fp.split('/', '\\').lastOrNull().orEmpty()
+                val ext = name.substringAfterLast('.', "").lowercase()
+                if (ext !in PREVIEW_EXTS) continue
+                out += DocumentEntry(path = fp, content = content)
+            }
+            return out
+        }
+
+        /**
+         * 把一次 Edit / MultiEdit 调用应用到内容上，返回新内容。
+         *
+         * 三种入参形态（按优先级）：
+         * 1. `edits` 数组 —— 逐个 `{old_string, new_string}` 应用（APK 的 MultiEdit schema）
+         * 2. 顶层 `old_string` / `new_string` —— 单次替换（Edit，或 Web 形态的 MultiEdit）
+         * 3. 都没有 → 原样返回（不改内容，也不会崩）
+         */
+        private fun applyEditsTo(content: String, inputJson: String): String {
+            var out = content
+            val root = try {
+                kotlinx.serialization.json.Json.parseToJsonElement(inputJson)
+                    as? kotlinx.serialization.json.JsonObject
+            } catch (_: Throwable) {
+                null
+            } ?: return out
+
+            // 形态 1：edits 数组
+            val edits = root["edits"] as? kotlinx.serialization.json.JsonArray
+            if (edits != null) {
+                for (el in edits) {
+                    val obj = el as? kotlinx.serialization.json.JsonObject ?: continue
+                    val oldStr = (obj["old_string"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+                    val newStr = (obj["new_string"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+                    if (oldStr.isNullOrEmpty() || newStr == null) continue
+                    out = out.replace(oldStr, newStr)
+                }
+                return out
+            }
+
+            // 形态 2：顶层 old_string / new_string
+            val oldStr = (root["old_string"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+            val newStr = (root["new_string"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+            if (!oldStr.isNullOrEmpty() && newStr != null) {
+                out = out.replace(oldStr, newStr)
+            }
+            return out
+        }
+
+        /**
+         * 从工具卡 `input`（完整入参 JSON 字符串）里取一个字符串字段。
+         *
+         * 解析失败 / 字段不存在 / 类型不对 → 返回空串（调用方自行判断）。
+         * APK 的 [ToolCard.input] 是 String 而非对象，所以必须先 parse ——
+         * 对齐 Web 的 `tc.input?.file_path`（那边已经是对象）。
+         */
+        private fun toolInputString(input: String, key: String): String = try {
+            val obj = kotlinx.serialization.json.Json.parseToJsonElement(input) as? kotlinx.serialization.json.JsonObject
+            (obj?.get(key) as? kotlinx.serialization.json.JsonPrimitive)?.content ?: ""
+        } catch (_: Throwable) {
+            ""
+        }
+
+        /**
+         * 字段是否存在（区分「值为空串」与「压根没这个字段」）。
+         *
+         * Write 的 `content` 可能是 `""`（写空文件），Edit 的 `new_string`
+         * 也可能是 `""`（删掉一段）—— 用取值判空会把这两种合法调用误杀。
+         */
+        private fun toolInputHasField(input: String, key: String): Boolean = try {
+            val obj = kotlinx.serialization.json.Json.parseToJsonElement(input) as? kotlinx.serialization.json.JsonObject
+            obj?.containsKey(key) == true
+        } catch (_: Throwable) {
+            false
+        }
+
         /**
          * 一个 goal turn 的最长等待（30 分钟）。
          *
