@@ -52,7 +52,46 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 首次启动引导页 —— 安装 Linux 运行环境。
+ * 首次启动引导页 —— **三步分页向导**。
+ *
+ * ══════════════════════════════════════════════════════════════
+ *  2026-10-11：从单页堆叠改成分页
+ * ══════════════════════════════════════════════════════════════
+ *
+ * 用户原话：
+ * > 「这引导页太乱了，分几页，但 UI 差得不多，右下角有一个翻页按钮，
+ * >   每做完一项后继续下一页。」
+ *
+ * 原来是**单页堆叠**：说明卡 + 环境选择 + 工具链选择 + 开始按钮全挤在
+ * 一屏里。现在拆成三页 —— UI 组件不变（仍是 InfoCard / RadioButton /
+ * Button 那套），只换组织方式：
+ *
+ * | 页 | 内容 | 进入下一页的条件 |
+ * |---|---|---|
+ * | 1 | 授予「所有文件访问」 | 已授权 |
+ * | 2 | 环境选择（内置 proot / 外接 Termux） | 选完 |
+ * | 3 | 工具链选择 + 安装（**仅内置 proot 时出现**） | 安装完成 |
+ *
+ * **选了外接 Termux → 跳过第 3 页**：第 2 页点「使用 Termux」写盘后
+ * 直接 `onReady()`（工具装在 Termux 里，不归我们管）。
+ *
+ * 翻页按钮固定在**右下角**（左下角显示当前步数），文案随页变：
+ * 未授权时「去授权」→ 授权后「继续」→ 第 3 页「开始安装」/「重试」。
+ *
+ * ## 第 1 页（2026-10-11 新增）
+ *
+ * 数据根目录改成了 `Download/Claude/`（外部存储：用户可见可备份，
+ * proot 与 Termux 两边都能访问）。代价是 Android 11+ 必须拿到
+ * `MANAGE_EXTERNAL_STORAGE`（「所有文件访问」）—— 否则：
+ *   · 会话存不了
+ *   · 终端环境装不了
+ *   · 配置读不了
+ *
+ * **不做回落** —— 没授权就卡在第 1 页。回落只会让用户以为能用、
+ * 实际到处报错，那种失败方式比拦住他更糟。
+ *
+ * `phase` 状态机（0 未开始 / 1 安装中 / 2 完成 / 3 失败）**保留**，
+ * 但只在第 3 页用；失败时仍**停住不跳走**，让用户看完日志再决定。
  *
  * ══════════════════════════════════════════════════════════════
  *  这个页面在 2026-09-27 重写过，因为用户报了三个问题
@@ -88,22 +127,23 @@ import kotlinx.coroutines.withContext
  * ══════════════════════════════════════════════════════════════
  *  这个页面负责什么
  * ══════════════════════════════════════════════════════════════
- * - 说明为什么需要 Linux 环境（一句话，不吓人）
- * - 触发 [RootfsManager.install]（复制/下载 → 解压 → 配置）
+ * - 第 1 页：拿到「所有文件访问」（数据根在 Download/Claude/ 的前提）
+ * - 第 2 页：选运行环境（内置 proot / 外接 Termux）
+ * - 第 3 页：选工具链并触发 [RootfsManager.install]
+ *   （复制/下载 → 解压 → 配置 → 工具链 → 自检）
  * - 显示真实进度（**不是假进度条**）
  * - 失败时**停住**并显示日志（用户反馈过「失败后自动跳走，想截图都来不及」）
  * - 环境自检结果（proot 能否启动）—— 提前暴露问题，别等用户点工具才报错
  *
- * ⚠️ **不负责**：工具链选择（Node/Python/Rust…）。那是可选增强，
- * 放到设置页里，首次启动不该让用户做这种选择题。
- *
  * @param onReady 环境就绪回调（父组件据此切到主界面）
  */
+
 @Composable
 fun OnboardingScreen(
     modifier: Modifier = Modifier,
     onReady: () -> Unit = {},
 ) {
+
     val ctx = LocalContext.current
     val colors = CCMTheme.colors
     val scope = rememberCoroutineScope()
@@ -117,6 +157,29 @@ fun OnboardingScreen(
     var log by remember { mutableStateOf("") }
     /** 失败后**停住**，不自动跳走 —— 用户要看日志。 */
     var failed by remember { mutableStateOf(false) }
+
+    // ══════════════════════════════════════════════════════════════
+    //  分页状态（2026-10-11 新增）
+    // ══════════════════════════════════════════════════════════════
+    /** 当前页：1 = 权限申请；2 = 环境选择；3 = 工具链（仅内置 proot 才走到） */
+    var page by remember { mutableStateOf(1) }
+
+    // ── 第 1 页：所有文件访问（MANAGE_EXTERNAL_STORAGE）─────────────
+    //
+    // 数据根目录是 Download/Claude/（外部存储）。Android 11（API 30）起，
+    // 读写 /sdcard 根下任意目录必须拿这个权限 —— 它是**特殊权限**，
+    // 不在运行时权限体系里，只能跳系统设置页让用户开。
+    //
+    // API < 30 时外部存储是另一套模型（READ/WRITE_EXTERNAL_STORAGE），
+    // 直接放行，不做额外申请。
+    var hasAllFiles by remember {
+        mutableStateOf(
+            if (android.os.Build.VERSION.SDK_INT >= 30)
+                android.os.Environment.isExternalStorageManager()
+            else true
+        )
+    }
+
     // ── 运行环境选择（2026-10-06）────────────────────────────────────
     // 首次进入先选「内置 proot」还是「外接 Termux」，工具链选择在其后。
     // 选完写进 config.json 的 envMode，之后不再问（MainActivity 按 rootfs
@@ -161,379 +224,570 @@ fun OnboardingScreen(
         autoFollow = (scrollState.maxValue - scrollState.value) < 60
     }
 
+    // ── 第 1 页：授权状态轮询 ───────────────────────────────────────
+    //
+    // 用户跳去系统设置开开关，回到 App 时我们要自动发现。
+    // 这是本项目既有做法（SettingsGeneralTab.kt:487 同款）：每秒探一次、
+    // 授权后立刻停 —— 从设置返回后状态最多 1 秒更新。
+    //
+    // 放在**顶层**而不是 when(page) 的第 1 分支里：状态提升到顶层后，
+    // 切页不会因为分支离开组合而中断轮询。
+    if (!hasAllFiles && android.os.Build.VERSION.SDK_INT >= 30) {
+        LaunchedEffect(Unit) {
+            while (true) {
+                delay(1000)
+                if (android.os.Environment.isExternalStorageManager()) {
+                    hasAllFiles = true
+                    break
+                }
+            }
+        }
+    }
+
+    /**
+     * 打开系统的「所有文件访问」设置页。
+     *
+     * 两级兜底（照抄 SettingsGeneralTab.kt:504 的写法）：先试**带包名**的
+     * 页面（直接落在本 App 的开关上，用户少找一步），个别 ROM 不认这个
+     * action 时退到**全局列表**页。两级都失败就静默放弃 —— 引导页不能
+     * 因为跳设置失败而崩。
+     */
+    val openAllFilesSettings: () -> Unit = {
+        try {
+            ctx.startActivity(
+                android.content.Intent(
+                    android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    android.net.Uri.parse("package:${ctx.packageName}"),
+                )
+            )
+        } catch (_: Throwable) {
+            try {
+                ctx.startActivity(
+                    android.content.Intent(
+                        android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION,
+                    )
+                )
+            } catch (_: Throwable) {}
+        }
+    }
+
+    /**
+     * 落盘 envMode（AppGraph 装配时按它选 Bash 通道）。
+     *
+     * 写在安装**之前**：即使后面安装失败，用户的选择也保住了。
+     * 原来这段内联在「开始安装」按钮里；现在第 2 页（选 Termux 直接进
+     * 主界面）也要写，抽出来共用，避免两份漂移。
+     */
+    val saveEnvMode: () -> Unit = {
+        try {
+            // 【2026-10-11】加 ensureDirs（数据根在 Download/Claude/，
+            // 首次进来时可能不存在）
+            val storage = com.ccm.app.core.FileAppStorage(com.ccm.app.core.resolveDataRoot(ctx))
+                .also { it.ensureDirs() }
+            val loadR = com.ccm.app.core.provider.AppConfig.load(storage.configFile)
+            com.ccm.app.core.provider.AppConfig.save(
+                loadR.config.copy(envMode = envMode),
+                storage.configFile,
+            )
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * 开始安装 —— 第 3 页的「开始安装」与失败后的「重试」共用。
+     *
+     * 原来这两处是**复制两份**的同一段代码；抽成 lambda 后改进度文案
+     * 不会漏改一处。
+     *
+     * 【2026-10-06 保险】权限没授予却选了 termux（理论不可达，因为
+     * RadioButton 已禁用）→ 弹授权框并中止，别让用户进到「选了但用不了」
+     * 的状态。注意这里**不能用 `return@Button`** —— 已经不在 Button 的
+     * onClick 里了，改用 if/else。
+     */
+    val startInstall: () -> Unit = {
+        if (envMode == "termux" && !termuxPermGranted) {
+            termuxPermLauncher.launch(
+                com.ccm.app.tools.bash.TermuxChannel.PERMISSION_RUN_COMMAND
+            )
+        } else {
+            phase = 1
+            progress = 0f
+            log = ""
+            failed = false
+            // 落盘 envMode（AppGraph 装配时按它选 Bash 通道）——
+            // 写在最前：即使后面安装失败，用户的选择也保住了。
+            saveEnvMode()
+            scope.launch { runInstall(rootfs, proot, selectedToolchains, envMode) { p, msg ->
+                progress = p
+                if (msg.isNotEmpty()) log = if (log.isEmpty()) msg else "$log\n$msg"
+            }.also { ok ->
+                if (ok) {
+                    phase = 2
+                    delay(400)
+                    onReady()
+                } else {
+                    phase = 3
+                    failed = true
+                }
+            } }
+        }
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(colors.bgMain)
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .background(colors.bgMain),
     ) {
-        Spacer(Modifier.height(24.dp))
+        // ══════════════════════════════════════════════════════════
+        //  内容区（可滚动）—— 翻页栏固定在它下面，不随内容滚走
+        // ══════════════════════════════════════════════════════════
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // ── Claude 标志 + 标题 ────────────────────────────────────────
+            PainterIcon(R.drawable.ic_hero_star, size = 36.dp, tint = colors.claudeOrange)
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = "Claude Code Mobile",
+                style = CCMText.body18.copy(fontSize = 19.sp, fontWeight = FontWeight.SemiBold),
+                color = colors.textTitle,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "一个跑在手机上的 AI 编程助手",
+                style = CCMText.body14,
+                color = colors.textSecondary,
+            )
 
-        // ── Claude 标志 + 标题 ────────────────────────────────────────
-        PainterIcon(R.drawable.ic_hero_star, size = 36.dp, tint = colors.claudeOrange)
-        Spacer(Modifier.height(16.dp))
-        Text(
-            text = "Claude Code Mobile",
-            style = CCMText.body18.copy(fontSize = 19.sp, fontWeight = FontWeight.SemiBold),
-            color = colors.textTitle,
-        )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = "一个跑在手机上的 AI 编程助手",
-            style = CCMText.body14,
-            color = colors.textSecondary,
-        )
+            Spacer(Modifier.height(28.dp))
 
-        Spacer(Modifier.height(28.dp))
 
-        when (phase) {
-            // ══════════════════════════════════════════════════════
-            //  未开始 —— 说明 + 开始按钮
-            // ══════════════════════════════════════════════════════
-            0 -> {
-                InfoCard {
-                    Text(
-                        text = "首次启动需要安装 Linux 运行环境（Ubuntu 24.04，已内置）",
-                        style = CCMText.body14,
-                        color = colors.textMain,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        // 【为什么这么写】原文案列了「Node.js 运行时（约 50MB，apt 下载）」
-                        // 「Claude Code Mobile 内核（约 14MB）」—— 两条都是老架构遗留。
-                        // 内核已移植进 Kotlin；Node 现在是可选工具链。
-                        // 把可选说成必需，用户会以为不装就用不了。
-                        text = "它用来跑 AI 执行命令的工具（git / curl / python 等）。" +
-                                "首次安装约 10~20 秒，之后不再需要联网。\n\n" +
-                                "手机操作（点击/输入/截图）需要 Shizuku，是可选的；" +
-                                "没装也能正常对话和读写文件。",
-                        style = CCMText.body14,
-                        color = colors.textSecondary,
-                    )
-                }
-
-                Spacer(Modifier.height(18.dp))
-
-                // ── 运行环境选择（2026-10-06）────────────────────────────
-                // 排在最前：选 Termux 的话下面的「工具链安装」整段不适用
-                // （工具装进 Termux，不由我们管）。
-                InfoCard {
-                    Text("选择运行环境", style = CCMText.body14.copy(fontWeight = FontWeight.Medium), color = colors.textMain)
-                    Spacer(Modifier.height(8.dp))
-
-                    // 内置 proot
-                    Row(
-                        modifier = Modifier.fillMaxWidth().clickable { envMode = "proot" },
-                        verticalAlignment = Alignment.Top,
-                    ) {
-                        RadioButton(selected = envMode == "proot", onClick = { envMode = "proot" })
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("内置 proot", style = CCMText.body14, color = colors.textMain)
-                            Text(
-                                "App 自带 Ubuntu 环境，点一下自动装好，不依赖其他 App。" +
-                                    "适合想要开箱即用、环境干净可复现的；缺点是文件与手机系统隔一层。",
-                                style = CCMText.body12, color = colors.textSecondary,
-                            )
-                        }
+            when (page) {
+                // ══════════════════════════════════════════════════
+                //  第 1 页 —— 授予「所有文件访问」
+                // ══════════════════════════════════════════════════
+                1 -> {
+                    InfoCard {
+                        Text(
+                            text = "授予「所有文件访问」",
+                            style = CCMText.body14.copy(fontWeight = FontWeight.Medium),
+                            color = colors.textMain,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            text = "CCM 把数据存在 Download/Claude/ —— 会话、终端环境、" +
+                                    "配置都在那儿。放在外部存储是为了让你能在文件管理器里" +
+                                    "直接看到、备份，换机或重装 App 也不丢。",
+                            style = CCMText.body14,
+                            color = colors.textSecondary,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            // 【为什么说得这么直白】这不是可选优化 —— 没授权
+                            // 会话写不进去、环境装不了，引导页会一直卡在这一步。
+                            // 用户有权知道「为什么必须给」，而不是被一个权限框
+                            // 拦住还不知道是干嘛用的。
+                            text = "Android 11 起，App 默认只能读写自己的私有目录，" +
+                                    "要访问 Download/Claude/ 必须单独授予这个权限。" +
+                                    "没有它，会话存不了、环境装不了 —— 这一步不能跳过。",
+                            style = CCMText.body12,
+                            color = colors.textSecondary,
+                        )
                     }
 
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(18.dp))
 
-                    // 外接 Termux
-                    Row(
-                        modifier = Modifier.fillMaxWidth().clickable {
-                            // 没装 Termux 时点了自动弹回 proot —— 不让用户卡死路
-                            if (termuxInstalled == true) envMode = "termux"
-                        },
-                        verticalAlignment = Alignment.Top,
-                    ) {
-                        // 未装 Termux 或未授权时禁用 —— 授权后自动变可选
-                        // （termuxPermGranted 是 remember state，launcher 回调会更新它）
-                        RadioButton(
-                            selected = envMode == "termux",
-                            enabled = termuxInstalled == true && termuxPermGranted,
-                            onClick = {
-                                if (termuxInstalled == true && termuxPermGranted) envMode = "termux"
-                            },
-                        )
-                        Column(modifier = Modifier.weight(1f)) {
+                    // ── 授权状态（轮询实时更新）────────────────────
+                    InfoCard {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                if (termuxInstalled == false) "外接 Termux（未安装）" else "外接 Termux",
+                                text = if (hasAllFiles) "✓" else "·",
                                 style = CCMText.body14,
-                                color = if (termuxInstalled == false) colors.textSecondary else colors.textMain,
+                                color = if (hasAllFiles) colors.success else colors.textSecondary,
                             )
-                            Text(
-                                if (termuxInstalled == false) {
-                                    "未检测到 Termux。从 F-Droid 安装 Termux 后可回来选它；" +
-                                        "现在选内置 proot 也能用。"
-                                } else {
-                                    // 【2026-10-06 修文案】原来写「工具、配置、~/.claude 都在那边」
-                                    // —— 不准确：CCM 的配置在 App 私有目录（Termux 访问不了），
-                                    // ~/.claude 是 CLI 的东西，跟 Termux 无关。
-                                    // 真正成立的是：命令跑在 Termux 里，能用它装的工具链。
-                                    "Bash 命令跑在你已装的 Termux 里，直接用它已有的 " +
-                                        "pkg/apt 工具链（git、node、python 等），无需再装一遍。" +
-                                        "文件通过 /sdcard 与 App 互通。" +
-                                        "选它则跳过下面的工具链安装。"
-                                },
-                                style = CCMText.body12, color = colors.textSecondary,
-                            )
-                            // ── 授权按钮（2026-10-06 重做）──────────────────
-                            // 原来是一行 body11 灰色小字「点此授权」，混在描述里 ——
-                            // 用户不会注意到那里能点。现在做成**实心按钮**：
-                            // 橙色底 + 白字 + 明确的行动文案。
-                            if (termuxInstalled == true && !termuxPermGranted) {
-                                Spacer(Modifier.height(6.dp))
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(colors.claudeOrange)
-                                        .clickable {
-                                            termuxPermLauncher.launch(
-                                                com.ccm.app.tools.bash.TermuxChannel.PERMISSION_RUN_COMMAND
-                                            )
-                                        }
-                                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            "① 先点这里授权",
-                                            style = CCMText.body13.copy(fontWeight = FontWeight.SemiBold),
-                                            color = androidx.compose.ui.graphics.Color.White,
-                                        )
-                                        Text(
-                                            "系统会弹框问「允许在 Termux 中运行命令」—— 必须允许，否则选它也用不了",
-                                            style = CCMText.body11,
-                                            color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.85f),
-                                        )
-                                    }
-                                }
-                                Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    "授权后，左边的圆点才会变成可选状态",
-                                    style = CCMText.body11, color = colors.textSecondary,
+                                    text = if (hasAllFiles) "已授权" else "尚未授权",
+                                    style = CCMText.body14,
+                                    color = colors.textMain,
+                                )
+                                Text(
+                                    text = if (hasAllFiles) {
+                                        "点右下角「继续」进入下一步"
+                                    } else {
+                                        "点右下角「去授权」，在系统设置里打开开关 —— " +
+                                                "打开后本页会自动更新"
+                                    },
+                                    style = CCMText.body12,
+                                    color = colors.textSecondary,
                                 )
                             }
                         }
                     }
                 }
 
-                Spacer(Modifier.height(18.dp))
+                // ══════════════════════════════════════════════════
+                //  第 2 页 —— 运行环境选择
+                // ══════════════════════════════════════════════════
+                2 -> {
+                        // ── 运行环境选择 ────────────────────────────────────────
+                        // 这一页决定**要不要第 3 页**：选 Termux 则工具装在 Termux 里
+                        // （不由我们管），点「使用 Termux」直接进主界面；选 proot 才需要
+                        // 装工具链。
+                        InfoCard {
+                            Text("选择运行环境", style = CCMText.body14.copy(fontWeight = FontWeight.Medium), color = colors.textMain)
+                            Spacer(Modifier.height(8.dp))
 
-                // ══════════════════════════════════════════════════════
-                //  工具链选择 —— **只在内置 proot 模式显示**（2026-10-06 修）
+                            // 内置 proot
+                            Row(
+                                modifier = Modifier.fillMaxWidth().clickable { envMode = "proot" },
+                                verticalAlignment = Alignment.Top,
+                            ) {
+                                RadioButton(selected = envMode == "proot", onClick = { envMode = "proot" })
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("内置 proot", style = CCMText.body14, color = colors.textMain)
+                                    Text(
+                                        "App 自带 Ubuntu 环境，点一下自动装好，不依赖其他 App。" +
+                                            "适合想要开箱即用、环境干净可复现的；缺点是文件与手机系统隔一层。",
+                                        style = CCMText.body12, color = colors.textSecondary,
+                                    )
+                                }
+                            }
+
+                            Spacer(Modifier.height(8.dp))
+
+                            // 外接 Termux
+                            Row(
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    // 没装 Termux 时点了自动弹回 proot —— 不让用户卡死路
+                                    if (termuxInstalled == true) envMode = "termux"
+                                },
+                                verticalAlignment = Alignment.Top,
+                            ) {
+                                // 未装 Termux 或未授权时禁用 —— 授权后自动变可选
+                                // （termuxPermGranted 是 remember state，launcher 回调会更新它）
+                                RadioButton(
+                                    selected = envMode == "termux",
+                                    enabled = termuxInstalled == true && termuxPermGranted,
+                                    onClick = {
+                                        if (termuxInstalled == true && termuxPermGranted) envMode = "termux"
+                                    },
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        if (termuxInstalled == false) "外接 Termux（未安装）" else "外接 Termux",
+                                        style = CCMText.body14,
+                                        color = if (termuxInstalled == false) colors.textSecondary else colors.textMain,
+                                    )
+                                    Text(
+                                        if (termuxInstalled == false) {
+                                            "未检测到 Termux。从 F-Droid 安装 Termux 后可回来选它；" +
+                                                "现在选内置 proot 也能用。"
+                                        } else {
+                                            // 【2026-10-06 修文案】原来写「工具、配置、~/.claude 都在那边」
+                                            // —— 不准确：CCM 的配置在 App 私有目录（Termux 访问不了），
+                                            // ~/.claude 是 CLI 的东西，跟 Termux 无关。
+                                            // 真正成立的是：命令跑在 Termux 里，能用它装的工具链。
+                                            "Bash 命令跑在你已装的 Termux 里，直接用它已有的 " +
+                                                "pkg/apt 工具链（git、node、python 等），无需再装一遍。" +
+                                                "文件通过 /sdcard 与 App 互通。" +
+                                                "选它则跳过下面的工具链安装。"
+                                        },
+                                        style = CCMText.body12, color = colors.textSecondary,
+                                    )
+                                    // ── 授权按钮（2026-10-06 重做）──────────────────
+                                    // 原来是一行 body11 灰色小字「点此授权」，混在描述里 ——
+                                    // 用户不会注意到那里能点。现在做成**实心按钮**：
+                                    // 橙色底 + 白字 + 明确的行动文案。
+                                    if (termuxInstalled == true && !termuxPermGranted) {
+                                        Spacer(Modifier.height(6.dp))
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(colors.claudeOrange)
+                                                .clickable {
+                                                    termuxPermLauncher.launch(
+                                                        com.ccm.app.tools.bash.TermuxChannel.PERMISSION_RUN_COMMAND
+                                                    )
+                                                }
+                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    "① 先点这里授权",
+                                                    style = CCMText.body13.copy(fontWeight = FontWeight.SemiBold),
+                                                    color = androidx.compose.ui.graphics.Color.White,
+                                                )
+                                                Text(
+                                                    "系统会弹框问「允许在 Termux 中运行命令」—— 必须允许，否则选它也用不了",
+                                                    style = CCMText.body11,
+                                                    color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.85f),
+                                                )
+                                            }
+                                        }
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            "授权后，左边的圆点才会变成可选状态",
+                                            style = CCMText.body11, color = colors.textSecondary,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+
+                }
+
+                // ══════════════════════════════════════════════════
+                //  第 3 页 —— 工具链选择 + 安装（**仅内置 proot 才走到**）
                 //
-                // 上一版只是把它排在环境选择「后面」，选了 Termux 照样显示、
-                // 照样让你勾 —— 语义上完全说不通：工具装进内置 rootfs，
-                // 而 Termux 模式根本不装 rootfs，勾了也是白勾。
-                //
-                // 现在：Termux 模式整段换成一张说明卡（工具在 Termux 里自己装）。
-                // ══════════════════════════════════════════════════════
-                if (envMode == "termux") {
-                    InfoCard {
-                        Text("工具链", style = CCMText.body14.copy(fontWeight = FontWeight.Medium), color = colors.textMain)
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            "外接 Termux 模式下不需要在这里装工具 —— " +
-                                "命令直接跑在你 Termux 的环境里，用 `pkg install` 或 `apt` " +
-                                "装什么、什么时候装都由你决定。",
-                            style = CCMText.body12, color = colors.textSecondary,
-                        )
+                //  `phase` 状态机只在这一页用：0 未开始 / 1 安装中 /
+                //  2 完成 / 3 失败。安装中与失败的界面都留在本页内，
+                //  不再回到「单页大杂烩」那种堆叠。
+                // ══════════════════════════════════════════════════
+                else -> when (phase) {
+                    // ── 未开始：说明 + 工具链清单 ───────────────
+                    0 -> {
+                        InfoCard {
+                            Text(
+                                text = "安装内置 Linux 环境（Ubuntu 24.04，已内置）",
+                                style = CCMText.body14,
+                                color = colors.textMain,
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                // 【为什么这么写】原文案列了「Node.js 运行时（约 50MB，apt 下载）」
+                                // 「Claude Code Mobile 内核（约 14MB）」—— 两条都是老架构遗留。
+                                // 内核已移植进 Kotlin；Node 现在是可选工具链。
+                                // 把可选说成必需，用户会以为不装就用不了。
+                                text = "它用来跑 AI 执行命令的工具（git / curl / python 等）。" +
+                                        "首次安装约 10~20 秒，之后不再需要联网。\n\n" +
+                                        "手机操作（点击/输入/截图）需要 Shizuku，是可选的；" +
+                                        "没装也能正常对话和读写文件。",
+                                style = CCMText.body14,
+                                color = colors.textSecondary,
+                            )
+                        }
+
+
+                        Spacer(Modifier.height(18.dp))
+
+                        InfoCard {
+                            Text("选择要安装的工具链", style = CCMText.body14.copy(fontWeight = FontWeight.Medium), color = colors.textMain)
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                // 环境本身是内置的（不用下载），下面这些是可选命令工具。
+                                // 把可选说成必需，用户会以为不装就用不了（2026-09-27 的教训）。
+                                text = "Linux 环境本身（Ubuntu 24.04）已内置，不用下载。" +
+                                        "下面这些是**可选的**命令工具，勾了会在装环境时一并装好；" +
+                                        "现在不勾也行，之后在设置里随时能补。",
+                                style = CCMText.body12,
+                                color = colors.textSecondary,
+                            )
+                            toolchains.forEach { chain ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().clickable { if (chain.id != "base") selectedToolchains = if (chain.id in selectedToolchains) selectedToolchains - chain.id else selectedToolchains + chain.id },
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Checkbox(checked = chain.id in selectedToolchains, onCheckedChange = { checked -> if (chain.id != "base") selectedToolchains = if (checked) selectedToolchains + chain.id else selectedToolchains - chain.id })
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(chain.name, style = CCMText.body14, color = colors.textMain)
+                                        Text("${chain.description} · 约 ${chain.sizeMB}MB", style = CCMText.body12, color = colors.textSecondary)
+                                    }
+                                }
+                            }
+                        }
+
+
+                        Spacer(Modifier.height(20.dp))
+                        CapabilityList(shizukuOk = shizukuOk)
+
                     }
-                } else {
-                InfoCard {
-                    Text("选择要安装的工具链", style = CCMText.body14.copy(fontWeight = FontWeight.Medium), color = colors.textMain)
-                    toolchains.forEach { chain ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth().clickable { if (chain.id != "base") selectedToolchains = if (chain.id in selectedToolchains) selectedToolchains - chain.id else selectedToolchains + chain.id },
-                            verticalAlignment = Alignment.CenterVertically,
+
+                    // ── 安装中 ──────────────────────────────────
+                    1 -> {
+                        InfoCard {
+                            Text(
+                                text = "正在安装…",
+                                style = CCMText.body14.copy(fontWeight = FontWeight.Medium),
+                                color = colors.textMain,
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            LinearProgressIndicator(
+                                progress = { progress },
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                color = colors.claudeOrange,
+                                trackColor = colors.border,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = "${(progress * 100).toInt()}%",
+                                style = CCMText.body14,
+                                color = colors.textSecondary,
+                            )
+                        }
+
+                        if (log.isNotEmpty()) {
+                            Spacer(Modifier.height(16.dp))
+                            LogBox(log = log, scrollState = scrollState)
+                        }
+                    }
+
+
+                    // ── 完成（随后自动 onReady）─────────────────
+                    2 -> {
+                        InfoCard {
+                            Text(
+                                text = "环境就绪",
+                                style = CCMText.body14.copy(fontWeight = FontWeight.Medium),
+                                color = colors.success,
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = "正在进入…",
+                                style = CCMText.body14,
+                                color = colors.textSecondary,
+                            )
+                        }
+                    }
+
+
+                    // ── 失败 —— 停住，让用户看完日志 ────────────
+                    else -> {
+                        InfoCard {
+                            Text(
+                                text = "安装未完成",
+                                style = CCMText.body14.copy(fontWeight = FontWeight.Medium),
+                                color = colors.error,
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                // 失败时最需要日志，所以不自动跳走（用户反馈过
+                                // 「弹了『部分失败』后就清屏，想截图都来不及」）
+                                text = "下面是完整日志，可以截图反馈。常见原因：存储空间不足、" +
+                                        "网络中断。已下载的部分会保留，重试不用从头开始。",
+                                style = CCMText.body14,
+                                color = colors.textSecondary,
+                            )
+                        }
+
+                        Spacer(Modifier.height(16.dp))
+                        LogBox(log = log.ifEmpty { "（没有输出）" }, scrollState = scrollState)
+
+                        Spacer(Modifier.height(16.dp))
+                        // 「重试」不在这里 —— 它在**右下角的翻页按钮**上（文案随
+                        // phase 变成「重试」）。页内只留次要出口：让用户先进去用起来
+                        // （对话/读写文件不依赖工具链），环境回头在设置页补装。
+                        Button(
+                            onClick = onReady,
+                            modifier = Modifier.fillMaxWidth().height(44.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.hover,
+                                contentColor = colors.textMain,
+                            ),
                         ) {
-                            Checkbox(checked = chain.id in selectedToolchains, onCheckedChange = { checked -> if (chain.id != "base") selectedToolchains = if (checked) selectedToolchains + chain.id else selectedToolchains - chain.id })
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(chain.name, style = CCMText.body14, color = colors.textMain)
-                                Text("${chain.description} · 约 ${chain.sizeMB}MB", style = CCMText.body12, color = colors.textSecondary)
-                            }
+                            Text("跳过（稍后再装）")
                         }
                     }
-                }
-                }   // ← if (envMode != "termux") 的闭合
 
-                Spacer(Modifier.height(24.dp))
-
-                Button(
-                    onClick = {
-                        // 【2026-10-06 保险】权限没授予却选了 termux（理论不可达，
-                        // 因为 RadioButton 已禁用）→ 弹授权框并中止，别让用户
-                        // 进到一个「选了但用不了」的状态。
-                        if (envMode == "termux" && !termuxPermGranted) {
-                            termuxPermLauncher.launch(
-                                com.ccm.app.tools.bash.TermuxChannel.PERMISSION_RUN_COMMAND
-                            )
-                            return@Button
-                        }
-                        phase = 1
-                        progress = 0f
-                        log = ""
-                        failed = false
-                        // 落盘 envMode（AppGraph 装配时按它选 Bash 通道）——
-                        // 写在最前：即使后面安装失败，用户的选择也保住了。
-                        try {
-                            val storage = com.ccm.app.core.FileAppStorage(ctx.filesDir)
-                            val loadR = com.ccm.app.core.provider.AppConfig.load(storage.configFile)
-                            com.ccm.app.core.provider.AppConfig.save(
-                                loadR.config.copy(envMode = envMode),
-                                storage.configFile,
-                            )
-                        } catch (_: Throwable) {}
-                        scope.launch { runInstall(rootfs, proot, selectedToolchains, envMode) { p, msg ->
-                            progress = p
-                            if (msg.isNotEmpty()) log = if (log.isEmpty()) msg else "$log\n$msg"
-                        }.also { ok ->
-                            if (ok) {
-                                phase = 2
-                                delay(400)
-                                onReady()
-                            } else {
-                                phase = 3
-                                failed = true
-                            }
-                        } }
-                    },
-                    modifier = Modifier.fillMaxWidth().height(46.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = colors.claudeOrange,
-                    ),
-                ) {
-                    Text(
-                        if (envMode == "termux") "使用外接 Termux" else "开始安装",
-                        color = androidx.compose.ui.graphics.Color.White,
-                    )
-                }
-
-                Spacer(Modifier.height(20.dp))
-                CapabilityList(shizukuOk = shizukuOk)
-            }
-
-            // ══════════════════════════════════════════════════════
-            //  安装中
-            // ══════════════════════════════════════════════════════
-            1 -> {
-                InfoCard {
-                    Text(
-                        text = "正在安装…",
-                        style = CCMText.body14.copy(fontWeight = FontWeight.Medium),
-                        color = colors.textMain,
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    LinearProgressIndicator(
-                        progress = { progress },
-                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
-                        color = colors.claudeOrange,
-                        trackColor = colors.border,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = "${(progress * 100).toInt()}%",
-                        style = CCMText.body14,
-                        color = colors.textSecondary,
-                    )
-                }
-
-                if (log.isNotEmpty()) {
-                    Spacer(Modifier.height(16.dp))
-                    LogBox(log = log, scrollState = scrollState)
                 }
             }
 
-            // ══════════════════════════════════════════════════════
-            //  完成
-            // ══════════════════════════════════════════════════════
-            2 -> {
-                InfoCard {
-                    Text(
-                        text = "环境就绪",
-                        style = CCMText.body14.copy(fontWeight = FontWeight.Medium),
-                        color = colors.success,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = "正在进入…",
-                        style = CCMText.body14,
-                        color = colors.textSecondary,
-                    )
-                }
-            }
-
-            // ══════════════════════════════════════════════════════
-            //  失败 —— 停住，让用户看完日志
-            // ══════════════════════════════════════════════════════
-            else -> {
-                InfoCard {
-                    Text(
-                        text = "安装未完成",
-                        style = CCMText.body14.copy(fontWeight = FontWeight.Medium),
-                        color = colors.error,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        // 失败时最需要日志，所以不自动跳走（用户反馈过
-                        // 「弹了『部分失败』后就清屏，想截图都来不及」）
-                        text = "下面是完整日志，可以截图反馈。常见原因：存储空间不足、" +
-                                "网络中断。已下载的部分会保留，重试不用从头开始。",
-                        style = CCMText.body14,
-                        color = colors.textSecondary,
-                    )
-                }
-
-                Spacer(Modifier.height(16.dp))
-                LogBox(log = log.ifEmpty { "（没有输出）" }, scrollState = scrollState)
-
-                Spacer(Modifier.height(16.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Button(
-                        onClick = {
-                            phase = 1
-                            progress = 0f
-                            log = ""
-                            failed = false
-                            scope.launch { runInstall(rootfs, proot, selectedToolchains, envMode) { p, msg ->
-                                progress = p
-                                if (msg.isNotEmpty()) log = if (log.isEmpty()) msg else "$log\n$msg"
-                            }.also { ok ->
-                                if (ok) { phase = 2; delay(400); onReady() }
-                                else { phase = 3; failed = true }
-                            } }
-                        },
-                        modifier = Modifier.weight(1f).height(44.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = colors.claudeOrange),
-                    ) {
-                        Text("重试", color = androidx.compose.ui.graphics.Color.White)
-                    }
-                    Button(
-                        onClick = onReady,
-                        modifier = Modifier.weight(1f).height(44.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = colors.hover,
-                            contentColor = colors.textMain,
-                        ),
-                    ) {
-                        Text("跳过（稍后再装）")
-                    }
-                }
-            }
+            Spacer(Modifier.height(32.dp))
         }
 
-        Spacer(Modifier.height(32.dp))
+        // ══════════════════════════════════════════════════════════
+        //  底部：步骤指示 + 翻页按钮（右下角）
+        // ══════════════════════════════════════════════════════════
+        //
+        // 文案 / 可用性 / 动作都随当前页变：
+        //   第 1 页  未授权 → 「去授权」（跳系统设置）；已授权 → 「继续」
+        //   第 2 页  选 Termux → 「使用 Termux」（跳过第 3 页，直接进主界面）
+        //           选 proot  → 「继续」
+        //   第 3 页  未开始 → 「开始安装」；安装中 → 禁用；失败 → 「重试」
+        //
+        // 步数为什么是动态的：选了 Termux 就只有 2 步，写死「/ 3」会让
+        // 用户以为漏了一步。
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = when (page) {
+                    1 -> "步骤 1 / 3"
+                    2 -> if (envMode == "termux") "步骤 2 / 2" else "步骤 2 / 3"
+                    else -> "步骤 3 / 3"
+                },
+                style = CCMText.body12,
+                color = colors.textSecondary,
+            )
+            Button(
+                onClick = {
+                    when (page) {
+                        // 第 1 页：未授权 → 跳系统设置；已授权 → 下一页
+                        1 -> if (!hasAllFiles) {
+                            openAllFilesSettings()
+                        } else {
+                            page = 2
+                        }
+                        // 第 2 页：Termux → 写配置后直接进主界面（跳过第 3 页）；
+                        //         proot  → 进第 3 页选工具链
+                        2 -> if (envMode == "termux") {
+                            if (!termuxPermGranted) {
+                                termuxPermLauncher.launch(
+                                    com.ccm.app.tools.bash.TermuxChannel.PERMISSION_RUN_COMMAND
+                                )
+                            } else {
+                                saveEnvMode()
+                                onReady()
+                            }
+                        } else {
+                            page = 3
+                        }
+                        // 第 3 页：开始安装 / 失败后重试
+                        else -> if (phase == 0 || phase == 3) startInstall()
+                    }
+                },
+                // 第 3 页安装中/刚完成时禁用，避免重复触发
+                enabled = when (page) {
+                    1 -> true              // 未授权时点了是「去授权」，不是死路
+                    2 -> true
+                    else -> phase == 0 || phase == 3
+                },
+                modifier = Modifier.width(170.dp).height(46.dp),
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = colors.claudeOrange,
+                    // 用 contentColor（不是 Text(color = ...)）：禁用态下
+                    // ButtonDefaults 会自动换成灰字，白字写在灰底上看不清。
+                    contentColor = androidx.compose.ui.graphics.Color.White,
+                ),
+            ) {
+                Text(
+                    when (page) {
+                        1 -> if (hasAllFiles) "继续" else "去授权"
+                        2 -> if (envMode == "termux") "使用 Termux" else "继续"
+                        else -> when (phase) {
+                            0 -> "开始安装"
+                            1 -> "安装中…"
+                            2 -> "环境就绪"
+                            else -> "重试"
+                        }
+                    }
+                )
+            }
+        }
     }
 }
 

@@ -93,22 +93,26 @@ object AppGraph {
         val configured = cfg.workspacePath?.trim().orEmpty()
         if (configured.isEmpty()) {
             // ══════════════════════════════════════════════════════════
-            //  【2026-10-11 修「没设工作区就写不了文件」】
-            //
-            //  上一版（2026-10-06）把这里改成「空 = 真的没有，返回空串」——
-            //  想法是「用户能表达不用工作区」，但**代价是工具全废**：
-            //    · PathGuard.resolveAllowed：cwd 为空 → 相对路径直接拒绝
-            //    · 于是 Agent 写不了文件、建不了目录、读不了相对路径
-            //    · 而系统提示词还说「工作目录：/」→ 模型以为能写
-            //  用户报「没设工作区它现在都写不了文件」就是这个。
-            //
-            //  正确做法：**永远给一个可用的默认工作区**（App 私有目录
-            //  files/workspace）—— 它在 App 沙箱内、必然可写、不涉及
-            //  外部存储权限。用户想用外部目录（/sdcard/...）就显式配。
-            //
-            //  这与 CLI 的 `process.cwd()`、Web 的 `loadWebSettings().workspacePath`
-            //  语义一致：**永远有个有效 cwd**，不存在「没有工作区」状态。
+            //  【2026-10-11 学 Operit】没配置 → 用**数据根下的 workspace/**
             // ══════════════════════════════════════════════════════════
+            //
+            // 三个概念要分清：
+            //   · **数据根** `Download/CCM/` = App 自己用的
+            //     （会话 sessions/、配置 config.json、日志 traces/）
+            //   · **工作区** `Download/CCM/workspace/` = Agent 干活的地方
+            //   · 两者**不混**：Agent 写文件进 workspace/，碰不到 App 的
+            //     会话和配置（路径隔离，比"数据根即工作区"安全）
+            //
+            // 为什么用 Download 下而不是 App 私有目录：
+            //   · 用户能在文件管理器里看到、能备份
+            //   · proot 容器与 Termux 通道**都能访问**
+            //     （`/sdcard` 是唯一两边都通的空间）
+            //   · 换机/重装 App 数据不丢
+            //
+            // 用 `Environment.getExternalStoragePublicDirectory(DIRECTORY_DOWNLOADS)`
+            // 拿路径，**不硬编码 `/sdcard/...`** —— 不同设备/多用户下路径不同。
+            // （Operit 的 OperitPaths.kt 就是这么做的：
+            //   `File(downloadsDir(), "Operit")` + `File(root, "workspace")`）
             return try {
                 val d = File(st.rootDir, "workspace")
                 if (!d.exists()) d.mkdirs()
@@ -512,7 +516,10 @@ object AppGraph {
 
         return try {
             // ── 1. 存储根 ────────────────────────────────────────────
-            val st = FileAppStorage(app.filesDir).also { it.ensureDirs() }
+            // 【2026-10-11】数据根改到 /sdcard/Claude/（外部存储，用户可见、
+            // proot 与 Termux 都能访问）。必须已授予「所有文件访问」——
+            // 没授权时引导页会拦住用户，不会走到这里。
+            val st = FileAppStorage(com.ccm.app.core.resolveDataRoot(app)).also { it.ensureDirs() }
             storage = st
 
             // ── 1.2 用户资料（称呼 / 职业 / 回复偏好）────────────────
