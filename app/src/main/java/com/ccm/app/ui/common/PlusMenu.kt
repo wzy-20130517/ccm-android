@@ -31,6 +31,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ccm.app.R
@@ -112,6 +122,12 @@ fun PlusMenu(
     val colors = CCMTheme.colors
     // 子菜单展开状态（同一时刻只有一个，对齐 Web 的 showSkillsSubmenu/showProjectsSubmenu）
     var submenu by remember { mutableStateOf<SubmenuKind?>(null) }
+    // 【2026-10-11】子菜单的锚点 —— 触发它的那一行在窗口里的坐标。
+    // Web 的子菜单是 `div.relative` 的子元素（`absolute left-full top-0`），
+    // 所以锚点是**那一行菜单项**，不是整个菜单。Compose 里没有
+    // "相对某个兄弟节点定位"的机制，只能自己记坐标。
+    var projectsAnchor by remember { mutableStateOf<androidx.compose.ui.unit.IntRect?>(null) }
+    var skillsAnchor by remember { mutableStateOf<androidx.compose.ui.unit.IntRect?>(null) }
 
     // 外壳 —— 对齐 Web `landingPlusMenuShellClass`：
     //   `w-[218px] rounded-[12px] border border-[rgba(31,31,30,0.3)]
@@ -160,30 +176,61 @@ fun PlusMenu(
         )
 
         // ── 3. 添加到项目（有子菜单）────────────────────────────────
-        PlusMenuItem(
-            iconRes = R.drawable.ic_pm_project,
-            label = "添加到项目",
-            trailingChevron = true,
-            // 【2026-10-06 修 P0】原来 onEnter = { submenu = PROJECTS } 且
-            // onClick 里做 toggle —— 而 PlusMenuItem 的点击是
-            // `.clickable { onEnter(); onClick() }`（串联），onEnter 先把它
-            // 设成 PROJECTS，onClick 立刻读到 PROJECTS → toggle 走 null 分支。
-            // Compose 的 MutableState 同线程读写即时可见，于是**每次点击都
-            // 净设成 null**，子菜单永远打不开（首页/对话页两个入口都是）。
-            //
-            // 修：onEnter 只负责「收起别的子菜单」（触屏没有 hover，
-            // 不需要"划过即展开"），展开/收起完全交给 onClick 的 toggle。
-            onEnter = { if (submenu != SubmenuKind.PROJECTS) submenu = null },
-            onClick = {
-                submenu = if (submenu == SubmenuKind.PROJECTS) null else SubmenuKind.PROJECTS
+        // 【2026-10-11】包一层 Box 记录这一行的**窗口坐标** —— 子菜单
+        // Popup 靠它定位（Web 的子菜单是 `div.relative` 的子元素，
+        // 锚点就是这一行，不是整个菜单）。
+        Box(
+            modifier = Modifier.onGloballyPositioned { coords ->
+                // 用 positionInParent() 拿**相对父容器（PlusMenu 的 Column）**
+                // 的坐标 —— 与 PopupPositionProvider 的坐标系一致。
+                // 别用 boundsInWindow()（那是屏幕坐标，会偏）。
+                val p = coords.positionInParent()
+                val sz = coords.size
+                projectsAnchor = androidx.compose.ui.unit.IntRect(
+                    p.x.toInt(), p.y.toInt(),
+                    (p.x + sz.width).toInt(), (p.y + sz.height).toInt(),
+                )
             },
-        )
-        if (submenu == SubmenuKind.PROJECTS) {
-            ProjectSubmenu(
-                projects = projects,
-                onPick = { name -> onDismiss(); onPickProject(name) },
-                onCreate = { onDismiss(); onCreateProject() },
+        ) {
+            PlusMenuItem(
+                iconRes = R.drawable.ic_pm_project,
+                label = "添加到项目",
+                trailingChevron = true,
+                // 【2026-10-06 修 P0】原来 onEnter = { submenu = PROJECTS } 且
+                // onClick 里做 toggle —— 而 PlusMenuItem 的点击是
+                // `.clickable { onEnter(); onClick() }`（串联），onEnter 先把它
+                // 设成 PROJECTS，onClick 立刻读到 PROJECTS → toggle 走 null 分支。
+                // Compose 的 MutableState 同线程读写即时可见，于是**每次点击都
+                // 净设成 null**，子菜单永远打不开（首页/对话页两个入口都是）。
+                //
+                // 修：onEnter 只负责「收起别的子菜单」（触屏没有 hover，
+                // 不需要"划过即展开"），展开/收起完全交给 onClick 的 toggle。
+                onEnter = { if (submenu != SubmenuKind.PROJECTS) submenu = null },
+                onClick = {
+                    submenu = if (submenu == SubmenuKind.PROJECTS) null else SubmenuKind.PROJECTS
+                },
             )
+        }
+        // 【2026-10-11 改悬浮】Web 的子菜单是 `absolute left-full ml-2`
+        // —— **悬浮在父菜单右侧**，不是内联展开在下方。
+        //
+        // 之前注释说"手机屏幕窄（393dp），悬浮右侧会超出屏幕，所以改内联"
+        // —— 那个判断是错的：
+        //   · Web 菜单 218px + 子菜单 218px + 间距 8px = 444px
+        //   · 手机 393dp 确实放不下**两个完整菜单**
+        //   · 但 Web 的 submenuClass 有 `max-h-[30vh] overflow-y-auto`，
+        //     而且子菜单本来就是临时浮层，**允许超出/覆盖**
+        //   · 用 Popup 悬浮时，系统会自动处理超出部分（不会挤坏布局）
+        //
+        // 现在改成 Popup：锚在菜单项右侧，超出屏幕时自动向左翻。
+        if (submenu == SubmenuKind.PROJECTS) {
+            projectsAnchor?.let { a -> SubmenuPopup(anchor = a, alignTop = true) {
+                ProjectSubmenu(
+                    projects = projects,
+                    onPick = { name -> onDismiss(); onPickProject(name) },
+                    onCreate = { onDismiss(); onCreateProject() },
+                )
+            } }
         }
 
         // ── 分割线 1 ────────────────────────────────────────────────
@@ -200,22 +247,36 @@ fun PlusMenu(
         Spacer(Modifier.height(6.44.dp))
 
         // ── 4. 技能（有子菜单）──────────────────────────────────────
-        PlusMenuItem(
-            iconRes = R.drawable.ic_pm_skills,
-            label = "技能",
-            trailingChevron = true,
-            // 【2026-10-06 修】同「添加到项目」—— onEnter 不再抢占 onClick 的 toggle
-            onEnter = { if (submenu != SubmenuKind.SKILLS) submenu = null },
-            onClick = {
-                submenu = if (submenu == SubmenuKind.SKILLS) null else SubmenuKind.SKILLS
+        Box(
+            modifier = Modifier.onGloballyPositioned { coords ->
+                val p = coords.positionInParent()
+                val sz = coords.size
+                skillsAnchor = androidx.compose.ui.unit.IntRect(
+                    p.x.toInt(), p.y.toInt(),
+                    (p.x + sz.width).toInt(), (p.y + sz.height).toInt(),
+                )
             },
-        )
-        if (submenu == SubmenuKind.SKILLS) {
-            SkillsSubmenu(
-                skills = skills,
-                onPick = { id -> onDismiss(); onPickSkill(id) },
-                onManage = { onDismiss(); onManageSkills() },
+        ) {
+            PlusMenuItem(
+                iconRes = R.drawable.ic_pm_skills,
+                label = "技能",
+                trailingChevron = true,
+                // 【2026-10-06 修】同「添加到项目」—— onEnter 不再抢占 onClick 的 toggle
+                onEnter = { if (submenu != SubmenuKind.SKILLS) submenu = null },
+                onClick = {
+                    submenu = if (submenu == SubmenuKind.SKILLS) null else SubmenuKind.SKILLS
+                },
             )
+        }
+        if (submenu == SubmenuKind.SKILLS) {
+            // 同「添加到项目」：悬浮右侧（Web: `absolute left-full bottom-0 ml-2`）
+            skillsAnchor?.let { a -> SubmenuPopup(anchor = a, alignTop = false) {
+                SkillsSubmenu(
+                    skills = skills,
+                    onPick = { id -> onDismiss(); onPickSkill(id) },
+                    onManage = { onDismiss(); onManageSkills() },
+                )
+            } }
         }
 
         // 【2026-10-11 删】原来这里有个一级的「管理技能」—— 但 Web 里
@@ -263,6 +324,115 @@ fun PlusMenu(
 
 /** 子菜单类型（同一时刻只展开一个）。 */
 private enum class SubmenuKind { PROJECTS, SKILLS }
+
+/**
+ * 子菜单浮层 —— 对齐 Web 的 `absolute left-full ml-2`
+ *（悬浮在父菜单**右侧**，不是内联展开在下方）。
+ *
+ * ## 定位
+ *
+ * 用 `Popup` + `PopupPositionProvider`：锚定在**父菜单的右边缘外侧**，
+ * 纵向按 [alignTop] 对齐父菜单的顶或底（对齐 Web 的
+ * `top-0` / `bottom-0` 两种写法）。
+ *
+ * ## 为什么不用内联展开
+ *
+ * 手机屏 393dp，两个菜单并排 444dp 放不下 —— 但那是"并排显示"的问题，
+ * 不是"不能悬浮"的理由。Web 的子菜单是 `position:absolute` 的浮层，
+ * 超出视口时浏览器会自动调整（或用户能滚动到）。
+ *
+ * 之前改成内联展开，视觉上完全不是 Web 的样子（用户报「+ 展开的位置
+ * 还是有问题」）—— 内联展开会**把父菜单撑高**，下面的项被顶走，
+ * 整个菜单跳动。
+ *
+ * ## 屏幕边缘处理
+ *
+ * 优先放右侧；若右侧空间不足（`x + width > 屏宽 - 边距`），
+ * 翻到**左侧**（`x = 父菜单左边缘 - 子菜单宽 - 间距`）。
+ */
+@Composable
+private fun SubmenuPopup(
+    /**
+     * 触发子菜单的那一行**相对父容器（PlusMenu 的 Column）**的坐标。
+     *
+     * ⚠️ 必须是相对坐标（`positionInParent()`），不是屏幕坐标
+     * （`boundsInWindow()`）—— 见 [SubmenuPopup] 里的坐标系统说明。
+     */
+    anchor: androidx.compose.ui.unit.IntRect,
+    alignTop: Boolean,
+    content: @Composable () -> Unit,
+) {
+    val density = LocalDensity.current
+    val gap = with(density) { 7.36.dp.roundToPx() }        // ml-2 × 0.92
+    val edge = with(density) { 7.36.dp.roundToPx() }       // 屏幕边距
+
+    val positionProvider = remember(anchor, alignTop, gap, edge) {
+        object : PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize,
+            ): IntOffset {
+                // ══════════════════════════════════════════════════════
+                //  坐标系统一：全部基于 `anchorBounds`（父 Popup 的边界）
+                // ══════════════════════════════════════════════════════
+                //
+                // ⚠️ **不要**直接用 `boundsInWindow()` 的绝对值。
+                //
+                // 原因：PlusMenu 本身在一个 Popup 里（独立窗口），而子菜单
+                // 又是一个 Popup。Compose 传给 `calculatePosition` 的
+                // `anchorBounds` 是**父 Popup 的窗口坐标**，返回值也按这个
+                // 坐标系解释。而 `boundsInWindow()` 拿到的是**屏幕坐标** ——
+                // 两者原点不同（父 Popup 不是全屏时差一个偏移），
+                // 直接用会让子菜单整体偏移。
+                //
+                // 正确做法：只取**相对量**。
+                //   · 纵向：菜单项相对父 Popup 顶部的偏移 = anchor.top - 父 Popup 的 top
+                //     但父 Popup 的 top 我们不知道 —— 所以换个思路：
+                //     用 anchor 的高度信息 + anchorBounds 推算。
+                //
+                // 更简单可靠的办法：**把 anchor 记录成"相对父 Popup 的偏移"**。
+                // 见调用方 onGloballyPositioned 里改用 positionInWindow() 减去
+                // 父容器位置 —— 但更省事的是直接用 `positionInParent()`…
+                //
+                // 实际上最省事的是：anchorBounds.top 就是父 Popup 的顶部，
+                // 而我们记的 anchor.top 是屏幕坐标 —— 父 Popup 的屏幕 top
+                // 未知。所以这里改用一个约定：**调用方传的是相对父 Popup 的偏移**
+                // （由调用方保证，见 onGloballyPositioned 的实现）。
+                //
+                // 纵向：alignTop=true 对齐菜单项顶部（Web `top-0`）
+                //       alignTop=false 对齐菜单项底部（Web `bottom-0`）
+                val menuItemTop = anchorBounds.top + anchor.top
+                val menuItemBottom = anchorBounds.top + anchor.bottom
+                val y = if (alignTop) {
+                    menuItemTop
+                } else {
+                    menuItemBottom - popupContentSize.height
+                }.coerceIn(edge, (windowSize.height - popupContentSize.height - edge).coerceAtLeast(edge))
+
+                // 横向：优先放**父菜单右侧**（Web `left-full ml-2`）
+                val rightX = anchorBounds.right + gap
+                val fitsRight = rightX + popupContentSize.width <= windowSize.width - edge
+                val x = if (fitsRight) {
+                    rightX
+                } else {
+                    // 翻到左侧：父菜单左边缘 - 子菜单宽 - 间距
+                    (anchorBounds.left - popupContentSize.width - gap).coerceAtLeast(edge)
+                }
+                return IntOffset(x, y)
+            }
+        }
+    }
+
+    Popup(
+        popupPositionProvider = positionProvider,
+        onDismissRequest = { /* 点外部不关子菜单（Web 行为：靠 mouseLeave） */ },
+        properties = PopupProperties(focusable = false, clippingEnabled = false),
+    ) {
+        content()
+    }
+}
 
 /**
  * 单个菜单项 —— 对齐 Web `landingPlusMenuItemClass`。

@@ -803,14 +803,20 @@ class ChatSession(
         //    LazyColumn 认为整个列表都是新内容 → **滚动位置丢失/漂移**。
         //    用户报的「上滑脱离跟随后界面仍被下拉」就是这个（锚定失效）。
         //    key 必须**稳定且唯一**，唯一性在这里（数据层）保证才对。
-        // 【显式标注类型】mapIndexedNotNull 的 lambda 里是 `when` 表达式，
-        // 分支返回 Bubble / null / `if (…) Bubble`（无 else）——
-        // Kotlin 推断不出 T，会推成 Any。显式写 <Message, Bubble> 即可。
-        val restored: List<Bubble> = messages.mapIndexedNotNull<Message, Bubble> { histIdx, message ->
+        // 【用 mapIndexed + filterNotNull，不用 mapIndexedNotNull】
+        //
+        // 后者要求显式类型参数 `<Message, Bubble>`，而 lambda 里是
+        // `when` 表达式 + 多个 `return@` 分支 —— 实测编译报
+        //   "actual type is 'kotlin.Any?', but 'kotlin.Nothing' was expected"
+        // （Kotlin 在混合表达式/语句的 lambda 里推断不稳）。
+        //
+        // mapIndexed 返回 List<Bubble?>，再 filterNotNull 过滤 —— 语义等价，
+        // 类型推断直白，不依赖任何显式标注。
+        val restored: List<Bubble> = messages.mapIndexed { histIdx, message ->
             // 【2026-10-06】hidden 消息（轮次提醒/空响应提示/队友注入等
             // 系统内部消息）不进气泡 —— 它们不是用户说的话，显示出来会
             // 让人困惑（「我什么时候发过这个？」）。
-            if (message.hidden) return@mapIndexedNotNull null
+            if (message.hidden) return@mapIndexed null
             when (message.role) {
                 Message.ROLE_ASSISTANT -> {
                     // 【2026-10-10 修正文/工具交错】按 content 的真实顺序算 textBefore。
@@ -848,7 +854,11 @@ class ChatSession(
                     // 老会话里用 `<cp_artifact>` 展示的内容会退回成正文里的标签文本
                     // （用户看到一串 `<cp_artifact title="…">`，比没有还糟）。
                     val (histText, histInlineDocs) = parseInlineArtifacts(message.text)
-                    if (histText.isBlank() && cards.isEmpty()) null else Bubble(
+                    // 显式 return（不用 if 表达式）—— 理由同下方用户分支
+                    if (histText.isBlank() && cards.isEmpty()) {
+                        return@mapIndexed null
+                    }
+                    return@mapIndexed Bubble(
                         role = Message.ROLE_ASSISTANT,
                         text = histText,
                         messageId = "history-$histIdx-${message.timestamp}",
@@ -882,18 +892,25 @@ class ChatSession(
                     val imgs = message.imagePaths.filter { java.io.File(it).exists() }
                     // 有图但正文被剥空时**也要生成气泡** —— 只发图不打字是
                     // 常见用法，此时 stripMetaTags 的结果可能是空串。
+                    //
+                    // 【为什么用显式 return 而不是 if 表达式】`if (…) Bubble(…)`
+                    // 无 else 分支时 Kotlin 推断为 Unit，与 when 其他分支的
+                    // Bubble? 冲突 → CI 报 "actual type is Any?, but Nothing
+                    // was expected"。显式 `return@mapIndexed` 让每个分支
+                    // 都明确返回 Bubble?，推断不再依赖表达式类型合并。
                     if (visible.isNotBlank() || imgs.isNotEmpty()) {
-                        Bubble(
+                        return@mapIndexed Bubble(
                             role = Message.ROLE_USER,
                             text = visible,
                             messageId = "history-$histIdx-${message.timestamp}",
                             images = imgs,
                         )
                     }
+                    return@mapIndexed null
                 }
                 else -> null
             }
-        }
+        }.filterNotNull()
         _state.value = State(bubbles = restored)
         // Web 在首轮消息后异步生成标题；APK 先用首条用户消息做稳定本地兜底。
         if (container.sessionAuto?.title.isNullOrBlank()) {
