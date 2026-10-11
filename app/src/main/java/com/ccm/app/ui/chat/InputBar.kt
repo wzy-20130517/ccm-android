@@ -96,6 +96,17 @@ fun InputBar(
     modelPickerContent: (@Composable () -> Unit)? = null,
     /** 点 + → 拉起图片多选（第18批）。 */
     onAttach: () -> Unit = {},
+    /**
+     * 加号菜单内容（2026-10-11）。
+     *
+     * 【为什么放在这里】之前 ChatScreenConnected 用 `Alignment.Center` 的
+     * Popup 弹菜单 —— **弹在屏幕中央**（用户截图报「位置明显不对」）。
+     * 正确做法是锚定 `+` 按钮（像首页 LandingScreen 那样）。
+     *
+     * 与 [modelPickerContent] 同一模式：调用方给内容，InputBar 负责
+     * 在按钮的 Box 里渲染 —— 这样 Popup 天然拿到按钮的锚点。
+     */
+    plusMenuContent: (@Composable () -> Unit)? = null,
     /** 已选待发图片（管理条渲染，第19批）。 */
     attachedPaths: List<String> = emptyList(),
     /** 点麦克风 → 语音听写回填（第30批）。 */
@@ -233,6 +244,8 @@ fun InputBar(
                                     )
                                 }
                             }
+                            // 加号菜单（锚定在这个 Box 上 —— 对齐首页 LandingScreen）
+                            plusMenuContent?.invoke()
                         }
                         if (tokenCount > 0) {
                             // ★ webgap #7（2026-09-29）：原来只有裸 tokens 数 ——

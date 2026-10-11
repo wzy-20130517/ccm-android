@@ -106,6 +106,7 @@ fun ChatScreen(
     modelPickerContent: (@Composable () -> Unit)? = null,
     /** 点标题旁的下拉箭头 → 切换对话（Web 是会话下拉；2026-09-28 接通）。 */
     onSwitchClick: () -> Unit = {},
+    plusMenuContent: (@Composable () -> Unit)? = null,
     onAttach: () -> Unit = {},
     attachedPaths: List<String> = emptyList(),
     onVoice: () -> Unit = {},
@@ -527,6 +528,7 @@ fun ChatScreen(
                     onModelClick = onModelClick,
                     modelPickerContent = modelPickerContent,
                     onAttach = onAttach,
+                    plusMenuContent = plusMenuContent,
                     attachedPaths = attachedPaths,
                     onVoice = onVoice,
                     onRemoveImage = onRemoveImage,

@@ -356,20 +356,27 @@ fun ChatScreenConnected(
     // 改法与 LandingScreen 一致：**裸 Popup + PlusMenu**，不套任何 Material 容器。
     // 位置放屏幕中下（对齐"从加号按钮向上弹"的视觉，但对话页输入框位置
     // 与首页不同，用 Center 更稳）。
-    if (showAttachMenu) {
-        androidx.compose.ui.window.Popup(
-            alignment = androidx.compose.ui.Alignment.Center,
-            onDismissRequest = { showAttachMenu = false },
-            // 【2026-10-11 对齐模型栏】Popup 属性与 ModelPickerMenu 一致：
-            // focusable 让返回键能关它、clippingEnabled 防止超出屏幕。
-            properties = androidx.compose.ui.window.PopupProperties(
-                focusable = true,
-                clippingEnabled = true,
-            ),
-        ) {
-            // 容器样式全在 PlusMenu 内部（对齐模型栏 ModelPickerMenu 的做法：
-            // 组件自带 shadow/clip/background/border，调用方不套任何包装）。
-            com.ccm.app.ui.common.PlusMenu(
+    // 【2026-10-11 位置修正】原来是 `Alignment.Center` 的 Popup ——
+    // **弹在屏幕中央**（用户截图报「位置明显不对」）。正确做法是锚定
+    // `+` 按钮（对齐首页 LandingScreen）。
+    //
+    // 实现：菜单内容通过 `plusMenuContent` 参数交给 InputBar，
+    // 由它在 `+` 按钮的 Box 里渲染 Popup —— 这样天然拿到按钮锚点。
+    // 与 `modelPickerContent` 同一模式（那个也是这么做的）。
+    val attachMenuContent: (@Composable () -> Unit)? = if (showAttachMenu) {
+        {
+            androidx.compose.ui.window.Popup(
+                alignment = androidx.compose.ui.Alignment.TopStart,
+                // 从按钮**上方**弹出（对齐 LandingScreen 的做法：
+                // 输入框贴近屏幕底部，向下弹会超出屏幕）
+                offset = androidx.compose.ui.unit.IntOffset(0, -(300 * 2.75f).toInt()),
+                onDismissRequest = { showAttachMenu = false },
+                properties = androidx.compose.ui.window.PopupProperties(
+                    focusable = true,
+                    clippingEnabled = true,
+                ),
+            ) {
+                com.ccm.app.ui.common.PlusMenu(
                     onDismiss = { showAttachMenu = false },
                     onAttach = {
                         // 附件二级：沿用原来的三个入口
@@ -400,8 +407,10 @@ fun ChatScreenConnected(
                     },
                     onConnectors = { showAttachMenu = false },
                 )
+            }
         }
-    }
+    } else null
+
 
     // 附件二级菜单（PlusMenu 的 onAttach 转到这里）
     // 【2026-10-11 修「菜单 UI 明显不对」】同上一处：AlertDialog 会套 Material3
@@ -694,6 +703,9 @@ fun ChatScreenConnected(
             }
         },
         onAttach = { showAttachMenu = true },   // ★ #2：+ 弹菜单（原直接开选图）
+        // 菜单内容交给 InputBar 渲染 —— 它会把 Popup 锚定在 + 按钮上
+        // （之前由本文件直接弹 Popup 且用 Alignment.Center，弹在了屏幕中央）
+        plusMenuContent = attachMenuContent,
         attachedPaths = pendingImages + pendingFiles,
         onRemoveImage = { path ->
             pendingImages = pendingImages - path
