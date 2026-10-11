@@ -97,9 +97,9 @@ object AppGraph {
             // ══════════════════════════════════════════════════════════
             //
             // 三个概念要分清：
-            //   · **数据根** `Download/CCM/` = App 自己用的
+            //   · **数据根** `Download/Claude/` = App 自己用的
             //     （会话 sessions/、配置 config.json、日志 traces/）
-            //   · **工作区** `Download/CCM/workspace/` = Agent 干活的地方
+            //   · **工作区** `Download/Claude/workspace/` = Agent 干活的地方
             //   · 两者**不混**：Agent 写文件进 workspace/，碰不到 App 的
             //     会话和配置（路径隔离，比"数据根即工作区"安全）
             //
@@ -114,7 +114,10 @@ object AppGraph {
             // （Operit 的 OperitPaths.kt 就是这么做的：
             //   `File(downloadsDir(), "Operit")` + `File(root, "workspace")`）
             return try {
-                val d = File(st.rootDir, "workspace")
+                // ⚠️ 这里是 `st.root` 不是 `st.rootDir` —— `st` 是 **AppStorage**
+                // 接口（成员叫 `root`）；`rootDir` 是 **ToolStorage** 的成员，
+                // 两者不是一回事。写错 CI 报 `Unresolved reference 'rootDir'`。
+                val d = File(st.root, "workspace")
                 if (!d.exists()) d.mkdirs()
                 if (d.isDirectory) d.absolutePath else ""
             } catch (_: Throwable) {
@@ -516,7 +519,7 @@ object AppGraph {
 
         return try {
             // ── 1. 存储根 ────────────────────────────────────────────
-            // 【2026-10-11】数据根改到 /sdcard/Claude/（外部存储，用户可见、
+            // 【2026-10-11】数据根改到 Download/Claude/（外部存储，用户可见、
             // proot 与 Termux 都能访问）。必须已授予「所有文件访问」——
             // 没授权时引导页会拦住用户，不会走到这里。
             val st = FileAppStorage(com.ccm.app.core.resolveDataRoot(app)).also { it.ensureDirs() }

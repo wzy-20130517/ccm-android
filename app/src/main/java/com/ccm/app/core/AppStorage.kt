@@ -50,7 +50,7 @@ interface AppStorage {
      * 会失败 —— 显式建一次更稳。
      */
     fun ensureDirs() {
-        // 先建根（/sdcard/Claude 可能不存在）
+        // 先建根（Download/Claude 可能不存在）
         try { if (!root.exists()) root.mkdirs() } catch (_: Throwable) {}
         listOf(sessionsDir, undoDir, trashDir, tracesDir, toolOutputDir, compactTrashDir)
             .forEach { it.mkdirs() }
@@ -97,4 +97,17 @@ fun resolveDataRoot(context: android.content.Context): File {
         android.os.Environment.DIRECTORY_DOWNLOADS,
     )
     return File(downloads, "Claude")
+}
+
+/**
+ * 默认实现 —— 纯 `java.io.File`，可在 JVM 单测里指向任意临时目录。
+ */
+class FileAppStorage(override val root: File) : AppStorage {
+    override val sessionsDir: File get() = File(root, "sessions")
+    override val undoDir: File get() = File(root, "undo")
+    override val trashDir: File get() = File(root, "trash")
+    override val tracesDir: File get() = File(root, "traces")
+    override val toolOutputDir: File get() = File(root, "tool-output")
+    override val compactTrashDir: File get() = File(root, "compact-trash")
+    override val configFile: File get() = File(root, "config.json")
 }

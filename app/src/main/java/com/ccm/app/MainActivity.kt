@@ -244,7 +244,7 @@ fun CcmRoot() {
             //     明确原因 + 自动降级 proot）
             //   · proot 模式/老用户（envMode 空）→ 维持原判据（rootfs 已装）
             try {
-                // 【2026-10-11】加 ensureDirs —— 数据根在 /sdcard/Claude/，
+                // 【2026-10-11】加 ensureDirs —— 数据根在 Download/Claude/，
                 // 新装用户第一次进来时目录不存在，读 config.json 会失败。
                 val storage = com.ccm.app.core.FileAppStorage(com.ccm.app.core.resolveDataRoot(ctx))
                     .also { it.ensureDirs() }
