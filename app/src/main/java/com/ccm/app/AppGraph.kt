@@ -967,6 +967,7 @@ object AppGraph {
                     }
                 }
             }
+
         } catch (t: Throwable) {
             // 静默 —— 迁移失败只是「用户要重配一次」，不该让 App 起不来
             android.util.Log.w("AppGraph", "老配置迁移失败（不影响启动）：${t.message}")
