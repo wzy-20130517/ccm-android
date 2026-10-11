@@ -493,7 +493,21 @@ class BashTool(
         var lastProgressAt = 0L
         var result = try {
             // ⚠️ timeout 是 Int（来自 input.int），execute 要 Long —— 必须显式转换。
-            ch.execute(command, ctx.cwd, timeout.toLong()) { line ->
+            //
+            // 【2026-10-11 修路径空间错配】原来传 `ctx.cwd`（Android 侧路径，
+            // 如 /data/data/com.ccm.app/files/workspace）—— 但 Bash 跑在
+            // **通道内部**（proot 容器 / Termux 沙箱），那个路径在通道里
+            // **不存在**：
+            //   · proot: `--cwd=/data/data/...` → 容器里没这目录
+            //   · Termux: workDir 指向 App 私有目录 → Termux 读不了
+            // 结果是命令要么失败、要么落到莫名其妙的目录。
+            //
+            // 修法：传 null，让**通道用自己环境里的默认目录**：
+            //   · proot → /root（容器 home）
+            //   · Termux → $HOME（Termux home）
+            // 这与系统提示词里「Bash 跑在 proot 容器里，路径与 Android 侧
+            // 可能不同」的说明一致 —— 提示词早就这么写了，代码没跟上。
+            ch.execute(command, null, timeout.toLong()) { line ->
                 lines += line
                 val now = System.currentTimeMillis()
                 if (now - lastProgressAt > 2_000) lastProgressAt = now
@@ -541,7 +555,8 @@ class BashTool(
             val failedLabel = ch.label
             ch = fallbackChannel
             result = try {
-                ch.execute(command, ctx.cwd, timeout.toLong()) { line -> lines += line }
+                // 同主通道：null = 用通道自己的默认目录（见上方注释）
+                ch.execute(command, null, timeout.toLong()) { line -> lines += line }
             } catch (e: Throwable) {
                 return ToolResult.Error(
                     "主通道（$failedLabel）启动失败，备用通道（${fallbackChannel.label}）也失败：${e.message}" +
@@ -643,7 +658,8 @@ object BackgroundShells {
         // 在独立作用域跑（不阻塞工具返回，也不随调用方取消而中止）
         scope.launch {
             try {
-                val r = channel.execute(command, ctx.cwd, 600_000) { line ->
+                // 同主通道：null = 用通道自己的默认目录（见上方注释）
+                val r = channel.execute(command, null, 600_000) { line ->
                     task.append(line)
                 }
                 task.exitCode = r.exitCode
