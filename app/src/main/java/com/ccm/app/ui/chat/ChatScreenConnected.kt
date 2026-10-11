@@ -1,11 +1,15 @@
 package com.ccm.app.ui.chat
 
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
@@ -340,10 +344,28 @@ fun ChatScreenConnected(
     // · 项目 → 把「在项目「X」里：」前缀塞进草稿
     // · 技能 → 把 /技能id 塞进草稿
     // · 附件 → 弹二级（图片/文件/拍照）—— PlusMenu 的 onAttach 回调
+    // 【2026-10-11 修「菜单 UI 明显不对」】
+    //
+    // 原来用 `androidx.compose.material3.AlertDialog` 包 PlusMenu —— 那会套一层
+    // Material3 的默认容器：**淡紫色背景**（`surfaceContainerHigh`，M3 默认调色板
+    // 的紫色调）、M3 自己的圆角与内边距、还有 280dp 的最小宽度约束。
+    // 结果：外层淡紫大圆角面板 + 内层白色 PlusMenu，双层边框叠着，与
+    // LandingScreen 的 PlusMenu（裸 Popup，无外层）完全两个样子。
+    //
+    // 改法与 LandingScreen 一致：**裸 Popup + PlusMenu**，不套任何 Material 容器。
+    // 位置放屏幕中下（对齐"从加号按钮向上弹"的视觉，但对话页输入框位置
+    // 与首页不同，用 Center 更稳）。
     if (showAttachMenu) {
-        androidx.compose.material3.AlertDialog(
+        androidx.compose.ui.window.Popup(
+            alignment = androidx.compose.ui.Alignment.Center,
             onDismissRequest = { showAttachMenu = false },
-            text = {
+        ) {
+            androidx.compose.foundation.layout.Box(
+                modifier = androidx.compose.ui.Modifier
+                    .shadow(12.dp, androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp))
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp))
+                    .background(com.ccm.app.ui.theme.CCMTheme.colors.input),
+            ) {
                 com.ccm.app.ui.common.PlusMenu(
                     onDismiss = { showAttachMenu = false },
                     onAttach = {
@@ -375,17 +397,39 @@ fun ChatScreenConnected(
                     },
                     onConnectors = { showAttachMenu = false },
                 )
-            },
-            confirmButton = {},
-        )
+            }
+        }
     }
 
     // 附件二级菜单（PlusMenu 的 onAttach 转到这里）
+    // 【2026-10-11 修「菜单 UI 明显不对」】同上一处：AlertDialog 会套 Material3
+    // 的淡紫容器 + 自己的标题栏/按钮区，与项目自绘的视觉体系不符。
+    // 改成裸 Popup + 自绘卡片（与 PlusMenu 同一套圆角/底色/阴影）。
     if (showAttachSubmenu) {
-        androidx.compose.material3.AlertDialog(
+        androidx.compose.ui.window.Popup(
+            alignment = androidx.compose.ui.Alignment.Center,
             onDismissRequest = { showAttachSubmenu = false },
-            title = { androidx.compose.material3.Text("添加附件", style = com.ccm.app.ui.theme.CCMText.body14) },
-            text = {
+        ) {
+            androidx.compose.foundation.layout.Column(
+                modifier = androidx.compose.ui.Modifier
+                    .width(220.dp)
+                    .shadow(12.dp, androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp))
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp))
+                    .background(com.ccm.app.ui.theme.CCMTheme.colors.input)
+                    .padding(vertical = 6.44.dp),
+            ) {
+                androidx.compose.material3.Text(
+                    "添加附件",
+                    style = com.ccm.app.ui.theme.CCMText.body14,
+                    color = com.ccm.app.ui.theme.CCMTheme.colors.textSecondary,
+                    modifier = androidx.compose.ui.Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+                androidx.compose.foundation.layout.Box(
+                    modifier = androidx.compose.ui.Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(com.ccm.app.ui.theme.CCMTheme.colors.border),
+                )
                 androidx.compose.foundation.layout.Column {
                     listOf(
                         "拍照" to {
@@ -432,14 +476,8 @@ fun ChatScreenConnected(
                         )
                     }
                 }
-            },
-            confirmButton = {},
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showAttachSubmenu = false }) {
-                    androidx.compose.material3.Text("取消", style = com.ccm.app.ui.theme.CCMText.body13)
-                }
-            },
-        )
+            }
+        }
     }
 
     ChatScreen(

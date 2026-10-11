@@ -474,7 +474,22 @@ class ChatSession(
             error = null,
         )
         // ③ 重新发送
-        send(target.text)
+        //
+        // 【2026-10-11 修「重发后图片消失」】
+        // 原来只传 `target.text` —— 图片信息（Bubble.images）丢了，
+        // 重发的消息变成纯文本。用户报「选择一张图片发出去，点重新发送，图会消失」。
+        //
+        // 从**气泡**取图片路径（不是从历史 —— Message 结构里没存图片，
+        // 图片只在 Bubble 上）。先按 messageId 精确匹配，兜底按文本匹配。
+        // 过滤掉**已被清理**的图片（Android 系统随时可能清 cacheDir，
+        // 7 天清理也在这里跑）。路径不存在的图直接丢弃 —— 传下去只会
+        // 在发送时失败，用户看到的是「图又没了」却不知道为什么。
+        val images = (
+            _state.value.bubbles.firstOrNull { it.messageId == messageId }?.images
+                ?: _state.value.bubbles.lastOrNull { it.role == Message.ROLE_USER && it.text == target.text }?.images
+                ?: emptyList()
+            ).filter { java.io.File(it).exists() }
+        send(target.text, images)
     }
 
     /**
