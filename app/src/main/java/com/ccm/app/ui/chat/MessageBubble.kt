@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -328,7 +330,38 @@ fun PresentBlock(
                     .clip(RoundedCornerShape(10.dp)).background(CCMTheme.colors.input).padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Text(item.title ?: "展示 · ${item.kind}", style = CCMText.body14.copy(fontWeight = FontWeight.Medium), color = CCMTheme.colors.textMain)
+                // 标题行 + 复制按钮（对齐 Web 的「复制源码」—— 用户明确要过）
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        item.title ?: "展示 · ${item.kind}",
+                        style = CCMText.body14.copy(fontWeight = FontWeight.Medium),
+                        color = CCMTheme.colors.textMain,
+                        modifier = Modifier.weight(1f),
+                    )
+                    // 源码类才有内容可复制（image/video 只有路径）
+                    if (item.content.isNotBlank()) {
+                        val ctx = androidx.compose.ui.platform.LocalContext.current
+                        var copied by remember(item.content) { mutableStateOf(false) }
+                        Text(
+                            text = if (copied) "已复制" else "复制",
+                            style = CCMText.body12,
+                            color = CCMTheme.colors.accent,
+                            modifier = Modifier
+                                .clickable {
+                                    try {
+                                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                            as? android.content.ClipboardManager
+                                        cm?.setPrimaryClip(android.content.ClipData.newPlainText("CCM", item.content))
+                                        copied = true
+                                    } catch (_: Throwable) {}
+                                }
+                                .padding(start = 8.dp),
+                        )
+                    }
+                }
                 item.caption?.let { Text(it, style = CCMText.body12, color = CCMTheme.colors.textSecondary) }
                 // 【2026-10-06 Present 升级】html / svg / mermaid 都走 WebView 内联渲染。
                 //   · html/svg：禁 JS（防外跳、防恶意页）
@@ -344,8 +377,23 @@ fun PresentBlock(
                             else -> item.content
                         }
                     }
+                    // 【2026-10-11 高度自适应】原来是固定 260dp —— 长内容（完整网页、
+                    // 长 SVG）被截断只能看到顶部，短内容又留一大片空白。
+                    //
+                    // Web 端的做法（PresentBlock.tsx:232）是 iframe 内脚本
+                    // postMessage 上报 scrollHeight，父页动态调高（160-1200）。
+                    // Android 的等价物：WebViewClient.onPageFinished 时读
+                    // `webView.contentHeight` —— 不需要 JS 桥，也不受
+                    // javaScriptEnabled=false 影响（contentHeight 是 WebView 自己
+                    // 量的，不是脚本算的）。
+                    //
+                    // 兜底：contentHeight 可能不准（图片未加载完、异步布局）——
+                    // 所以给「展开/收起」按钮，用户可手动切换 260dp ↔ 全屏高度。
+                    var webHeight by remember(item.content) { mutableStateOf(260.dp) }
+                    var expanded by remember(item.content) { mutableStateOf(false) }
+                    val maxHeight = 1200.dp
                     AndroidView(
-                        modifier = Modifier.fillMaxWidth().height(260.dp),
+                        modifier = Modifier.fillMaxWidth().height(if (expanded) maxHeight else webHeight),
                         factory = { context -> WebView(context).apply {
                             settings.javaScriptEnabled = isMermaid
                             settings.domStorageEnabled = false
@@ -369,6 +417,18 @@ fun PresentBlock(
                                     val scheme = request.url.scheme?.lowercase()
                                     return !(scheme == "file" || scheme == "data" || scheme == "about")
                                 }
+                                override fun onPageFinished(view: WebView, url: String?) {
+                                    super.onPageFinished(view, url)
+                                    // 量真实内容高度 → 动态调容器（clamp 到 160..1200dp）
+                                    try {
+                                        val density = view.resources.displayMetrics.density
+                                        val px = view.contentHeight
+                                        if (px > 0) {
+                                            val dp = (px / density).dp
+                                            webHeight = dp.coerceIn(160.dp, maxHeight)
+                                        }
+                                    } catch (_: Throwable) {}
+                                }
                             }
                             setBackgroundColor(android.graphics.Color.TRANSPARENT)
                         } },
@@ -381,19 +441,79 @@ fun PresentBlock(
                             }
                         },
                     )
+                    // 展开/收起：内容比 260dp 高时给入口（contentHeight 不准时也能救）
+                    if (webHeight > 260.dp || expanded) {
+                        Text(
+                            text = if (expanded) "收起" else "展开全部",
+                            style = CCMText.body12,
+                            color = CCMTheme.colors.accent,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { expanded = !expanded }
+                                .padding(vertical = 4.dp),
+                        )
+                    }
                 } else if (item.content.isNotBlank()) {
                     Text(item.content.take(4000), style = CCMText.body12.copy(fontFamily = FontFamily.Monospace), color = CCMTheme.colors.textSecondary)
                 }
                 item.paths.forEach { path ->
                     when (item.kind) {
-                        "image", "images" -> com.ccm.app.ui.common.ThumbImage(path, Modifier.fillMaxWidth().height(220.dp), 8.dp)
-                        "video" -> AndroidView(
-                            modifier = Modifier.fillMaxWidth().height(240.dp),
-                            factory = { context -> android.widget.VideoView(context).apply {
-                                setVideoPath(path)
-                                setMediaController(android.widget.MediaController(context).also { it.setAnchorView(this) })
-                            } },
-                        )
+                        "image", "images" -> {
+                            // 【2026-10-11 修两个内容问题】
+                            //  1. 原来 ContentScale.Crop —— 裁掉图片边缘。展示场景要
+                            //     看完整内容（长图/图表/截图），改成 Fit（完整、按比例）。
+                            //  2. 原来固定 220dp 高 —— 竖图被压、横图留白。改成按
+                            //     图片原始宽高比算高度（对齐 Web 的 `w-full h-auto`）。
+                            val aspect = remember(path) {
+                                try {
+                                    val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                    android.graphics.BitmapFactory.decodeFile(path, o)
+                                    if (o.outWidth > 0 && o.outHeight > 0) o.outWidth.toFloat() / o.outHeight else 0f
+                                } catch (_: Throwable) { 0f }
+                            }
+                            // 用 BoxWithConstraints 拿实际可用宽度（比猜屏幕宽可靠，
+                            // 也自动适配横竖屏/分屏）。高度 = 宽度 / 宽高比。
+                            BoxWithConstraints(
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                val w = maxWidth
+                                val h = if (aspect > 0f) {
+                                    (w / aspect).coerceIn(120.dp, 900.dp)
+                                } else 220.dp
+                                com.ccm.app.ui.common.ThumbImage(
+                                    path,
+                                    Modifier.fillMaxWidth().height(h),
+                                    8.dp,
+                                    contentScale = ContentScale.Fit,
+                                )
+                            }
+                        }
+                        "video" -> {
+                            // 【2026-10-11】原来固定 240dp —— 竖屏视频被压、宽屏留白。
+                            // 改成用 MediaMetadataRetriever 读真实宽高比算高度
+                            // （对齐 Web 的 `w-full` + 视频自身比例）。
+                            val vAspect = remember(path) {
+                                try {
+                                    val mmr = android.media.MediaMetadataRetriever()
+                                    mmr.setDataSource(path)
+                                    val w = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+                                    val h = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+                                    mmr.release()
+                                    if (w > 0 && h > 0) w.toFloat() / h else 0f
+                                } catch (_: Throwable) { 0f }
+                            }
+                            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                                val w = maxWidth
+                                val h = if (vAspect > 0f) (w / vAspect).coerceIn(160.dp, 900.dp) else 240.dp
+                                AndroidView(
+                                    modifier = Modifier.fillMaxWidth().height(h),
+                                    factory = { context -> android.widget.VideoView(context).apply {
+                                        setVideoPath(path)
+                                        setMediaController(android.widget.MediaController(context).also { it.setAnchorView(this) })
+                                    } },
+                                )
+                            }
+                        }
                         else -> Text(path, style = CCMText.body11.copy(fontFamily = FontFamily.Monospace), color = CCMTheme.colors.textSecondary)
                     }
                 }

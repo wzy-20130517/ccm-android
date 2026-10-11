@@ -34,6 +34,15 @@ fun ThumbImage(
     path: String,
     modifier: Modifier = Modifier,
     cornerRadius: Dp = 8.dp,
+    /**
+     * 缩放模式。
+     *
+     * 【2026-10-11 加】默认 Crop（保持比例填满，超出裁掉）—— 适合**缩略图**
+     * （用户发的图，看一眼就行）。但 Present 展示场景要的是**完整内容**：
+     * 长图、图表、截图被裁掉边缘等于丢信息。
+     * Web 端展示用的是 `w-full h-auto`（完整、按比例），对应这里的 Fit。
+     */
+    contentScale: ContentScale = ContentScale.Crop,
 ) {
     // 【2026-10-06 加缓存】先查共享 LRU，命中直接显示（避免滑回来重新解码）。
     var bitmap by remember(path) { mutableStateOf(ThumbCache.get(path, 512)) }
@@ -72,7 +81,7 @@ fun ThumbImage(
                 bitmap = bmp.asImageBitmap(),
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
+                contentScale = contentScale,
             )
         } else {
             // 占位：加载中/失败都是这个（尺寸由外部 modifier 定）
