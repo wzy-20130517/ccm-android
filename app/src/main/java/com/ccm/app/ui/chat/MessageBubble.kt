@@ -337,6 +337,20 @@ fun MessageList(
     listState: androidx.compose.foundation.lazy.LazyListState =
         androidx.compose.foundation.lazy.rememberLazyListState(),
 ) {
+    // 【2026-10-11】流式期间也剥离 `<cp_artifact>` 标记 ——
+    // 原来只在 Done 定型时解析，于是流式中用户看到的是**未解析的原始标记**：
+    //   正文1
+    //   <cp_artifact title="夜景" format="svg">
+    //   （svg 源码，当普通文本显示）
+    //   </cp_artifact>
+    //   正文2
+    // 观感就是「卡片显示在两条正文之间」，而 Done 后标记被剥掉、卡片
+    // 跑到最下面 —— 前后不一致（用户报的就是这个）。
+    //
+    // 这里解析一次（纯函数、无 IO），用剥掉标记的文本渲染；
+    // 流式期间不渲染卡片（内容还在变，等 Done 定型后一次性出）。
+    val (streamingClean, _) = com.ccm.app.core.ChatSession.parseInlineArtifacts(streaming)
+
     androidx.compose.foundation.lazy.LazyColumn(
         state = listState,
         reverseLayout = true,
@@ -418,7 +432,7 @@ fun MessageList(
                 modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
             ) {
             // 流式部分（未定型）：思考 → 工具组 → 正文
-            if (streaming.isNotBlank() || streamingThinking.isNotBlank()) {
+            if (streamingClean.isNotBlank() || streamingThinking.isNotBlank()) {
             // 流式中：思考在前（先想后说），running 驱动 isThinking 动效
             if (streamingThinking.isNotBlank()) {
                 AssistantThinkingChain(
@@ -446,7 +460,7 @@ fun MessageList(
             //  ⚠️ thinking 非空时**同样**要走工具区 —— 思考链时间线只画
             //  「思考 → 工具步骤」的概览行（label 是一行摘要），
             //  **不显示工具前的正文**。早先这里 thinking 非空就直接
-            //  `AssistantBubble(streaming)` 显示全文、工具区整个跳过 ——
+            //  `AssistantBubble(streamingClean)` 显示全文、工具区整个跳过 ——
             //  结果 thinking 模型永远看不到 textBefore 分段，
             //  与本任务的目标结构不符。现在两条路都渲染工具区。
             // ══════════════════════════════════════════════════════════
@@ -454,8 +468,8 @@ fun MessageList(
                 // 已消费长度 = 最后一个可见工具的 textBefore 长度；
                 // 之后的都是「还没归属到任何工具」的在写正文。
                 val consumed = consumedTextLength(toolCards)
-                val pending = if (streaming.length > consumed) {
-                    streaming.substring(consumed).trim()
+                val pending = if (streamingClean.length > consumed) {
+                    streamingClean.substring(consumed).trim()
                 } else {
                     ""
                 }
@@ -466,10 +480,10 @@ fun MessageList(
                     pendingWorkText = pending,
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
-            } else if (streaming.isNotBlank()) {
+            } else if (streamingClean.isNotBlank()) {
                 // 没有可见工具（无工具 / 全是 WebSearch 等隐藏工具）：
                 // 正文区直接显示，否则两边都空 = 正文凭空消失
-                AssistantBubble(text = streaming)
+                AssistantBubble(text = streamingClean)
             } else if (toolCards.isNotEmpty()) {
                 // 没有流式文本但工具在跑（例如纯工具轮次）
                 ToolCallGroup(

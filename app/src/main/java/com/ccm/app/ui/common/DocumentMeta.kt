@@ -40,6 +40,11 @@ object DocumentMeta {
         "ps1" to "powershell", "vue" to "vue", "svelte" to "svelte",
         "toml" to "toml", "ini" to "ini", "dockerfile" to "dockerfile",
         "docx" to "docx", "pdf" to "pdf", "pptx" to "pptx", "xlsx" to "xlsx",
+        // 【2026-10-11 加】DocumentPanel 支持 svg 渲染（走沙箱 WebView），
+        // 但映射表没有 svg —— Write 写的 .svg 文件被推断成 'text'，
+        // 点开只显示源码（用户报「用写工具为什么只是 text」）。
+        // 注意：内联 artifact 路径不受影响（它直接传 format="svg"）。
+        "svg" to "svg",
     )
 
     /** 内部格式名 → 展示用徽章文字（大写） */
@@ -58,7 +63,7 @@ object DocumentMeta {
 
     private val DOCUMENT_KINDS = setOf("markdown", "text", "docx", "pdf")
     private val DATA_KINDS = setOf("json", "yaml", "xml", "csv", "xlsx", "toml", "ini")
-    private val ARTIFACT_KINDS = setOf("html", "css", "scss", "jsx", "tsx", "vue", "svelte")
+    private val ARTIFACT_KINDS = setOf("html", "css", "scss", "jsx", "tsx", "vue", "svelte", "svg")
 
     private fun extensionOf(filename: String): String {
         if (filename.isEmpty()) return ""
