@@ -587,7 +587,6 @@ private val ToolLabels = mapOf(
     "Lookup" to "Lookup",
     "FindImage" to "Find image",
     "ImageGen" to "Generate image",
-    "ReverseImage" to "Reverse image",
     // 视觉
     "ViewImage" to "View image",
     "ViewVideo" to "View video",
@@ -644,7 +643,6 @@ private val ToolLabels = mapOf(
     "AgentStop" to "中止子 Agent",
     "AgentMemory" to "Agent 记忆",
     "ExtendTurns" to "加轮次",
-    "AgentWorkflow" to "Agent 工作流",
     // 杂项
     "TodoWrite" to "更新待办",
     "Sleep" to "等待",
@@ -663,7 +661,6 @@ private val ToolLabels = mapOf(
     "Test" to "跑测试",
     "Diagnostics" to "代码诊断",
     "CommandExec" to "执行命令",
-    "LSP" to "LSP",
     // 定时任务
     "CronCreate" to "建定时任务",
     "CronList" to "看定时任务",

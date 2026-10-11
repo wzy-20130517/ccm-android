@@ -1521,24 +1521,20 @@ private fun handleConfigCommands(cmd: String, arg: String, ctx: SlashContext): S
         // 协调者」，本命令是「主对话本人是协调者」——两者可同时存在。
         "coordinate", "cowork" -> SlashCoordinate.dispatch(ctx, arg)
 
-        // ── /workflow —— 阶段化工作流说明（2026-10-07 对齐 CLI）─────────────
+        // ── /workflow —— 分阶段派活说明 ─────────────────────────────────
         //
-        // CLI 是纯文字说明（`index.mjs` case 'workflow' 返回一段字符串）。
-        // APK 侧 AgentWorkflow 工具已注册（Explore → Plan → Implement → Review），
-        // 这里给用户侧入口 + 讲清与 Agent 工具的分工。
+        // 原来讲的是 AgentWorkflow 工具（固定四阶段），该工具已删（零调用，
+        // 被 Agent 工具替代）。现在改成讲「怎么用 Agent 工具自己做阶段化」。
         "workflow" -> SlashResult.Notice(
-            "**AgentWorkflow：Explore → Plan → Implement → Review**\n\n" +
-                "固定流程的多阶段子 Agent 工作流：\n" +
-                "- **Explore** — 只读调查，摸清代码结构\n" +
-                "- **Plan** — 只读分析，给出执行计划\n" +
-                "- **Implement** — 实施改动（本阶段工具不限）\n" +
-                "- **Review** — 只读审查，找问题\n\n" +
-                "每阶段独立上下文、工具白名单、轮次上限和超时；阶段间只传压缩报告。\n" +
-                "**由 Agent 工具调用**（工具名 `AgentWorkflow`），默认不后台运行。\n\n" +
-                "与 Agent 工具的区别：\n" +
-                "- `AgentWorkflow` = 固定流程（顺序不可变），适合复杂多文件任务\n" +
-                "- `Agent` = 灵活分工（模型自己决定派几个、什么角色）\n\n" +
-                "⚠ 4 个阶段串行执行，整轮耗时较长；简单任务直接自己做，别用它。",
+            "**分阶段派活：Explore → Plan → Implement → Review**\n\n" +
+                "推荐的多阶段流程，用 Agent 工具逐阶段派活：\n" +
+                "- **Explore** — 只读调查，摸清代码结构（subagent_type: Explore）\n" +
+                "- **Plan** — 只读分析，给出执行计划（subagent_type: Plan）\n" +
+                "- **Implement** — 实施改动（general-purpose）\n" +
+                "- **Review** — 只读审查，找问题（code-reviewer）\n\n" +
+                "每阶段独立上下文；把上一阶段的报告写进下一阶段的 prompt 里传递结论。\n\n" +
+                "与单个 Agent 调用的区别：分阶段是**你主动编排**，可以按任务需要增减阶段；\n" +
+                "简单任务直接自己做，不要为了流程而流程。",
         )
 
         // ── /imagegen —— 生图配置（对齐 CLI /imagegen）──────────────────────

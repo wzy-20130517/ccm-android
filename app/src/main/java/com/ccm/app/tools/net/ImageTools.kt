@@ -147,67 +147,6 @@ class ImageTools(
     }
 
     // ══════════════════════════════════════════════════════════════
-    //  ReverseImage（以图识图 —— 刻意降级，见下方注释）
-    // ══════════════════════════════════════════════════════════════
-
-    /**
-     * 以图识图。**当前没有可用识图源**，这是刻意保留的诚实降级，不是没写完。
-     *
-     * 参照 Node 版 `core/tools-image-search.mjs:125` —— 那边同样是这个结论。
-     * 移植时逐条复核过（2026-09-27），四个通道全部失效：
-     *
-     * | 通道 | 状态 |
-     * |---|---|
-     * | Yandex 结果页抓取 | 弹验证码，反爬拦截 |
-     * | Bing 视觉搜索端点 | 已下线 |
-     * | Google Lens | 直连不通（需代理） |
-     * | SauceNAO | 要 API key，且注册页在手机上打不开 |
-     *
-     * **为什么还保留这个工具**：对齐 Node 版工具集（87 个），
-     * 且它的 description 会进系统提示词 —— 模型看到「这个工具当前不可用，
-     * 请改用 ViewImage + SearchInfo」就不会浪费一轮去试。
-     *
-     * **正确的替代路径**（写在 description 里让模型照做）：
-     * 自己看图（ViewImage / 用户 /image 发的图）提炼关键词 → 用 SearchInfo 搜。
-     * 陌生人物图认不出就直说，不要编名字。
-     *
-     * 以后拿到 SauceNAO key 或找到新源，在 execute 里补实现即可，
-     * schema / 注册 / 提示词都不用动。
-     */
-    inner class ReverseImageTool : Tool() {
-        override val name = "ReverseImage"
-        override val description =
-            "以图识图：给一张本地图片，搜索它的来源、相关页面和相似图片。" +
-                "⚠️ **当前没有可用识图源**（Yandex 弹验证码 / Bing 端点下线 / Google 直连不通 / SauceNAO 要 key），" +
-                "调用只会返回这条说明。用户发一张不认识的图问「这是什么」时，" +
-                "应该**自己看图**（ViewImage）提炼关键词，再用 SearchInfo 搜 —— " +
-                "而不是调这个工具。陌生人物图认不出就直说，不要编名字。"
-        override val isReadOnly = true
-        override val maxResultSizeChars = 1_000
-
-        override val inputSchema: JsonObject = ToolSchema.objectSchema(
-            "path" to ToolSchema.string("本地图片绝对路径"),
-            required = listOf("path"),
-        )
-
-        override fun validateInput(input: JsonObject): String? =
-            if (input.str("path").isNullOrBlank()) "path is required" else null
-
-        override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
-            val p = input.str("path")!!.trim()
-            // 先校验路径存在，让错误信息更具体（模型能据此改参数重试）
-            if (!File(p).exists()) {
-                return ToolResult.notFound("文件不存在: $p")
-            }
-            return ToolResult.failed(
-                "ReverseImage 尚未接入识图源：Yandex 结果页抓取待验证，SauceNAO 需 API key。" +
-                    "拿到 SauceNAO key（https://saucenao.com/user.php 注册后显示）后告诉我，我接上。\n" +
-                    "当前替代做法：用 ViewImage 亲自看图，提炼出画面特征后用 SearchInfo 搜关键词。",
-            )
-        }
-    }
-
-    // ══════════════════════════════════════════════════════════════
     //  ImageGen（OpenAI images 兼容）
     // ══════════════════════════════════════════════════════════════
 

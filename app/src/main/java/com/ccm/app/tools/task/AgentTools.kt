@@ -224,7 +224,7 @@ class AgentTools(
     inner class AgentStatusTool : Tool() {
         override val name = "AgentStatus"
         override val description =
-            "查看由 Agent 或 AgentWorkflow 启动的后台子 Agent 状态、耗时、turn、最近输出和最终结果。" +
+            "查看由 Agent 工具启动的后台子 Agent 状态、耗时、turn、最近输出和最终结果。" +
                 "不要用 BashOutput 轮询子 Agent；子 Agent 完成与否以这里的状态为准。\n" +
                 "**注意**：(no output) 不等于完成 —— 只有 completed/failed/killed 才是终态。"
         override val isReadOnly = true

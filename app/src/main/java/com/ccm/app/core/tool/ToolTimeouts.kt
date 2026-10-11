@@ -62,11 +62,11 @@ object ToolTimeouts {
         "ViewImage" to NORMAL, "Screencap" to NORMAL,
 
         // ── 网络（NETWORK）──
-        "WebFetch" to NETWORK, "WebSearch" to NETWORK, "LSP" to NETWORK,
+        "WebFetch" to NETWORK, "WebSearch" to NETWORK,
         "SearchInfo" to NETWORK, "Lookup" to NETWORK, "FindImage" to NETWORK,
 
         // ── 长任务（LONG）──
-        "Bash" to LONG, "Test" to LONG, "Agent" to LONG, "AgentWorkflow" to LONG,
+        "Bash" to LONG, "Test" to LONG, "Agent" to LONG,
         "CommandExec" to LONG,
 
         // ── 生成类（SLOW_GEN）──

@@ -73,7 +73,7 @@ val COMMON_SLASH_COMMANDS: List<Pair<String, String>> = listOf(
     "/watch" to "持续模式（/watch on|off）",
     "/coordinate" to "协调者模式（/coordinate [on|off|<任务>]）",
     "/cowork" to "协调者模式（/coordinate 的别名）",
-    "/workflow" to "AgentWorkflow 阶段说明",
+    "/workflow" to "分阶段派活说明",
     "/web" to "Web 服务说明",
     // ── 工具 ──
     "/compact" to "压缩历史（status|micro|force [N]|<N>）",

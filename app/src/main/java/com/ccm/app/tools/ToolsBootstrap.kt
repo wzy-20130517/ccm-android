@@ -22,7 +22,6 @@ import com.ccm.app.tools.file.SearchTools
 import com.ccm.app.tools.file.TrashStore
 import com.ccm.app.tools.file.UndoStore
 import com.ccm.app.tools.dev.DevTools
-import com.ccm.app.tools.dev.LspTools
 import com.ccm.app.tools.net.GitHubTools
 import com.ccm.app.tools.net.ImageTools
 import com.ccm.app.tools.net.LookupTools
@@ -35,7 +34,6 @@ import com.ccm.app.tools.system.CronTools
 import com.ccm.app.tools.system.QqTools
 import com.ccm.app.tools.system.SystemTools
 import com.ccm.app.tools.task.AgentTools
-import com.ccm.app.tools.task.AgentWorkflowTools
 import com.ccm.app.tools.task.GoalStore
 import com.ccm.app.tools.task.GoalTools
 import com.ccm.app.tools.task.MiscTools
@@ -237,8 +235,7 @@ class ToolsBootstrap(
         // 始终创建（见下方注册处注释：WebSearch 没 key 时内部报明确错误，
         // 不该让工具从清单里静默消失）
         val webTools = WebTools(settings)
-        // ImageTools 始终创建 —— ReverseImage 不需要任何 key，
-        // 若跟 FindImage/ImageGen 一起挂在 settings 下面会被误伤（没配 key 就整个消失）
+        // ImageTools 始终创建 —— 内部工具各自判断 key 配置
         val imageTools = ImageTools(settings, defaultCwd)
         val lookupTools = LookupTools(storage.rootDir)
         // Present：把可视内容落盘 + 返回路径（APK 端无内联渲染通道，见类注释）
@@ -260,8 +257,6 @@ class ToolsBootstrap(
             getRegistry = { registry },
             subAgentRegistry = subAgentRegistry,
         )
-        // AgentWorkflow：Explore → Plan → Implement → Review 四阶段串行
-        val workflowTools = AgentWorkflowTools()
         // Skill：项目 skills/（按运行时 cwd）优先，用户级兜底
         // 【2026-10-06 问题40】首次启动时把**内置 skill**（assets/skills/）
         // 解压到 files/skills/ —— 项目自带的 5 个 skill 装完就能用。
@@ -319,8 +314,6 @@ class ToolsBootstrap(
 
         // 批 3 补全 + P1
         val devTools = DevTools(primary, trashStore, commandExec)
-        // LSP：diagnostic 走 Bash 通道真实执行；hover/definition/completion 降级
-        val lspTools = LspTools(primary)
         val hashlineTools = HashlineTools(trashStore, undoStore)
         val cronTools = CronTools(CronStore(File(storage.rootDir, "cron")))
         val qqTools = QqTools(qqPusher, qqRecaller)
@@ -371,8 +364,6 @@ class ToolsBootstrap(
                 add(imageTools.FindImageTool())
                 add(imageTools.ImageGenTool())
             }
-            // ReverseImage 不依赖任何 key（当前是诚实降级的占位，见类注释）
-            add(imageTools.ReverseImageTool())
             // SearchInfo/Lookup 不依赖任何 key（直连公开搜索源）
             add(lookupTools.SearchInfoTool())
             add(lookupTools.LookupTool())
@@ -475,11 +466,9 @@ class ToolsBootstrap(
             add(hashlineTools.HashlineEditTool())
             add(hashlineTools.HashlineGrepTool())
 
-            // P2：Skill / AgentWorkflow / Present / LSP
+            // P2：Skill / Present
             add(skillTools.SkillTool())
-            add(workflowTools.AgentWorkflowTool())
             add(presentTools.PresentTool())
-            add(lspTools.LspTool())
 
             // P2：GitHub（未配 token 时工具会提示怎么配）
             add(ghTools.GitHubRepoTool())

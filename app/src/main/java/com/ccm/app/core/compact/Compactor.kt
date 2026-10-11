@@ -352,7 +352,7 @@ class Compactor(
          */
         val REGENERABLE_TOOLS: Set<String> = setOf(
             "Read", "Glob", "Grep", "CodeSearch", "HashlineRead", "HashlineGrep",
-            "Symbols", "RepoMap", "Diagnostics", "LSP",
+            "Symbols", "RepoMap", "Diagnostics",
             "GitStatus", "GitDiff", "GitLog",
             "Bash", "BashOutput", "Test",
             "WebFetch", "WebSearch",
