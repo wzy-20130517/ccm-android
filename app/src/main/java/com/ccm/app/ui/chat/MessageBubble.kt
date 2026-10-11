@@ -343,8 +343,9 @@ fun MessageList(
     ) {
         // 流式部分放**最先**声明 → reverseLayout 下渲染在**视觉最底部**
         // （它是最新内容，就该在最下面）。声明顺序 = 从底往上的顺序。
-        if (streaming.isNotBlank() || streamingThinking.isNotBlank()) {
-            item(key = "streaming") {
+        item(key = "streaming") {
+            // 流式部分（未定型）：思考 → 工具组 → 正文
+            if (streaming.isNotBlank() || streamingThinking.isNotBlank()) {
             // 流式中：思考在前（先想后说），running 驱动 isThinking 动效
             if (streamingThinking.isNotBlank()) {
                 AssistantThinkingChain(
@@ -396,17 +397,17 @@ fun MessageList(
                 // 没有可见工具（无工具 / 全是 WebSearch 等隐藏工具）：
                 // 正文区直接显示，否则两边都空 = 正文凭空消失
                 AssistantBubble(text = streaming)
+            } else if (toolCards.isNotEmpty()) {
+                // 没有流式文本但工具在跑（例如纯工具轮次）
+                ToolCallGroup(
+                    cards = toolCards,
+                    isStreaming = streamingRunning,
+                    isStale = !streamingRunning,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
             }
-        } else if (toolCards.isNotEmpty()) {
-            // 没有流式文本但工具在跑（例如纯工具轮次）
-            ToolCallGroup(
-                cards = toolCards,
-                isStreaming = streamingRunning,
-                isStale = !streamingRunning,
-                modifier = Modifier.padding(horizontal = 16.dp),
-            )
-        }
-            }  // ← item {} 闭合（流式部分）
+            }  // ← if (streaming.isNotBlank() || streamingThinking.isNotBlank())
+        }  // ← item {} 闭合（流式部分）
 
 
         // （见下方 bubbles 循环的 assistant 分支）。
