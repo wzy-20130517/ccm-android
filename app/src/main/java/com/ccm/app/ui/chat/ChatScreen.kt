@@ -321,7 +321,10 @@ fun ChatScreen(
                     Row(
                         modifier = Modifier
                             .clip(RoundedCornerShape(50)) // 椭圆胶囊
-                            .background(colors.accent)
+                            // 【2026-10-11】加透明度 —— 原来是实底 accent，
+                            // 浮在消息上方时太抢眼（用户报「有点挡了」）。
+                            // 0.85 既能看清、又透出下面的内容。
+                            .background(colors.accent.copy(alpha = 0.85f))
                             .shadow(8.dp, RoundedCornerShape(50))
                             .clickable {
                                 // 需要一个协程作用域来跑 animateScrollToItem
