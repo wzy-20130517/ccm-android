@@ -470,7 +470,15 @@ object MarketClient {
             val f = installTimesFile(ctx)
             if (!f.exists()) return emptyMap()
             val o = JSONObject(f.readText())
-            o.keys().associateWith { o.optString(it) }
+            // 【注意】org.json 的 keys() 返回 Iterator（不是 Iterable）——
+            // associateWith 用不了，手动遍历。
+            val out = mutableMapOf<String, String>()
+            val it = o.keys()
+            while (it.hasNext()) {
+                val k = it.next()
+                out[k] = o.optString(k)
+            }
+            out
         } catch (_: Throwable) {
             emptyMap()
         }

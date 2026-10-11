@@ -563,6 +563,8 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
         // 与命令共用 `UiPrefs.voiceEnabled` / `voiceRate`（同一份状态，
         // 改哪个都同步）。
         SettingsSection(title = "语音朗读") {
+            // SettingsSection 的 lambda 里没有 colors —— 自己取
+            val colors = CCMTheme.colors
             SettingsField(label = "自动朗读回复") {
                 SettingsSwitch(
                     checked = com.ccm.app.ui.theme.UiPrefs.voiceEnabled.value,
