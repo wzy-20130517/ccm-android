@@ -10,3 +10,17 @@ captures/
 tools/__pycache__/
 rootfs-dist/
 =
+
+# 通道文件系统测试的临时产物（tools/tests/channel-fs-probe.mjs 会生成）
+# 测试脚本应该在自己建的临时目录里跑 —— 但它历史上污染过项目根，
+# 这里兜底拦一道，避免误提交。
+/big.txt
+/biglines.txt
+/empty.txt
+/out-*.txt
+/out1.txt
+/script.sh
+/t1.txt
+/gdir/
+/ldir/
+/newdir/
