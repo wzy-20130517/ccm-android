@@ -640,7 +640,7 @@ private fun InputCard(
                     // （`MainContent.tsx` 的发送键 enabled 逻辑）。
                     // 纯图消息是常见用法（「这是什么？」都不用打），
                     // 只贴图应该能发。
-                    val canSend = input.isNotBlank() || pendingImages.isNotEmpty()
+                    val canSend = input.isNotBlank() || attachedCount > 0
                     if (canSend) {
                         // 发送按钮 —— 对应 `landingSendButtonClass`：
                         // `flex h-[32px] w-[40px] rounded-[8px] bg-[#efcbc0] text-white`
