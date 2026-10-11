@@ -121,6 +121,35 @@ object ClawdBus {
             // 新一轮开始：清掉上一轮的残留（气泡 + 回到思考态）
             _bubbleText.value = ""
             _state.value = ClawdState.THINKING
+        } else {
+            // 【2026-10-11 修「Clawd 一直循环播放一个动画」】
+            //
+            // 原来 running=false 时**什么都不做** —— 状态靠悬浮窗那边的
+            // 「COMPLETED/FAILED 脉冲 + delay(2.6s) + 检查 running」收回。
+            // 那条路径有三个洞，任何一个都会让螃蟹**永远停在某个动画上**：
+            //
+            //   ① 脉冲丢失：SharedFlow 无重放，悬浮窗若在延迟期间被杀/重建，
+            //      脉冲已消费，永远不会再收回
+            //   ② 顺序问题：若 Done 事件先于 setRunning(false) 到达，
+            //      2.6 秒后 running 已 false 能收回；但若某个路径**只**
+            //      调 setRunning(false) 而没发 Done（比如用户 Ctrl+C 打断、
+            //      或错误分支提前 return），脉冲从没发过 → 卡住
+            //   ③ 多次往返：工具往返/续跑会反复 setRunning(true) → 状态
+            //      被重置回 THINKING，看起来像"循环播放"
+            //
+            // 修法：**在这里直接兜底**。running=false 意味着"整轮真的结束了"，
+            // 此时无论如何都该回 IDLE —— 唯一例外是刚播完的 HAPPY/ERROR
+            // （那是给用户看的"完成/失败"反馈，立即抹掉反而突兀）。
+            //
+            // 所以：保留 HAPPY/ERROR 让悬浮窗的脉冲逻辑正常收回；
+            // 其余状态（THINKING/SPEAKING/TYPING/READING/BUILDING…）
+            // 立刻回 IDLE。
+            when (_state.value) {
+                ClawdState.HAPPY, ClawdState.ERROR -> {
+                    // 交给悬浮窗的脉冲延迟收回（2.6s 后），这里不抢
+                }
+                else -> _state.value = ClawdState.IDLE
+            }
         }
     }
 
@@ -161,6 +190,31 @@ object ClawdBus {
             appendBubble(ev.text)
             return
         }
+        // ══════════════════════════════════════════════════════════
+        //  【Done 特殊处理】必须在读当前状态的地方判断
+        // ══════════════════════════════════════════════════════════
+        //
+        // AgentLoop 的 finally 保证「恰好发一次 Done」（成功失败都发），
+        // 所以**错误路径的事件序列是 Error → Done**。
+        //
+        // 原来 `forEvent(Done)` 无条件返回 HAPPY → 刚设好的 ERROR
+        // 立刻被 HAPPY 覆盖 → 用户看到螃蟹在报错时开开心心。
+        //
+        // 修法：Done 的分支判断**当前状态**：
+        //   · 已是 ERROR → 保持 ERROR，不发 COMPLETED 脉冲
+        //     （让 FAILED 的 2.6s 收回逻辑正常走完）
+        //   · 其余 → HAPPY + COMPLETED 脉冲（原行为）
+        //
+        // forEvent 那边已把 Done 改为返回 null（纯函数拿不到当前状态，
+        // 判断只能在这里做）。
+        if (ev == com.ccm.app.core.agent.AgentEvent.Done) {
+            if (_state.value != ClawdState.ERROR) {
+                setState(ClawdState.HAPPY)
+                emitPulse(ClawdPulse.COMPLETED)
+            }
+            return
+        }
+
         val next = ClawdState.forEvent(ev) ?: return
 
         // ══════════════════════════════════════════════════════════
@@ -181,7 +235,6 @@ object ClawdBus {
         // 由 ChatSession 的 setRunning(false) 在整轮结束时置位）
         when (ev) {
             is com.ccm.app.core.agent.AgentEvent.Error -> emitPulse(ClawdPulse.FAILED)
-            com.ccm.app.core.agent.AgentEvent.Done -> emitPulse(ClawdPulse.COMPLETED)
             else -> {}
         }
     }

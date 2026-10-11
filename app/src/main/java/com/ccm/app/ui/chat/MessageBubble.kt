@@ -490,17 +490,24 @@ fun MessageList(
         // 与 Jetchat 的 `_messages.add(0, msg)` 等价 —— 这里渲染时反序，
         // 不改数据源（bubbles 本身保持时间正序，其它地方还在用）。
         bubbles.asReversed().forEachIndexed { index, bubble ->
-            // 【2026-10-11 修崩溃】key 必须**全局唯一** ——
-            // LazyColumn 对重复 key 直接抛 IllegalArgumentException：
-            //   `Key "assistant-history-0" was already used`
+            // 【key 必须「稳定 + 唯一」，缺一不可】
             //
-            // 根因：历史消息的 messageId = "history-${timestamp}"，而老数据
-            // 的 timestamp 可能为 0（没存时间）→ 多条消息的 key 全是
-            // "assistant-history-0" → 撞车 → 点老对话进不去（闪退）。
+            // 唯一性 → 由数据层保证（`loadHistory` 用 mapIndexedNotNull
+            //   拼历史索引进 messageId，见那里的长注释）。
+            // 稳定性 → **key 里绝不能带列表位置**（index）。
             //
-            // 修法：key 拼上 index —— 索引在列表内天然唯一，
-            // 且气泡顺序稳定（追加型列表），重组时 key 不变。
-            item(key = "${index}-${bubble.key}") {
+            // 【2026-10-11 修「上滑后仍被下拉」】
+            // 上一版为了修重复 key 崩溃，写成 `"${index}-${bubble.key}"` ——
+            // 唯一性有了，但**稳定性没了**：
+            //   · 这是 reverseLayout 列表，index 0 = 最新（视觉底部）
+            //   · 新消息/新工具卡插入时，所有已有 item 的 index 都 +1
+            //   · → 全部 key 变化 → LazyColumn 认为整个列表都是新内容
+            //   · → 已滚动的锚点丢失，位置漂移
+            // 用户报的「上滑脱离跟随，界面仍随 Agent 输出被下拉」就是这个。
+            //
+            // 现在只用 `bubble.key`（role + messageId）—— 对同一条消息
+            // 永远不变，插入新消息也不影响旧 item 的 key。
+            item(key = bubble.key) {
             // 【2026-10-11 修「内容顺序反了」】item{} 里的多个平级 Composable
             // 在 reverseLayout 下会**从底往上堆叠** —— 视觉顺序整个反过来
             // （用户报：思维链/工具/正文的顺序变成正文/工具/思维链）。

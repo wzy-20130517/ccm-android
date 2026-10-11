@@ -524,7 +524,24 @@ class AgentLoop(
                     }
                 }
             }
-            messages += Message(Message.ROLE_USER, blocks)
+            // 【2026-10-11 两处修复】
+            //
+            // ① 图片路径存进历史 —— 否则会话落盘时图片信息丢失，
+            //    重启后 loadHistory 恢复不出缩略图（用户报「重启 APP 时
+            //    之前发的图片会不显示了」）。
+            //
+            // ② **补 timestamp** —— 原构造 `Message(ROLE_USER, blocks)`
+            //    没传 timestamp，默认 0。而 messageId 是
+            //    `"history-${message.timestamp}"`（见 loadHistory），
+            //    于是所有带图消息的 messageId 都是 `history-0` ——
+            //    点击/重发/删除会命中错的那条。纯文本消息走
+            //    `Message.user()`（自带当前时间戳），所以只有带图的坏。
+            messages += Message(
+                Message.ROLE_USER,
+                blocks,
+                timestamp = System.currentTimeMillis(),
+                imagePaths = imagePaths,
+            )
         }
         turnCount = 0
         aborted = false

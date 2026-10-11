@@ -644,7 +644,19 @@ class ChatSession(
             } catch (_: Throwable) {}
 
             // imagePaths 空 = 原路径，零行为变化（第18批向后兼容点）
-            collectEvents(container.agentLoop.run(effectiveText, imagePaths))
+            //
+            // 【2026-10-11 加 finally 兜底】`setRunning(false)` 原来只在
+            // AgentEvent.Done 分支里调 —— 那条路径要求**流正常走到 Done**。
+            // 中断（Ctrl+C / 异常 / 流断开）时 Done 不会到 → Clawd 的
+            // running 永远为 true → 悬浮窗的状态收回逻辑全部失效 →
+            // **螃蟹永远停在最后一个动画上**（用户报「一直循环播放一个动画」）。
+            //
+            // finally 保证：不管怎么结束（正常/异常/取消），一定通知 Clawd。
+            try {
+                collectEvents(container.agentLoop.run(effectiveText, imagePaths))
+            } finally {
+                try { com.ccm.app.core.clawd.ClawdBus.setRunning(false) } catch (_: Throwable) {}
+            }
 
             // ── 自动压缩（2026-10-06 P1-8 接线）────────────────────────
             //
@@ -775,11 +787,27 @@ class ChatSession(
         val resultsById = messages
             .flatMap { it.content.filterIsInstance<ContentBlock.ToolResult>() }
             .associateBy { it.id }
-        val restored = messages.mapNotNull { message ->
+        // 【2026-10-11 用 mapIndexedNotNull 保证 messageId 唯一】
+        //
+        // 原来用 mapNotNull + `"history-${timestamp}"` —— 老会话数据的
+        // timestamp 可能是 0（早期版本没存时间），于是多条消息的 messageId
+        // 全变成 `history-0`：
+        //   · LazyColumn 的 key 撞车（曾导致点老对话闪退，当时用
+        //     `"${index}-${bubble.key}"` 绕过 —— 但那个绕法有副作用，见下）
+        //   · 点击/重发/删除会命中错误的那条
+        //
+        // 现在拼上**历史索引**（在本次恢复内天然唯一），messageId 就唯一了。
+        //
+        // ⚠️ 为什么不在 LazyColumn 的 key 里拼 index：那样每次新消息插入
+        //    （index 0 是最新），所有已有 item 的 index 都 +1 → key 全变 →
+        //    LazyColumn 认为整个列表都是新内容 → **滚动位置丢失/漂移**。
+        //    用户报的「上滑脱离跟随后界面仍被下拉」就是这个（锚定失效）。
+        //    key 必须**稳定且唯一**，唯一性在这里（数据层）保证才对。
+        val restored = messages.mapIndexedNotNull { histIdx, message ->
             // 【2026-10-06】hidden 消息（轮次提醒/空响应提示/队友注入等
             // 系统内部消息）不进气泡 —— 它们不是用户说的话，显示出来会
             // 让人困惑（「我什么时候发过这个？」）。
-            if (message.hidden) return@mapNotNull null
+            if (message.hidden) return@mapIndexedNotNull null
             when (message.role) {
                 Message.ROLE_ASSISTANT -> {
                     // 【2026-10-10 修正文/工具交错】按 content 的真实顺序算 textBefore。
@@ -820,7 +848,7 @@ class ChatSession(
                     if (histText.isBlank() && cards.isEmpty()) null else Bubble(
                         role = Message.ROLE_ASSISTANT,
                         text = histText,
-                        messageId = "history-${message.timestamp}",
+                        messageId = "history-$histIdx-${message.timestamp}",
                         toolCards = cards,
                         // 历史消息同样推导文档 —— 否则重启后老会话里的
                         // Write/Edit 卡片全都不见了（对齐 Web：那边是从
@@ -838,11 +866,26 @@ class ChatSession(
                     // → 渲染时剥空 → 空白气泡。每次截图注入一条，所以「老有」。
                     //
                     // 现在用 stripMetaTags 剥完再判 —— 剥完还有内容才生成气泡。
-                    // 另外：这类消息带 Image 块但没有本地路径（历史里不存），
-                    // 恢复不出缩略图，所以图片本身不还原（与 Bubble.images 注释一致）。
+                    //
+                    // 【2026-10-11 恢复图片】原来注释写「历史里不存路径，
+                    // 图片不还原」—— 那是当时的限制，不是设计。现在
+                    // `Message.imagePaths` 会随会话落盘（见 AgentLoop.run），
+                    // 这里读回来重建缩略图。
+                    //
+                    // 只保留**文件仍存在**的路径 —— 附件有 7 天清理，
+                    // 老会话里的图可能已被删。路径失效时静默丢弃（气泡
+                    // 退化成纯文本，与旧行为一致，不会显示破图占位）。
                     val visible = com.ccm.app.core.session.stripMetaTags(message.text)
-                    visible.takeIf { it.isNotBlank() }?.let {
-                        Bubble(role = Message.ROLE_USER, text = it, messageId = "history-${message.timestamp}")
+                    val imgs = message.imagePaths.filter { java.io.File(it).exists() }
+                    // 有图但正文被剥空时**也要生成气泡** —— 只发图不打字是
+                    // 常见用法，此时 stripMetaTags 的结果可能是空串。
+                    if (visible.isNotBlank() || imgs.isNotEmpty()) {
+                        Bubble(
+                            role = Message.ROLE_USER,
+                            text = visible,
+                            messageId = "history-$histIdx-${message.timestamp}",
+                            images = imgs,
+                        )
                     }
                 }
                 else -> null

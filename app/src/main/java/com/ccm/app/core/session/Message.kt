@@ -51,6 +51,22 @@ data class Message(
      * 不回传时（默认 off）这个字段只用于 UI 展示，不占请求带宽。
      */
     val reasoning: String? = null,
+    /**
+     * 用户消息附带的图片**本地路径**（2026-10-11 加）。
+     *
+     * 【为什么需要】原来图片路径只存在 `Bubble.images`（UI 层），
+     * 没进 `Message` —— 会话落盘时自然也没存。重启后 `loadHistory`
+     * 只能重建出纯文本气泡，**图片必然消失**（用户报「重启 APP 时，
+     * 之前发的图片会不显示了」）。
+     *
+     * 【为什么存路径而不是 base64】base64 会让会话文件膨胀几十倍
+     * （一张图 1~4MB → base64 后 ×1.37），且历史恢复时要重新解码。
+     * 路径 + 附件文件本身存在持久目录（见 AttachmentCache）即可。
+     *
+     * 【兼容性】默认空列表 —— 老会话文件反序列化时字段缺失，
+     * kotlinx.serialization 会用默认值，不会报错。
+     */
+    val imagePaths: List<String> = emptyList(),
 ) {
 
     /** 便捷构造：纯文本用户消息。 */

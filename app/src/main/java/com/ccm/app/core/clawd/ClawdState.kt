@@ -116,7 +116,17 @@ enum class ClawdState(val svg: String, val label: String) {
             is AgentEvent.Error -> ERROR
             is AgentEvent.TurnEnd -> null        // 一轮结束但任务可能继续
             is AgentEvent.Usage -> null
-            AgentEvent.Done -> HAPPY
+            // 【2026-10-11 修「报错后显示开心动画」】
+            //
+            // AgentLoop 的 finally 保证「恰好发一次 Done」（无论成功还是失败），
+            // 所以**错误路径的事件序列是 Error → Done**。原来 Done 无条件
+            // 返回 HAPPY —— 刚设好的 ERROR 立刻被 HAPPY 覆盖，用户看到的是
+            // 螃蟹在报错时开开心心。
+            //
+            // 修法：Done 时若当前已是 ERROR，保持 ERROR（返回 null = 不改状态）。
+            // 判断放在**调用方**（onAgentEvent）做，因为 forEvent 是纯函数、
+            // 拿不到当前状态。见 ClawdBus.onAgentEvent 的同名处理。
+            AgentEvent.Done -> null
         }
 
         /** 深度思考出现概率（0.35 = 约三分之一的思考会「想得特别用力」）。 */
