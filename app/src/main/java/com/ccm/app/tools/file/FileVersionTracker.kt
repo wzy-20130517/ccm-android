@@ -101,6 +101,57 @@ object FileVersionTracker {
         }
     }
 
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-11 加】通道模式（Termux）的版本追踪
+    // ══════════════════════════════════════════════════════════════
+    //
+    // 走 [com.ccm.app.tools.file.ChannelFs] 时，文件在 Termux 的私有目录里，
+    // Android 侧 `File.exists()/lastModified()/length()` 全部拿不到值
+    // （跨沙箱，Permission denied）。所以上面那套基于 [File] 的 API 用不了。
+    //
+    // 解决：把「取版本」这一步交给调用方（它本来就要发一条命令 stat），
+    // 这里只负责**存和比**。key 用 [ChannelFs.canonicalKey] 算出的绝对路径，
+    // 与 [keyOf] 的 canonicalPath 在语义上一致（都是「规范化绝对路径」）。
+    //
+    // ⚠️ 两套记录**共用同一个 map** —— 同一个文件在两种模式下被读写时，
+    //    key 相同就能互相看见（这正是我们要的）。
+
+    /**
+     * 记录一个「远程」版本（通道模式）。
+     *
+     * @param key 规范化绝对路径（见 [ChannelFs.canonicalKey]）
+     * @param mtimeMs 修改时间（毫秒）
+     * @param size 文件长度
+     */
+    @Synchronized
+    fun trackRemote(key: String, mtimeMs: Long, size: Long) {
+        versions.remove(key)
+        versions[key] = Version(mtimeMs, size)
+    }
+
+    /**
+     * 覆盖写前的守卫（通道模式）。
+     *
+     * 与 [staleReason] 同语义，只是版本由调用方提供（它已经发命令 stat 过了，
+     * 不必再查一次 —— 通道的每次往返都要过一次 Binder）。
+     *
+     * @return null = 放行；非 null = 拒绝原因
+     */
+    @Synchronized
+    fun staleReasonRemote(key: String, mtimeMs: Long, size: Long, exists: Boolean): String? {
+        if (!exists) return null                 // 新建文件，无冲突可言
+        val known = versions[key] ?: return null // 没读过 → 明确要覆盖，不拦
+        if (mtimeMs == known.mtimeMs && size == known.size) return null
+
+        rejectCount++
+        return buildString {
+            append("文件已被其他 Agent 修改，拒绝覆盖（否则对方的改动会静默消失）：$key\n")
+            append("  记录 mtime ${known.mtimeMs}（${known.size} bytes）\n")
+            append("  当前 mtime $mtimeMs（$size bytes）\n")
+            append("请重新 Read 这个文件，把对方的改动合并进来后再写。")
+        }
+    }
+
     /** 清空记录（测试/诊断用） */
     @Synchronized
     fun reset() {

@@ -16,6 +16,7 @@ import com.ccm.app.tools.bash.KillShellTool
 import com.ccm.app.tools.bash.ProotChannel
 import com.ccm.app.tools.bash.TermuxChannel
 import com.ccm.app.tools.file.ApplyPatchTool
+import com.ccm.app.tools.file.ChannelFs
 import com.ccm.app.tools.file.FileTools
 import com.ccm.app.tools.file.HashlineTools
 import com.ccm.app.tools.file.SearchTools
@@ -228,9 +229,32 @@ class ToolsBootstrap(
         val fallback: com.ccm.app.tools.bash.BashChannel? =
             if (primary === prootChannel) termuxChannel else prootChannel
 
+        // ══════════════════════════════════════════════════════════
+        //  【2026-10-11 加】文件工具的执行通道
+        // ══════════════════════════════════════════════════════════
+        //
+        // 用户选「外接 Termux」时，Bash 跑在 Termux 里，而文件工具用
+        // `java.io.File` —— 两者不是同一个文件系统视图：
+        //
+        //   Bash : cd /data/data/com.termux/files/home && ls  → Termux 的 home
+        //   Write: File(".../files/home/a.txt")               → Permission denied
+        //
+        // 于是「Bash 读不到 Write 写的文件」，模型陷入死循环。
+        // 修法：Termux 模式下把文件读写也交给通道执行（见 [ChannelFs]）。
+        //
+        // ⚠️ **只在 Termux 模式启用**。proot 的 rootfs 与 Android 侧路径不通，
+        //    但 `/sdcard` 两边共享 —— 用 File API 更直接、更快（零 Binder 往返），
+        //    所以 proot 模式**保持原行为不变**。
+        //
+        // ⚠️ 判据是「主通道是不是 TermuxChannel」，不是重新读一次 cfg.envMode ——
+        //    这样与 Bash 工具用的通道**永远一致**（唯一真值源），
+        //    将来加第三个通道也不会漏改这里。
+        val fileChannel: ChannelFs? =
+            if (primary is TermuxChannel) ChannelFs(primary) else null
+
         // ── 工具实例 ──────────────────────────────────────────────
-        val fileTools = FileTools(trashStore, undoStore)
-        val searchTools = SearchTools()
+        val fileTools = FileTools(trashStore, undoStore, fileChannel)
+        val searchTools = SearchTools(fileChannel)
         // 始终创建（见下方注册处注释：WebSearch 没 key 时内部报明确错误，
         // 不该让工具从清单里静默消失）
         val webTools = WebTools(settings)
@@ -311,7 +335,7 @@ class ToolsBootstrap(
 
         // 批 3 补全 + P1
         val devTools = DevTools(primary, trashStore, commandExec)
-        val hashlineTools = HashlineTools(trashStore, undoStore)
+        val hashlineTools = HashlineTools(trashStore, undoStore, fileChannel)
         val cronTools = CronTools(CronStore(File(storage.rootDir, "cron")))
         val qqTools = QqTools(qqPusher, qqRecaller)
         val ghTools = GitHubTools(githubToken, githubRepo)
@@ -322,7 +346,7 @@ class ToolsBootstrap(
             add(fileTools.WriteTool())
             add(fileTools.EditTool())
             add(fileTools.MultiEditTool())
-            add(ApplyPatchTool(trashStore, undoStore))
+            add(ApplyPatchTool(trashStore, undoStore, fileChannel))
             add(searchTools.GlobTool())
             add(searchTools.GrepTool())
             add(searchTools.CodeSearchTool())

@@ -151,15 +151,26 @@ class UndoStore(private val rootDir: File) {
      */
     @Synchronized
     fun saveSnapshot(file: File, content: String, note: String = "") {
+        saveSnapshotAt(file.absolutePath, content, note)
+    }
+
+    /**
+     * 保存一份「修改前」的快照（**按路径**，通道模式用）。
+     *
+     * 走 [ChannelFs] 时目标在 Termux 私有目录里，[File] 对象只是个路径载体
+     * （不访问文件系统），快照文件本身仍落在 App 自己的目录下。
+     * 与 [saveSnapshot] 共用同一条落盘逻辑，避免两份实现漂移。
+     */
+    @Synchronized
+    fun saveSnapshotAt(path: String, content: String, note: String = "") {
         try {
-            val abs = file.absolutePath
-            val safeName = abs.replace(Regex("[/\\\\]"), "_")
+            val safeName = path.replace(Regex("[/\\\\]"), "_")
             val snapFile = File(rootDir, "${System.currentTimeMillis()}_$safeName")
             AtomicFile.writeText(snapFile, content, createParent = true)
 
             snapshots += Snapshot(
                 type = TYPE_FILE,
-                path = abs,
+                path = path,
                 file = snapFile.absolutePath,
                 timestamp = System.currentTimeMillis(),
                 note = note,

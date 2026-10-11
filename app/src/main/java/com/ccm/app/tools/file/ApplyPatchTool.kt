@@ -33,10 +33,30 @@ import java.io.File
  * 【为什么不用 applyPatch 之外的方案】
  * 模型一次生成完整 patch 比多次 Edit 更省 token，且能表达
  * 「跨文件的重命名」「新增+删除+修改混合」这类操作。
+ *
+ * ══════════════════════════════════════════════════════════════
+ *  【2026-10-11 加】执行通道（外接 Termux 模式）
+ * ══════════════════════════════════════════════════════════════
+ *
+ * `envMode == "termux"` 时文件在 Termux 私有目录里，Android 侧 [File] 读不到。
+ * 通道模式的批次原子性靠**内存里的 oldContent** 实现：
+ *
+ * ```
+ * prepare : 逐个通道读旧内容 → 本地算新内容（任一失败则零改动，什么都没写）
+ * commit  : 逐个通道写（每个文件的写本身是原子的：tmp + mv）
+ *            中途失败 → 用 oldContent 逐个通道写回去（回滚）
+ * ```
+ *
+ * 与 Android 侧的两阶段提交**语义一致**（承诺「任一失败则全部不改」），
+ * 只是把 tmp 文件的生命周期从磁盘挪到了内存 —— 通道模式下做不到
+ * 「先把所有 tmp 写好再统一 rename」，因为那需要 3 次往返/文件。
+ *
+ * @param channel 主执行通道。null = 用 Android [File] API（proot / 未选环境）
  */
 class ApplyPatchTool(
     private val trashStore: TrashStore,
     private val undoStore: UndoStore,
+    private val channel: ChannelFs? = null,
 ) : Tool() {
 
     override val name = "ApplyPatch"
@@ -70,6 +90,16 @@ class ApplyPatchTool(
         val patchText = input.str("patch")!!
         val note = input.str("backup_note") ?: ""
 
+        val patches = try {
+            PatchParser.parse(patchText)
+        } catch (e: Throwable) {
+            return ToolResult.invalidInput("patch 解析失败：${e.message}")
+        }
+        if (patches.isEmpty()) return ToolResult.invalidInput("patch 中没有可应用的改动")
+
+        // ── 通道模式（外接 Termux）──────────────────────────────
+        if (channel != null) return executeViaChannel(input, ctx, patches, note)
+
         val baseDir = try {
             val raw = input.str("base_path")
             if (raw == null) {
@@ -80,14 +110,6 @@ class ApplyPatchTool(
         } catch (e: Throwable) {
             return ToolResult.Error(e.message ?: "base_path 错误", ToolResult.INVALID_INPUT)
         }
-
-        // ── 解析 ────────────────────────────────────────────────
-        val patches = try {
-            PatchParser.parse(patchText)
-        } catch (e: Throwable) {
-            return ToolResult.invalidInput("patch 解析失败：${e.message}")
-        }
-        if (patches.isEmpty()) return ToolResult.invalidInput("patch 中没有可应用的改动")
 
         // ── 阶段 1：prepare（全部写 tmp，任一失败则全撤）────────────
         val staged = mutableListOf<Staged>()
@@ -189,6 +211,171 @@ class ApplyPatchTool(
             }
             staged.filter { it !in committed }.forEach { runCatching { if (!it.isDelete) it.tmp.delete() } }
             return ToolResult.Error("ApplyPatch 提交阶段失败，已回滚：${e.message}", ToolResult.INTERNAL)
+        }
+
+        return ToolResult.ok("ApplyPatch 完成：${applied.joinToString("；")}\n已写 ${committed.size} 个文件")
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  通道模式实现（外接 Termux）
+    // ══════════════════════════════════════════════════════════════
+
+    /** 通道模式的暂存项（tmp 是内存里的新内容，不落盘）。 */
+    private data class RemoteStaged(
+        val path: String,
+        val newContent: String?,   // null = 删除
+        val oldContent: String?,   // null = 原本不存在
+    )
+
+    private fun channelError(detail: String): ToolResult =
+        ToolResult.Error(
+            "Termux 通道执行失败：$detail\n" +
+                "当前环境是「外接 Termux」，文件读写必须由 Termux 执行。\n" +
+                "排查：① Termux 是否在运行 ② 是否已授权「在 Termux 中运行命令」",
+            ToolResult.INTERNAL,
+        )
+
+    /**
+     * 通道模式：路径解析。
+     *
+     * · **绝对路径** → 原样（Termux 自己解析）
+     * · **相对路径 + 给了 base_path** → 拼在 base 下
+     * · **相对路径 + 没给 base_path** → 原样交给 Termux 的 `$HOME`
+     *   （通道 execute 传 `workDir = null` 时 TermuxChannel 用 TERMUX_HOME）
+     *
+     * ⚠️ **不用 `ctx.cwd`** —— 它是 App 私有目录（如
+     * `/data/user/0/com.ccm.app/files/workspace`），Termux 侧根本不存在，
+     * 拼进去只会让每个文件都「不存在」。
+     */
+    private fun resolveRemotePath(raw: String, basePath: String?): String {
+        val p = raw.trim()
+        if (p.startsWith("/")) return p
+        if (basePath.isNullOrBlank()) return p
+        return basePath.trim().trimEnd('/') + "/" + p
+    }
+
+    private suspend fun executeViaChannel(
+        input: JsonObject,
+        ctx: ToolContext,
+        patches: List<PatchParser.FilePatch>,
+        note: String,
+    ): ToolResult {
+        val ch = channel ?: return channelError("通道未注入")
+        val basePath = input.str("base_path")
+
+        // ── 阶段 1：prepare（全部在内存里算好，任一失败则什么都没写）──
+        val staged = mutableListOf<RemoteStaged>()
+        val applied = mutableListOf<String>()
+
+        for (fp in patches) {
+            ctx.checkCancelled()
+            val path = resolveRemotePath(fp.path, basePath)
+
+            val pre = ch.read(path)
+            val existedBefore: Boolean
+            val oldContent: String?
+
+            when (pre) {
+                is ChannelFs.ReadResult.NotFound -> {
+                    existedBefore = false
+                    oldContent = null
+                }
+                is ChannelFs.ReadResult.IsDirectory ->
+                    return ToolResult.invalidInput("是目录不是文件：$path（patch 想改它）")
+                is ChannelFs.ReadResult.TooLarge -> return ToolResult.Error(
+                    "文件过大（${pre.size} bytes，通道单次读取上限 ${pre.limit}）：$path\n" +
+                        "ApplyPatch 需要读旧内容来应用 hunk，大文件走不了通道。请用 Bash 工具处理。",
+                    ToolResult.INVALID_INPUT,
+                )
+                is ChannelFs.ReadResult.Failed -> return channelError("${pre.path}: ${pre.message}")
+                is ChannelFs.ReadResult.Ok -> {
+                    existedBefore = true
+                    oldContent = pre.content
+                    FileVersionTracker.staleReasonRemote(
+                        ch.canonicalKey(path), pre.mtimeMs, pre.size, exists = true,
+                    )?.let {
+                        return ToolResult.Error(it, ToolResult.INVALID_INPUT)
+                    }
+                }
+            }
+
+            // 计算新内容
+            val newContent: String? = when {
+                fp.isDelete -> null
+                fp.isNew || !existedBefore -> PatchParser.buildNewFile(fp.hunks)
+                else -> {
+                    val base = oldContent
+                        ?: return ToolResult.Error("${path} 不存在，但 patch 不是新增", ToolResult.INVALID_INPUT)
+                    try {
+                        PatchParser.applyHunks(base, fp.hunks)
+                    } catch (e: Throwable) {
+                        return ToolResult.Error(
+                            "ApplyPatch 准备阶段失败，未做任何改动：${fp.path} 的 hunk 无法应用 —— ${e.message}",
+                            ToolResult.INVALID_INPUT,
+                        )
+                    }
+                }
+            }
+
+            staged += RemoteStaged(path, newContent, oldContent)
+            applied += if (newContent == null) {
+                "删除 ${fp.path}"
+            } else {
+                "${if (existedBefore) "修改" else "新增"} ${fp.path}（${fp.hunks.size} hunk）"
+            }
+        }
+
+        // ── 备份 + undo 快照（prepare 成功后、commit 之前）──────────
+        staged.forEach { s ->
+            val old = s.oldContent ?: return@forEach
+            try {
+                undoStore.saveSnapshotAt(s.path, old, note)
+            } catch (_: Throwable) {
+            }
+            if (s.newContent == null) {
+                runCatching { trashStore.backupAt(s.path, old, note) }
+            } else {
+                runCatching { trashStore.backupBeforeOverwriteAt(s.path, old, s.newContent, note) }
+            }
+        }
+
+        // ── 阶段 2：commit（逐个写，失败则用 oldContent 回滚）────────
+        val committed = mutableListOf<RemoteStaged>()
+        for (s in staged) {
+            ctx.checkCancelled()
+            val r: ChannelFs.WriteResult? = if (s.newContent == null) {
+                if (ch.remove(s.path)) null
+                else ChannelFs.WriteResult.Failed(s.path, "删除失败")
+            } else {
+                ch.write(s.path, s.newContent)
+            }
+
+            if (r is ChannelFs.WriteResult.Failed || r is ChannelFs.WriteResult.TooLarge) {
+                // 回滚已提交的
+                for (done in committed) {
+                    val old = done.oldContent
+                    if (old == null) {
+                        ch.remove(done.path)
+                    } else {
+                        ch.write(done.path, old)
+                    }
+                }
+                val detail = when (r) {
+                    is ChannelFs.WriteResult.TooLarge ->
+                        "${s.path} 内容过大（${r.size} bytes，上限 ${r.limit}）"
+                    is ChannelFs.WriteResult.Failed -> "${s.path}: ${r.message}"
+                    else -> s.path
+                }
+                return ToolResult.Error(
+                    "ApplyPatch 提交阶段失败，已回滚：$detail",
+                    ToolResult.INTERNAL,
+                )
+            }
+
+            if (r is ChannelFs.WriteResult.Ok) {
+                FileVersionTracker.trackRemote(ch.canonicalKey(s.path), r.mtimeMs, r.bytes)
+            }
+            committed += s
         }
 
         return ToolResult.ok("ApplyPatch 完成：${applied.joinToString("；")}\n已写 ${committed.size} 个文件")

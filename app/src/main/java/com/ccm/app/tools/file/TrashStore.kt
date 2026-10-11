@@ -196,15 +196,53 @@ class TrashStore(private val rootDir: File) {
         }
     }
 
-    private fun writeBackup(file: File, content: String, desc: String): File {
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-11 加】通道模式（Termux）的备份入口
+    // ══════════════════════════════════════════════════════════════
+    //
+    // 走 [ChannelFs] 时，被改的文件在 Termux 私有目录里，Android 侧
+    // `File.exists()/readText()` 拿不到（跨沙箱）。但**备份内容本身**是
+    // 调用方刚读出来的字符串 —— 所以只要把「路径」而不是「File 对象」
+    // 交给这里，备份照样能落进 App 自己的回收站目录。
+    //
+    // ⚠️ manifest 记的仍是原始路径字符串（Termux 侧路径），恢复时
+    //    [restore] 会 `File(it).copyTo(dest)` —— 对 Termux 私有目录
+    //    同样会失败。这是已知限制（见报告「遗留问题」），不影响
+    //    「备份不丢」这个主要目的。
+
+    /** 备份即将被覆盖的文件（通道模式）。[path] 是 Termux 侧路径，[oldContent] 是旧内容。 */
+    @Synchronized
+    fun backupBeforeOverwriteAt(path: String, oldContent: String, newContent: String, desc: String = ""): File? {
+        return try {
+            if (oldContent == newContent) return null
+            if (diffSize(oldContent, newContent) < MIN_DIFF_TO_BACKUP) return null
+            writeBackupAt(path, oldContent, desc)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /** 无条件备份（通道模式，rm / 删除场景用）。 */
+    @Synchronized
+    fun backupAt(path: String, content: String, desc: String = ""): File? = try {
+        writeBackupAt(path, content, desc)
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun writeBackup(file: File, content: String, desc: String): File =
+        writeBackupAt(file.absolutePath, content, desc)
+
+    private fun writeBackupAt(path: String, content: String, desc: String): File {
         ensureDir()
-        val trashName = makeTrashName(file, content, desc)
+        // File(path) 只做字符串解析（取 basename），不访问文件系统 —— 对 Termux 路径同样有效
+        val trashName = makeTrashName(File(path), content, desc)
         val trashFile = File(trashDir, trashName)
         AtomicFile.writeText(trashFile, content, createParent = true)
 
         // ⚠️ 必须记 manifest：否则恢复时找不到原始位置（CCM 踩过的坑 1）
         val manifest = loadManifest()
-        manifest[trashName] = file.absolutePath
+        manifest[trashName] = path
         saveManifest(manifest)
 
         // ⚠️ 必须在这里也调清理：日常备份都走这条路（CCM 踩过的坑 2）

@@ -30,8 +30,32 @@ import java.io.File
  * 【设计取舍：为什么不用 Java 的 `Files.find` + `Pattern`】
  * 行为必须与 CCM 对齐（模型侧的可预期性），而 Java 的 glob 语义在
  * `**` 和隐藏文件处理上与 shell 有细微差异，详见 [GlobMatcher]。
+ *
+ * ══════════════════════════════════════════════════════════════
+ *  【2026-10-11 加】执行通道（外接 Termux 模式）
+ * ══════════════════════════════════════════════════════════════
+ *
+ * `envMode == "termux"` 时，工作目录在 Termux 私有目录里 —— Android 侧的
+ * `File.walk` 连目录都进不去（跨沙箱）。所以三个搜索工具都改走通道：
+ *
+ * | 工具 | 通道实现 |
+ * |---|---|
+ * | Glob | `find` 列文件 + **本地** [GlobMatcher] 匹配（保持与 Android 侧同一套 glob 语义）|
+ * | Grep | `grep -rn`（PCRE），只回传命中的行 |
+ * | CodeSearch | `grep` 出候选行 → 本地按关键词逐行过滤 |
+ *
+ * 【为什么 Glob 只把 `find` 交给通道】
+ * 若直接用 `find -name '<glob>'`，glob 语义就变成 **shell 的**了 ——
+ * `**` 在 shell 里不递归、`*` 不跨目录，与 [GlobMatcher] 的行为对不上，
+ * 模型会看到「同一个模式在两种环境下结果不同」。所以只借 `find` 的
+ * 遍历能力，匹配仍在本地做。
+ *
+ * @param channel 主执行通道。null = 用 Android [File] API（proot / 未选环境）
  */
-class SearchTools {
+class SearchTools(private val channel: ChannelFs? = null) {
+
+    /** 是否走通道（Termux 模式） */
+    private val viaChannel: Boolean get() = channel != null
 
     companion object {
         /** Grep / CodeSearch 的命中上限（防止一次搜索把上下文塞爆） */
@@ -53,6 +77,24 @@ class SearchTools {
         val extras = ctx.extraDirs.map { File(it) }
         return PathGuard.resolveAllowed(cwd, extras, raw)
     }
+
+    /**
+     * 通道模式的搜索根（字符串形式）。
+     *
+     * 语义与 [com.ccm.app.tools.file.FileTools.resolvePath] 一致：
+     * 绝对路径原样用；相对路径交给 Termux 的 `$HOME`（通道默认 workDir）。
+     * `ctx.cwd` 不参与 —— 它是 App 私有目录，Termux 侧看不见。
+     */
+    private fun resolveRootPath(input: JsonObject): String = (input.str("path") ?: ".").trim()
+
+    /** 通道执行失败时的统一文案。 */
+    private fun channelError(detail: String): ToolResult =
+        ToolResult.Error(
+            "Termux 通道执行失败：$detail\n" +
+                "当前环境是「外接 Termux」，文件检索必须由 Termux 执行。\n" +
+                "排查：① Termux 是否在运行 ② 是否已授权「在 Termux 中运行命令」",
+            ToolResult.INTERNAL,
+        )
 
     /** 读取文本文件（带大小保护）。读不了返回 null。 */
     private fun readTextSafe(file: File): String? = try {
@@ -90,6 +132,23 @@ class SearchTools {
             val pattern = input.str("pattern")!!
             val re = GlobMatcher.compile(pattern)
                 ?: return ToolResult.invalidInput("glob 模式非法：$pattern")
+
+            // ── 通道模式（外接 Termux）──────────────────────────────
+            if (viaChannel) {
+                val ch = channel ?: return channelError("通道未注入")
+                val rootPath = resolveRootPath(input)
+                val listed = ch.listFiles(rootPath, maxFiles = 50_000)
+                listed.error?.let { return ToolResult.notFound(it) }
+
+                val results = mutableListOf<String>()
+                for (f in listed.files) {
+                    ctx.checkCancelled()
+                    if (results.size >= 500) break
+                    val rel = ch.relativeTo(f, rootPath)
+                    if (re.containsMatchIn(rel)) results += ch.canonicalKey(f)
+                }
+                return ToolResult.ok(results.joinToString("\n").ifEmpty { "(no matches)" })
+            }
 
             val root = try {
                 resolveRoot(input, ctx)
@@ -145,6 +204,27 @@ class SearchTools {
                 } catch (_: Throwable) {
                     return ToolResult.invalidInput("include 正则非法：$it")
                 }
+            }
+
+            // ── 通道模式（外接 Termux）──────────────────────────────
+            if (viaChannel) {
+                val ch = channel ?: return channelError("通道未注入")
+                val rootPath = resolveRootPath(input)
+
+                // include 过滤在本地做（保持 Kotlin 正则语义），所以先多取一些行，
+                // 过滤后仍有足够命中。上限 800 行，防单次回传过大。
+                val fetch = if (includeFilter != null) (MAX_MATCHES * 4).coerceAtMost(800) else MAX_MATCHES
+                val res = ch.grep(patternText, rootPath, maxMatches = fetch)
+                res.error?.let { return ToolResult.notFound(it) }
+
+                val out = mutableListOf<String>()
+                for (h in res.hits) {
+                    if (out.size >= MAX_MATCHES) break
+                    val name = h.path.substringAfterLast('/')
+                    if (includeFilter != null && !includeFilter.containsMatchIn(name)) continue
+                    out += "${h.path}:${h.line}:${h.text}"
+                }
+                return ToolResult.ok(out.joinToString("\n").ifEmpty { "(no matches)" })
             }
 
             val root = try {
@@ -214,6 +294,42 @@ class SearchTools {
                 } catch (_: Throwable) {
                     null
                 }
+            }
+
+            // ── 通道模式（外接 Termux）──────────────────────────────
+            //
+            // CodeSearch 的语义是「一行里出现全部关键词」（不分词、不要求相邻），
+            // 直接映射成 grep 的多个 `-e`（AND 语义）会把**同一行**的约束
+            // 变成「同一文件任意行」—— 那会大量误报。
+            //
+            // 所以：用第一个关键词 grep 出候选行（多取一些），其余关键词
+            // 在本地逐行校验。绝大多数情况下第一个关键词的候选集已经很小。
+            if (viaChannel) {
+                val ch = channel ?: return channelError("通道未注入")
+                val rootPath = resolveRootPath(input)
+
+                val head = keywords.first()
+                val fetch = (limit * 8).coerceAtMost(1000)
+                val res = ch.grep(
+                    pattern = Regex.escape(head),
+                    root = rootPath,
+                    maxMatches = fetch,
+                    ignoreCase = true,
+                )
+                res.error?.let { return ToolResult.notFound(it) }
+
+                val results = mutableListOf<String>()
+                for (h in res.hits) {
+                    if (results.size >= limit) break
+                    val name = h.path.substringAfterLast('/')
+                    if (includeFilter != null && !includeFilter.containsMatchIn(name)) continue
+                    if (includeFilter == null && !CODE_EXTENSIONS.containsMatchIn(name)) continue
+                    val low = h.text.lowercase()
+                    if (keywords.all { low.contains(it) }) {
+                        results += "${ch.canonicalKey(h.path)}:${h.line}:${h.text.trim().take(200)}"
+                    }
+                }
+                return ToolResult.ok(results.joinToString("\n").ifEmpty { "(no matches)" })
             }
 
             val root = try {

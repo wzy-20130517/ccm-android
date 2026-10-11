@@ -35,13 +35,40 @@ import java.io.File
  *
  * 做法：Read 记录 `mtime+size`，Write/Edit 覆盖前比对，不一致就拒写。
  * 细节见 [FileVersionTracker]。
+ *
+ * ══════════════════════════════════════════════════════════════
+ *  【2026-10-11 加】执行通道（外接 Termux 模式）
+ * ══════════════════════════════════════════════════════════════
+ *
+ * 用户选「外接 Termux」后，Bash 命令跑在 Termux 进程里，而文件工具用
+ * `java.io.File` —— **两者不是同一个文件系统视图**：
+ *
+ * ```
+ * Bash : cd /data/data/com.termux/files/home && ls       → Termux 的 home
+ * Write: File("/data/data/com.termux/files/home/a.txt")  → Permission denied
+ * ```
+ *
+ * 于是出现「Bash 读不到 Write 写的文件」这种死循环。
+ *
+ * 修法：构造时注入主通道（[ChannelFs]），`envMode == "termux"` 时
+ * **全部读写都过通道**，让 Termux 自己去动它自己的文件。
+ *
+ * ⚠️ **proot 模式零改动**：proot 的 rootfs 与 Android 侧路径不通，但
+ * `/sdcard` 两边共享，用 [File] API 更直接。所以 [channel] 为 null 时
+ * 完全走原有路径，行为与改动前逐字节一致。
+ *
+ * @param channel 主执行通道。null = 用 Android [File] API（proot / 未选环境）
  */
 class FileTools(
     private val trashStore: TrashStore,
     private val undoStore: UndoStore,
+    private val channel: ChannelFs? = null,
 ) {
 
-    /** 解析路径：相对路径基于 ctx.cwd，并做越界检查 */
+    /** 是否走通道（Termux 模式） */
+    private val viaChannel: Boolean get() = channel != null
+
+    /** 解析路径：相对路径基于 ctx.cwd，并做越界检查（Android 模式） */
     private fun resolve(input: JsonObject, ctx: ToolContext, key: String = "file_path"): File {
         val raw = input.str(key) ?: throw IllegalArgumentException("$key is required")
         val cwd = File(ctx.cwd)
@@ -49,8 +76,279 @@ class FileTools(
         return PathGuard.resolveAllowed(cwd, extras, raw)
     }
 
+    /**
+     * 通道模式的路径解析。
+     *
+     * 语义（与 CLI 对齐）：
+     * · **绝对路径** → 原样交给 Termux 解析（`/sdcard/...` 两边都通）
+     * · **相对路径** → 基于 Termux 的 `$HOME`（通道的默认 workDir）
+     *
+     * ⚠️ **不使用 ctx.cwd** —— 它是 App 私有目录下的路径，Termux 侧看不见，
+     * 拿来当基准只会让 `cat a.txt` 变成 `cat /data/data/com.ccm.app/.../a.txt`（不存在）。
+     */
+    private fun resolvePath(input: JsonObject, key: String = "file_path"): String {
+        val raw = input.str(key) ?: throw IllegalArgumentException("$key is required")
+        return raw.trim()
+    }
+
     private fun pathError(e: Throwable): ToolResult =
         ToolResult.Error(e.message ?: "路径解析失败", ToolResult.INVALID_INPUT)
+
+    /** 通道不可用时的统一报错文案。 */
+    private fun channelError(detail: String): ToolResult =
+        ToolResult.Error(
+            "Termux 通道执行失败：$detail\n" +
+                "当前环境是「外接 Termux」，文件读写必须由 Termux 执行。\n" +
+                "排查：① Termux 是否在运行 ② 是否已授权「在 Termux 中运行命令」",
+            ToolResult.INTERNAL,
+        )
+
+    // ══════════════════════════════════════════════════════════════
+    //  通道模式实现（外接 Termux）
+    // ══════════════════════════════════════════════════════════════
+    //
+    //  下面这些方法是四个工具在 `envMode == "termux"` 时走的路径。
+    //  与 Android 侧实现**逐条对齐语义**（唯一性检查、原子写、并发守卫、
+    //  回收站 / undo 快照），只是把「读写文件」换成「让 Termux 读写」。
+    //
+    //  代价是**每次操作至少一次 Binder 往返**（Intent → Termux → PendingIntent），
+    //  比 `File.readText()` 慢。所以：
+    //    · 能合并的命令就合并（read 同时带回 size/mtime，省一次 stat）
+    //    · 备份 / 快照仍走本地磁盘（内容已经在内存里，不必再往返）
+
+    /** 通道模式下的写前状态。 */
+    private sealed interface PreRead {
+        /** 文件不存在（新建场景） */
+        data object Missing : PreRead
+
+        /** 存在且已读出内容 */
+        data class Present(val content: String, val mtimeMs: Long, val size: Long) : PreRead
+
+        /** 读不了 —— 调用方直接返回这个结果 */
+        data class Reject(val result: ToolResult) : PreRead
+    }
+
+    /**
+     * 通道模式：读旧内容 + 并发守卫。
+     *
+     * 合并成一次往返（[ChannelFs.read] 顺带带回 size / mtime）。
+     */
+    private suspend fun preReadForWrite(ch: ChannelFs, path: String): PreRead =
+        when (val r = ch.read(path)) {
+            is ChannelFs.ReadResult.NotFound -> PreRead.Missing
+
+            is ChannelFs.ReadResult.IsDirectory ->
+                PreRead.Reject(ToolResult.invalidInput("是目录不是文件：$path"))
+
+            is ChannelFs.ReadResult.TooLarge -> PreRead.Reject(
+                ToolResult.Error(
+                    "文件过大（${r.size} bytes，通道单次读取上限 ${r.limit}）。\n" +
+                        "通道模式的覆盖写需要先读出旧内容（备份 + 快照），大文件走不了这条路。\n" +
+                        "替代方案：用 Bash 工具在 Termux 侧直接处理（如 `sed -i`）。",
+                    ToolResult.INVALID_INPUT,
+                ),
+            )
+
+            is ChannelFs.ReadResult.Failed -> PreRead.Reject(channelError(r.message))
+
+            is ChannelFs.ReadResult.Ok -> {
+                val key = ch.canonicalKey(path)
+                FileVersionTracker.staleReasonRemote(key, r.mtimeMs, r.size, exists = true)?.let {
+                    return PreRead.Reject(ToolResult.Error(it, ToolResult.INVALID_INPUT))
+                }
+                PreRead.Present(r.content, r.mtimeMs, r.size)
+            }
+        }
+
+    /** 通道模式：备份到回收站 + undo 快照（纯本地写盘，不发命令）。 */
+    private fun backupAndSnapshot(path: String, oldContent: String, newContent: String, note: String) {
+        trashStore.backupBeforeOverwriteAt(path, oldContent, newContent, note)
+        try {
+            undoStore.saveSnapshotAt(path, oldContent, note)
+        } catch (_: Throwable) {
+            // 快照失败不阻塞写入
+        }
+    }
+
+    /** 通道模式：写入并把通道结果转成 [ToolResult]。 */
+    private suspend fun writeViaChannel(ch: ChannelFs, path: String, content: String): ToolResult =
+        when (val w = ch.write(path, content)) {
+            is ChannelFs.WriteResult.Ok -> {
+                // 刷新版本，否则连续两次写会被自己误拦
+                FileVersionTracker.trackRemote(ch.canonicalKey(path), w.mtimeMs, w.bytes)
+                ToolResult.ok("Wrote ${w.bytes} bytes to ${ch.canonicalKey(path)}")
+            }
+
+            is ChannelFs.WriteResult.TooLarge -> ToolResult.Error(
+                "内容过大（${w.size} bytes，通道单次写入上限 ${w.limit}）。\n" +
+                    "请分多次写：先 Write 前一段，再用 Edit 追加其余部分。",
+                ToolResult.INVALID_INPUT,
+            )
+
+            is ChannelFs.WriteResult.Failed -> channelError(w.message)
+        }
+
+    /** 通道模式：Read 工具主体。 */
+    private suspend fun readViaChannel(input: JsonObject): ToolResult {
+        val ch = channel ?: return channelError("通道未注入")
+        val path = try {
+            resolvePath(input)
+        } catch (e: Throwable) {
+            return pathError(e)
+        }
+        val startLine = input.int("start_line")
+        val endLine = input.int("end_line")
+
+        return when (val r = ch.read(path, startLine, endLine)) {
+            is ChannelFs.ReadResult.NotFound -> ToolResult.notFound("File not found: $path")
+            is ChannelFs.ReadResult.IsDirectory -> ToolResult.invalidInput("是目录不是文件：$path")
+
+            is ChannelFs.ReadResult.TooLarge -> ToolResult.Error(
+                "文件过大（${r.size} bytes，通道单次读取上限 ${r.limit}）。\n" +
+                    "请用 start_line / end_line 分段读，或先用 Grep 定位到目标行。",
+                ToolResult.INVALID_INPUT,
+            )
+
+            is ChannelFs.ReadResult.Failed -> channelError(r.message)
+
+            is ChannelFs.ReadResult.Ok -> {
+                // ⚠️ 先记版本再切片：记的是**整个文件**的 size/mtime，
+                // 与后续写时的比对基准一致（切片后行数变了，不能拿切片算）
+                FileVersionTracker.trackRemote(ch.canonicalKey(path), r.mtimeMs, r.size)
+
+                // 0 字节文件：内容为空串，与 Android 侧 `"".split("\n")` = [""] 对齐，
+                // 走下面同一条编号逻辑（不特判，避免两条路径的输出格式漂移）
+                val lines = r.content.split("\n")
+
+                // ⚠️ 分段读的偏移：`sed -n 'N,Mp'` 的输出**从第 N 行开始**，
+                // 所以内容里的第 1 行对应文件的第 N 行 —— 行号要加 (N-1)。
+                // 一开始这里减成了「从 0 开始」，会把切片前几行又跳掉、行号也错。
+                val isRanged = startLine != null && r.size > 0L
+
+                if (isRanged && r.content.isEmpty()) {
+                    // sed 什么都没输出 = 请求的范围超出文件末尾
+                    return ToolResult.invalidInput(
+                        "start_line ($startLine) 超出文件末尾（该范围没有内容）",
+                    )
+                }
+
+                val baseLine = if (isRanged) startLine!! - 1 else 0
+                val start = 0
+                val end = if (isRanged && endLine != null) {
+                    endLine - startLine!! + 1
+                } else {
+                    endLine ?: lines.size
+                }
+
+                // 与 Android 侧一致的越界检查（只在没走 sed 切片的路径上需要）
+                if (!isRanged && start >= lines.size) {
+                    return ToolResult.invalidInput(
+                        "start_line (${(startLine ?: 1) - 1}) 超出文件行数 (${lines.size})",
+                    )
+                }
+
+                val slice = lines.subList(start, end.coerceAtMost(lines.size))
+                ToolResult.ok(
+                    slice.mapIndexed { i, line ->
+                        val no = (baseLine + start + i + 1).toString().padStart(5)
+                        "$no| $line"
+                    }.joinToString("\n"),
+                )
+            }
+        }
+    }
+
+    /** 通道模式：Write 工具主体。 */
+    private suspend fun writeViaChannelTool(input: JsonObject, content: String, note: String): ToolResult {
+        val ch = channel ?: return channelError("通道未注入")
+        val path = try {
+            resolvePath(input)
+        } catch (e: Throwable) {
+            return pathError(e)
+        }
+
+        return when (val pre = preReadForWrite(ch, path)) {
+            is PreRead.Reject -> pre.result
+
+            is PreRead.Missing -> writeViaChannel(ch, path, content)
+
+            is PreRead.Present -> {
+                // 内容完全相同 → 不产生副作用（与 Android 侧 backupBeforeOverwrite 的语义一致）
+                if (pre.content == content) return ToolResult.ok("内容未变化：${ch.canonicalKey(path)}")
+                backupAndSnapshot(path, pre.content, content, note)
+                writeViaChannel(ch, path, content)
+            }
+        }
+    }
+
+    /** 通道模式：Edit / MultiEdit 的公共骨架（读 → 改 → 写）。 */
+    private sealed interface EditOutcome {
+        /** 改好了：新内容 + 给模型看的结果文案 */
+        data class Done(val updated: String, val message: String) : EditOutcome
+
+        /** 改不了（唯一性检查失败等），直接把结果返回给模型 */
+        data class Failed(val result: ToolResult) : EditOutcome
+    }
+
+    private suspend fun editViaChannel(
+        path: String,
+        ch: ChannelFs,
+        note: String,
+        transform: (String) -> EditOutcome,
+    ): ToolResult {
+        val pre = preReadForWrite(ch, path)
+        return when (pre) {
+            is PreRead.Reject -> pre.result
+            is PreRead.Missing -> ToolResult.notFound("File not found: $path")
+            is PreRead.Present -> {
+                when (val outcome = transform(pre.content)) {
+                    is EditOutcome.Failed -> outcome.result
+                    is EditOutcome.Done -> {
+                        backupAndSnapshot(path, pre.content, outcome.updated, note)
+                        when (val w = ch.write(path, outcome.updated)) {
+                            is ChannelFs.WriteResult.Ok -> {
+                                FileVersionTracker.trackRemote(ch.canonicalKey(path), w.mtimeMs, w.bytes)
+                                ToolResult.ok(outcome.message)
+                            }
+
+                            is ChannelFs.WriteResult.TooLarge -> ToolResult.Error(
+                                "修改后内容过大（${w.size} bytes，上限 ${w.limit}）。",
+                                ToolResult.INVALID_INPUT,
+                            )
+
+                            is ChannelFs.WriteResult.Failed -> channelError(w.message)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** 统计 [needle] 在 [haystack] 里出现的次数（字面量匹配，非正则）。 */
+    private fun countOccurrences(haystack: String, needle: String): Int {
+        if (needle.isEmpty()) return 0
+        var count = 0
+        var idx = haystack.indexOf(needle)
+        while (idx >= 0) {
+            count++
+            idx = haystack.indexOf(needle, idx + needle.length)
+        }
+        return count
+    }
+
+    /**
+     * 唯一替换（Edit / MultiEdit 的核心逻辑）。
+     *
+     * ⚠️ 用 split+join 而不是正则替换：new_string 里的 `$` 不会被当特殊模式
+     * （CCM 踩过：正则替换会把 `$1` 之类当反向引用，损坏内容）。
+     */
+    private fun applyReplace(original: String, oldStr: String, newStr: String, replaceAll: Boolean): String =
+        if (replaceAll) {
+            original.split(oldStr).joinToString(newStr)
+        } else {
+            val idx = original.indexOf(oldStr)
+            original.substring(0, idx) + newStr + original.substring(idx + oldStr.length)
+        }
 
     // ══════════════════════════════════════════════════════════════
     //  Read
@@ -80,6 +378,9 @@ class FileTools(
         }
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            // ── 通道模式（外接 Termux）──────────────────────────────
+            if (viaChannel) return readViaChannel(input)
+
             val file = try {
                 resolve(input, ctx)
             } catch (e: Throwable) {
@@ -141,13 +442,17 @@ class FileTools(
         }
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val content = input.str("content") ?: ""
+            val note = input.str("backup_note") ?: ""
+
+            // ── 通道模式（外接 Termux）──────────────────────────────
+            if (viaChannel) return writeViaChannelTool(input, content, note)
+
             val file = try {
                 resolve(input, ctx)
             } catch (e: Throwable) {
                 return pathError(e)
             }
-            val content = input.str("content") ?: ""
-            val note = input.str("backup_note") ?: ""
 
             // ① 并发守卫放最前面：校验失败不产生任何副作用（不污染 undo / 回收站）
             FileVersionTracker.staleReason(file)?.let {
@@ -204,17 +509,52 @@ class FileTools(
         }
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val oldStr = input.str("old_string") ?: ""
+            val newStr = input.str("new_string") ?: ""
+            val replaceAll = input.bool("replace_all") ?: false
+            val note = input.str("backup_note") ?: ""
+
+            // ── 通道模式（外接 Termux）──────────────────────────────
+            if (viaChannel) {
+                val ch = channel ?: return channelError("通道未注入")
+                val path = try {
+                    resolvePath(input)
+                } catch (e: Throwable) {
+                    return pathError(e)
+                }
+                return editViaChannel(path, ch, note) { original ->
+                    // 唯一性检查（对齐 CCM：0 处或 >1 处都报错）
+                    val occurrences = countOccurrences(original, oldStr)
+                    if (occurrences == 0) {
+                        EditOutcome.Failed(
+                            ToolResult.Error(
+                                "old_string 未找到（文件中不存在该文本）。请确认内容与当前文件一致。",
+                                ToolResult.INVALID_INPUT,
+                            ),
+                        )
+                    } else if (occurrences > 1 && !replaceAll) {
+                        EditOutcome.Failed(
+                            ToolResult.Error(
+                                "old_string 不唯一（出现 $occurrences 次）。请扩大上下文使其唯一，或设 replace_all=true。",
+                                ToolResult.INVALID_INPUT,
+                            ),
+                        )
+                    } else {
+                        val changed = if (replaceAll) occurrences else 1
+                        EditOutcome.Done(
+                            applyReplace(original, oldStr, newStr, replaceAll),
+                            "已编辑 ${ch.canonicalKey(path)}（替换 $changed 处）",
+                        )
+                    }
+                }
+            }
+
             val file = try {
                 resolve(input, ctx)
             } catch (e: Throwable) {
                 return pathError(e)
             }
             if (!file.exists()) return ToolResult.notFound("File not found: ${file.absolutePath}")
-
-            val oldStr = input.str("old_string") ?: ""
-            val newStr = input.str("new_string") ?: ""
-            val replaceAll = input.bool("replace_all") ?: false
-            val note = input.str("backup_note") ?: ""
 
             // 并发守卫
             FileVersionTracker.staleReason(file)?.let {
@@ -244,12 +584,7 @@ class FileTools(
 
             // ⚠️ 用 split+join 而不是正则替换：new_string 里的 $ 不会被当特殊模式
             // （CCM 踩过：正则替换会把 $1 之类当反向引用，损坏内容）
-            val updated = if (replaceAll) {
-                original.split(oldStr).joinToString(newStr)
-            } else {
-                val idx = original.indexOf(oldStr)
-                original.substring(0, idx) + newStr + original.substring(idx + oldStr.length)
-            }
+            val updated = applyReplace(original, oldStr, newStr, replaceAll)
 
             trashStore.backupBeforeOverwrite(file, updated, note)
             try {
@@ -267,16 +602,6 @@ class FileTools(
             }
         }
 
-        private fun countOccurrences(haystack: String, needle: String): Int {
-            if (needle.isEmpty()) return 0
-            var count = 0
-            var idx = haystack.indexOf(needle)
-            while (idx >= 0) {
-                count++
-                idx = haystack.indexOf(needle, idx + needle.length)
-            }
-            return count
-        }
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -310,16 +635,79 @@ class FileTools(
         }
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult {
+            val editsArr = input["edits"] as? kotlinx.serialization.json.JsonArray
+                ?: return ToolResult.invalidInput("edits 必须是数组")
+            if (editsArr.isEmpty()) return ToolResult.invalidInput("edits 不能为空")
+            val note = input.str("backup_note") ?: ""
+
+            // ── 通道模式（外接 Termux）──────────────────────────────
+            if (viaChannel) {
+                val ch = channel ?: return channelError("通道未注入")
+                val path = try {
+                    resolvePath(input)
+                } catch (e: Throwable) {
+                    return pathError(e)
+                }
+                return editViaChannel(path, ch, note) { original ->
+                    // ⚠️ 全部在内存里应用，任一失败则整体不改（原子性）
+                    // 不做「边改边写」——否则第 3 个编辑失败时前 2 个已落盘，文件处于破碎状态
+                    var current = original
+                    val applied = mutableListOf<String>()
+                    var failure: ToolResult? = null
+
+                    for ((i, el) in editsArr.withIndex()) {
+                        val edit = el as? JsonObject
+                        if (edit == null) {
+                            failure = ToolResult.invalidInput("edits[$i] 不是对象"); break
+                        }
+                        val oldStr = edit.str("old_string")
+                        if (oldStr == null) {
+                            failure = ToolResult.invalidInput("edits[$i].old_string is required"); break
+                        }
+                        val newStr = edit.str("new_string")
+                        if (newStr == null) {
+                            failure = ToolResult.invalidInput("edits[$i].new_string is required"); break
+                        }
+                        val replaceAll = edit.bool("replace_all") ?: false
+
+                        val count = countOccurrences(current, oldStr)
+                        if (count == 0) {
+                            failure = ToolResult.Error(
+                                "edits[$i].old_string 未找到。前 ${applied.size} 个编辑已通过校验但**未写盘**，文件保持原样。",
+                                ToolResult.INVALID_INPUT,
+                            )
+                            break
+                        }
+                        if (count > 1 && !replaceAll) {
+                            failure = ToolResult.Error(
+                                "edits[$i].old_string 不唯一（出现 $count 次）。请扩大上下文，或设 replace_all=true。",
+                                ToolResult.INVALID_INPUT,
+                            )
+                            break
+                        }
+                        current = applyReplace(current, oldStr, newStr, replaceAll)
+                        applied += "  [$i] 替换${if (replaceAll) " $count 处" else ""}"
+                    }
+
+                    val f = failure
+                    if (f != null) {
+                        EditOutcome.Failed(f)
+                    } else {
+                        EditOutcome.Done(
+                            current,
+                            "MultiEdit 完成 ${ch.canonicalKey(path)}（${editsArr.size} 个编辑）\n" +
+                                applied.joinToString("\n"),
+                        )
+                    }
+                }
+            }
+
             val file = try {
                 resolve(input, ctx)
             } catch (e: Throwable) {
                 return pathError(e)
             }
             if (!file.exists()) return ToolResult.notFound("File not found: ${file.absolutePath}")
-
-            val editsArr = input["edits"] as? kotlinx.serialization.json.JsonArray
-                ?: return ToolResult.invalidInput("edits 必须是数组")
-            if (editsArr.isEmpty()) return ToolResult.invalidInput("edits 不能为空")
 
             // 并发守卫放最前：校验失败不产生任何副作用
             FileVersionTracker.staleReason(file)?.let {
@@ -359,12 +747,7 @@ class FileTools(
                         ToolResult.INVALID_INPUT,
                     )
                 }
-                current = if (replaceAll) {
-                    current.split(oldStr).joinToString(newStr)
-                } else {
-                    val idx = current.indexOf(oldStr)
-                    current.substring(0, idx) + newStr + current.substring(idx + oldStr.length)
-                }
+                current = applyReplace(current, oldStr, newStr, replaceAll)
                 applied += "  [$i] 替换${if (replaceAll) " $count 处" else ""}"
             }
 
@@ -387,16 +770,6 @@ class FileTools(
             }
         }
 
-        private fun countOccurrences(haystack: String, needle: String): Int {
-            if (needle.isEmpty()) return 0
-            var count = 0
-            var idx = haystack.indexOf(needle)
-            while (idx >= 0) {
-                count++
-                idx = haystack.indexOf(needle, idx + needle.length)
-            }
-            return count
-        }
     }
 }
 
