@@ -340,6 +340,21 @@ fun MessageList(
     androidx.compose.foundation.lazy.LazyColumn(
         state = listState,
         reverseLayout = true,
+        // 【2026-10-11 修「用户消息贴屏幕最底」】
+        //
+        // `reverseLayout = true` 时 verticalArrangement 的默认值是
+        // `Arrangement.Bottom` —— 内容**不足一屏时从底部开始堆**，
+        // 于是刚发的用户消息直接贴在屏幕最底下（旧版不是这样）。
+        //
+        // 旧版（Column + fillMaxSize + verticalScroll）的行为是
+        // **从顶部开始排**：内容不足一屏时，消息从顶部往下堆，
+        // 底部留空。
+        //
+        // 显式指定 `Arrangement.Top` 恢复旧版行为。
+        // （官方文档：reverseLayout 时 Arrangement.Top 的语义是
+        //  「(top) 123### (bottom)」→「(top) 321### (bottom)」，
+        //   即 item 顺序仍反转，但**堆叠起点在顶部**。）
+        verticalArrangement = androidx.compose.foundation.layout.Arrangement.Top,
         modifier = modifier.fillMaxWidth(),
     ) {
         // ══════════════════════════════════════════════════════════════
