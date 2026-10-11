@@ -751,7 +751,6 @@ class FileTools(
                 applied += "  [$i] 替换${if (replaceAll) " $count 处" else ""}"
             }
 
-            val note = input.str("backup_note") ?: ""
             trashStore.backupBeforeOverwrite(file, current, note)
             try {
                 undoStore.saveSnapshot(file, original, note)
