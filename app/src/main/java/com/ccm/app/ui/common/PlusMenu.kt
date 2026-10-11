@@ -1,6 +1,10 @@
 package com.ccm.app.ui.common
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,10 +29,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ccm.app.R
 import com.ccm.app.ui.theme.CCMTheme
+import androidx.compose.ui.text.style.TextOverflow
 import com.ccm.app.ui.theme.CCMText
 
 /**
@@ -106,14 +113,34 @@ fun PlusMenu(
     // 子菜单展开状态（同一时刻只有一个，对齐 Web 的 showSkillsSubmenu/showProjectsSubmenu）
     var submenu by remember { mutableStateOf<SubmenuKind?>(null) }
 
-    // 外壳：Web `w-[218px] rounded-[12px] border px-[7px] pb-px pt-[7px]`
+    // 外壳 —— 对齐 Web `landingPlusMenuShellClass`：
+    //   `w-[218px] rounded-[12px] border border-[rgba(31,31,30,0.3)]
+    //    bg-white px-[7px] pb-px pt-[7px] shadow-[0_2px_8px_rgba(0,0,0,0.08)]`
+    //
+    // 【2026-10-11 完整还原】原来只做了尺寸和底色，漏了三样：
+    //   ① `border` —— 没有边框，与浅色背景糊在一起看不出卡片边界
+    //   ② `shadow` —— 没有阴影，缺少"浮在内容之上"的层次
+    //   ③ 顺序 —— clip 之后画 border 会被裁掉一半，正确顺序是
+    //      shadow（在外）→ clip → background → border
+    //
+    // 尺寸换算：Web px × 0.92 = APK dp（项目统一约定，见 CcmModal.kt 注释）
     Column(
         modifier = modifier
-            .width(200.56.dp)
-            .clip(RoundedCornerShape(11.04.dp))
-            .background(colors.input)
-            .padding(horizontal = 6.44.dp)
-            .padding(top = 6.44.dp, bottom = 1.dp),
+            .width(200.56.dp)                                    // w-[218px]
+            .shadow(2.dp, RoundedCornerShape(11.04.dp))          // shadow-[0_2px_8px_rgba(0,0,0,0.08)]
+            .clip(RoundedCornerShape(11.04.dp))                  // rounded-[12px]
+            .background(colors.input)                            // bg-white / dark:bg-claude-input
+            // ⚠️ 边框色**不能**用全局 `colors.border`（那是 CSS `:root` 的
+            // `--border` = #E8E7E3，给输入框/分隔用的）。PlusMenu 的边框是
+            // Web 里**硬编码**的 `border-[rgba(31,31,30,0.3)]`（暗色
+            // `white/15`）—— 明显更深，是"卡片描边"而非"内容分隔"。
+            .border(
+                1.dp,
+                if (CCMTheme.isDark) Color(0x26FFFFFF) else Color(0x4D1F1F1E),
+                RoundedCornerShape(11.04.dp),
+            )
+            .padding(horizontal = 6.44.dp)                       // px-[7px]
+            .padding(top = 6.44.dp, bottom = 1.dp),              // pt-[7px] pb-px
         verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
         // ── 1. 添加文件或照片 ────────────────────────────────────────
@@ -166,7 +193,9 @@ fun PlusMenu(
                 .fillMaxWidth()
                 .padding(horizontal = 7.36.dp)
                 .height(1.dp)
-                .background(colors.border),
+                // 分隔线色也是 Web 硬编码的 `bg-[rgba(31,31,30,0.15)]`
+                // （暗色 `white/10`），不是全局 colors.border
+                .background(if (CCMTheme.isDark) Color(0x1AFFFFFF) else Color(0x261F1F1E)),
         )
         Spacer(Modifier.height(6.44.dp))
 
@@ -189,13 +218,10 @@ fun PlusMenu(
             )
         }
 
-        // ── 5. 管理技能 ─────────────────────────────────────────────
-        PlusMenuItem(
-            iconRes = R.drawable.ic_pm_skills,
-            label = "管理技能",
-            onEnter = { submenu = null },
-            onClick = { onDismiss(); onManageSkills() },
-        )
+        // 【2026-10-11 删】原来这里有个一级的「管理技能」—— 但 Web 里
+        // 「管理技能」在**技能子菜单内**（技能列表 → 分隔线 → 管理技能），
+        // 而 SkillsSubmenu 已经实现了它。这里再放一个是一级菜单里出现
+        // 两次同名项（打开子菜单能看到两个「管理技能」）。
 
         // ── 分割线 2 ────────────────────────────────────────────────
         Spacer(Modifier.height(6.44.dp))
@@ -204,17 +230,34 @@ fun PlusMenu(
                 .fillMaxWidth()
                 .padding(horizontal = 7.36.dp)
                 .height(1.dp)
-                .background(colors.border),
+                // 分隔线色也是 Web 硬编码的 `bg-[rgba(31,31,30,0.15)]`
+                // （暗色 `white/10`），不是全局 colors.border
+                .background(if (CCMTheme.isDark) Color(0x1AFFFFFF) else Color(0x261F1F1E)),
         )
         Spacer(Modifier.height(6.44.dp))
 
-        // ── 6. 添加连接器 ───────────────────────────────────────────
+        // ── 5. 添加连接器 ───────────────────────────────────────────
         PlusMenuItem(
             iconRes = R.drawable.ic_pm_connectors,
             label = "添加连接器",
             onEnter = { submenu = null },
             onClick = { onDismiss(); onConnectors() },
         )
+
+        // ── 结尾分隔线 ──────────────────────────────────────────────
+        // Web 的最后一项之后还有一条（`mx-[8px] my-[7px]`）—— 它的作用
+        // 是给最后一项与容器底边之间留出呼吸感（pb-px 只有 1px）。
+        Spacer(Modifier.height(6.44.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 7.36.dp)
+                .height(1.dp)
+                // 分隔线色也是 Web 硬编码的 `bg-[rgba(31,31,30,0.15)]`
+                // （暗色 `white/10`），不是全局 colors.border
+                .background(if (CCMTheme.isDark) Color(0x1AFFFFFF) else Color(0x261F1F1E)),
+        )
+        Spacer(Modifier.height(6.44.dp))
     }
 }
 
@@ -236,12 +279,27 @@ private fun PlusMenuItem(
     trailingChevron: Boolean = false,
 ) {
     val colors = CCMTheme.colors
+    // hover / 按压背景 —— 对齐 Web `hover:bg-[#F5F4F1] dark:hover:bg-white/5`。
+    // ⚠️ 又是**硬编码值**，不是全局 `colors.hover`（= #EFEEEB，CSS :root 的
+    // `--hover`，给侧栏之类用的）—— 菜单项的悬停色比它浅一档。
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val pressed by interaction.collectIsPressedAsState()
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(29.44.dp)
             .clip(RoundedCornerShape(7.36.dp))
-            .clickable { onEnter(); onClick() }
+            .background(
+                when {
+                    pressed -> if (CCMTheme.isDark) Color(0x1AFFFFFF) else Color(0xFFEFEEEB)
+                    hovered -> if (CCMTheme.isDark) Color(0x0DFFFFFF) else Color(0xFFF5F4F1)
+                    else -> Color.Transparent
+                }
+            )
+            .clickable(interactionSource = interaction, indication = null) {
+                onEnter(); onClick()
+            }
             .padding(horizontal = 7.36.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(7.36.dp),
@@ -284,14 +342,29 @@ private fun ProjectSubmenu(
     onCreate: () -> Unit,
 ) {
     val colors = CCMTheme.colors
+    // 【2026-10-11 完整还原】原来是「浅灰底 + 小圆角」的内联块 —— 但 Web 的
+    // 子菜单是**与主菜单完全相同的独立卡片**（`plusMenuSubmenuClass`）：
+    //   w-[218px] rounded-[12px] border bg-white px-[7px] pb-px pt-[7px] shadow
+    // 即：同样的白底、同样的深色描边、同样的 2px 阴影、同样的内边距。
+    //
+    // 手机屏幕窄（393dp），Web 的「悬浮在右侧」（`left-full ml-2`）会超出屏幕，
+    // 所以这里**内联展开**（位置妥协），但**视觉必须一致**（样式不妥协）——
+    // 之前只做了位置妥协，把样式也一起简化了，那是错的。
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(max = 200.dp)
-            .clip(RoundedCornerShape(7.36.dp))
-            .background(colors.hover.copy(alpha = 0.4f))
+            .shadow(2.dp, RoundedCornerShape(11.04.dp))
+            .clip(RoundedCornerShape(11.04.dp))
+            .background(colors.input)
+            .border(
+                1.dp,
+                if (CCMTheme.isDark) Color(0x26FFFFFF) else Color(0x4D1F1F1E),
+                RoundedCornerShape(11.04.dp),
+            )
             .verticalScroll(rememberScrollState())
-            .padding(vertical = 3.68.dp),
+            .padding(horizontal = 6.44.dp)
+            .padding(top = 6.44.dp, bottom = 1.dp),
     ) {
         if (projects.isEmpty()) {
             Text(
@@ -304,7 +377,17 @@ private fun ProjectSubmenu(
         projects.forEach { name ->
             SubmenuRow(label = name, onClick = { onPick(name) })
         }
-        SubmenuRow(label = "新建项目", onClick = onCreate, accent = true)
+        // Web: 项目列表 → 分隔线 → 新建项目
+        Spacer(Modifier.height(6.44.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 7.36.dp)
+                .height(1.dp)
+                .background(if (CCMTheme.isDark) Color(0x1AFFFFFF) else Color(0x261F1F1E)),
+        )
+        Spacer(Modifier.height(6.44.dp))
+        SubmenuRow(label = "新建项目", onClick = onCreate)
     }
 }
 
@@ -316,19 +399,53 @@ private fun SkillsSubmenu(
     onManage: () -> Unit,
 ) {
     val colors = CCMTheme.colors
+    // 【2026-10-11 完整还原】原来是「浅灰底 + 小圆角」的内联块 —— 但 Web 的
+    // 子菜单是**与主菜单完全相同的独立卡片**（`plusMenuSubmenuClass`）：
+    //   w-[218px] rounded-[12px] border bg-white px-[7px] pb-px pt-[7px] shadow
+    // 即：同样的白底、同样的深色描边、同样的 2px 阴影、同样的内边距。
+    //
+    // 手机屏幕窄（393dp），Web 的「悬浮在右侧」（`left-full ml-2`）会超出屏幕，
+    // 所以这里**内联展开**（位置妥协），但**视觉必须一致**（样式不妥协）——
+    // 之前只做了位置妥协，把样式也一起简化了，那是错的。
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(max = 200.dp)
-            .clip(RoundedCornerShape(7.36.dp))
-            .background(colors.hover.copy(alpha = 0.4f))
+            .shadow(2.dp, RoundedCornerShape(11.04.dp))
+            .clip(RoundedCornerShape(11.04.dp))
+            .background(colors.input)
+            .border(
+                1.dp,
+                if (CCMTheme.isDark) Color(0x26FFFFFF) else Color(0x4D1F1F1E),
+                RoundedCornerShape(11.04.dp),
+            )
             .verticalScroll(rememberScrollState())
-            .padding(vertical = 3.68.dp),
+            .padding(horizontal = 6.44.dp)
+            .padding(top = 6.44.dp, bottom = 1.dp),
     ) {
-        skills.forEach { (id, name) ->
-            SubmenuRow(label = name, onClick = { onPick(id) })
+        if (skills.isEmpty()) {
+            Text(
+                "暂无已启用技能",
+                style = CCMText.body13.copy(fontSize = 12.sp),
+                color = colors.textSecondary,
+                modifier = Modifier.padding(horizontal = 7.36.dp, vertical = 5.52.dp),
+            )
+        } else {
+            skills.forEach { (id, name) ->
+                SubmenuRow(label = name, onClick = { onPick(id) })
+            }
         }
-        SubmenuRow(label = "管理技能", onClick = onManage, accent = true)
+        // Web: 技能列表 → 分隔线 → 管理技能
+        Spacer(Modifier.height(6.44.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 7.36.dp)
+                .height(1.dp)
+                .background(if (CCMTheme.isDark) Color(0x1AFFFFFF) else Color(0x261F1F1E)),
+        )
+        Spacer(Modifier.height(6.44.dp))
+        SubmenuRow(label = "管理技能", onClick = onManage)
     }
 }
 
@@ -336,23 +453,43 @@ private fun SkillsSubmenu(
 private fun SubmenuRow(
     label: String,
     onClick: () -> Unit,
-    accent: Boolean = false,
 ) {
     val colors = CCMTheme.colors
+    // 【2026-10-11 对齐 Web】子菜单项的 class 是：
+    //   `flex h-[32px] w-full items-center rounded-[8px] px-[8px]
+    //    text-[14px] hover:bg-[#F5F4F1]`
+    // —— 与**主菜单项完全相同**（h-32 / rounded-8 / px-8 / text-14）。
+    //
+    // 原来是 h-29.44 / rounded-5.52 / px-11.04 / text-12sp —— 全都不一样，
+    // 看起来像"另一种控件"。实际只是同一个按钮的两种尺寸，不该有差异。
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val pressed by interaction.collectIsPressedAsState()
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(29.44.dp)
-            .clip(RoundedCornerShape(5.52.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 11.04.dp),
+            .height(29.44.dp)                                        // h-[32px] × .92
+            .clip(RoundedCornerShape(7.36.dp))                       // rounded-[8px]
+            .background(
+                when {
+                    pressed -> if (CCMTheme.isDark) Color(0x1AFFFFFF) else Color(0xFFEFEEEB)
+                    hovered -> if (CCMTheme.isDark) Color(0x0DFFFFFF) else Color(0xFFF5F4F1)
+                    else -> Color.Transparent
+                }
+            )
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 7.36.dp),                          // px-[8px]
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = label,
-            style = CCMText.body13.copy(fontSize = 12.sp),
-            color = if (accent) colors.accent else colors.textMain,
+            style = CCMText.body14.copy(                             // text-[14px]
+                fontSize = 12.88.sp,
+                lineHeight = 18.4.sp,
+            ),
+            color = colors.textMain,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
     }

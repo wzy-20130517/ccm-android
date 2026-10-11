@@ -2,6 +2,7 @@ package com.ccm.app.ui.chat
 
 import androidx.compose.runtime.Composable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -359,14 +360,16 @@ fun ChatScreenConnected(
         androidx.compose.ui.window.Popup(
             alignment = androidx.compose.ui.Alignment.Center,
             onDismissRequest = { showAttachMenu = false },
+            // 【2026-10-11 对齐模型栏】Popup 属性与 ModelPickerMenu 一致：
+            // focusable 让返回键能关它、clippingEnabled 防止超出屏幕。
+            properties = androidx.compose.ui.window.PopupProperties(
+                focusable = true,
+                clippingEnabled = true,
+            ),
         ) {
-            androidx.compose.foundation.layout.Box(
-                modifier = androidx.compose.ui.Modifier
-                    .shadow(12.dp, androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp))
-                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp))
-                    .background(com.ccm.app.ui.theme.CCMTheme.colors.input),
-            ) {
-                com.ccm.app.ui.common.PlusMenu(
+            // 容器样式全在 PlusMenu 内部（对齐模型栏 ModelPickerMenu 的做法：
+            // 组件自带 shadow/clip/background/border，调用方不套任何包装）。
+            com.ccm.app.ui.common.PlusMenu(
                     onDismiss = { showAttachMenu = false },
                     onAttach = {
                         // 附件二级：沿用原来的三个入口
@@ -397,7 +400,6 @@ fun ChatScreenConnected(
                     },
                     onConnectors = { showAttachMenu = false },
                 )
-            }
         }
     }
 
@@ -409,14 +411,27 @@ fun ChatScreenConnected(
         androidx.compose.ui.window.Popup(
             alignment = androidx.compose.ui.Alignment.Center,
             onDismissRequest = { showAttachSubmenu = false },
+            properties = androidx.compose.ui.window.PopupProperties(
+                focusable = true,
+                clippingEnabled = true,
+            ),
         ) {
+            // 容器样式与 PlusMenu / ModelPickerMenu 完全一致
+            // （shadow 12dp → clip → background → border → 内边距），
+            // 三处菜单是同一套视觉，改一处要同步另两处。
             androidx.compose.foundation.layout.Column(
                 modifier = androidx.compose.ui.Modifier
-                    .width(220.dp)
+                    .width(200.56.dp)                                    // 与 PlusMenu 同宽
                     .shadow(12.dp, androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp))
                     .clip(androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp))
                     .background(com.ccm.app.ui.theme.CCMTheme.colors.input)
-                    .padding(vertical = 6.44.dp),
+                    .border(
+                        1.dp,
+                        com.ccm.app.ui.theme.CCMTheme.colors.border,
+                        androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp),
+                    )
+                    .padding(horizontal = 6.44.dp)
+                    .padding(top = 6.44.dp, bottom = 1.dp),
             ) {
                 androidx.compose.material3.Text(
                     "添加附件",
