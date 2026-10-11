@@ -14,8 +14,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.clickable
 import androidx.compose.runtime.getValue
@@ -325,6 +323,12 @@ fun PresentBlock(
     if (items.isEmpty()) return
     Column(modifier = modifier.fillMaxWidth()) {
         items.forEach { item ->
+            // 参数当前值（滑块状态）。初始值来自 item.params，拖动只改这里 ——
+            // PresentFrame 内部区分「首帧（用初始值构建 HTML）」与「热更新
+            // （postMessage 进 WebView，不重建）」，见 PresentFrame 文档。
+            var paramValues by remember(item.content) {
+                mutableStateOf(item.params.associate { it.name to it.value })
+            }
             Column(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
                     .clip(RoundedCornerShape(10.dp)).background(CCMTheme.colors.input).padding(12.dp),
@@ -363,83 +367,21 @@ fun PresentBlock(
                     }
                 }
                 item.caption?.let { Text(it, style = CCMText.body12, color = CCMTheme.colors.textSecondary) }
-                // 【2026-10-06 Present 升级】html / svg / mermaid 都走 WebView 内联渲染。
-                //   · html/svg：禁 JS（防外跳、防恶意页）
-                //   · mermaid：**必须 JS** —— 用 assets/mermaid.min.js 离线渲染成
-                //     流程图（原来是 else 分支把 .mmd 源码当纯文本显示 = 没升级完）
+                // 【2026-10-11 重构】html / svg / mermaid 的渲染抽到 PresentFrame
+                // （独立文件，含完整的四层安全模型文档 + 参数热更新 + 速度参数接管）。
+                // 原来内联在这里，参数滑块加不进来（WebView 的 JS 桥、首帧/热更新
+                // 区分、高度上报都挤在一个 composable 里会失控）。
                 if (item.kind in setOf("html", "svg", "mermaid") && item.content.isNotBlank()) {
-                    val isMermaid = item.kind == "mermaid"
-                    val preview = remember(item.kind, item.content) {
-                        when {
-                            item.kind == "svg" && !item.content.contains("<svg", ignoreCase = true) ->
-                                "<svg xmlns=\"http://www.w3.org/2000/svg\">${item.content}</svg>"
-                            isMermaid -> buildMermaidHtml(item.content)
-                            else -> item.content
-                        }
-                    }
-                    // 【2026-10-11 高度自适应】原来是固定 260dp —— 长内容（完整网页、
-                    // 长 SVG）被截断只能看到顶部，短内容又留一大片空白。
-                    //
-                    // Web 端的做法（PresentBlock.tsx:232）是 iframe 内脚本
-                    // postMessage 上报 scrollHeight，父页动态调高（160-1200）。
-                    // Android 的等价物：WebViewClient.onPageFinished 时读
-                    // `webView.contentHeight` —— 不需要 JS 桥，也不受
-                    // javaScriptEnabled=false 影响（contentHeight 是 WebView 自己
-                    // 量的，不是脚本算的）。
-                    //
-                    // 兜底：contentHeight 可能不准（图片未加载完、异步布局）——
-                    // 所以给「展开/收起」按钮，用户可手动切换 260dp ↔ 全屏高度。
                     var webHeight by remember(item.content) { mutableStateOf(260.dp) }
                     var expanded by remember(item.content) { mutableStateOf(false) }
-                    val maxHeight = 1200.dp
-                    AndroidView(
-                        modifier = Modifier.fillMaxWidth().height(if (expanded) maxHeight else webHeight),
-                        factory = { context -> WebView(context).apply {
-                            settings.javaScriptEnabled = isMermaid
-                            settings.domStorageEnabled = false
-                            // mermaid 需要读 assets 里的脚本；html/svg 分支 JS 已关，
-                            // 开着 allowFileAccess 也执行不了任何东西（双重保险靠下面的拦截）。
-                            settings.allowFileAccess = isMermaid
-                            settings.allowContentAccess = false
-                            settings.allowFileAccessFromFileURLs = false
-                            settings.allowUniversalAccessFromFileURLs = false
-                            webViewClient = object : WebViewClient() {
-                                override fun shouldInterceptRequest(view: WebView, request: android.webkit.WebResourceRequest): android.webkit.WebResourceResponse? {
-                                    val scheme = request.url.scheme?.lowercase()
-                                    // 放行 data/about + 本包 assets（mermaid.min.js 走 file:///android_asset/）
-                                    return if (scheme == "data" || scheme == "about" ||
-                                        (isMermaid && scheme == "file" && request.url.toString().contains("/android_asset/"))
-                                    ) null
-                                    else android.webkit.WebResourceResponse("text/plain", "UTF-8", java.io.ByteArrayInputStream(ByteArray(0)))
-                                }
-                                override fun shouldOverrideUrlLoading(view: WebView, request: android.webkit.WebResourceRequest): Boolean {
-                                    // 只拦「离页跳转」；assets/data/about 是渲染自身需要
-                                    val scheme = request.url.scheme?.lowercase()
-                                    return !(scheme == "file" || scheme == "data" || scheme == "about")
-                                }
-                                override fun onPageFinished(view: WebView, url: String?) {
-                                    super.onPageFinished(view, url)
-                                    // 量真实内容高度 → 动态调容器（clamp 到 160..1200dp）
-                                    try {
-                                        val density = view.resources.displayMetrics.density
-                                        val px = view.contentHeight
-                                        if (px > 0) {
-                                            val dp = (px / density).dp
-                                            webHeight = dp.coerceIn(160.dp, maxHeight)
-                                        }
-                                    } catch (_: Throwable) {}
-                                }
-                            }
-                            setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                        } },
-                        update = { web ->
-                            if (web.tag != preview) {
-                                web.tag = preview
-                                // baseUrl 让 <script src="mermaid.min.js"> 解析到
-                                // file:///android_asset/mermaid.min.js；html/svg 无外链不受影响。
-                                web.loadDataWithBaseURL("file:///android_asset/", preview, "text/html", "UTF-8", null)
-                            }
-                        },
+                    val maxH = 1200.dp
+                    PresentFrame(
+                        kind = item.kind,
+                        content = item.content,
+                        params = item.params,
+                        values = paramValues,
+                        height = if (expanded) maxH else webHeight,
+                        onHeightChanged = { webHeight = it.coerceIn(160.dp, maxH) },
                     )
                     // 展开/收起：内容比 260dp 高时给入口（contentHeight 不准时也能救）
                     if (webHeight > 260.dp || expanded) {
@@ -455,6 +397,45 @@ fun PresentBlock(
                     }
                 } else if (item.content.isNotBlank()) {
                     Text(item.content.take(4000), style = CCMText.body12.copy(fontFamily = FontFamily.Monospace), color = CCMTheme.colors.textSecondary)
+                }
+                // 参数滑块（对齐 Web 的 params 区）—— 拖动热更新，不重建 WebView
+                if (item.params.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        item.params.forEach { param ->
+                            val v = paramValues[param.name] ?: param.value
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    param.label,
+                                    style = CCMText.body12,
+                                    color = CCMTheme.colors.textSecondary,
+                                    modifier = Modifier.width(72.dp),
+                                )
+                                androidx.compose.material3.Slider(
+                                    value = v.toFloat(),
+                                    onValueChange = { nv ->
+                                        paramValues = paramValues + (param.name to nv.toDouble())
+                                    },
+                                    valueRange = param.min.toFloat()..param.max.toFloat(),
+                                    steps = if (param.step > 0) {
+                                        (((param.max - param.min) / param.step).toInt() - 1).coerceAtLeast(0)
+                                    } else 0,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    presentFormatNumber(v),
+                                    style = CCMText.body12.copy(fontFamily = FontFamily.Monospace),
+                                    color = CCMTheme.colors.textMain,
+                                    modifier = Modifier.width(48.dp),
+                                )
+                            }
+                        }
+                    }
                 }
                 item.paths.forEach { path ->
                     when (item.kind) {
@@ -796,7 +777,7 @@ fun MessageList(
  * · `startOnLoad:true`：div 就位后自动 render；语法错时 mermaid 会把错误画在图里
  *   （这是它的原生行为，比我们吞掉强 —— 模型和用户都能看到哪儿写错了）。
  */
-private fun buildMermaidHtml(source: String): String {
+private fun buildMermaidHtml(source: String, runtime: String = ""): String {
     val escaped = source.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return """<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -806,6 +787,7 @@ private fun buildMermaidHtml(source: String): String {
   #chart{display:flex;justify-content:center;min-height:40px;}
   #chart svg{max-width:100%;height:auto;}
 </style>
+$runtime
 </head><body>
 <div id="chart" class="mermaid">$escaped</div>
 <script>

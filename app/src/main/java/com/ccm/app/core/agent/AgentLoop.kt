@@ -1268,8 +1268,15 @@ class AgentLoop(
                 emit(AgentEvent.TextDelta(text, messageId))
             }
 
-            override suspend fun onPresent(kind: String, title: String?, caption: String?, content: String, paths: List<String>) {
-                emit(AgentEvent.Present(kind, title, caption, content, paths))
+            override suspend fun onPresent(
+                kind: String,
+                title: String?,
+                caption: String?,
+                content: String,
+                paths: List<String>,
+                params: List<com.ccm.app.core.tool.PresentParam>,
+            ) {
+                emit(AgentEvent.Present(kind, title, caption, content, paths, params))
             }
         }
 

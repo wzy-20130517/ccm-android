@@ -1162,7 +1162,7 @@ class ChatSession(
                         // 【2026-10-11】累积到 presentBuf（与 toolCards 同机制），
                         // Done 时随 bubble 定型。不再写全局 state.presentItems ——
                         // 那会让展示块跑到整个消息流顶部（见 Bubble.presentItems 注释）。
-                        val item = PresentItem(ev.kind, ev.title, ev.caption, ev.content, ev.paths)
+                        val item = PresentItem(ev.kind, ev.title, ev.caption, ev.content, ev.paths, ev.params)
                         presentBuf += item
                         // 流式期间也要能看到 —— 挂到 state 上供「当前正在生成的这条」渲染。
                         // 定型后 presentBuf 清空、state.presentItems 也清空（避免重复渲染）。
@@ -1398,6 +1398,14 @@ class ChatSession(
         val caption: String?,
         val content: String,
         val paths: List<String>,
+        /**
+         * 可调参数（滑块）。
+         *
+         * 对齐 Web 端 `msg.presents[].params` —— 三种读取方式（CSS 变量 /
+         * window.PARAMS + onParamChange / `{{name}}` 占位符）见 [com.ccm.app.core.tool.PresentParam]。
+         * 空 = 无滑块。
+         */
+        val params: List<com.ccm.app.core.tool.PresentParam> = emptyList(),
     )
 
     /** 一条待办（TodoWrite 的 todos 数组元素，core 侧形态）。 */

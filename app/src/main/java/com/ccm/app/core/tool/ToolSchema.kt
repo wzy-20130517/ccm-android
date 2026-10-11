@@ -152,6 +152,40 @@ object ToolSchema {
         put("items", string("元素"))
     }
 
+    /**
+     * 浮点数参数。
+     *
+     * 与 [integer] 分开：Present 的滑块参数 min/max/step/value 天然是小数
+     * （`0.1` 步长、`1.5` 倍速），用 integer 会误导模型只给整数。
+     */
+    fun number(description: String, minimum: Double? = null, maximum: Double? = null): JsonObject =
+        buildJsonObject {
+            put("type", JsonPrimitive("number"))
+            put("description", JsonPrimitive(description))
+            if (minimum != null) put("minimum", JsonPrimitive(minimum))
+            if (maximum != null) put("maximum", JsonPrimitive(maximum))
+        }
+
+    /**
+     * 对象数组参数（如 Present 的 `params`：`[{name, min, max, step, value}, …]`）。
+     *
+     * `items` 必须写全 —— 只给 `{"type":"array"}` 的话模型不知道元素长什么样，
+     * 实测会开始瞎猜字段名。空 `properties` 也要给（同 [emptyObjectSchema] 的理由，
+     * 落到 Gemini 后端时 `/properties: null` 会 400）。
+     *
+     * @param properties 元素的字段定义
+     * @param required 元素内必填字段名（**只对元素生效**，不是数组本身）
+     */
+    fun arrayOfObjects(
+        description: String,
+        properties: List<Pair<String, JsonElement>>,
+        required: List<String> = emptyList(),
+    ): JsonObject = buildJsonObject {
+        put("type", JsonPrimitive("array"))
+        put("description", JsonPrimitive(description))
+        put("items", objectSchema(*properties.toTypedArray(), required = required))
+    }
+
     // ───────────────────────── 取值助手 ─────────────────────────
     //
     // 模型给的参数经常缺字段/类型不对，用这些取值不会抛异常。

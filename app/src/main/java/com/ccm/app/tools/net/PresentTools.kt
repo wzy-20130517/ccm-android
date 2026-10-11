@@ -1,5 +1,6 @@
 package com.ccm.app.tools.net
 
+import com.ccm.app.core.tool.PresentParam
 import com.ccm.app.core.tool.Tool
 import com.ccm.app.core.tool.ToolContext
 import com.ccm.app.core.tool.ToolResult
@@ -8,6 +9,7 @@ import com.ccm.app.core.tool.ToolSchema.str
 import com.ccm.app.core.tool.ToolSchema.strList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import java.io.File
 
@@ -93,7 +95,14 @@ class PresentTools(private val saveDir: File) {
                 "适用：写完 SVG/HTML 动画想给用户看效果；处理视频后抽几帧；生成图表/流程图。\n" +
                 "kind=svg/html/mermaid 时用 content 传源码（会内联渲染：SVG/HTML 走 WebView，" +
                 "mermaid 渲染成流程图）；kind=image/images/video 时用 paths 传本地文件路径" +
-                "（图片缩略图、视频直接播放）。源码类同时会落盘一份，返回值里带路径。"
+                "（图片缩略图、视频直接播放）。源码类同时会落盘一份，返回值里带路径。\n" +
+                "需要用户调参时用 params 声明数值参数（最多 8 个），画面下方会生成滑块，" +
+                "拖动时热更新、动画不重启。content 里读取参数三种写法（推荐前两种）：" +
+                "① CSS 变量 var(--参数名)，如 animation-duration: calc(60s / var(--speed))；" +
+                "② JS 读 window.PARAMS.参数名 + window.onParamChange = (name, value) => {...}；" +
+                "③ {{参数名}} 占位符（整体重渲染、动画从头播，仅用于静态图）。" +
+                "例：地球自转 → 转速用 var(--speed) 驱动，" +
+                "params: [{ name:'speed', label:'转速', min:0.1, max:5, step:0.1, value:1 }]。"
         override val isReadOnly = false
         override val isConcurrencySafe = false
         override val maxResultSizeChars = 1_500
@@ -107,6 +116,23 @@ class PresentTools(private val saveDir: File) {
             "content" to ToolSchema.string("kind=svg/html/mermaid 时的源码内容"),
             "paths" to ToolSchema.stringArray("kind=image/images/video 时的本地文件路径"),
             "caption" to ToolSchema.string("可选说明文字"),
+            "params" to ToolSchema.arrayOfObjects(
+                "可选：可调参数列表，前端在画面下方生成滑块，拖动时【热更新、动画不重启】。" +
+                    "在 content 里用三种方式之一读取参数（推荐前两种，能保持动画连续）：" +
+                    "① CSS 变量 var(--参数名)，如 animation-duration: calc(60s / var(--speed))；" +
+                    "② JS 读 window.PARAMS.参数名，配合 window.onParamChange = (name, value) => {...} 响应变化；" +
+                    "③ {{参数名}} 占位符（会整体重渲染，动画从头开始，仅用于静态图）。" +
+                    "最多 8 个。",
+                properties = listOf(
+                    "name" to ToolSchema.string("参数名，对应 content 里的 var(--name) / window.PARAMS.name / {{name}}"),
+                    "label" to ToolSchema.string("显示名（可选，默认用 name）"),
+                    "min" to ToolSchema.number("最小值（默认 0）"),
+                    "max" to ToolSchema.number("最大值（默认 max(10, value*2)）"),
+                    "step" to ToolSchema.number("步长（默认 1，必须 > 0）"),
+                    "value" to ToolSchema.number("默认值（必填，滑块没有初始位置就没意义）"),
+                ),
+                required = listOf("name", "value"),
+            ),
             required = listOf("kind"),
         )
 
@@ -132,6 +158,8 @@ class PresentTools(private val saveDir: File) {
                 val title = input.str("title")?.takeIf { it.isNotBlank() }
                 val caption = input.str("caption")?.takeIf { it.isNotBlank() }
                 val needsContent = kind == "svg" || kind == "html" || kind == "mermaid"
+                // 参数清洗（脏数据丢弃，不报错）—— 见 PresentParam.parse 的注释
+                val params = PresentParam.parse(input["params"] as? JsonArray)
 
                 val header = buildString {
                     if (title != null) append("【$title】\n")
@@ -159,9 +187,10 @@ class PresentTools(private val saveDir: File) {
                         )
                     }
 
-                    ctx.ui.onPresent(kind, title, caption, content, listOf(f.absolutePath))
+                    ctx.ui.onPresent(kind, title, caption, content, listOf(f.absolutePath), params)
+                    val paramNote = if (params.isEmpty()) "" else "，附 ${params.size} 个可调参数"
                     return@withContext ToolResult.ok(
-                        "$header\n已展示并保存到：${f.absolutePath}（${content.length} 字符）",
+                        "$header\n已展示并保存到：${f.absolutePath}（${content.length} 字符$paramNote）",
                     )
                 }
 
@@ -191,7 +220,7 @@ class PresentTools(private val saveDir: File) {
                 val sizeNote = okFiles.joinToString("\n") { "  · ${it.absolutePath}（${fmtSize(it.length())}）" }
                 val badNote = if (bad.isEmpty()) "" else "\n以下被跳过：\n" + bad.joinToString("\n") { "  · $it" }
 
-                ctx.ui.onPresent(kind, title, caption, "", okFiles.map { it.absolutePath })
+                ctx.ui.onPresent(kind, title, caption, "", okFiles.map { it.absolutePath }, params)
                 ToolResult.ok(
                     "$header\n已提交 ${okFiles.size} 个${if (kind == "video") "视频" else "图片"}到展示区：\n" +
                         sizeNote + badNote,

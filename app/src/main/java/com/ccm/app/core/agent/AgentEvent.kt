@@ -130,6 +130,13 @@ sealed class AgentEvent {
         val caption: String?,
         val content: String,
         val paths: List<String>,
+        /**
+         * 可调参数（滑块）。
+         *
+         * 对齐 Web 端 `msg.presents[].params`（server.mjs:731 从 tool_use.input 反解）。
+         * 空列表 = 无滑块 —— 老会话/不传 params 的调用保持原样。
+         */
+        val params: List<com.ccm.app.core.tool.PresentParam> = emptyList(),
     ) : AgentEvent()
 
     /** 工具执行完成。[result] 是已截断的结果文本。 */
