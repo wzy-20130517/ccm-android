@@ -30,7 +30,6 @@ import com.ccm.app.tools.net.PresentTools
 import com.ccm.app.tools.net.VisionTools
 import com.ccm.app.tools.net.WebTools
 import com.ccm.app.tools.phone.PhoneTools
-import com.ccm.app.tools.phone.SayTool
 import com.ccm.app.tools.system.CronStore
 import com.ccm.app.tools.system.CronTools
 import com.ccm.app.tools.system.QqTools
@@ -409,9 +408,6 @@ class ToolsBootstrap(
             add(systemTools.ShareTool())
             add(systemTools.TtsTool())
 
-            // 语音播报（与 TTS 的区别：多一个 secret 模式）
-            add(SayTool(context))
-
             // 批 5：任务
             add(taskTools.TaskCreateTool())
             add(taskTools.TaskListTool())
@@ -585,7 +581,7 @@ class ToolsBootstrap(
             "phone_shell", "phone_vd", "phone_device",
             // 系统
             "ClipboardGet", "ClipboardSet", "Toast", "Notify", "Vibrate", "Battery",
-            "Location", "OpenUrl", "Share", "TTS", "say",
+            "Location", "OpenUrl", "Share", "TTS",
             // 任务
             "TaskCreate", "TaskList", "TaskGet", "TaskClaim", "TaskUpdate", "TaskDelete",
             // 团队

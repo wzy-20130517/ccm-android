@@ -61,10 +61,11 @@ class PhoneTools(
 ) {
 
     companion object {
-        /** 息屏时的统一提示（Android 系统限制，不是故障） */
+        /** 元素树为空时的提示（不等于息屏——Shizuku/adb 通道不受屏幕状态影响） */
         private const val SCREEN_OFF_HINT =
-            "屏幕已关闭（Android 在息屏/Doze 下暂停虚拟屏合成、不给应用分配 Surface）。" +
-                "这是系统限制不是故障 —— 请点亮屏幕后重试（不用解锁）。"
+            "元素树为空。可能原因：目标屏没有窗口（应用没起来）、界面是 WebView/Flutter " +
+                "（改用 phone_screenshot 看画面），或副屏帧缓存过期（phone_vd restart）。" +
+                "注意：息屏本身不影响 phone 工具（Shizuku/adb 通道不依赖屏幕状态）。"
 
         /** 默认元素树节点上限 */
         private const val DEFAULT_MAX_NODES = 120
@@ -297,10 +298,11 @@ class PhoneTools(
                     input.bool("no_system_ui") ?: true,
                 )
                 if (tree.isBlank()) {
-                    // 空树不一定是息屏（无窗口 / WebView/Flutter 时元素树也是空的），
-                    // 一刀切报「息屏」会让模型让用户「点亮屏幕」而不是改用截图。
+                    // 空树通常是「目标屏没有窗口」或「WebView/Flutter 界面」——
+                    // 别报「息屏」：息屏不影响 dumpTree（Shizuku/adb 通道与屏幕状态无关），
+                    // 误导成息屏会让模型让用户「点亮屏幕」而不是改用截图。
                     ToolResult.failed(
-                        "未解析到可见元素。可能息屏（点亮屏幕重试），" +
+                        "未解析到可见元素。可能目标屏没有窗口（应用没起来），" +
                             "也可能是 WebView/Flutter 界面 —— 改用 phone_screenshot 看画面。",
                     )
                 } else {

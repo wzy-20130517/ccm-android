@@ -40,7 +40,7 @@ class ToolPermissions(private val configDir: File) {
         /** 装饰性工具：default / acceptEdits 模式下未点名就拒绝 */
         val DECORATIVE_TOOLS = setOf(
             "Toast", "TTS", "Notify", "Vibrate", "Battery", "Location",
-            "ClipboardGet", "Screencap", "say",
+            "ClipboardGet", "Screencap",
         )
 
         /** 写操作类工具：acceptEdits 模式下自动放行 */

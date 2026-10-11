@@ -618,7 +618,6 @@ private val ToolLabels = mapOf(
     "OpenUrl" to "打开链接",
     "Share" to "分享",
     "TTS" to "朗读",
-    "say" to "语音播报",
     // 持久化 Task（多 Agent 共享待办）
     "TaskCreate" to "建任务",
     "TaskList" to "看任务清单",
