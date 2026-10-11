@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -777,7 +778,7 @@ fun MessageList(
  * · `startOnLoad:true`：div 就位后自动 render；语法错时 mermaid 会把错误画在图里
  *   （这是它的原生行为，比我们吞掉强 —— 模型和用户都能看到哪儿写错了）。
  */
-private fun buildMermaidHtml(source: String, runtime: String = ""): String {
+internal fun buildMermaidHtml(source: String, runtime: String = ""): String {
     val escaped = source.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return """<!DOCTYPE html>
 <html><head><meta charset="utf-8">

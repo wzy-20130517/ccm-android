@@ -390,15 +390,21 @@ svg{max-width:100%;height:auto;display:block}
  * 有 `<head>` 就插进去；只有 `<html>` 就补一个 head；都没有就整体包一层。
  * 对齐 Web 的 `wrapHtml`。
  */
-internal fun wrapPresentHtml(html: String, runtime: String): String = when {
-    Regex("<head[^>]*>", RegexOption.IGNORE_CASE).containsMatchIn(html) ->
-        Regex("<head([^>]*)>", RegexOption.IGNORE_CASE).replaceFirst(html) { m ->
-            "${m.value}$runtime"
-        }
-    Regex("<html[^>]*>", RegexOption.IGNORE_CASE).containsMatchIn(html) ->
-        Regex("<html([^>]*)>", RegexOption.IGNORE_CASE).replaceFirst(html) { m ->
-            "${m.value}<head>$runtime</head>"
-        }
-    else ->
-        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">$runtime</head><body>$html</body></html>"
+internal fun wrapPresentHtml(html: String, runtime: String): String {
+    // 【为什么不用 Regex.replaceFirst(input) { transform }】那个重载在这里
+    // 解析失败（CI 报 "actual type is Function1 but String was expected"）——
+    // 编译器选了 String 版本的重载。改用 find() + 手工拼接，语义完全等价
+    // 且不依赖重载解析。
+    val headRe = Regex("<head[^>]*>", RegexOption.IGNORE_CASE)
+    headRe.find(html)?.let { m ->
+        // 有 <head>：运行时插在它后面
+        return html.substring(0, m.range.last + 1) + runtime + html.substring(m.range.last + 1)
+    }
+    val htmlRe = Regex("<html[^>]*>", RegexOption.IGNORE_CASE)
+    htmlRe.find(html)?.let { m ->
+        // 只有 <html>：补一个 head
+        return html.substring(0, m.range.last + 1) + "<head>$runtime</head>" + html.substring(m.range.last + 1)
+    }
+    // 都没有：整体包一层
+    return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">$runtime</head><body>$html</body></html>"
 }
