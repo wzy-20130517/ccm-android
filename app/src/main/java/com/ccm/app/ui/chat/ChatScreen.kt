@@ -307,6 +307,8 @@ fun ChatScreen(
                             lastValue = v
                             lastMax = max
 
+                            android.util.Log.d("CCMScroll", "judge v=$v max=$max vChg=$valueChanged mChg=$maxChanged prog=$programmaticScroll req=$scrollRequested follow=$followBottom")
+
                             if (max <= 0) return@collect
 
                             // ── 判定：只看「离底部多远」（Web 同款，容差 50px）──
@@ -339,6 +341,7 @@ fun ChatScreen(
                             if (valueChanged && !maxChanged) {
                                 // 纯滚动：用当前 max 判定（用户拖或程序滚）
                                 followBottom = (max - v) < 50
+                                android.util.Log.d("CCMScroll", "  → pure: dist=${max-v} follow=$followBottom")
                             } else if (valueChanged && maxChanged) {
                                 // 滚动 + 内容增长同时发生（流式期间拖拽）：
                                 // 用**旧 max**（用户拖拽那一刻的屏幕底部）判定 ——
@@ -399,6 +402,7 @@ fun ChatScreen(
                 LaunchedEffect(Unit) {
                     snapshotFlow { scrollState.maxValue }
                         .collect { max ->
+                            android.util.Log.d("CCMScroll", "follow-trigger max=$max follow=$followBottom")
                             if (max <= 0) return@collect
                             if (!followBottom) return@collect
                             // 标记「接下来这几帧的 value 变化是程序造成的」
