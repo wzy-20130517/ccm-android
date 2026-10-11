@@ -180,6 +180,11 @@ fun OnboardingScreen(
         )
     }
 
+    // 悬浮窗权限（可选）—— Clawd 吉祥物用
+    var hasOverlay by remember {
+        mutableStateOf(com.ccm.app.service.ClawdOverlayService.canDrawOverlays(ctx))
+    }
+
     // ── 运行环境选择（2026-10-06）────────────────────────────────────
     // 首次进入先选「内置 proot」还是「外接 Termux」，工具链选择在其后。
     // 选完写进 config.json 的 envMode，之后不再问（MainActivity 按 rootfs
@@ -232,6 +237,19 @@ fun OnboardingScreen(
     //
     // 放在**顶层**而不是 when(page) 的第 1 分支里：状态提升到顶层后，
     // 切页不会因为分支离开组合而中断轮询。
+    // 悬浮窗权限同样轮询（从设置页返回后自动更新）
+    if (!hasOverlay) {
+        LaunchedEffect(Unit) {
+            while (true) {
+                delay(1000)
+                if (com.ccm.app.service.ClawdOverlayService.canDrawOverlays(ctx)) {
+                    hasOverlay = true
+                    break
+                }
+            }
+        }
+    }
+
     if (!hasAllFiles && android.os.Build.VERSION.SDK_INT >= 30) {
         LaunchedEffect(Unit) {
             while (true) {
@@ -425,6 +443,70 @@ fun OnboardingScreen(
                                     },
                                     style = CCMText.body12,
                                     color = colors.textSecondary,
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(14.dp))
+
+                    // ── 悬浮窗权限（可选）──────────────────────────
+                    // Clawd 吉祥物退到后台时飘在屏幕上（对标官方 Claude 的
+                    // 桌面宠物）。没授权不影响对话，只是看不到动画 ——
+                    // 所以**可选**，不像「所有文件访问」那样卡住流程。
+                    InfoCard {
+                        Text(
+                            text = "悬浮窗（可选）",
+                            style = CCMText.body14.copy(fontWeight = FontWeight.Medium),
+                            color = colors.textMain,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            text = "授权后，App 退到后台时会有个 Clawd 小吉祥物飘在" +
+                                    "屏幕上，显示 AI 的工作状态。不影响功能，纯装饰。",
+                            style = CCMText.body14,
+                            color = colors.textSecondary,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = if (hasOverlay) "✓" else "·",
+                                style = CCMText.body14,
+                                color = if (hasOverlay) colors.success else colors.textSecondary,
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                text = if (hasOverlay) "已授权" else "未授权（不影响使用）",
+                                style = CCMText.body14,
+                                color = colors.textMain,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (!hasOverlay) {
+                                Text(
+                                    text = "去授权",
+                                    style = CCMText.body12.copy(fontWeight = FontWeight.Medium),
+                                    color = colors.accent,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(7.36.dp))
+                                        .clickable {
+                                            try {
+                                                ctx.startActivity(
+                                                    android.content.Intent(
+                                                        android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                                        android.net.Uri.parse("package:${ctx.packageName}"),
+                                                    )
+                                                )
+                                            } catch (_: Throwable) {
+                                                try {
+                                                    ctx.startActivity(
+                                                        android.content.Intent(
+                                                            android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                                        )
+                                                    )
+                                                } catch (_: Throwable) {}
+                                            }
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
                                 )
                             }
                         }
