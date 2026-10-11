@@ -416,7 +416,17 @@ fun MessageList(
         // 与 Jetchat 的 `_messages.add(0, msg)` 等价 —— 这里渲染时反序，
         // 不改数据源（bubbles 本身保持时间正序，其它地方还在用）。
         bubbles.asReversed().forEachIndexed { index, bubble ->
-            item(key = bubble.key) {
+            // 【2026-10-11 修崩溃】key 必须**全局唯一** ——
+            // LazyColumn 对重复 key 直接抛 IllegalArgumentException：
+            //   `Key "assistant-history-0" was already used`
+            //
+            // 根因：历史消息的 messageId = "history-${timestamp}"，而老数据
+            // 的 timestamp 可能为 0（没存时间）→ 多条消息的 key 全是
+            // "assistant-history-0" → 撞车 → 点老对话进不去（闪退）。
+            //
+            // 修法：key 拼上 index —— 索引在列表内天然唯一，
+            // 且气泡顺序稳定（追加型列表），重组时 key 不变。
+            item(key = "${index}-${bubble.key}") {
             if (bubble.isUser) {
                 UserBubble(
                     // <image_resize_notice> / <vision_unsupported> 是 AgentLoop
