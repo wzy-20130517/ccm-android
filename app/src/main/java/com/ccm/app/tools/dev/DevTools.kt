@@ -83,7 +83,13 @@ class DevTools(
                     ToolResult.INTERNAL,
                 )
 
-            val cwd = input.str("cwd")?.let { File(ctx.cwd, it).absolutePath } ?: ctx.cwd
+            // ⚠️ 必须判 isAbsolute —— Java 的 `File(parent, child)` 对绝对路径
+            // child 是**拼接**（`/a/b` + `/x/y` = `/a/b/x/y`），与 Python/Node
+            // 的 resolve 语义相反。不判的话模型传 `/data/data/.../ccm` 会变成
+            // `/storage/.../workspace/data/data/.../ccm`（实测报「路径不存在」）。
+            val cwd = input.str("cwd")?.let {
+                if (File(it).isAbsolute) it else File(ctx.cwd, it).absolutePath
+            } ?: ctx.cwd
             val timeoutMs = (input.int("timeout") ?: 60_000).toLong()
 
             // 决定跑什么命令
@@ -284,7 +290,11 @@ class DevTools(
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult =
             withContext(Dispatchers.IO) {
-                val root = input.str("path")?.let { File(ctx.cwd, it) } ?: File(ctx.cwd)
+                val root = input.str("path")?.let {
+                    // ⚠️ isAbsolute 判断不能省（见 TestTool 处注释：Java 的
+                    // File(parent, child) 会拼接绝对路径）
+                    if (File(it).isAbsolute) File(it) else File(ctx.cwd, it)
+                } ?: File(ctx.cwd)
                 if (!root.exists()) return@withContext ToolResult.notFound("路径不存在：${root.absolutePath}")
 
                 val maxTags = (input.int("max_tags") ?: 60).coerceIn(5, 300)
@@ -412,7 +422,11 @@ class DevTools(
 
         override suspend fun execute(input: JsonObject, ctx: ToolContext): ToolResult =
             withContext(Dispatchers.IO) {
-                val root = input.str("path")?.let { File(ctx.cwd, it) } ?: File(ctx.cwd)
+                val root = input.str("path")?.let {
+                    // ⚠️ isAbsolute 判断不能省（见 TestTool 处注释：Java 的
+                    // File(parent, child) 会拼接绝对路径）
+                    if (File(it).isAbsolute) File(it) else File(ctx.cwd, it)
+                } ?: File(ctx.cwd)
                 if (!root.exists()) return@withContext ToolResult.notFound("路径不存在：${root.absolutePath}")
 
                 val keyword = input.str("keyword")?.lowercase()
@@ -482,7 +496,11 @@ class DevTools(
                 val from = input.str("from")!!
                 val to = input.str("to")!!
                 val dryRun = input.bool("dry_run") ?: true
-                val root = input.str("path")?.let { File(ctx.cwd, it) } ?: File(ctx.cwd)
+                val root = input.str("path")?.let {
+                    // ⚠️ isAbsolute 判断不能省（见 TestTool 处注释：Java 的
+                    // File(parent, child) 会拼接绝对路径）
+                    if (File(it).isAbsolute) File(it) else File(ctx.cwd, it)
+                } ?: File(ctx.cwd)
                 if (!root.exists()) return@withContext ToolResult.notFound("路径不存在：${root.absolutePath}")
 
                 val includeFilter = input.str("include")?.let {
