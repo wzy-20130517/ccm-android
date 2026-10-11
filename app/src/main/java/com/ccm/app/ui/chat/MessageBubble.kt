@@ -6,6 +6,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -341,8 +342,60 @@ fun MessageList(
         reverseLayout = true,
         modifier = modifier.fillMaxWidth(),
     ) {
-        // 流式部分放**最先**声明 → reverseLayout 下渲染在**视觉最底部**
-        // （它是最新内容，就该在最下面）。声明顺序 = 从底往上的顺序。
+        // ══════════════════════════════════════════════════════════════
+        //  【声明顺序 = 从底往上的视觉顺序】（reverseLayout 的特性）
+        //
+        //  旧版（Column 从上到下）：todos → bubbles → streaming → waiting → Spacer
+        //  这里要反过来声明（从底往上）：
+        //    1. Spacer        → 视觉最底部（呼吸空间）
+        //    2. waiting       → 等待态（发送后到首字之间）
+        //    3. streaming     → 正在生成的内容
+        //    4. bubbles 反序  → 最新消息在下、旧的在上
+        //    5. todos         → 视觉最顶部（待办面板）
+        // ══════════════════════════════════════════════════════════════
+        // 底部呼吸空间（旧版 Column 末尾的 Spacer(12.dp)）
+        item(key = "bottom-spacer") {
+            androidx.compose.foundation.layout.Spacer(
+                androidx.compose.ui.Modifier.height(12.dp),
+            )
+        }
+
+        // ★ 2026-10-01：等待态指示器 —— 发送后到首字之间的空窗期。
+        //   原来这段什么都没显示（用户以为卡死）；Web 有 Claude 星芒 sprite。
+        //   条件：在跑 && 还没有任何流式内容（正文/思考都空）。
+        //
+        // 【reverseLayout】这个块也是列表内容 → 必须包 item{}
+        // （它放最后声明 = 视觉最底部，正好是等待态该在的位置）。
+        if (streamingRunning && streaming.isBlank() && streamingThinking.isBlank()) {
+            item(key = "waiting") {
+            // ★ 2026-10-01 用户报「没有思维链」：原来只放了个裸星芒 ——
+            //   Web 的对应物是 AssistantThinkingCompactStatus（星芒 28px +
+            //   斜体衬线状态文字 + 打字机逐词显现），这才是「思维链」的观感。
+            //   组件早就写好了（739 行），一直零调用 —— 又是「写好了没接线」。
+            // 【2026-10-06 问题17 修复】原来这里加了
+            //   `.padding(horizontal = 16.dp, vertical = 12.dp)`
+            // —— 但 AssistantThinkingCompactStatus 组件**内部已有**
+            //   `padding(start = 10.12.dp, top = 12.88.dp)`（对齐 Web 的
+            //   pl-[11px] / mt-[14px]）。两者叠加 → 左边距 26.12dp、
+            //   上边距 24.88dp，比其他消息明显偏右偏下，
+            //   用户报「那句正在深度思考的位置有点奇怪」。
+            //
+            // 现在只留外层 16dp 水平边距（与正文对齐），垂直交给组件自己。
+            AssistantThinkingCompactStatus(
+                event = AssistantThinkingEvent(
+                    kind = ThinkingEventKind.FOCUS,
+                    label = "正在深入思考，请稍候…",
+                ),
+                isThinking = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+            )
+            }  // ← item(waiting) 闭合
+        }      // ← 闭 if (streamingRunning && ...)
+
+        // 流式部分（正在生成的内容）—— 声明顺序 = 从底往上的顺序，
+        // 它在 waiting 之上、bubbles 之下（视觉上：bubbles → streaming → waiting → spacer）
         item(key = "streaming") {
             // 流式部分（未定型）：思考 → 工具组 → 正文
             if (streaming.isNotBlank() || streamingThinking.isNotBlank()) {
@@ -408,9 +461,6 @@ fun MessageList(
             }
             }  // ← if (streaming.isNotBlank() || streamingThinking.isNotBlank())
         }  // ← item {} 闭合（流式部分）
-
-
-        // （见下方 bubbles 循环的 assistant 分支）。
 
         // 【reverseLayout】数据反序：最新的在 index 0（视觉底部）。
         // 与 Jetchat 的 `_messages.add(0, msg)` 等价 —— 这里渲染时反序，
@@ -567,40 +617,6 @@ fun MessageList(
             }   // ← 闭 else（if (bubble.isUser) 的另一半）
             }   // ← 闭 item(key = bubble.key)
         }       // ← 闭 forEachIndexed
-
-        // ★ 2026-10-01：等待态指示器 —— 发送后到首字之间的空窗期。
-        //   原来这段什么都没显示（用户以为卡死）；Web 有 Claude 星芒 sprite。
-        //   条件：在跑 && 还没有任何流式内容（正文/思考都空）。
-        //
-        // 【reverseLayout】这个块也是列表内容 → 必须包 item{}
-        // （它放最后声明 = 视觉最底部，正好是等待态该在的位置）。
-        if (streamingRunning && streaming.isBlank() && streamingThinking.isBlank()) {
-            item(key = "waiting") {
-            // ★ 2026-10-01 用户报「没有思维链」：原来只放了个裸星芒 ——
-            //   Web 的对应物是 AssistantThinkingCompactStatus（星芒 28px +
-            //   斜体衬线状态文字 + 打字机逐词显现），这才是「思维链」的观感。
-            //   组件早就写好了（739 行），一直零调用 —— 又是「写好了没接线」。
-            // 【2026-10-06 问题17 修复】原来这里加了
-            //   `.padding(horizontal = 16.dp, vertical = 12.dp)`
-            // —— 但 AssistantThinkingCompactStatus 组件**内部已有**
-            //   `padding(start = 10.12.dp, top = 12.88.dp)`（对齐 Web 的
-            //   pl-[11px] / mt-[14px]）。两者叠加 → 左边距 26.12dp、
-            //   上边距 24.88dp，比其他消息明显偏右偏下，
-            //   用户报「那句正在深度思考的位置有点奇怪」。
-            //
-            // 现在只留外层 16dp 水平边距（与正文对齐），垂直交给组件自己。
-            AssistantThinkingCompactStatus(
-                event = AssistantThinkingEvent(
-                    kind = ThinkingEventKind.FOCUS,
-                    label = "正在深入思考，请稍候…",
-                ),
-                isThinking = true,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-            )
-            }  // ← item(waiting) 闭合
-        }
 
         // 待办面板 —— Web 行为：清单挂在消息流顶部，随 TodoWrite 更新
         // reverseLayout 下：先声明的 item 在**视觉底部**，所以 todos 要放最后。
