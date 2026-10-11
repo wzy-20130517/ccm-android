@@ -554,13 +554,18 @@ fun MessageList(
                         onOpen = onOpenDocument,
                     )
                 }
-            }
-        }
+            }   // ← 闭 else（if (bubble.isUser) 的另一半）
+            }   // ← 闭 item(key = bubble.key)
+        }       // ← 闭 forEachIndexed
 
         // ★ 2026-10-01：等待态指示器 —— 发送后到首字之间的空窗期。
         //   原来这段什么都没显示（用户以为卡死）；Web 有 Claude 星芒 sprite。
         //   条件：在跑 && 还没有任何流式内容（正文/思考都空）。
+        //
+        // 【reverseLayout】这个块也是列表内容 → 必须包 item{}
+        // （它放最后声明 = 视觉最底部，正好是等待态该在的位置）。
         if (streamingRunning && streaming.isBlank() && streamingThinking.isBlank()) {
+            item(key = "waiting") {
             // ★ 2026-10-01 用户报「没有思维链」：原来只放了个裸星芒 ——
             //   Web 的对应物是 AssistantThinkingCompactStatus（星芒 28px +
             //   斜体衬线状态文字 + 打字机逐词显现），这才是「思维链」的观感。
@@ -584,8 +589,8 @@ fun MessageList(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp),
             )
+            }  // ← item(waiting) 闭合
         }
-            }  // ← item {} 闭合（bubbles 循环）
 
         // 待办面板 —— Web 行为：清单挂在消息流顶部，随 TodoWrite 更新
         // reverseLayout 下：先声明的 item 在**视觉底部**，所以 todos 要放最后。
