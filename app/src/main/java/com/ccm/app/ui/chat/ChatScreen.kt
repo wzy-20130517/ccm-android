@@ -273,75 +273,19 @@ fun ChatScreen(
                 }
 
                 // ══════════════════════════════════════════════════════════════
-                //  【2026-10-11 修「上翻看历史时内容持续下滑」】
+                //  【2026-10-11 加「跟随到底」】
                 //
-                //  现象（用户报）：上滑脱离跟随后，随着 Agent 输出，页面被
-                //  **逐渐往下拉** —— 不是一下到底，是慢慢滑。
+                //  在底部时，内容长高（流式吐字 / 新消息）就滚到 index 0。
                 //
-                //  根因：`reverseLayout` 下 index 0 = 视觉底部。我们的数据是
-                //  `bubbles.asReversed()`（最新在 index 0），新消息插入到 index 0
-                //  位置 → **它前面的所有 item 索引 +1**。
-                //  LazyColumn 会保持「当前可见的 item」不跳，但那个 item 的
-                //  **索引变了** → 视觉上整段历史被往下推。
+                //  ⚠️ 曾试过「锚点协程」（用户上翻时锁定他看的 item、防索引
+                //  漂移），但那个实现有无限循环风险：snapshotFlow 监听
+                //  firstVisibleItemScrollOffset，而 scrollToItem 又会改它 →
+                //  每帧滚动 → 主线程 100% CPU → ANR（已删）。
                 //
-                //  这不是「自动滚动」，是**索引漂移**。
-                //
-                //  修法：**锚定用户正在看的那个 item** ——
-                //  内容变化后，把那个 item 滚回它原来的位置（同一个 key、
-                //  同一个 offset）。这样用户视野里的内容**纹丝不动**。
-                //
-                //  Compose 的 `scrollToItem(index, offset)` 能做到，但需要：
-                //  1. 记住用户看的是哪个 key（不能记 index，index 会变）
-                //  2. 内容变化后找到该 key 的新 index
-                //  3. 滚回去
-                //
-                //  ⚠️ 只在**用户脱离底部**时做这件事 —— 在底部时应该跟随
-                //  （那是另一个 LaunchedEffect 的职责）。
+                //  现在的取舍：**用户上翻时接受轻微漂移**（reverseLayout 下
+                //  LazyColumn 的固有行为，业界通病）；换来的是主线程不做
+                //  额外滚动工作。
                 // ══════════════════════════════════════════════════════════════
-
-                // 用户脱离底部时，锚定他正在看的 item（防索引漂移）
-                LaunchedEffect(listState) {
-                    var anchoredKey: Any? = null
-                    var anchoredOffset = 0
-
-                    snapshotFlow {
-                        val info = listState.layoutInfo
-                        val first = info.visibleItemsInfo.firstOrNull()
-                        Triple(
-                            info.totalItemsCount,
-                            first?.key,
-                            listState.firstVisibleItemScrollOffset,
-                        )
-                    }.collect { (total, firstKey, offset) ->
-                        if (total == 0) return@collect
-
-                        if (!isAtBottom) {
-                            // 不在底部：用户在看历史 → 锚定
-                            if (anchoredKey == null && firstKey != null) {
-                                // 首次进入"脱离"状态 → 记住当前锚点
-                                anchoredKey = firstKey
-                                anchoredOffset = offset
-                            } else if (anchoredKey != null) {
-                                // 后续变化：找到锚点 key 的新 index，滚回原位
-                                val target = listState.layoutInfo.visibleItemsInfo
-                                    .firstOrNull { it.key == anchoredKey }
-                                if (target != null) {
-                                    // 只在位置真的偏了时才滚（避免每帧滚）
-                                    val currentFirst = listState.layoutInfo.visibleItemsInfo.firstOrNull()
-                                    if (currentFirst?.key != anchoredKey ||
-                                        listState.firstVisibleItemScrollOffset != anchoredOffset
-                                    ) {
-                                        listState.scrollToItem(target.index, anchoredOffset)
-                                    }
-                                }
-                            }
-                        } else {
-                            // 回到（或本来在）底部 → 清除锚点，交给跟随逻辑
-                            anchoredKey = null
-                            anchoredOffset = 0
-                        }
-                    }
-                }
 
                 // 在底部时跟随到底（内容长高就滚到 index 0）
                 LaunchedEffect(listState) {
