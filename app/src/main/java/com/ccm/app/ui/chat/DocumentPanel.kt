@@ -220,12 +220,17 @@ fun DocumentCardList(
     ) {
         documents.forEach { doc ->
             com.ccm.app.ui.common.DocumentCard(
-                title = doc.filename,
+                // displayName：内联 artifact 用 title 属性，文件来源用文件名
+                title = doc.displayName,
                 // 副标题用 DocumentMeta 生成（`Document · MARKDOWN`），
-                // 与 Web 的 getDocumentSubtitle 一致 —— 不自己拼字符串
+                // 与 Web 的 getDocumentSubtitle 一致 —— 不自己拼字符串。
+                //
+                // 【2026-10-11 修】format 参数原来写死空串 —— 文件来源靠扩展名
+                // 能推断出来，但**内联 artifact 没有文件名**（path 为空），
+                // 只能靠它的 format 属性。不传进去的话 html/svg 全被当成 text。
                 subtitle = com.ccm.app.ui.common.DocumentMeta.getDocumentSubtitle(
                     com.ccm.app.ui.common.DocumentMeta.resolveDocumentFormat(
-                        format = "",
+                        format = doc.inlineFormat,
                         filename = doc.filename,
                         content = doc.content,
                     ),

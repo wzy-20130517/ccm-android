@@ -679,10 +679,13 @@ fun ChatScreen(
         // 挂在最外层 Box 末尾 → 盖住整屏（含标题栏/输入栏），与 Web 的全屏抽屉一致。
         openDoc?.let { doc ->
             DocumentPanel(
-                filename = doc.filename,
+                // 内联 artifact 没有文件名 → 用它的 title 当顶栏标题
+                filename = doc.displayName,
                 content = doc.content,
+                // 【2026-10-11 修】format 原来写死空串 —— 内联 artifact 无文件名，
+                // 只能靠它的 format 属性；不传的话 html/svg 全被当纯文本渲染。
                 format = com.ccm.app.ui.common.DocumentMeta.resolveDocumentFormat(
-                    format = "",
+                    format = doc.inlineFormat,
                     filename = doc.filename,
                     content = doc.content,
                 ),

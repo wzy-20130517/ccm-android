@@ -798,15 +798,19 @@ class ChatSession(
                             else -> {}
                         }
                     }
-                    if (message.text.isBlank() && cards.isEmpty()) null else Bubble(
+                    // 【2026-10-11】历史消息同样解析内联 artifact —— 否则重启后
+                    // 老会话里用 `<cp_artifact>` 展示的内容会退回成正文里的标签文本
+                    // （用户看到一串 `<cp_artifact title="…">`，比没有还糟）。
+                    val (histText, histInlineDocs) = parseInlineArtifacts(message.text)
+                    if (histText.isBlank() && cards.isEmpty()) null else Bubble(
                         role = Message.ROLE_ASSISTANT,
-                        text = message.text,
+                        text = histText,
                         messageId = "history-${message.timestamp}",
                         toolCards = cards,
                         // 历史消息同样推导文档 —— 否则重启后老会话里的
                         // Write/Edit 卡片全都不见了（对齐 Web：那边是从
                         // 消息对象的 toolCalls 实时算，不依赖额外落盘字段）
-                        documents = deriveDocuments(cards),
+                        documents = deriveDocuments(cards) + histInlineDocs,
                     )
                 }
                 Message.ROLE_USER -> {
@@ -1205,9 +1209,25 @@ class ChatSession(
                         // 收尾时同时定型正文和思维链；有些 Provider 只回传 reasoning，
                         // 若只检查正文，思维链会在 Done 时被清空并永久丢失。
                         if (accumulatedText.isNotBlank() || streaming.isNotBlank() || thinkingBuf.isNotBlank() || toolCards.isNotEmpty()) {
-                            val finalText = (accumulatedText + streaming).trim()
+                            val rawText = (accumulatedText + streaming).trim()
+                            // 【2026-10-11】内联 artifact：正文里的 `<cp_artifact title=… format=…>`
+                            // 抽成文档卡片，正文里剥掉标记（对齐 Desktop 的 parseInlineArtifactDisplay）。
+                            val (finalText, inlineDocs) = parseInlineArtifacts(rawText)
                             val finalThinking = thinkingBuf
-                            val finalTools = toolCards.toList()
+                            // ⚠️【2026-10-11 坐标系对齐，别删】artifact 剥离会**改变正文长度**，
+                            // 所以每个工具的 textBefore 必须做**同样的剥离** ——
+                            // 否则 UI 的「已消费长度」（= 最后一个可见工具的 textBefore 长度）
+                            // 与 finalText 不在同一坐标系：
+                            //   · offset 越界 → UI 走兜底显示全文 → 与工具区的 textBefore
+                            //     **重复显示**（正文出现两遍）
+                            //   · 或 offset 偏小 → 切掉一段 → **正文丢失**
+                            // 两者都是静默的（不报错、不崩溃），排查成本极高。
+                            //
+                            // 无 artifact 时 parseInlineArtifacts 走快速路径原样返回，零副作用。
+                            val finalTools = toolCards.toList().map { card ->
+                                if (card.textBefore.isBlank()) card
+                                else card.copy(textBefore = parseInlineArtifacts(card.textBefore).first)
+                            }
                             // 【2026-10-06】工具后的正文起点（对齐 Web 的 toolTextEndOffset）：
                             // 最后一个工具的 textBefore 长度 = 工具区显示的正文总量，
                             // 正文区从这里往后显示 —— 否则工具前的正文会显示两遍。
@@ -1222,7 +1242,8 @@ class ChatSession(
                                         toolTextEndOffset = textEndOffset,
                                         thinking = finalThinking,
                                         toolCards = finalTools,
-                                        documents = deriveDocuments(finalTools),
+                                        // 两个来源合并：文件推导（Write/Edit）+ 内联 artifact
+                                        documents = deriveDocuments(finalTools) + inlineDocs,
                                     )
                                 } else _state.value.bubbles,
                                 streaming = "",
@@ -1285,7 +1306,16 @@ class ChatSession(
             //
             // 现在：取消时把已收到的内容**定型成气泡**（保留半截回复），
             // 与 Done 分支同样的逻辑（只是没有 automem 提取）。
-            val partialText = (accumulatedText + streaming).trim()
+            val rawPartial = (accumulatedText + streaming).trim()
+            // 中断的回复同样解析内联 artifact（用户可能正好停在文档生成到一半）
+            val (partialText, partialInlineDocs) = parseInlineArtifacts(rawPartial)
+            // ⚠️【2026-10-11 坐标系对齐，同 Done 分支】中断路径也必须剥离
+            // textBefore 里的 artifact —— 否则 UI 的「已消费长度」用的是含
+            // artifact 的旧偏移，与 partialText 不同坐标系 → 正文重复或丢失。
+            val partialTools = toolCards.toList().map { card ->
+                if (card.textBefore.isBlank()) card
+                else card.copy(textBefore = parseInlineArtifacts(card.textBefore).first)
+            }
             if (partialText.isNotBlank() || thinkingBuf.isNotBlank() || toolCards.isNotEmpty()) {
                 val nextState = _state.value.copy(
                     bubbles = _state.value.bubbles + Bubble(
@@ -1293,7 +1323,8 @@ class ChatSession(
                         text = partialText,
                         messageId = currentMessageId.ifBlank { "turn-${System.currentTimeMillis()}" },
                         thinking = thinkingBuf,
-                        toolCards = toolCards.toList(),
+                        toolCards = partialTools,
+                        documents = partialInlineDocs,
                     ),
                     streaming = "",
                     thinking = "",
@@ -1386,16 +1417,30 @@ class ChatSession(
      * **Agent 只管写文件**（Write / Edit），前端扫一遍 toolCards 就知道
      * 哪些文件被写过、内容是什么，渲染成可点开的卡片。
      *
-     * @property path 文件路径（卡片标题取它的文件名）
+     * ## 两个来源（2026-10-11 加第二个）
+     * 1. **文件推导**：[deriveDocuments] 扫 toolCards 的 Write/Edit
+     * 2. **内联 artifact**：消息正文里的 `<cp_artifact title="…" format="…">…</cp_artifact>`
+     *    （对齐 Desktop 的 `parseInlineArtifactDisplay`）—— 模型不必落盘，
+     *    直接在回复里内联一段可展开的内容。解析后正文里的标记会被剥掉。
+     *
+     * @property path 文件路径（卡片标题取它的文件名）。内联 artifact 无路径 → 空串
      * @property content 最终内容（Write 的原文 + 后续 Edit 的替换结果）
+     * @property inlineTitle 内联 artifact 的 title 属性（空 = 文件来源，用 [filename]）
+     * @property inlineFormat 内联 artifact 的 format 属性（空 = 按扩展名推断）
      */
     data class DocumentEntry(
         val path: String,
         val content: String,
+        val inlineTitle: String = "",
+        val inlineFormat: String = "",
     ) {
         /** 文件名（取路径最后一段，兼容 `/` 与 `\`）。 */
         val filename: String
             get() = path.split('/', '\\').lastOrNull()?.takeIf { it.isNotBlank() } ?: path
+
+        /** 卡片显示名：内联 artifact 用 title，文件来源用文件名。 */
+        val displayName: String
+            get() = inlineTitle.ifBlank { filename }
     }
 
     /** 一条待办（TodoWrite 的 todos 数组元素，core 侧形态）。 */
@@ -1421,6 +1466,18 @@ class ChatSession(
          *   workText  = fullText.slice(0, offset)   ← 工具区
          *   finalText = fullText.slice(offset)      ← 正文区
          * 0 或 ≥ text.length = 没有「工具后正文」，正文区显示全文（兜底）。
+         *
+         * ⚠️ **2026-10-11 起 UI 渲染不再用它** —— 正文切分改由 UI 侧的
+         * `finalTextAfterTools` 现场计算（见 MessageBubble.kt）。
+         *
+         * 原因：这里算的是**全部**工具（含 WebSearch/WebFetch 这类
+         * UI 侧 `HiddenToolNames` 过滤掉的），而工具区只渲染可见工具。
+         * 若最后一个是隐藏工具，用它切分会把「最后一个可见工具 → 隐藏工具」
+         * 之间的正文切走，而那段在工具区**无处显示** → 正文静默消失
+         *（与 2026-10-10「正文一突然消失」同类）。
+         *
+         * 字段保留：语义本身没错（「最后一个工具的 textBefore 长度」），
+         * 留作数据记录。**不要拿它做 UI 的正文切分**。
          */
         val toolTextEndOffset: Int = 0,
         /** 该消息的思考过程（TurnEnd 时从 State.thinking 定型过来；历史恢复无此项）。 */
@@ -1557,6 +1614,82 @@ class ChatSession(
                 out += DocumentEntry(path = fp, content = content)
             }
             return out
+        }
+
+        /**
+         * 从消息正文里解析**内联 artifact 标记**（对齐 Desktop 的 `parseInlineArtifactDisplay`）。
+         *
+         * ## 协议
+         * 模型在回复里直接写：
+         * ```
+         * <cp_artifact title="报告" format="markdown">
+         * （内容）
+         * </cp_artifact>
+         * ```
+         * 前端把它抽成一张文档卡片，正文里**不留标记**（否则用户看到一串标签）。
+         *
+         * ## 三种状态
+         * 1. **闭合**（有 `</cp_artifact>`）→ 抽出内容，正文剥掉整段
+         * 2. **未闭合**（流式到一半）→ 抽出已有内容当 preview，正文剥掉标记头
+         * 3. **没有标记** → 原样返回
+         *
+         * ## 与 Desktop 的差异
+         * Desktop 还维护「草稿态」（done=false 时显示进度条）。APK 简化：
+         * 只在**定型时**解析一次（流式期间正文本身在变，草稿态会反复重排）。
+         * 代价：流式中看不到「正在生成文档」的提示 —— 可以接受（正文本身可见）。
+         *
+         * @param text 消息正文
+         * @return `(剥掉标记的正文, 解析出的文档列表)`。无标记时返回 `(text, emptyList())`
+         */
+        fun parseInlineArtifacts(text: String): Pair<String, List<DocumentEntry>> {
+            if (!text.contains("<cp_artifact")) return text to emptyList()
+
+            var cleaned = text
+            val docs = mutableListOf<DocumentEntry>()
+
+            // 循环处理多个标记（模型可能一次回复里放多个 artifact）
+            while (true) {
+                val openMatch = Regex("<cp_artifact\\s+([^>]*)>", RegexOption.IGNORE_CASE)
+                    .find(cleaned) ?: break
+                val attrs = openMatch.groupValues.getOrNull(1).orEmpty()
+
+                val title = Regex("title=\"([^\"]*)\"", RegexOption.IGNORE_CASE)
+                    .find(attrs)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+                val format = Regex("format=\"([^\"]*)\"", RegexOption.IGNORE_CASE)
+                    .find(attrs)?.groupValues?.getOrNull(1)?.trim()
+                    ?.takeIf { it.isNotBlank() } ?: "markdown"
+
+                val bodyStart = openMatch.range.last + 1
+                val closeIdx = cleaned.indexOf("</cp_artifact>", bodyStart)
+
+                if (closeIdx == -1) {
+                    // 未闭合：抽走标记头 + 余下内容，正文只留标记之前的部分
+                    val body = cleaned.substring(bodyStart).removePrefix("\n")
+                    docs += DocumentEntry(
+                        path = "",
+                        content = body,
+                        inlineTitle = title.ifBlank { "Untitled document" },
+                        inlineFormat = format,
+                    )
+                    cleaned = cleaned.substring(0, openMatch.range.first).trim()
+                    break
+                }
+
+                val body = cleaned.substring(bodyStart, closeIdx).removePrefix("\n")
+                docs += DocumentEntry(
+                    path = "",
+                    content = body,
+                    inlineTitle = title.ifBlank { "Untitled document" },
+                    inlineFormat = format,
+                )
+                // 剥掉整段标记（before + after），继续找下一个
+                cleaned = (cleaned.substring(0, openMatch.range.first) +
+                    cleaned.substring(closeIdx + "</cp_artifact>".length))
+                    .trim()
+                    .replace(Regex("\\n{3,}"), "\n\n")
+            }
+
+            return cleaned to docs
         }
 
         /**

@@ -91,6 +91,14 @@ fun ToolCallGroup(
     modifier: Modifier = Modifier,
     isStreaming: Boolean = false,
     isStale: Boolean = !isStreaming,
+    /**
+     * 流式中：**正在生成、还没关联到任何工具**的正文（对应 Web `pendingWorkText_ui`）。
+     *
+     * 流式期间正文区是空的（`finalText = ''`），所有文字都归工具区 ——
+     * 各工具的 textBefore 是「已消费」的部分，这里补上「最后一个工具之后、
+     * 还在往外吐」的那段，否则用户看不到模型此刻正在写什么。
+     */
+    pendingWorkText: String = "",
 ) {
     // 隐藏工具（Web `HIDDEN_TOOL_NAMES`）不进组、不计入 summary
     val visible = remember(cards) { cards.filter { it.name !in HiddenToolNames } }
@@ -189,11 +197,59 @@ fun ToolCallGroup(
                     .padding(start = 3.68.dp + 14.72.dp),    // ml-1 + pl-4
                 verticalArrangement = Arrangement.spacedBy(7.36.dp),   // space-y-2
             ) {
-                // 【2026-10-10】textBefore 渲染已移除 —— 正文区现在显示全文
-                //（见 MessageBubble 的「正文一消失」修复），工具卡不再重复
-                // 渲染工具前的正文。
+                // ══════════════════════════════════════════════════════════
+                //  【2026-10-11 恢复 textBefore 渲染】对齐 Web `MainContent.tsx:1236-1262`
+                //
+                //  历史：2026-10-10 曾删掉这段，起因是「正文一突然消失」——
+                //  当时正文区被 `toolTextEndOffset` 切走、工具区又不渲染 textBefore，
+                //  工具前的正文两边都看不见。**但删掉渲染是错的修法**：
+                //  真正的修法是「两处都显示」（工具区灰色小字 + 正文区收尾段），
+                //  合起来才是全文，既不消失也不重复。
+                //
+                //  ⚠️ textBefore 是**累计值**（= 到此刻为止的全部正文），
+                //  原样渲染会让第 2 个工具把第 1 个工具的正文再显示一遍：
+                //      工具1: "正文1"        → 显示 "正文1"
+                //      工具2: "正文1正文2"   → 显示 "正文1正文2"  ← 重复
+                //  所以必须做**前缀差**（增量 = 当前 - 上一个），
+                //  与 Web 2026-10-11 的修法（`MainContent.tsx:1251-1262`）
+                //  是同一算法（APK 的旧 buildInterleavedSegments 已删，
+                //  那段逻辑现在只活在工具区这一处）。
+                // ══════════════════════════════════════════════════════════
+                var prevTextBefore = ""
                 visible.forEach { card ->
+                    val raw = card.textBefore.trim()
+                    val delta = when {
+                        raw.isBlank() -> ""
+                        prevTextBefore.isBlank() -> raw
+                        raw.startsWith(prevTextBefore) -> raw.removePrefix(prevTextBefore).trim()
+                        // 不是前缀（数据异常：重试/历史回放）→ 整段显示，宁可多显示不丢内容
+                        else -> raw
+                    }
+                    if (delta.isNotBlank()) {
+                        Text(
+                            text = delta,
+                            style = CCMText.body13.copy(
+                                // Web `leading-relaxed` = 1.625；13px × 1.625 ≈ 21.1px
+                                lineHeight = 19.44.sp,
+                            ),
+                            color = colors.textSecondary,
+                            // Web `px-1 py-1.5` = 3.68dp / 5.52dp
+                            modifier = Modifier.padding(horizontal = 3.68.dp, vertical = 5.52.dp),
+                        )
+                    }
                     ToolCallItem(card = card, isStale = isStale)
+                    if (raw.isNotBlank()) prevTextBefore = raw
+                }
+
+                // 流式中：正在生成、还没关联到工具的正文（Web `MainContent.tsx:1319-1323`）
+                // 13px 灰字 + shimmer 扫光 —— 与组头同款动画（`animate-shimmer-text`）。
+                if (isStreaming && pendingWorkText.isNotBlank()) {
+                    ToolHeaderShimmer(
+                        text = pendingWorkText,
+                        style = CCMText.body13.copy(lineHeight = 19.44.sp),
+                        modifier = Modifier.padding(horizontal = 3.68.dp, vertical = 5.52.dp),
+                        maxLines = Int.MAX_VALUE,
+                    )
                 }
 
                 // 组尾：全跑完且不在流式中 → Check + Done
@@ -243,7 +299,16 @@ fun ToolCallGroup(
  * 即亮带在 **t ∈ [0.25, 0.5]** 掠过文字，其余 3/4 时间是静止灰字。
  */
 @Composable
-private fun ToolHeaderShimmer(text: String, style: TextStyle, modifier: Modifier = Modifier) {
+private fun ToolHeaderShimmer(
+    text: String,
+    style: TextStyle,
+    modifier: Modifier = Modifier,
+    /**
+     * 最多几行。组头/`Running...` 都是单行（默认），
+     * 但 pendingWorkText 是**一段正文**，必须放开（传 [Int.MAX_VALUE]）。
+     */
+    maxLines: Int = 1,
+) {
     var width by remember { mutableStateOf(0f) }
 
     // ★ 颜色在 remember 之外求值：@Composable 不能进 remember 的 calculation
@@ -283,8 +348,9 @@ private fun ToolHeaderShimmer(text: String, style: TextStyle, modifier: Modifier
         text = text,
         style = style.copy(brush = brush),
         modifier = modifier.onSizeChanged { width = it.width.toFloat() },
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
+        maxLines = maxLines,
+        // 多行正文不截断（Ellipsis 会把整段掐掉尾巴）；单行时保留省略号
+        overflow = if (maxLines == 1) TextOverflow.Ellipsis else TextOverflow.Clip,
     )
 }
 
@@ -552,8 +618,13 @@ private fun PulsingFileTextIcon(size: Dp, tint: Color) {
  * Web 把 WebSearch/WebFetch 从**工具组**里过滤掉（它们走搜索过程条
  * `SearchProcess` 单独渲染）。APK 目前没有搜索过程条，但保持一致：
  * 混在工具组里会让「搜索」既出现在组内又出现在别处。
+ *
+ * ⚠️ **必须是 internal 而不是 private**：正文区切分（[finalTextAfterTools]）
+ * 与 pendingWorkText 计算都要用同一份过滤表算「已消费的正文长度」。
+ * 两边过滤口径不一致时，被隐藏工具的 textBefore 会把 offset 推大
+ * → 收尾正文被多切 → 正文凭空消失（且不报错）。
  */
-private val HiddenToolNames = setOf("WebSearch", "WebFetch")
+internal val HiddenToolNames = setOf("WebSearch", "WebFetch")
 
 /**
  * 工具显示名 —— 对应 Web `getToolDisplayName`（`toolThinkingFallback.js:3-26`）。
