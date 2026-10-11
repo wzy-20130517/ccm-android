@@ -134,6 +134,38 @@ android {
 }
 
 dependencies {
+    // ══════════════════════════════════════════════════════════════
+    //  【2026-10-11】Bash AST 解析（plan 模式只读判定）
+    // ══════════════════════════════════════════════════════════════
+    //
+    // 来源：NitorCreations/bashparser（ANTLR3 生成的完整 bash 语法解析器）。
+    // 用途：替换 plan 模式的 BASH_WRITE_PATTERN 正则黑名单 ——
+    //       正则拦不住 `/bin/rm`、`bash -c "rm x"`、`find . -delete`、
+    //       `ls;rm x`、`$(...)` 这些变体（详见 BashCommandAnalyzer 的文档注释）。
+    //
+    // 【为什么用预编译 jar 而不是源码】
+    //   两个源文件共 1.78MB（java_libbashParser.java 单独就 1.67MB，
+    //   是 ANTLR 生成的巨型 switch）。放进 src/ 会让每次 Kotlin 编译
+    //   都要读进这 1.78MB 文本，且 AGP 会把它算进增量编译的输入。
+    //   预编译后：class 只有 208 个 / 0.78MB，Kotlin 编译不再解析它。
+    //
+    //   实测（kotlinc 单模块编译 BashCommandAnalyzer + ReadonlyPolicy）：
+    //     · 读 Java 源码：15.3s
+    //     · 读预编译 jar：12.8s
+    //   （本机是手机，CI 上差异会放大）
+    //
+    // 【方法数】208 个 class / 930 个方法 —— DEX 65536 上限内，无压力。
+    //
+    // 【license 状态】bashparser 是 NitorCreations 把 Gentoo libbash 的
+    //   ANTLR 语法生成 Java 后的产物（pom 里 groupId=org.gentoo.libbash，
+    //   version=0.1，发布于 NitorCreations 的 github maven 仓库）。
+    //   源码文件头**没有** license 声明，上游 libbash 是 GPL-2.0。
+    //   antlr-runtime 是 BSD-3（明确）。
+    //   → 本 App 自用、不对外分发，GPL 不构成实际约束；
+    //     若将来要上架分发，需先向上游确认 bashparser 的授权。
+    implementation(files("libs/bashparser.jar"))
+    implementation(files("libs/antlr-runtime-3.5.3.jar"))
+
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")

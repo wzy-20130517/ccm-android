@@ -61,13 +61,6 @@ class ToolPermissions(private val configDir: File) {
         )
 
         val MODES = listOf("default", "acceptEdits", "plan", "bypassPermissions")
-
-        /** plan 模式下被判定为「写操作」的 Bash 命令特征 */
-        private val BASH_WRITE_PATTERN = Regex(
-            "\\b(rm|mv|cp|write|tee|sed\\s+-i|npm\\s+i|pip\\s+install|" +
-                "git\\s+(commit|push|add)|chmod|chown|mkdir|touch|dd|truncate)\\b",
-            RegexOption.IGNORE_CASE,
-        )
     }
 
     /** 裁决结果 */
@@ -249,6 +242,22 @@ class ToolPermissions(private val configDir: File) {
         if (hasIn(rules, "deny", toolName)) {
             return Decision.deny("permissions.json deny: $toolName")
         }
+
+        // ⚠ plan 模式下的 Bash **不能**被 `allow: ["Bash"]` 直接放行。
+        //
+        // 【2026-10-11 修复】CLI 侧发现过同类问题：`allow:["Bash"]` 会让 plan
+        // 保护完全失效 —— 用户加这条规则的本意多半是「平时别老问我」，
+        // 但 plan 模式的语义是「这一轮只准看、不准改」，属于**会话级硬约束**，
+        // 不该被工具级的 allow 规则推翻。
+        //
+        // 修法：把「plan + Bash」的只读校验提到 allow 规则**之前**。
+        // deny 仍然最高优先（用户显式禁止 > 一切）；ask 不受影响（下面继续走）。
+        if (mode == "plan" && toolName == "Bash") {
+            val cmd = input?.optString("command", "") ?: ""
+            val verdict = BashReadonlyGate.check(cmd)
+            if (!verdict.allowed) return verdict
+        }
+
         if (hasIn(rules, "allow", toolName)) {
             return Decision.ALLOW
         }
@@ -264,13 +273,7 @@ class ToolPermissions(private val configDir: File) {
                 if (toolName !in PLAN_ALLOWED) {
                     return Decision.deny("plan 模式禁止工具: $toolName（只允许只读工具）")
                 }
-                // plan 下的 Bash：只放行明显只读的命令
-                if (toolName == "Bash") {
-                    val cmd = input?.optString("command", "") ?: ""
-                    if (BASH_WRITE_PATTERN.containsMatchIn(cmd)) {
-                        return Decision.deny("plan 模式禁止写操作 Bash：$cmd")
-                    }
-                }
+                // Bash 的只读校验已在上面（allow 规则之前）做过
                 return Decision.ALLOW
             }
 
