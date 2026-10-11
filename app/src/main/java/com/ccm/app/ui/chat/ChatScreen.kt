@@ -239,6 +239,11 @@ fun ChatScreen(
                 val scrollState = rememberScrollState()
                 // 回到底部请求标志（防判定协程把 followBottom 打回，见按钮注释）
                 var scrollRequested by remember { mutableStateOf(false) }
+                // 【2026-10-11】程序滚动标志（scrollTo 执行期间为 true）。
+                // 判定协程见到它就跳过 —— 否则会把 scrollTo 的中间态
+                // （v 旧值 / max 新值）误判成「用户上翻」，把 followBottom
+                // 打成 false，跟随协程随即中途退出 → 「滑到最低也不跟随」。
+                var programmaticScroll by remember { mutableStateOf(false) }
                 // 追底循环：请求期间每帧滚到底（流式增长也追得上），
                 // 连续 40 帧内 max 稳定（或用户主动滚动）就结束。
                 LaunchedEffect(scrollRequested) {
@@ -320,7 +325,16 @@ fun ChatScreen(
                             // —— 那是流式吐字，不是用户操作）。
                             // 回到底部请求期间：不打回 followBottom（动画/追底
                             // 途中的中间位置不代表用户意图）
-                            if (scrollRequested) return@collect
+                            if (scrollRequested) {
+                                return@collect
+                            }
+                            // 【2026-10-11】程序滚动（scrollTo）期间不判定 ——
+                            // scrollTo 是异步的（suspend 到下一帧才生效），
+                            // 此刻的 (v, max) 是**中间态**：v 还是旧值、max 已是新值，
+                            // 用它会误判成「用户上翻」→ followBottom=false
+                            // → 跟随协程的 repeat(3) 检查到 false → 中途退出。
+                            // 这就是「Sticky Scroll 滑到最低也不跟随」的根因。
+                            if (programmaticScroll) return@collect
 
                             if (valueChanged && !maxChanged) {
                                 // 纯滚动：用当前 max 判定（用户拖或程序滚）
@@ -358,26 +372,45 @@ fun ChatScreen(
                 // 监听「内容高度」变化 → 变化就滚。流式吐 1000 个字符也
                 // 只是触发 1000 次滚动（每次瞬时），不会重启协程。
                 // ══════════════════════════════════════════════════════════
+                // ══════════════════════════════════════════════════════════
+                //  【2026-10-11 修「Sticky Scroll 滑到最低也不跟随」】
+                //
+                //  根因：**跟随协程与判定协程互相打架**。
+                //
+                //  时序（流式期间，每来一个字都会重复）：
+                //    帧 N   : maxValue 变大 → 跟随协程触发 → scrollTo(maxValue)
+                //    帧 N   : scrollTo 是**异步**的（下一帧才生效）→
+                //             snapshotFlow 此刻看到 (v=旧值, max=新值)
+                //    帧 N   : 判定协程触发 → valueChanged && !maxChanged?
+                //             → 两个都变了 → 走 (prevMax-v)<50 || (max-v)<50
+                //             → 内容长高 >50px 时**两个都不成立** → followBottom=false
+                //    帧 N+1 : 跟随协程的 repeat(3) 检查 !followBottom → **中途退出**
+                //    → 滚动没滚到位，且跟随被自己关掉 → 「不跟随」
+                //
+                //  之前的注释说「scrollTo 是瞬时操作，isScrollInProgress 窗口极短」
+                //  —— 那是错的：scrollTo 会 suspend 到下一帧，判定协程**必然**
+                //  在同一帧看到中间态。
+                //
+                //  修法：加一个「程序滚动中」标志，判定协程见到它就跳过 ——
+                //  只认**用户主动**的滚动。
+                //  （不是 autoScrolling 那版：那版把标志的**整个生命周期**都跳过，
+                //   包括用户真拖到底的时刻；这里只在 scrollTo 的那一帧跳过。）
+                // ══════════════════════════════════════════════════════════
                 LaunchedEffect(Unit) {
                     snapshotFlow { scrollState.maxValue }
                         .collect { max ->
                             if (max <= 0) return@collect
                             if (!followBottom) return@collect
-                            // ⚠️ 不用 autoScrolling 挡 —— 它和判定协程互相干扰：
-                            //   自动滚动期间用户真拖到底时，判定协程因
-                            //   `if (autoScrolling) return@collect` 跳过，
-                            //   用户的意图丢失（这是「拉到底不触发跟随」的
-                            //   又一成因）。
-                            //
-                            // 正确做法：scrollTo 是**幂等**的（已在底部时是
-                            // no-op），重复触发无害；判定协程靠
-                            // `isScrollInProgress` 区分用户/程序滚动 ——
-                            // 而 scrollTo 是瞬时操作，isScrollInProgress
-                            // 的 true 窗口极短（<1 帧），不会误判。
-                            repeat(3) {
-                                withFrameNanos {}
-                                if (!followBottom) return@repeat
-                                scrollState.scrollTo(scrollState.maxValue)
+                            // 标记「接下来这几帧的 value 变化是程序造成的」
+                            programmaticScroll = true
+                            try {
+                                repeat(3) {
+                                    withFrameNanos {}
+                                    if (!followBottom) return@repeat
+                                    scrollState.scrollTo(scrollState.maxValue)
+                                }
+                            } finally {
+                                programmaticScroll = false
                             }
                         }
                 }
