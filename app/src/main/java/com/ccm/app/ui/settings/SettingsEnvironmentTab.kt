@@ -84,7 +84,7 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
                 termuxInstalled = false, termuxPerm = false,
                 sdk = android.os.Build.VERSION.SDK_INT.toString(),
                 abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown",
-                home = ctx.filesDir.absolutePath,
+                home = com.ccm.app.AppGraph.dataRoot(ctx).absolutePath,
                 uptimeMs = 0L,
             ),
         )
@@ -103,7 +103,7 @@ fun SettingsEnvironmentTab(modifier: Modifier = Modifier) {
                 termuxPerm = com.ccm.app.tools.bash.TermuxChannel.hasRunCommandPermission(ctx),
                 sdk = android.os.Build.VERSION.SDK_INT.toString(),
                 abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown",
-                home = ctx.filesDir.absolutePath,
+                home = com.ccm.app.AppGraph.dataRoot(ctx).absolutePath,
                 uptimeMs = try {
                     android.os.SystemClock.elapsedRealtime() -
                         android.os.Process.getStartElapsedRealtime()

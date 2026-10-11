@@ -144,6 +144,21 @@ object AppGraph {
      *
      * 存储未初始化、或**没有配置工作区**时返回空串（调用方自行提示）。
      */
+    /**
+     * 数据根目录（`Download/Claude/`）—— 给**拿不到 AppStorage 的地方**用。
+     *
+     * 【2026-10-11 加】数据根迁到外部存储后，还有些散落的落盘点直接用了
+     * `context.filesDir`（QQ 配置、skills、device.json…）—— 那些数据会
+     * 留在旧位置，用户迁移时漏掉。
+     *
+     * 统一走这里（内部就是 `resolveDataRoot`），保证「所有落盘都在数据根下」。
+     *
+     * ⚠️ 新代码优先用 `AppGraph.storage?.rootDir`（已初始化时）——
+     * 这个方法是为「初始化之前 / 拿不到 storage」的场景兜底。
+     */
+    fun dataRoot(ctx: android.content.Context): java.io.File =
+        com.ccm.app.core.resolveDataRoot(ctx)
+
     fun workspacePath(): String {
         val st = storage ?: return ""
         val cfg = AppConfig.load(st.configFile).config
@@ -708,7 +723,9 @@ object AppGraph {
             //（其他端开的 on 不该让 APK 抢端口）。
             try {
                 val host = qqHost ?: com.ccm.app.core.integrations.QqBridgeHost(
-                    filesDir = app.filesDir,
+                    // 【2026-10-11】数据根（Download/Claude/）而非 filesDir ——
+                    // QQ 的配置 / qq-images / qq-files 都在这个目录下
+                    filesDir = st.root,
                     scope = scope,
                 ).also { qqHost = it }
                 sess?.let { s2 ->

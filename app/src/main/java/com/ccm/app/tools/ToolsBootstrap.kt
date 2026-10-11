@@ -265,7 +265,7 @@ class ToolsBootstrap(
         //
         // 只做一次：用标记文件（files/skills/.unpacked）判断。
         try {
-            val skillsDir = File(context.filesDir, "skills")
+            val skillsDir = File(com.ccm.app.AppGraph.dataRoot(context), "skills")
             val marker = File(skillsDir, ".unpacked")
             if (!marker.exists()) {
                 skillsDir.mkdirs()
@@ -289,7 +289,7 @@ class ToolsBootstrap(
         } catch (_: Throwable) {}
 
         val skillTools = SkillTools(
-            globalDir = File(context.filesDir, "skills"),
+            globalDir = File(com.ccm.app.AppGraph.dataRoot(context), "skills"),
         )
         subAgentManager?.let { agentTools.observer = it.asToolObserver() }
         val miscTools = MiscTools(

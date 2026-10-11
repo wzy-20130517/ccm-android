@@ -3069,7 +3069,9 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
             // 「APK 尚未接入」）。现在桥已落地（QqBridge/QqBridgeHost），
             // 所有子命令接真数据。
             val host = com.ccm.app.AppGraph.qqHost
-            val filesDir = ctx.appContext?.filesDir
+            // 【2026-10-11】用数据根（Download/Claude/）而非 filesDir ——
+            // 否则 QQ 配置留在旧位置，数据迁移时漏掉
+            val filesDir = ctx.appContext?.let { com.ccm.app.AppGraph.dataRoot(it) }
             val cfg = filesDir?.let { com.ccm.app.core.integrations.QqConfigStore.load(it) }
                 ?: com.ccm.app.core.integrations.QqConfigStore.Cfg()
             val b = host?.bridge

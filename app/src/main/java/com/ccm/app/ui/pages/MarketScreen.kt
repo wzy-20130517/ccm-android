@@ -94,11 +94,12 @@ fun MarketScreen(
     val installed = remember(refresh) {
         val s = mutableSetOf<String>()
         try {
-            val skillsDir = java.io.File(ctx.filesDir, "skills")
+            // 【2026-10-11】数据根（Download/Claude/）
+            val skillsDir = java.io.File(com.ccm.app.AppGraph.dataRoot(ctx), "skills")
             skillsDir.listFiles()?.forEach { f ->
                 s += if (f.isDirectory) f.name else f.name.removeSuffix(".md")
             }
-            val mcpFile = java.io.File(ctx.filesDir, "mcp.json")
+            val mcpFile = java.io.File(com.ccm.app.AppGraph.dataRoot(ctx), "mcp.json")
             if (mcpFile.exists()) {
                 val o = org.json.JSONObject(mcpFile.readText())
                 o.optJSONObject("mcpServers")?.keys()?.forEach { s += it }

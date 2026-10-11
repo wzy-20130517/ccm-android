@@ -42,7 +42,9 @@ object PhoneMode {
 
     /** device.json（与 CLI 同名文件，但各自独立存） */
     private fun configFile(ctx: Context): File =
-        File(ctx.filesDir, "device.json")
+        // 【2026-10-11】数据根（Download/Claude/）—— 否则手机操作偏好
+        // 留在 filesDir，数据迁移时漏掉
+        File(com.ccm.app.AppGraph.dataRoot(ctx), "device.json")
 
     /**
      * 读偏好。返回 'foreground' | 'background' | 'ask' | null（从没设过）。

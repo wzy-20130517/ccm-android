@@ -234,6 +234,43 @@ class SkillTools(
      */
     fun listAll(cwd: String): List<Pair<String, String>> = listNames(cwd)
 
+    /**
+     * 列出所有可用 skill（**带描述** —— 定制页用）。
+     *
+     * 【2026-10-11 加】定制页原来读 `BuiltinSkills.all()`（写死的 10 个
+     * CLI 技能名），与 APK 实际安装的 5 个（key-pool / phone-use /
+     * qq-bridge / slash-wizard / subagent-orchestration）**零重叠** ——
+     * 用户看到一堆不存在的「幽灵技能」。
+     *
+     * 这个方法扫真实目录（与 Skill 工具同一套查找规则）+ 读 frontmatter
+     * 的描述，给定制页正确的数据。
+     *
+     * @return `(名字, 描述, 作用域)` 列表
+     */
+    fun listAllWithDescription(cwd: String): List<Triple<String, String, String>> {
+        val out = mutableListOf<Triple<String, String, String>>()
+        for (dir in rootDirsFor(cwd)) {
+            if (!dir.exists() || !dir.isDirectory) continue
+            val scope = scopeOf(dir)
+            dir.listFiles()?.forEach { f ->
+                val loaded = when {
+                    f.isFile && f.name.endsWith(".md", ignoreCase = true) ->
+                        try { loadFrom(f, dir, scope, f.name.removeSuffix(".md")) } catch (_: Throwable) { null }
+                    f.isDirectory -> {
+                        val skillMd = File(f, "SKILL.md")
+                        if (skillMd.isFile) try { loadFrom(skillMd, dir, scope, f.name) } catch (_: Throwable) { null }
+                        else null
+                    }
+                    else -> null
+                }
+                if (loaded != null) {
+                    out += Triple(loaded.name, loaded.description, scope)
+                }
+            }
+        }
+        return out
+    }
+
     private fun listNames(cwd: String): List<Pair<String, String>> {
         val out = LinkedHashMap<String, String>()   // name → scope
         for (dir in rootDirsFor(cwd)) {

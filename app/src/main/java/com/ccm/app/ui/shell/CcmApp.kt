@@ -1349,15 +1349,44 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         // 2) workspace/.claude/skills/*/SKILL.md（用户放的）
                         // 这里先接 1（内置清单随 APK 走，无需文件系统权限）；
                         // 自定义技能目录扫描待 workspace 目录初始化后接入。
+                        // 【2026-10-11 修「幽灵技能」】原来读 BuiltinSkills.all()
+                        // —— 那是**写死的 10 个 CLI 技能名**（anti-ai-slop /
+                        // termux-video / apple-design…），与 APK 实际安装的 5 个
+                        // （key-pool / phone-use / qq-bridge / slash-wizard /
+                        // subagent-orchestration）**零重叠**。用户看到一堆
+                        // 不存在的技能，点进去也执行不了。
+                        //
+                        // 改为**动态扫描真实目录**（与 Skill 工具、/skills 命令
+                        // 同一套查找规则）—— 放个 .md 就能在定制页看到。
                         val skills = remember(route) {
-                            com.ccm.app.core.skill.BuiltinSkills.all().map { sk ->
-                                com.ccm.app.ui.pages.CustomizeItem(
-                                    id = sk.id,
-                                    name = sk.name,
-                                    description = sk.description,
-                                    kind = "skills",
-                                )
-                            } + com.ccm.app.core.skill.BuiltinSkills.connectors().map { cn ->
+                            val cwd = com.ccm.app.AppGraph.workspacePath()
+                            val st = com.ccm.app.AppGraph.toolsResult?.skillTools
+                            val dynamic = try {
+                                st?.listAllWithDescription(cwd) ?: emptyList()
+                            } catch (_: Throwable) { emptyList() }
+
+                            val skillItems = if (dynamic.isNotEmpty()) {
+                                dynamic.map { (name, desc, scope) ->
+                                    com.ccm.app.ui.pages.CustomizeItem(
+                                        id = name,
+                                        name = name,
+                                        description = desc.ifBlank { "（无描述）" },
+                                        kind = "skills",
+                                    )
+                                }
+                            } else {
+                                // 兜底：动态扫描为空时才用内置清单
+                                com.ccm.app.core.skill.BuiltinSkills.all().map { sk ->
+                                    com.ccm.app.ui.pages.CustomizeItem(
+                                        id = sk.id,
+                                        name = sk.name,
+                                        description = sk.description,
+                                        kind = "skills",
+                                    )
+                                }
+                            }
+
+                            skillItems + com.ccm.app.core.skill.BuiltinSkills.connectors().map { cn ->
                                 // ★ 2026-10-01：connectors tab 原来永远空（只传了 skills）
                                 com.ccm.app.ui.pages.CustomizeItem(
                                     id = cn.id,

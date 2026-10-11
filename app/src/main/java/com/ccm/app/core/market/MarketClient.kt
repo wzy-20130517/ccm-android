@@ -79,7 +79,7 @@ object MarketClient {
      *   3. 网络全挂 → 过期缓存兜底（比给用户看空白强）
      */
     suspend fun fetchRegistry(ctx: Context): List<MarketItem>? = withContext(Dispatchers.IO) {
-        val cacheFile = File(ctx.filesDir, REGISTRY_CACHE_FILE)
+        val cacheFile = File(com.ccm.app.AppGraph.dataRoot(ctx), REGISTRY_CACHE_FILE)
         val cached = readCache(cacheFile)
 
         // 1. 新鲜缓存秒回
@@ -276,14 +276,14 @@ object MarketClient {
                     if (item.url.isNotBlank()) {
                         // tar.gz：解压到 skills/<skillName>/ —— 与散文件路径统一，
                         // 这样 installed 检测（按目录名）对两种格式都成立。
-                        val dest = File(ctx.filesDir, "skills/$skillName")
+                        val dest = File(com.ccm.app.AppGraph.dataRoot(ctx), "skills/$skillName")
                         dest.mkdirs()
                         onLog("正在解压…")
                         extractTarGz(tmp, dest)
                         onLog("✅ 已装到 ${dest.absolutePath}")
                     } else if (item.files.isNotEmpty()) {
                         // 散文件 skill：装到 files/skills/<名字>/
-                        val dest = File(ctx.filesDir, "skills/$skillName")
+                        val dest = File(com.ccm.app.AppGraph.dataRoot(ctx), "skills/$skillName")
                         dest.mkdirs()
                         onLog("正在下载 ${item.files.size} 个文件…")
                         item.files.forEach { fileUrl ->
@@ -381,7 +381,7 @@ object MarketClient {
                     val entryName = item.entry.ifBlank { "server.mjs" }
                     val entry = File(dest, entryName)
                     val cmd = installer.buildProotCommand(entry.absolutePath, env)
-                    val mcpFile = File(ctx.filesDir, "mcp.json")
+                    val mcpFile = File(com.ccm.app.AppGraph.dataRoot(ctx), "mcp.json")
                     val o = if (mcpFile.exists()) JSONObject(mcpFile.readText()) else JSONObject()
                     val servers = o.optJSONObject("mcpServers") ?: JSONObject()
                     servers.put(item.id, JSONObject().apply {
@@ -460,9 +460,9 @@ object MarketClient {
                         .removePrefix("anthropic-skill-")
                         .removePrefix("skill-")
                         .ifBlank { item.id }
-                    File(ctx.filesDir, "skills/${item.id}").deleteRecursively()
-                    File(ctx.filesDir, "skills/$skillName").deleteRecursively()
-                    File(ctx.filesDir, "skills/${item.id}.md").delete()
+                    File(com.ccm.app.AppGraph.dataRoot(ctx), "skills/${item.id}").deleteRecursively()
+                    File(com.ccm.app.AppGraph.dataRoot(ctx), "skills/$skillName").deleteRecursively()
+                    File(com.ccm.app.AppGraph.dataRoot(ctx), "skills/${item.id}.md").delete()
                 }
                 "plugin" -> {
                     // 从宿主配置移除 + 热卸载（npm 包保留，与 CLI 侧行为一致）
@@ -480,7 +480,7 @@ object MarketClient {
                         val runtime = com.ccm.app.runtime.ProotRuntime(ctx)
                         File(runtime.rootfsDir(), "root/.ccm/mcp/${item.id}").deleteRecursively()
                     } catch (_: Throwable) {}
-                    val mcpFile = File(ctx.filesDir, "mcp.json")
+                    val mcpFile = File(com.ccm.app.AppGraph.dataRoot(ctx), "mcp.json")
                     if (mcpFile.exists()) {
                         val o = JSONObject(mcpFile.readText())
                         o.optJSONObject("mcpServers")?.remove(item.id)
