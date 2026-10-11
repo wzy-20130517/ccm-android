@@ -159,6 +159,7 @@ object MarketClient {
         i.env.forEach { (k, v) -> env.put(k, v) }
         put("env", env)
         put("recommended", i.recommended)
+        put("updated", i.updated)
     }
 
     private fun jsonToItem(o: JSONObject?): MarketItem? = o?.let { j ->
@@ -167,6 +168,7 @@ object MarketClient {
                 type = j.optString("type"),
                 name = j.optString("name"),
                 description = j.optString("description"),
+                updated = j.optString("updated"),
                 author = j.optString("author"),
                 size = j.optString("size"),
                 url = j.optString("url"),
@@ -281,6 +283,9 @@ object MarketClient {
                         onLog("正在解压…")
                         extractTarGz(tmp, dest)
                         onLog("✅ 已装到 ${dest.absolutePath}")
+                        // 【2026-10-11】记安装时间 —— 供「可更新」检测用
+                        // （对比市场的 item.updated）
+                        recordInstallTime(ctx, skillName, item.updated)
                     } else if (item.files.isNotEmpty()) {
                         // 散文件 skill：装到 files/skills/<名字>/
                         val dest = File(com.ccm.app.AppGraph.dataRoot(ctx), "skills/$skillName")
@@ -446,6 +451,76 @@ object MarketClient {
         }
     }
 
+    // ══════════════════════════════════════════════════════════════
+    //  安装时间记录（供「可更新」检测用）—— 2026-10-11 加
+    // ══════════════════════════════════════════════════════════════
+    //
+    // 市场没有版本号体系（skill 就是一堆 md 文件），所以用**时间戳**判断：
+    //   · 装的时候记下「当时市场给的 updated」
+    //   · 下次拉清单时对比：市场的 updated > 本地记的 → 显示「可更新」
+    //
+    // 记录文件：`skills/.install-times.json`（与 skills 同目录，跟着数据根走）
+
+    private fun installTimesFile(ctx: Context): File =
+        File(com.ccm.app.AppGraph.dataRoot(ctx), "skills/.install-times.json")
+
+    /** 读全部安装时间记录（key = skill 目录名，value = ISO 时间戳）。 */
+    fun readInstallTimes(ctx: Context): Map<String, String> {
+        return try {
+            val f = installTimesFile(ctx)
+            if (!f.exists()) return emptyMap()
+            val o = JSONObject(f.readText())
+            o.keys().associateWith { o.optString(it) }
+        } catch (_: Throwable) {
+            emptyMap()
+        }
+    }
+
+    /** 记录一次安装（[updated] = 市场给的更新时间；空则用当前时间）。 */
+    private fun recordInstallTime(ctx: Context, skillName: String, updated: String) {
+        try {
+            val f = installTimesFile(ctx)
+            val o = if (f.exists()) JSONObject(f.readText()) else JSONObject()
+            o.put(
+                skillName,
+                updated.ifBlank {
+                    // 市场没给 updated（老 registry）→ 用当前时间
+                    java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
+                        .format(java.util.Date())
+                },
+            )
+            f.parentFile?.mkdirs()
+            f.writeText(o.toString())
+        } catch (_: Throwable) {
+            // 记不上不影响安装本身
+        }
+    }
+
+    /** 卸载时清记录。 */
+    private fun removeInstallTime(ctx: Context, skillName: String) {
+        try {
+            val f = installTimesFile(ctx)
+            if (!f.exists()) return
+            val o = JSONObject(f.readText())
+            o.remove(skillName)
+            f.writeText(o.toString())
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * 判断某个 skill 是否「可更新」。
+     *
+     * 判据：市场的 `updated` > 本地记录的安装时间（ISO 字符串可直接比较，
+     * 因为格式统一为 `yyyy-MM-ddTHH:mm:ssZ`）。
+     *
+     * @return true = 市场有更新版本
+     */
+    fun hasUpdate(ctx: Context, item: MarketItem): Boolean {
+        if (item.updated.isBlank()) return false        // 市场没给 → 不提示
+        val installedAt = readInstallTimes(ctx)[item.id] ?: return false  // 没记录 → 不提示
+        return item.updated > installedAt               // ISO 字符串字典序 = 时间序
+    }
+
     /** 卸载。 */
     suspend fun uninstall(
         ctx: Context,
@@ -463,6 +538,9 @@ object MarketClient {
                     File(com.ccm.app.AppGraph.dataRoot(ctx), "skills/${item.id}").deleteRecursively()
                     File(com.ccm.app.AppGraph.dataRoot(ctx), "skills/$skillName").deleteRecursively()
                     File(com.ccm.app.AppGraph.dataRoot(ctx), "skills/${item.id}.md").delete()
+                    // 【2026-10-11】清安装时间记录（否则重装后「可更新」判据错乱）
+                    removeInstallTime(ctx, item.id)
+                    removeInstallTime(ctx, skillName)
                 }
                 "plugin" -> {
                     // 从宿主配置移除 + 热卸载（npm 包保留，与 CLI 侧行为一致）

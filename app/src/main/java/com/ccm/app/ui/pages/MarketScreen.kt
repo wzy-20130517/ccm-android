@@ -300,8 +300,17 @@ fun MarketScreen(
                         )
                     } else {
                         list.forEach { item ->
+                            // 【2026-10-11】「可更新」检测 —— 市场 updated
+                            // 比本地记录的安装时间新
+                            val hasUpdate = remember(item.id, item.updated, refresh) {
+                                try {
+                                    com.ccm.app.core.market.MarketClient
+                                        .hasUpdate(ctx, item)
+                                } catch (_: Throwable) { false }
+                            }
                             MarketItemCard(
                                 item = item,
+                                updateAvailable = hasUpdate,
                                 installed = installedNameOf(item) in installed,
                                 busy = mkt.running && mkt.targetId == item.id,
                                 onInstall = {
@@ -397,6 +406,16 @@ data class MarketItem(
     val type: String,
     val name: String,
     val description: String,
+    /**
+     * 更新时间（ISO 8601，如 `2026-10-11T11:46:16Z`）。
+     *
+     * 【2026-10-11 加】用于「可更新」检测 —— 本地记录了安装时间，
+     * 市场这个字段比它新 → 提示用户重装（install 是无条件覆盖，
+     * 重装即更新）。
+     *
+     * 空 = 市场没给（老 registry）→ 不提示更新。
+     */
+    val updated: String = "",
     val author: String = "",
     val size: String = "",
     /** tar.gz 包地址（skill 用）。 */
@@ -428,6 +447,8 @@ private fun MarketItemCard(
     busy: Boolean,
     onInstall: () -> Unit,
     onUninstall: () -> Unit,
+    /** 【2026-10-11】市场有更新版本（updated > 本地安装时间）。 */
+    updateAvailable: Boolean = false,
 ) {
     val colors = CCMTheme.colors
     val ctx = androidx.compose.ui.platform.LocalContext.current
@@ -484,6 +505,19 @@ private fun MarketItemCard(
         }
         when {
             busy -> Text("…", style = CCMText.body12, color = colors.textSecondary)
+            // 【2026-10-11】可更新 —— 比「已安装」优先显示。
+            // install 是无条件覆盖（解压到同一目录），所以点「更新」
+            // 就是重装一次。
+            installed && updateAvailable -> Text(
+                "可更新",
+                style = CCMText.body12.copy(fontSize = 11.sp, fontWeight = FontWeight.Medium),
+                color = colors.accent,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(colors.accent.copy(alpha = 0.12f))
+                    .clickable(onClick = onInstall)
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+            )
             // 【2026-10-07 改】DSH 插件原来只有「复制安装命令」（当时没有
             // 本地宿主）。现在 DshHostManager 会在 proot 里部署 dsh-host，
             // plugin 条目走正常「下载」按钮 → MarketClient.install 的
