@@ -397,6 +397,11 @@ fun MessageList(
         // 流式部分（正在生成的内容）—— 声明顺序 = 从底往上的顺序，
         // 它在 waiting 之上、bubbles 之下（视觉上：bubbles → streaming → waiting → spacer）
         item(key = "streaming") {
+            // 【2026-10-11】同 bubbles 的 item：多个平级 Composable 在
+            // reverseLayout 下会从底往上堆叠 → 顺序反。包 Column 固定方向。
+            androidx.compose.foundation.layout.Column(
+                modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+            ) {
             // 流式部分（未定型）：思考 → 工具组 → 正文
             if (streaming.isNotBlank() || streamingThinking.isNotBlank()) {
             // 流式中：思考在前（先想后说），running 驱动 isThinking 动效
@@ -460,6 +465,7 @@ fun MessageList(
                 )
             }
             }  // ← if (streaming.isNotBlank() || streamingThinking.isNotBlank())
+            }  // ← 闭 Column
         }  // ← item {} 闭合（流式部分）
 
         // 【reverseLayout】数据反序：最新的在 index 0（视觉底部）。
@@ -477,6 +483,13 @@ fun MessageList(
             // 修法：key 拼上 index —— 索引在列表内天然唯一，
             // 且气泡顺序稳定（追加型列表），重组时 key 不变。
             item(key = "${index}-${bubble.key}") {
+            // 【2026-10-11 修「内容顺序反了」】item{} 里的多个平级 Composable
+            // 在 reverseLayout 下会**从底往上堆叠** —— 视觉顺序整个反过来
+            // （用户报：思维链/工具/正文的顺序变成正文/工具/思维链）。
+            // 包一层 Column 显式声明垂直布局，不受 reverseLayout 影响。
+            androidx.compose.foundation.layout.Column(
+                modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+            ) {
             if (bubble.isUser) {
                 UserBubble(
                     // <image_resize_notice> / <vision_unsupported> 是 AgentLoop
@@ -615,6 +628,7 @@ fun MessageList(
                     )
                 }
             }   // ← 闭 else（if (bubble.isUser) 的另一半）
+            }   // ← 闭 Column（item 内部的垂直布局）
             }   // ← 闭 item(key = bubble.key)
         }       // ← 闭 forEachIndexed
 
