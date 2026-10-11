@@ -93,16 +93,29 @@ object AppGraph {
         val configured = cfg.workspacePath?.trim().orEmpty()
         if (configured.isEmpty()) {
             // ══════════════════════════════════════════════════════════
-            //  【2026-10-06 改】没配置 = **没有工作区**，不再兜底默认目录
+            //  【2026-10-11 修「没设工作区就写不了文件」】
+            //
+            //  上一版（2026-10-06）把这里改成「空 = 真的没有，返回空串」——
+            //  想法是「用户能表达不用工作区」，但**代价是工具全废**：
+            //    · PathGuard.resolveAllowed：cwd 为空 → 相对路径直接拒绝
+            //    · 于是 Agent 写不了文件、建不了目录、读不了相对路径
+            //    · 而系统提示词还说「工作目录：/」→ 模型以为能写
+            //  用户报「没设工作区它现在都写不了文件」就是这个。
+            //
+            //  正确做法：**永远给一个可用的默认工作区**（App 私有目录
+            //  files/workspace）—— 它在 App 沙箱内、必然可写、不涉及
+            //  外部存储权限。用户想用外部目录（/sdcard/...）就显式配。
+            //
+            //  这与 CLI 的 `process.cwd()`、Web 的 `loadWebSettings().workspacePath`
+            //  语义一致：**永远有个有效 cwd**，不存在「没有工作区」状态。
             // ══════════════════════════════════════════════════════════
-            //
-            // 原来这里会依次尝试 envMode 外部目录 → files/workspace，
-            // 永远返回一个路径 —— 用户无法表达「我不用工作区」，
-            // 而且 App 会在他不知道的地方悄悄建目录、往里写文件。
-            //
-            // 现在的语义：**空 = 真的没有**。返回空串，由调用方处理。
-            // 想用工作区就显式设（/workspace <路径> 或设置页填）。
-            return ""
+            return try {
+                val d = File(st.rootDir, "workspace")
+                if (!d.exists()) d.mkdirs()
+                if (d.isDirectory) d.absolutePath else ""
+            } catch (_: Throwable) {
+                ""
+            }
         }
         return try {
             val d = File(configured)
