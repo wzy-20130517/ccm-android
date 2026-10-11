@@ -320,23 +320,102 @@ fun MessageList(
     todos: List<com.ccm.app.ui.common.TodoItem> = emptyList(),
     /** 点文档卡片（打开 DocumentPanel；null = 不响应，卡片仍显示）。 */
     onOpenDocument: ((com.ccm.app.core.ChatSession.DocumentEntry) -> Unit)? = null,
+    /**
+     * 列表状态（由 ChatScreen 传入，用于「回到底部」判定与滚动）。
+     *
+     * 【2026-10-11 reverseLayout 改造，照抄官方 Jetchat】
+     * 之前用 `Column + verticalScroll`，内容长高会改变滚动位置和 maxValue，
+     * 所有「离底部多远」的判定在流式期间都不可靠（修了 6 版仍有 bug）。
+     *
+     * 改用 `LazyColumn(reverseLayout = true)`：
+     *   · index 0 = 视觉**底部**（最新消息）
+     *   · 新内容自动出现在底部 —— **不需要任何滚动代码**
+     *   · 内容长高**不影响**滚动位置（锚点在底部）
+     *   · 「是否在底部」= `firstVisibleItemIndex == 0 && offset < 阈值`（精确）
+     */
+    listState: androidx.compose.foundation.lazy.LazyListState =
+        androidx.compose.foundation.lazy.rememberLazyListState(),
 ) {
-    Column(modifier = modifier.fillMaxWidth()) {
-        // 待办面板 —— Web 行为：清单挂在消息流顶部，随 TodoWrite 更新
-        if (todos.isNotEmpty()) {
-            com.ccm.app.ui.common.TodoPanel(
-                todos = todos,
-                running = streamingRunning,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+    androidx.compose.foundation.lazy.LazyColumn(
+        state = listState,
+        reverseLayout = true,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        // 流式部分放**最先**声明 → reverseLayout 下渲染在**视觉最底部**
+        // （它是最新内容，就该在最下面）。声明顺序 = 从底往上的顺序。
+        if (streaming.isNotBlank() || streamingThinking.isNotBlank()) {
+            item(key = "streaming") {
+            // 流式中：思考在前（先想后说），running 驱动 isThinking 动效
+            if (streamingThinking.isNotBlank()) {
+                AssistantThinkingChain(
+                    thinking = streamingThinking,
+                    isThinking = streamingRunning,
+                    // 工具卡传进去合成时间线事件（Web 同款：
+                    // `buildReasoningTimelineEvents(thinking, { toolCalls })`）
+                    toolCards = toolCards,
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
+            // ══════════════════════════════════════════════════════════
+            //  【2026-10-11 结构对齐 Desktop/Web】
+            //
+            //  流式期间**正文区为空**，所有文字都在工具区 —— 对齐 Web
+            //  `MainContent.tsx:1139-1141`（`_finalText = isCurrentlyStreaming ? '' : …`）：
+            //  各卡的 textBefore（灰字）+ `pendingWorkText`（正在生成、还没
+            //  关联到工具的那段，带 shimmer）。
+            //
+            //  这样用户读到的顺序就是真实输出顺序：
+            //    正文1 → 工具1 → 正文2 → 工具2 → （正在写的正文3，闪动）
+            //  而不是「工具全堆中间、正文全堆底部」。
+            //
+            //  ⚠️ thinking 非空时**同样**要走工具区 —— 思考链时间线只画
+            //  「思考 → 工具步骤」的概览行（label 是一行摘要），
+            //  **不显示工具前的正文**。早先这里 thinking 非空就直接
+            //  `AssistantBubble(streaming)` 显示全文、工具区整个跳过 ——
+            //  结果 thinking 模型永远看不到 textBefore 分段，
+            //  与本任务的目标结构不符。现在两条路都渲染工具区。
+            // ══════════════════════════════════════════════════════════
+            if (toolCards.isNotEmpty() && toolCards.any { it.name !in HiddenToolNames }) {
+                // 已消费长度 = 最后一个可见工具的 textBefore 长度；
+                // 之后的都是「还没归属到任何工具」的在写正文。
+                val consumed = consumedTextLength(toolCards)
+                val pending = if (streaming.length > consumed) {
+                    streaming.substring(consumed).trim()
+                } else {
+                    ""
+                }
+                ToolCallGroup(
+                    cards = toolCards,
+                    isStreaming = streamingRunning,
+                    isStale = !streamingRunning,
+                    pendingWorkText = pending,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            } else if (streaming.isNotBlank()) {
+                // 没有可见工具（无工具 / 全是 WebSearch 等隐藏工具）：
+                // 正文区直接显示，否则两边都空 = 正文凭空消失
+                AssistantBubble(text = streaming)
+            }
+        } else if (toolCards.isNotEmpty()) {
+            // 没有流式文本但工具在跑（例如纯工具轮次）
+            ToolCallGroup(
+                cards = toolCards,
+                isStreaming = streamingRunning,
+                isStale = !streamingRunning,
+                modifier = Modifier.padding(horizontal = 16.dp),
             )
         }
+            }  // ← item {} 闭合（流式部分）
 
 
-        // 【2026-10-11】原来这里渲染 presentItems（全局态）→ 展示块跑到整个
-        // 消息流顶部。Present 下线后，文档卡片改挂到 bubble 上内联渲染
         // （见下方 bubbles 循环的 assistant 分支）。
 
-        bubbles.forEachIndexed { index, bubble ->
+        // 【reverseLayout】数据反序：最新的在 index 0（视觉底部）。
+        // 与 Jetchat 的 `_messages.add(0, msg)` 等价 —— 这里渲染时反序，
+        // 不改数据源（bubbles 本身保持时间正序，其它地方还在用）。
+        bubbles.asReversed().forEachIndexed { index, bubble ->
+            item(key = bubble.key) {
             if (bubble.isUser) {
                 UserBubble(
                     // <image_resize_notice> / <vision_unsupported> 是 AgentLoop
@@ -505,75 +584,20 @@ fun MessageList(
                     .padding(horizontal = 16.dp),
             )
         }
+            }  // ← item {} 闭合（bubbles 循环）
 
-        // 流式内容（未定型）
-        // ★ 顺序对齐 Web（`MainContent.tsx:1073 → 1125 → 1330`）：
-        //   思考链 → 工具调用组 → 正文。
-        //   原来是「思考 → 正文 → 工具」，工具组被甩到正文下面，
-        //   与 Web 的「先看思考、再看它调了什么、最后读结论」叙事顺序相反。
-        if (streaming.isNotBlank() || streamingThinking.isNotBlank()) {
-            // 流式中：思考在前（先想后说），running 驱动 isThinking 动效
-            if (streamingThinking.isNotBlank()) {
-                AssistantThinkingChain(
-                    thinking = streamingThinking,
-                    isThinking = streamingRunning,
-                    // 工具卡传进去合成时间线事件（Web 同款：
-                    // `buildReasoningTimelineEvents(thinking, { toolCalls })`）
-                    toolCards = toolCards,
-                    modifier = Modifier.fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
+        // 待办面板 —— Web 行为：清单挂在消息流顶部，随 TodoWrite 更新
+        // reverseLayout 下：先声明的 item 在**视觉底部**，所以 todos 要放最后。
+        // 这里用 item{} 包起来（LazyColumn 的每个子项都要是 item）。
+        if (todos.isNotEmpty()) {
+            item(key = "todos") {
+                com.ccm.app.ui.common.TodoPanel(
+                    todos = todos,
+                    running = streamingRunning,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
             }
-            // ══════════════════════════════════════════════════════════
-            //  【2026-10-11 结构对齐 Desktop/Web】
-            //
-            //  流式期间**正文区为空**，所有文字都在工具区 —— 对齐 Web
-            //  `MainContent.tsx:1139-1141`（`_finalText = isCurrentlyStreaming ? '' : …`）：
-            //  各卡的 textBefore（灰字）+ `pendingWorkText`（正在生成、还没
-            //  关联到工具的那段，带 shimmer）。
-            //
-            //  这样用户读到的顺序就是真实输出顺序：
-            //    正文1 → 工具1 → 正文2 → 工具2 → （正在写的正文3，闪动）
-            //  而不是「工具全堆中间、正文全堆底部」。
-            //
-            //  ⚠️ thinking 非空时**同样**要走工具区 —— 思考链时间线只画
-            //  「思考 → 工具步骤」的概览行（label 是一行摘要），
-            //  **不显示工具前的正文**。早先这里 thinking 非空就直接
-            //  `AssistantBubble(streaming)` 显示全文、工具区整个跳过 ——
-            //  结果 thinking 模型永远看不到 textBefore 分段，
-            //  与本任务的目标结构不符。现在两条路都渲染工具区。
-            // ══════════════════════════════════════════════════════════
-            if (toolCards.isNotEmpty() && toolCards.any { it.name !in HiddenToolNames }) {
-                // 已消费长度 = 最后一个可见工具的 textBefore 长度；
-                // 之后的都是「还没归属到任何工具」的在写正文。
-                val consumed = consumedTextLength(toolCards)
-                val pending = if (streaming.length > consumed) {
-                    streaming.substring(consumed).trim()
-                } else {
-                    ""
-                }
-                ToolCallGroup(
-                    cards = toolCards,
-                    isStreaming = streamingRunning,
-                    isStale = !streamingRunning,
-                    pendingWorkText = pending,
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                )
-            } else if (streaming.isNotBlank()) {
-                // 没有可见工具（无工具 / 全是 WebSearch 等隐藏工具）：
-                // 正文区直接显示，否则两边都空 = 正文凭空消失
-                AssistantBubble(text = streaming)
-            }
-        } else if (toolCards.isNotEmpty()) {
-            // 没有流式文本但工具在跑（例如纯工具轮次）
-            ToolCallGroup(
-                cards = toolCards,
-                isStreaming = streamingRunning,
-                isStale = !streamingRunning,
-                modifier = Modifier.padding(horizontal = 16.dp),
-            )
         }
-
         // 【2026-10-11】流式期间**不**推导文档卡片：toolCards 里已能看到
         // Write/Edit 的调用，再叠一张卡片等于同一件事显示两遍；而且流式过程中
         // 文件还在写，卡片内容会反复变。等 Done 定型进 bubble 后一次性渲染。

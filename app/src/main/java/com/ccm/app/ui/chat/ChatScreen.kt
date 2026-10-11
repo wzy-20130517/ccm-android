@@ -20,9 +20,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -30,8 +28,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -236,262 +234,66 @@ fun ChatScreen(
             // 它自己吃 ime padding 上推时，消息区 `weight(1f)` 自动缩，
             // 消息区**不需要**再吃一次 ime padding。
             Box(modifier = Modifier.weight(1f)) {
-                val scrollState = rememberScrollState()
-                // 回到底部请求标志（防判定协程把 followBottom 打回，见按钮注释）
-                var scrollRequested by remember { mutableStateOf(false) }
-                // 【2026-10-11】程序滚动标志（scrollTo 执行期间为 true）。
-                // 判定协程见到它就跳过 —— 否则会把 scrollTo 的中间态
-                // （v 旧值 / max 新值）误判成「用户上翻」，把 followBottom
-                // 打成 false，跟随协程随即中途退出 → 「滑到最低也不跟随」。
-                var programmaticScroll by remember { mutableStateOf(false) }
-                // 追底循环：请求期间每帧滚到底（流式增长也追得上），
-                // 连续 40 帧内 max 稳定（或用户主动滚动）就结束。
-                LaunchedEffect(scrollRequested) {
-                    if (!scrollRequested) return@LaunchedEffect
-                    var stable = 0
-                    var lastMax = -1
-                    repeat(120) {
-                        withFrameNanos {}
-                        val max = scrollState.maxValue
-                        if (max == lastMax) stable++ else stable = 0
-                        lastMax = max
-                        scrollState.scrollTo(max)
-                        // 连续 10 帧 max 不变（内容已稳定）且确实在底部 → 完成
-                        if (stable >= 10 && (max - scrollState.value) < 50) {
-                            scrollRequested = false
-                            return@LaunchedEffect
-                        }
+                // ══════════════════════════════════════════════════════════════
+                //  【2026-10-11 滚动方案重写 —— 照抄官方 Jetchat】
+                //
+                //  旧的 `Column + verticalScroll` + 一整套跟随判定
+                //  （followBottom / scrollRequested / programmaticScroll /
+                //   判定协程 / 跟随协程 / 追底循环）修了 6 版仍有 bug：
+                //  用户报「滑到最低也不跟随」。
+                //
+                //  根因：`verticalScroll` 下**内容长高会改变滚动位置和 maxValue**
+                //  —— 所有「离底部多远」的判定在流式期间都不可靠。
+                //
+                //  Jetchat（官方 compose-samples）的方案：
+                //    · `LazyColumn(reverseLayout = true)` —— 坐标系翻转，
+                //      index 0 = 视觉**底部**（最新消息）
+                //    · 新内容**自动**出现在底部 —— 不需要任何滚动代码
+                //    · 内容长高**不影响**滚动位置（锚点在底部）
+                //    · 「是否在底部」= firstVisibleItemIndex == 0 && offset < 阈值
+                //      —— 精确、无歧义
+                //
+                //  参考：Jetchat/Conversation.kt:455（reverseLayout）、
+                //        :503-505（判定）、:513（滚到底）、
+                //        ConversationUiState.kt:28（数据 add(0, msg) 反序）
+                // ══════════════════════════════════════════════════════════
+                val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+                // 「回到底部」按钮的 animateScrollToItem 需要协程作用域
+                val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+                // 「是否在底部」判定 —— derivedStateOf 只在值变化时触发重组
+                val jumpThresholdPx = with(androidx.compose.ui.platform.LocalDensity.current) { 50.dp.toPx() }
+                val isAtBottom by remember {
+                    androidx.compose.runtime.derivedStateOf {
+                        listState.firstVisibleItemIndex == 0 &&
+                            listState.firstVisibleItemScrollOffset < jumpThresholdPx
                     }
-                    scrollRequested = false
                 }
 
-                // ★ 2026-09-27：原来没有自动滚动 —— 新消息只画在
-                //   视口外，用户必须手动往下滑，流式回复时看不到内容。
-                //   行为对齐 Web（跟底；用户上翻即停止跟随）。
-                var followBottom by remember { mutableStateOf(true) }
-
-                // 【2026-10-06 问题46 修复·第六版（最终）—— 对齐 Web 的判定模型】
-                //
-                // 用户反馈：「我手动拉到页面最底下时一次都没触发过跟随」（提了 5 次）。
-                //
-                // 前五版都栽在同一处：单一 followBottom + 阈值判定，而流式期间
-                // maxValue 一直在变（内容增长），判定时机与基准值都对不上。
-                //
-                // Web 的模型（MainContent.tsx:2524 handleScroll）是**实时位置判定**：
-                //   const isBottom = Math.abs(scrollHeight - clientHeight - scrollTop) < 50;
-                //   if (isBottom && userScrolledUpRef.current) userScrolledUpRef.current = false;
-                //   if (!userScrolledUpRef.current) isAtBottomRef.current = isBottom;
-                // 即：**滚到底一定恢复跟随**（无论拖拽还是程序滚），容差 50px。
-                //
-                // APK 等价实现（下面 snapshotFlow）：
-                //   · 只在 **value 变化**时判定（内容增长改 maxValue 不动 followBottom）
-                //   · value+max 同时变时用**旧 max**（用户拖拽那一刻的屏幕底部）
-                //   · 判据 (max - v) < 50 —— 与 Web 同值
-                //   · 程序滚动（scrollTo）是瞬时到 max 的 → 判定为 true，不自我否定
-                //
-                // 这样「用户拉到底 → 恢复跟随」与 Web 行为一致。
-                // ══════════════════════════════════════════════════════════
-                LaunchedEffect(scrollState) {
-                    var lastValue = scrollState.value
-                    var lastMax = scrollState.maxValue
-                    // 只用 value 和 maxValue 两个信号（isScrollInProgress 证明不可靠 ——
-                    // scrollTo 也会置 true，见下方注释）
-                    snapshotFlow { scrollState.value to scrollState.maxValue }
-                        .collect { (v, max) ->
-                            // ⚠️ 顺序：先算「变没变」，再更新基准 ——
-                            //   且下面判定要用**旧 max**（用户拖拽那一刻屏幕上的
-                            //   底部位置），所以旧值存进 prevMax 再更新 lastMax。
-                            val maxChanged = max != lastMax
-                            val valueChanged = v != lastValue
-                            val prevMax = lastMax
-                            lastValue = v
-                            lastMax = max
-
-                            android.util.Log.d("CCMScroll", "judge v=$v max=$max vChg=$valueChanged mChg=$maxChanged prog=$programmaticScroll req=$scrollRequested follow=$followBottom")
-
-                            if (max <= 0) return@collect
-
-                            // ── 判定：只看「离底部多远」（Web 同款，容差 50px）──
-                            //
-                            // ⚠️ 不能靠 `scrolling`（isScrollInProgress）区分用户/程序滚动：
-                            //   自动跟底的 scrollTo **也会**让它是 true，
-                            //   滚到一半时 max-v 可能 > 50 → 会被误判成「用户上翻」
-                            //   → followBottom=false → 自我否定（跟一会就停）。
-                            //
-                            // 只看位置就够，因为两个场景的期望一致：
-                            //   · 程序滚到底 → max-v≈0 → true（继续跟，正确）
-                            //   · 用户拖到底 → max-v≈0 → true（恢复跟，正确 ✓）
-                            //   · 用户上翻   → max-v 大 → false（停跟，正确）
-                            //
-                            // 且**只在 value 变化时**判定（maxChanged 不改 followBottom
-                            // —— 那是流式吐字，不是用户操作）。
-                            // 回到底部请求期间：不打回 followBottom（动画/追底
-                            // 途中的中间位置不代表用户意图）
-                            if (scrollRequested) {
-                                return@collect
-                            }
-                            // 【2026-10-11】程序滚动（scrollTo）期间不判定 ——
-                            // scrollTo 是异步的（suspend 到下一帧才生效），
-                            // 此刻的 (v, max) 是**中间态**：v 还是旧值、max 已是新值，
-                            // 用它会误判成「用户上翻」→ followBottom=false
-                            // → 跟随协程的 repeat(3) 检查到 false → 中途退出。
-                            // 这就是「Sticky Scroll 滑到最低也不跟随」的根因。
-                            if (programmaticScroll) return@collect
-
-                            if (valueChanged && !maxChanged) {
-                                // 纯滚动：用当前 max 判定（用户拖或程序滚）
-                                followBottom = (max - v) < 50
-                                android.util.Log.d("CCMScroll", "  → pure: dist=${max-v} follow=$followBottom")
-                            } else if (valueChanged && maxChanged) {
-                                // 滚动 + 内容增长同时发生（流式期间拖拽）：
-                                // 用**旧 max**（用户拖拽那一刻的屏幕底部）判定 ——
-                                // 那才是用户意图的准确表达。
-                                // 两个都试：旧 max 判定通过 = 用户拖到了当时底部；
-                                // 新 max 判定通过 = 内容刚好长到用户位置。
-                                followBottom = (prevMax - v) < 50 || (max - v) < 50
-                            }
-                        }
-                }
-
-                // 内容变化 → 跟到底。
-                // withFrameNanos 等一帧：新内容刚挂上时 maxValue 还是旧值，
-                // 不等这一帧会滚到旧底部（看起来像没滚）。
-                // 用瞬时 scrollTo 而非 animate：流式每个 chunk 都会触发，
-                // 动画叠加会抖。
-                //
-                // ══════════════════════════════════════════════════════════
-                //  【2026-10-06 问题46 修复·第四版（真正的根因）】
-                //
-                // 前三版都错在：用 `LaunchedEffect(key)` 驱动滚动。
-                // 而 key 里有 `streaming.length` —— **流式每吐一个字符
-                // key 就变一次** → LaunchedEffect **反复重启** →
-                // 每次重启取消上一次的协程 → repeat(6) 永远跑不完 →
-                // 滚动被反复打断。
-                //
-                // 这就是「Sticky Scroll 没用」的真根因：
-                // **不是判定逻辑错，是滚动协程被反复杀死。**
-                //
-                // 正确做法：**一个常驻协程**（key 不变），内部用 snapshotFlow
-                // 监听「内容高度」变化 → 变化就滚。流式吐 1000 个字符也
-                // 只是触发 1000 次滚动（每次瞬时），不会重启协程。
-                // ══════════════════════════════════════════════════════════
-                // ══════════════════════════════════════════════════════════
-                //  【2026-10-11 修「Sticky Scroll 滑到最低也不跟随」】
-                //
-                //  根因：**跟随协程与判定协程互相打架**。
-                //
-                //  时序（流式期间，每来一个字都会重复）：
-                //    帧 N   : maxValue 变大 → 跟随协程触发 → scrollTo(maxValue)
-                //    帧 N   : scrollTo 是**异步**的（下一帧才生效）→
-                //             snapshotFlow 此刻看到 (v=旧值, max=新值)
-                //    帧 N   : 判定协程触发 → valueChanged && !maxChanged?
-                //             → 两个都变了 → 走 (prevMax-v)<50 || (max-v)<50
-                //             → 内容长高 >50px 时**两个都不成立** → followBottom=false
-                //    帧 N+1 : 跟随协程的 repeat(3) 检查 !followBottom → **中途退出**
-                //    → 滚动没滚到位，且跟随被自己关掉 → 「不跟随」
-                //
-                //  之前的注释说「scrollTo 是瞬时操作，isScrollInProgress 窗口极短」
-                //  —— 那是错的：scrollTo 会 suspend 到下一帧，判定协程**必然**
-                //  在同一帧看到中间态。
-                //
-                //  修法：加一个「程序滚动中」标志，判定协程见到它就跳过 ——
-                //  只认**用户主动**的滚动。
-                //  （不是 autoScrolling 那版：那版把标志的**整个生命周期**都跳过，
-                //   包括用户真拖到底的时刻；这里只在 scrollTo 的那一帧跳过。）
-                // ══════════════════════════════════════════════════════════
-                LaunchedEffect(Unit) {
-                    snapshotFlow { scrollState.maxValue }
-                        .collect { max ->
-                            android.util.Log.d("CCMScroll", "follow-trigger max=$max follow=$followBottom")
-                            if (max <= 0) return@collect
-                            if (!followBottom) return@collect
-                            // 标记「接下来这几帧的 value 变化是程序造成的」
-                            programmaticScroll = true
-                            try {
-                                repeat(3) {
-                                    withFrameNanos {}
-                                    if (!followBottom) return@repeat
-                                    scrollState.scrollTo(scrollState.maxValue)
-                                }
-                            } finally {
-                                programmaticScroll = false
-                            }
-                        }
-                }
-
-                // ══════════════════════════════════════════════════════════
-                //  【2026-10-06 问题24 修复·第四版】
-                //
-                //  用户报「拉起输入框时正文不上移」。
-                //
-                //  前三版都在改「输入栏/消息区的高度」—— 那部分是对的
-                //  （输入栏吃 ime padding 上推，消息区 weight 自动缩）。
-                //
-                //  但**滚动位置没跟着动**：消息区变矮了，而 scrollState 还停在
-                //  原来的偏移量 → 用户看到的正文没变（甚至被裁掉底部）。
-                //
-                //  正确做法：**键盘弹出时滚到底**（对齐 Web 的行为）——
-                //  输入框附近才是用户视线焦点。
-                // ══════════════════════════════════════════════════════════
+                // 键盘弹出时滚到底（只在用户本来就在底部时 —— 别把他从历史里拽回来）
                 LaunchedEffect(imeVisible) {
-                    if (imeVisible && followBottom) {
-                        // 【2026-10-06 用户反馈·修】上一版 repeat(5) 只滚 5 帧
-                        // （≈80ms），而键盘动画要 200~300ms —— 滚动发生在
-                        // 消息区 weight(1f) 还没被键盘压矮的时刻，maxValue 是
-                        // 旧值，滚完视口停在原地；动画结束后**底部多出一段
-                        // 留白但没有内容**（用户原话「正文底部多了空间，
-                        // 你没让它自动翻到那个空间」）。
-                        //
-                        // 改成覆盖整个键盘动画期持续跟底：每帧都滚，
-                        // 滚到位后 scrollTo 是幂等的（maxValue 不变 = no-op），
-                        // 动画结束（约 30 帧后）自然停 —— 之后由常规
-                        // followBottom 逻辑接管（用户主动上翻即停跟）。
-                        repeat(40) {
-                            withFrameNanos {}
-                            scrollState.scrollTo(scrollState.maxValue)
-                        }
+                    if (imeVisible && isAtBottom) {
+                        listState.scrollToItem(0)
                     }
                 }
 
-                // ★ 第38批：打开历史会话时**强制滚到底**（不看 followBottom）。
-                //   场景：从侧栏点开一个 50 条历史的会话 —— 首帧时
-                //   maxValue 还是 0，上面那个 effect 滚了个寂寞，用户
-                //   看到的是**会话最开头**（很反直觉：聊天应用都停最新）。
-                //   这里等两帧（布局稳定）再滚，只在 bubbles 首次填充时触发。
-                LaunchedEffect(sessionKey, bubbles.size > 0) {
-                    if (bubbles.isNotEmpty()) {
-                        withFrameNanos {}
-                        withFrameNanos {}
-                        scrollState.scrollTo(scrollState.maxValue)
-                        followBottom = true
-                        // 多补几帧 —— 历史消息里的 markdown 撑高也要跟上
-                        repeat(4) {
-                            withFrameNanos {}
-                            scrollState.scrollTo(scrollState.maxValue)
-                        }
-                    }
-                }
-
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(scrollState),
-                ) {
-                    MessageList(
-                        bubbles = bubbles,
-                        onResend = onResend,
-                        streaming = streaming,
-                        toolCards = toolCards,
-                        streamingThinking = streamingThinking,
-                        streamingRunning = running,
-                        todos = emptyList(),
-                        onOpenDocument = { openDoc = it },
-                    )
-                    // 【2026-10-06 问题45 修复·第三版】输入栏已移进 Column
-                    // （不再是浮层）→ 不需要 154dp 的"给浮层让位"留白。
-                    // 只留一点点呼吸空间。
-                    Spacer(Modifier.height(12.dp))
-                }
+                // 【reverseLayout 改造】不再需要外层 Column + verticalScroll ——
+                // MessageList 自己就是 LazyColumn（带 reverseLayout），
+                // 滚动状态由 listState 管理（上面已创建）。
+                // 呼吸空间的 Spacer 也移进 MessageList（reverseLayout 下
+                // 它要在**视觉最底部**，即声明顺序的最后）。
+                MessageList(
+                    bubbles = bubbles,
+                    onResend = onResend,
+                    streaming = streaming,
+                    toolCards = toolCards,
+                    streamingThinking = streamingThinking,
+                    streamingRunning = running,
+                    todos = emptyList(),
+                    onOpenDocument = { openDoc = it },
+                    listState = listState,
+                    modifier = Modifier.fillMaxSize(),
+                )
 
                 // ── 回到底部按钮（不在跟随时显示）─────────────────────
                 // 【2026-10-07 修两个问题】
@@ -503,8 +305,11 @@ fun ChatScreen(
                 //     按钮反复闪、点了像没反应。修：加 scrollRequested 标志，
                 //     判定协程见到它时不打回；滚动用「追底循环」（每帧滚，
                 //     对齐键盘弹出那段的成熟做法），追到后清标志。
+                // 【reverseLayout 改造】显示条件用 isAtBottom（derivedStateOf，
+                // 精确判定）；点击直接 scrollToItem(0) —— index 0 就是视觉底部，
+                // 不再需要追底循环 / 标志位那套（reverseLayout 下滚到底就是滚到底）。
                 androidx.compose.animation.AnimatedVisibility(
-                    visible = !followBottom,
+                    visible = !isAtBottom,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .padding(bottom = 14.dp),
@@ -517,8 +322,10 @@ fun ChatScreen(
                             .background(colors.accent)
                             .shadow(8.dp, RoundedCornerShape(50))
                             .clickable {
-                                followBottom = true            // 先恢复跟随
-                                scrollRequested = true         // 防判定协程打回
+                                // 需要一个协程作用域来跑 animateScrollToItem
+                                scope.launch {
+                                    listState.animateScrollToItem(0)
+                                }
                             }
                             .padding(horizontal = 18.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically,
