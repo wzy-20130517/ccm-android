@@ -528,7 +528,18 @@ private fun ToolCallItem(
                     useDiff -> ToolDiffView(
                         toolName = card.name,
                         oldString = inputField(card.input, "old_string"),
-                        newString = inputField(card.input, "new_string"),
+                        // 【2026-10-11 修「展开里面什么也没有」】
+                        // Write 的入参字段是 `content`，**不是** `new_string` ——
+                        // 原来一律取 new_string，Write 永远拿到空串，
+                        // ToolDiffView 里 `if (newString.isEmpty()) return`
+                        // 直接不渲染 → 用户展开看到一片空白。
+                        // 对照 Web：renderWriteView 取的就是 `input?.content`。
+                        // Edit 仍然用 new_string（它的 schema 里就是这名字）。
+                        newString = if (card.name == "Write") {
+                            inputField(card.input, "content")
+                        } else {
+                            inputField(card.input, "new_string")
+                        },
                         filePath = filePath,
                         command = command,
                         // Bash/Read 的内容来自执行结果，不是入参

@@ -1546,6 +1546,11 @@ class ChatSession(
          */
         private val PREVIEW_EXTS = setOf(
             "md", "txt", "html", "json", "xml", "yaml", "yml", "csv",
+            // 【2026-10-11 加 svg】提示词里明确教了「矢量图 / SVG 动画 → .svg」，
+            // 但这里没放行 —— 模型写了 simple.svg，卡片根本不出现（用户报
+            // 「并没看见 svg 显示」）。DocumentPanel 早已支持 svg 渲染
+            // （走 DocumentPreview 沙箱 WebView），只是入口被这行过滤掉了。
+            "svg",
         )
 
         /**
