@@ -558,6 +558,46 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
 
         SettingsDivider()
 
+        // ── 5.4 语音朗读（/voice 的 UI 入口，2026-10-11 加）──────────
+        // 原来只有 `/voice` 命令能开 —— 用户不知道有这功能。
+        // 与命令共用 `UiPrefs.voiceEnabled` / `voiceRate`（同一份状态，
+        // 改哪个都同步）。
+        SettingsSection(title = "语音朗读") {
+            SettingsField(label = "自动朗读回复") {
+                SettingsSwitch(
+                    checked = com.ccm.app.ui.theme.UiPrefs.voiceEnabled.value,
+                    onCheckedChange = { com.ccm.app.ui.theme.UiPrefs.setVoiceEnabled(it) },
+                )
+            }
+            SettingsField(label = "语速") {
+                val rate = com.ccm.app.ui.theme.UiPrefs.voiceRate.value
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    androidx.compose.material3.Slider(
+                        value = rate,
+                        onValueChange = { com.ccm.app.ui.theme.UiPrefs.setVoiceRate(it) },
+                        valueRange = 0.5f..2.0f,
+                        steps = 14,   // 0.5 ~ 2.0，步长 0.1
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = String.format("%.1fx", rate),
+                        style = CCMText.body12,
+                        color = colors.textSecondary,
+                        modifier = Modifier.padding(start = 8.dp),
+                    )
+                }
+            }
+            Text(
+                text = "开启后每条回复完成时会用系统语音念出来（离线可用）。" +
+                        "也可用命令：/voice on|off · /voice rate 1.2",
+                style = CCMText.body12,
+                color = colors.textSecondary,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+        }
+
+        SettingsDivider()
+
         // ── 5.5 Clawd 悬浮窗（2026-10-09）──────────────────────────
         // 用户需求：「当 ccm 退到后台的时候，会有一个 Clawd（欢迎页那个吉祥物），
         // 有各种动画，按 spinner 来（思考/打字/说话气泡）」。
