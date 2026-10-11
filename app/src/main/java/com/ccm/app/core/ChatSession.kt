@@ -1057,6 +1057,8 @@ class ChatSession(
 
     private suspend fun collectEvents(events: Flow<AgentEvent>) {
         val toolCards = mutableListOf<ToolCard>()
+        // 本轮 Present 产出（与 toolCards 同机制：Done 时定型进 bubble）
+        val presentBuf = mutableListOf<PresentItem>()
         var streaming = ""
         var accumulatedText = ""
         var currentMessageId = ""
@@ -1157,8 +1159,14 @@ class ChatSession(
                     }
 
                     is AgentEvent.Present -> {
+                        // 【2026-10-11】累积到 presentBuf（与 toolCards 同机制），
+                        // Done 时随 bubble 定型。不再写全局 state.presentItems ——
+                        // 那会让展示块跑到整个消息流顶部（见 Bubble.presentItems 注释）。
                         val item = PresentItem(ev.kind, ev.title, ev.caption, ev.content, ev.paths)
-                        _state.value = _state.value.copy(presentItems = _state.value.presentItems + item)
+                        presentBuf += item
+                        // 流式期间也要能看到 —— 挂到 state 上供「当前正在生成的这条」渲染。
+                        // 定型后 presentBuf 清空、state.presentItems 也清空（避免重复渲染）。
+                        _state.value = _state.value.copy(presentItems = presentBuf.toList())
                     }
 
                     is AgentEvent.ToolProgress -> {
@@ -1205,17 +1213,18 @@ class ChatSession(
                     AgentEvent.Done -> {
                         // 收尾时同时定型正文和思维链；有些 Provider 只回传 reasoning，
                         // 若只检查正文，思维链会在 Done 时被清空并永久丢失。
-                        if (accumulatedText.isNotBlank() || streaming.isNotBlank() || thinkingBuf.isNotBlank() || toolCards.isNotEmpty()) {
+                        if (accumulatedText.isNotBlank() || streaming.isNotBlank() || thinkingBuf.isNotBlank() || toolCards.isNotEmpty() || presentBuf.isNotEmpty()) {
                             val finalText = (accumulatedText + streaming).trim()
                             val finalThinking = thinkingBuf
                             val finalTools = toolCards.toList()
+                            val finalPresents = presentBuf.toList()
                             // 【2026-10-06】工具后的正文起点（对齐 Web 的 toolTextEndOffset）：
                             // 最后一个工具的 textBefore 长度 = 工具区显示的正文总量，
                             // 正文区从这里往后显示 —— 否则工具前的正文会显示两遍。
                             // 没有工具 → 0（正文区显示全文，兜底）。
                             val textEndOffset = finalTools.lastOrNull()?.textBefore?.length ?: 0
                             val nextState = _state.value.copy(
-                                bubbles = if (finalText.isNotBlank() || finalThinking.isNotBlank() || finalTools.isNotEmpty()) {
+                                bubbles = if (finalText.isNotBlank() || finalThinking.isNotBlank() || finalTools.isNotEmpty() || finalPresents.isNotEmpty()) {
                                     _state.value.bubbles + Bubble(
                                         role = Message.ROLE_ASSISTANT,
                                         text = finalText,
@@ -1223,16 +1232,20 @@ class ChatSession(
                                         toolTextEndOffset = textEndOffset,
                                         thinking = finalThinking,
                                         toolCards = finalTools,
+                                        presentItems = finalPresents,
                                     )
                                 } else _state.value.bubbles,
                                 streaming = "",
                                 thinking = "",
                                 toolCards = emptyList(),
+                                // presentBuf 已定型进 bubble → 清空全局态，避免重复渲染
+                                presentItems = emptyList(),
                             )
                             _state.value = nextState
                             streaming = ""
                             accumulatedText = ""
                             thinkingBuf = ""
+                            presentBuf.clear()
                         }
                         saveForced()   // 每轮完成即落盘，避免切页/进程回收丢失最近一轮
                         // 【2026-10-06 问题14 修复】原来这里是
@@ -1422,6 +1435,18 @@ class ChatSession(
          * 显示占位即可，不影响对话）。
          */
         val images: List<String> = emptyList(),
+        /**
+         * 该消息展示的可视内容（Present 工具产出）。
+         *
+         * 【2026-10-11 从全局态改挂消息上】原来 `state.presentItems` 是全局的，
+         * MessageList 把它渲染在**整个消息流顶部** —— 于是 Agent 展示一张图，
+         * 它会跑到所有历史对话的最上面，而不是出现在当前回复的位置。
+         *
+         * Web 的做法（MainContent.tsx:1341）是挂在消息对象上（`msg.presents`），
+         * 渲染时在**该条消息内**内联。现在对齐：Present 事件累积到 presentBuf，
+         * Done 时随 toolCards 一起定型进 bubble。
+         */
+        val presentItems: List<PresentItem> = emptyList(),
     ) {
         val isUser: Boolean get() = role == Message.ROLE_USER
     }

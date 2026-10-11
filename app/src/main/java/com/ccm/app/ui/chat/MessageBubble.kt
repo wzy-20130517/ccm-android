@@ -302,38 +302,27 @@ fun UserBubble(
 }
 
 /**
- * 消息列表 —— 按 [ChatBubble] 类型分发到对应气泡。
+ * 渲染一组 Present 展示块。
  *
- * 对齐 dev-core 的 `ChatSession.State.bubbles` 结构。
+ * 【2026-10-11 从 MessageList 提取】原来是内联在 MessageList 顶部的全局渲染，
+ * 位置错误（展示块跑到整个消息流顶部）。现在提取成独立函数，由两处调用：
+ *   · MessageList 的 assistant 分支 —— 渲染 `bubble.presentItems`（定型后）
+ *   · 流式气泡 —— 渲染 `state.presentItems`（当前正在生成的，见 ChatScreen）
+ *
+ * 渲染分支：
+ *   · html / svg → WebView（禁 JS，防外跳）
+ *   · mermaid    → WebView + assets/mermaid.min.js（JS on，离线渲染流程图）
+ *   · image 等   → ThumbImage 缩略图
+ *   · video      → VideoView 播放
  */
 @Composable
-fun MessageList(
-    bubbles: List<ChatBubble>,
+fun PresentBlock(
+    items: List<com.ccm.app.core.ChatSession.PresentItem>,
     modifier: Modifier = Modifier,
-    /** 重发某条用户消息（webgap #1；null = 不显示重发入口）。 */
-    onResend: ((String) -> Unit)? = null,
-    streaming: String = "",
-    toolCards: List<ChatToolCard> = emptyList(),
-    /** 正在流式生成的思考（State.thinking）。 */
-    streamingThinking: String = "",
-    /** 是否还在跑（决定思考链的 isThinking 动效）。 */
-    streamingRunning: Boolean = false,
-    /** 待办清单（TodoWrite 维护，渲染在消息流顶部）。 */
-    todos: List<com.ccm.app.ui.common.TodoItem> = emptyList(),
-    presentItems: List<com.ccm.app.core.ChatSession.PresentItem> = emptyList(),
 ) {
+    if (items.isEmpty()) return
     Column(modifier = modifier.fillMaxWidth()) {
-        // 待办面板 —— Web 行为：清单挂在消息流顶部，随 TodoWrite 更新
-        if (todos.isNotEmpty()) {
-            com.ccm.app.ui.common.TodoPanel(
-                todos = todos,
-                running = streamingRunning,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            )
-        }
-
-
-        presentItems.forEach { item ->
+        items.forEach { item ->
             Column(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
                     .clip(RoundedCornerShape(10.dp)).background(CCMTheme.colors.input).padding(12.dp),
@@ -410,6 +399,45 @@ fun MessageList(
                 }
             }
         }
+    }
+}
+
+/**
+ * 消息列表 —— 按 [ChatBubble] 类型分发到对应气泡。
+ *
+ * 对齐 dev-core 的 `ChatSession.State.bubbles` 结构。
+ */
+@Composable
+fun MessageList(
+    bubbles: List<ChatBubble>,
+    modifier: Modifier = Modifier,
+    /** 重发某条用户消息（webgap #1；null = 不显示重发入口）。 */
+    onResend: ((String) -> Unit)? = null,
+    streaming: String = "",
+    toolCards: List<ChatToolCard> = emptyList(),
+    /** 正在流式生成的思考（State.thinking）。 */
+    streamingThinking: String = "",
+    /** 是否还在跑（决定思考链的 isThinking 动效）。 */
+    streamingRunning: Boolean = false,
+    /** 待办清单（TodoWrite 维护，渲染在消息流顶部）。 */
+    todos: List<com.ccm.app.ui.common.TodoItem> = emptyList(),
+    presentItems: List<com.ccm.app.core.ChatSession.PresentItem> = emptyList(),
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        // 待办面板 —— Web 行为：清单挂在消息流顶部，随 TodoWrite 更新
+        if (todos.isNotEmpty()) {
+            com.ccm.app.ui.common.TodoPanel(
+                todos = todos,
+                running = streamingRunning,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        }
+
+
+        // 【2026-10-11 位置修正】原来这里渲染 presentItems（全局态）→ 展示块
+        // 跑到整个消息流顶部。现在改挂到 bubble 上内联渲染（见下方 bubbles 循环
+        // 的 assistant 分支）。state.presentItems 只在**流式期间**用（当前正在
+        // 生成的那条），定型后清空 —— 见 ChatSession 的 Done 处理。
 
         bubbles.forEachIndexed { index, bubble ->
             if (bubble.isUser) {
@@ -522,6 +550,11 @@ fun MessageList(
                     // 纯正文（无工具）
                     AssistantBubble(text = bubble.text)
                 }
+
+                // 【2026-10-11 位置修正】Present 展示块内联在**本条消息内**渲染
+                // （原来挂在消息流顶部，Agent 展示的东西会跑到所有历史上面）。
+                // 对齐 Web 的做法（MainContent.tsx:1341 的 msg.presents）。
+                PresentBlock(items = bubble.presentItems)
             }
         }
 
@@ -622,6 +655,12 @@ fun MessageList(
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
         }
+
+        // 【2026-10-11】流式期间的 Present 展示块 —— 用全局 state.presentItems
+        // （当前正在生成的这条还没定型成 bubble，拿不到 bubble.presentItems）。
+        // 定型后 ChatSession 会清空全局态，改由上面的 bubble 分支渲染，
+        // 不会重复。
+        PresentBlock(items = presentItems)
     }
 }
 
@@ -675,6 +714,13 @@ data class ChatBubble(
     val toolCards: List<ChatToolCard> = emptyList(),
     /** 附带图片路径（用户消息；渲染缩略图，第20批）。 */
     val images: List<String> = emptyList(),
+    /**
+     * 该消息展示的可视内容（Present 工具产出）。
+     *
+     * 【2026-10-11】从全局态改挂消息上（对齐 Web 的 msg.presents）——
+     * 原来渲染在整个消息流顶部，展示块会跑到所有历史上面。
+     */
+    val presentItems: List<com.ccm.app.core.ChatSession.PresentItem> = emptyList(),
 ) {
     val isUser: Boolean get() = role == "user"
 

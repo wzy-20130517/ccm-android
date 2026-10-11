@@ -37,6 +37,7 @@ object ChatAdapter {
         toolTextEndOffset = bubble.toolTextEndOffset,
         toolCards = bubble.toolCards.map(::toUi),
         images = bubble.images,
+        presentItems = bubble.presentItems,
     )
 
     /** core 待办 → UI 待办 */

@@ -23,10 +23,16 @@ import java.io.File
  * 链路（三段都是现成的，本工具只管 emit）：
  *   execute → ctx.ui.onPresent(...)                    （ToolUiCallback）
  *           → AgentLoop:870 emit(AgentEvent.Present)   （事件流）
- *           → ChatSession 收事件 → state.presentItems  （UI 状态）
- *           → MessageBubble.presentItems.forEach 渲染  （WebView/缩略图/VideoView）
+ *           → ChatSession 收事件 → presentBuf 累积      （本轮缓冲，同 toolCards）
+ *           → Done 时随 bubble 定型                     （presentItems 挂消息上）
+ *           → MessageBubble 的 assistant 分支内联渲染   （WebView/缩略图/VideoView）
  *
- * 渲染分支（MessageBubble.kt）：
+ * 【2026-10-11 位置修正】原来渲染在**整个消息流顶部**（全局 state.presentItems），
+ * 展示块会跑到所有历史对话上面。现在挂到 bubble 上、在**本条消息内**内联，
+ * 对齐 Web 的 msg.presents（MainContent.tsx:1341）。
+ * 流式期间（还没定型）仍用全局 state.presentItems 渲染，定型后清空。
+ *
+ * 渲染分支（PresentBlock，MessageBubble.kt）：
  *   · html / svg → WebView（禁 JS，防外跳）
  *   · mermaid    → WebView + assets/mermaid.min.js（JS on，离线渲染流程图）
  *   · image 等   → ThumbImage 缩略图（可点开大图）
