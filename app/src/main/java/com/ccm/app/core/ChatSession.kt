@@ -988,9 +988,14 @@ class ChatSession(
         }.filterNotNull()
         _state.value = State(bubbles = restored)
         // Web 在首轮消息后异步生成标题；APK 先用首条用户消息做稳定本地兜底。
+        //
+        // 【2026-10-12 修】同 send 里的问题 —— 直接取 text 会把
+        // 「[附件: 名] 已保存到: 路径」这类元信息带进标题。
+        // 先 stripMetaTags 剥掉。
         if (container.sessionAuto?.title.isNullOrBlank()) {
             messages.firstOrNull { it.role == Message.ROLE_USER }
-                ?.text?.trim()?.replace(Regex("\\s+"), " ")
+                ?.text?.let { com.ccm.app.core.session.stripMetaTags(it) }
+                ?.trim()?.replace(Regex("\\s+"), " ")
                 ?.take(48)?.takeIf { it.isNotBlank() }
                 ?.let { container.sessionAuto?.title = it }
         }
