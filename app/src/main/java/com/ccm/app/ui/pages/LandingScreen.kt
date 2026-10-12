@@ -168,6 +168,37 @@ fun LandingScreen(
     }
 
 
+    // ── 拍照 / 文件（2026-10-12 补齐：与对话页一致的三入口）──────────
+    //
+    // 【为什么加】首页的「添加文件或照片」原来**直接开图片选择器** ——
+    // 而对话页弹二级菜单（拍照/图片/文件）。同一 App 两个行为，用户
+    // 在首页找不到「拍照」和「文件」入口。
+    //
+    // 照搬 ChatScreenConnected 的实现（那边已跑通）。
+    var pendingFiles by remember { mutableStateOf<List<String>>(emptyList()) }
+    var showAttachSubmenu by remember { mutableStateOf(false) }
+    // 每次拍照动态生成文件名（不能 remember —— 否则连拍覆盖同一路径）
+    var cameraFile by remember { mutableStateOf(java.io.File(ctx.cacheDir, "attachments/cam_init.jpg")) }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.TakePicture(),
+    ) { ok ->
+        if (ok) pendingImages = pendingImages + cameraFile.absolutePath
+    }
+    val fileLauncher = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents(),
+    ) { uris ->
+        if (!uris.isNullOrEmpty()) {
+            ioScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                val paths = uris.mapNotNull {
+                    com.ccm.app.core.image.AttachmentCache.copyToCache(ctx, it)
+                }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    if (paths.isNotEmpty()) pendingFiles = pendingFiles + paths
+                }
+            }
+        }
+    }
+
     // ★ 结构对齐 Web 的三层（实测链，见 KDoc）：
     //   scroll 容器  px-2 (8) + pt-[64px]
     //     └ 内容列  max-w-[373px]（= 672 × 0.92 / 1.08696 的反向 zoom 折算）居中
@@ -216,7 +247,7 @@ fun LandingScreen(
             Spacer(Modifier.height(20.62.dp))
 
             // ── 已选图片管理条（第19批）─────────────────────────────
-            if (pendingImages.isNotEmpty()) {
+            if (pendingImages.isNotEmpty() || pendingFiles.isNotEmpty()) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -224,6 +255,30 @@ fun LandingScreen(
                         .padding(bottom = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(7.36.dp),
                 ) {
+                    // 【2026-10-12】文件也显示（原来只有图片 —— 选了文件看不到，
+                    // 用户不知道有没有选上）。用文字条（文件没有缩略图）。
+                    pendingFiles.forEach { path ->
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(colors.hover)
+                                .clickable { pendingFiles = pendingFiles - path }
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "📄 " + path.substringAfterLast('/').take(16),
+                                    style = CCMText.body11,
+                                    color = colors.textMain,
+                                )
+                                Text(
+                                    text = " ✕",
+                                    style = CCMText.body11,
+                                    color = colors.textSecondary,
+                                )
+                            }
+                        }
+                    }
                     pendingImages.forEach { path ->
                         Box(
                             modifier = Modifier
@@ -318,8 +373,16 @@ fun LandingScreen(
                 value = input,
                 onValueChange = { input = it },
                 onSend = { text ->
-                    sendWithImages(onSend, text, pendingImages) {
+                    // 【2026-10-12 加文件支持】原来只传 pendingImages ——
+                    // 文件路径（pendingFiles）不会随消息发出去。
+                    // 对齐对话页：文件以 `[附件: 名 @ 路径]` 文本随消息走
+                    // （模型用 Read 读，core 的用户消息通道只支持图片）。
+                    val fileLines = pendingFiles.joinToString("") { p ->
+                        "\n[附件: ${p.substringAfterLast('/')} @ $p]"
+                    }
+                    sendWithImages(onSend, text + fileLines, pendingImages) {
                         pendingImages = emptyList()
+                        pendingFiles = emptyList()
                         input = ""
                     }
                 },
@@ -327,15 +390,63 @@ fun LandingScreen(
                 modelLabel = modelLabel,
                 onModelClick = onModelClick,
                 modelPickerContent = modelPickerContent,
-                attachedCount = pendingImages.size,
+                // 【2026-10-12】含文件 —— 只有文件没图时发送键也要亮
+                // （canSend = input.isNotBlank() || attachedCount > 0）
+                attachedCount = pendingImages.size + pendingFiles.size,
                 onAttach = { launcher.launch("image/*") },
                 showPlusMenu = showPlusMenu,
                 onTogglePlusMenu = { showPlusMenu = !showPlusMenu },
                 onDismissPlusMenu = { showPlusMenu = false },
                 plusMenuContent = {
+                    // 【2026-10-12】二级菜单：点「添加文件或照片」不再直接开
+                    // 选择器，而是切到二级（拍照/图片/文件）—— 与对话页一致。
+                    if (showAttachSubmenu) {
+                        com.ccm.app.ui.common.AttachSubmenuCard(
+                            onDismiss = {
+                                showPlusMenu = false
+                                showAttachSubmenu = false
+                            },
+                            onCamera = {
+                                showAttachSubmenu = false
+                                showPlusMenu = false
+                                val camDir = java.io.File(ctx.cacheDir, "attachments")
+                                camDir.mkdirs()
+                                cameraFile = java.io.File(camDir, "cam_${System.currentTimeMillis()}.jpg")
+                                try {
+                                    cameraFile.parentFile?.mkdirs()
+                                    cameraLauncher.launch(
+                                        androidx.core.content.FileProvider.getUriForFile(
+                                            ctx,
+                                            ctx.packageName + ".fileprovider",
+                                            cameraFile,
+                                        ),
+                                    )
+                                } catch (t: Throwable) {
+                                    android.widget.Toast.makeText(
+                                        ctx,
+                                        "拍照启动失败：${t.message ?: t.javaClass.simpleName}",
+                                        android.widget.Toast.LENGTH_LONG,
+                                    ).show()
+                                }
+                            },
+                            onImages = {
+                                showAttachSubmenu = false
+                                showPlusMenu = false
+                                launcher.launch("image/*")
+                            },
+                            onFiles = {
+                                showAttachSubmenu = false
+                                showPlusMenu = false
+                                fileLauncher.launch("*/*")
+                            },
+                        )
+                    } else {
                     PlusMenu(
                         onDismiss = { showPlusMenu = false },
-                        onAttach = { launcher.launch("image/*") },
+                        onAttach = {
+                            // 切到二级（不关菜单 —— showPlusMenu 保持 true）
+                            showAttachSubmenu = true
+                        },
                         onScreenshot = {
                             input = if (input.isBlank()) "截取当前屏幕并告诉我上面有什么"
                                 else "$input\n截取当前屏幕并告诉我上面有什么"
@@ -369,6 +480,7 @@ fun LandingScreen(
                             input = if (input.isBlank()) "新建项目：" else "$input\n新建项目："
                         },
                     )
+                    }   // 关 else（showAttachSubmenu 的）
                 },
             )
 

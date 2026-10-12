@@ -1,16 +1,6 @@
 package com.ccm.app.ui.chat
 
 import androidx.compose.runtime.Composable
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
@@ -21,7 +11,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import com.ccm.app.core.ChatSession
 
 /**
@@ -101,11 +90,10 @@ fun ChatScreenConnected(
     // 文件不进多模态 —— 发送时以 `[附件: 名 @ 路径]` 文本随消息走，
     // 模型用 Read 工具读内容（core 的用户消息通道只支持图片）。
     var pendingFiles by remember { mutableStateOf<List<String>>(emptyList()) }
-    var showAttachMenu by remember { mutableStateOf(false) }
     // 加号菜单的项目列表（异步加载，同 LandingScreen 的修法）
     var attachMenuProjects by remember { mutableStateOf<List<String>>(emptyList()) }
-    androidx.compose.runtime.LaunchedEffect(showAttachMenu) {
-        if (!showAttachMenu) return@LaunchedEffect
+    androidx.compose.runtime.LaunchedEffect(attachMenuLevel) {
+        if (attachMenuLevel == 0) return@LaunchedEffect
         attachMenuProjects = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 com.ccm.app.AppGraph.storage
@@ -115,7 +103,16 @@ fun ChatScreenConnected(
         }
     }
     // 附件二级菜单（PlusMenu 的「附件」项 → 拍照/图片/文件）
-    var showAttachSubmenu by remember { mutableStateOf(false) }
+    // 附件菜单的**层级**：0=关，1=一级（PlusMenu），2=二级（拍照/图片/文件）。
+    //
+    // 【2026-10-12 改用单状态】原来用两个布尔（showAttachMenu +
+    // showAttachSubmenu）在「一级 → 二级」切换时有**时序竞态**：
+    // 点「添加文件或照片」→ onClick 设 showAttachSubmenu=true →
+    // 紧接着 focusable Popup 的 onDismissRequest 触发 → 清成 false
+    // → 二级菜单刚设好就没了。
+    //
+    // 单状态没有这个问题：切换就是赋值，谁后执行谁生效。
+    var attachMenuLevel by remember { mutableIntStateOf(0) }
     val ctx = androidx.compose.ui.platform.LocalContext.current
 
     // ── slash 统一 handler 的上下文与结果执行器（2026-09-30）──────────
@@ -371,106 +368,81 @@ fun ChatScreenConnected(
     // 现在两级**共用一个 lambda**：都锚定 + 按钮，内部按状态渲染。
     // （一级/二级互斥，同时只可能有一个为 true。）
     val attachMenuContent: (@Composable () -> Unit)? =
-        if (showAttachMenu || showAttachSubmenu) {
+        if (attachMenuLevel > 0) {
         {
             androidx.compose.ui.window.Popup(
                 alignment = androidx.compose.ui.Alignment.TopStart,
                 // 从按钮**上方**弹出（对齐 LandingScreen 的做法：
                 // 输入框贴近屏幕底部，向下弹会超出屏幕）
                 offset = androidx.compose.ui.unit.IntOffset(0, -(300 * 2.75f).toInt()),
+                // 点外部 → 关菜单。
+                //
+                // 【为什么延迟 80ms 再关】Compose 的 `focusable = true` Popup
+                // 在点内部菜单项时是否也触发 onDismissRequest —— 我**没有验证过**，
+                // 而前几版就是栽在这个未验证的假设上（点「添加文件或照片」时
+                // 刚设好的二级层级被这个回调清掉 → 二级菜单不显示）。
+                //
+                // 用延迟规避：记下当前层级，80ms 后如果**层级没被菜单项改过**
+                // 才关。切换（1→2）会在同一帧内完成，延迟后看到的已是新值，
+                // 不会误关。这个判据不依赖「谁先执行」。
                 onDismissRequest = {
-                    showAttachMenu = false
-                    showAttachSubmenu = false
+                    val snapshot = attachMenuLevel
+                    ioScope.launch {
+                        kotlinx.coroutines.delay(80)
+                        if (attachMenuLevel == snapshot) attachMenuLevel = 0
+                    }
                 },
                 properties = androidx.compose.ui.window.PopupProperties(
                     focusable = true,
                     clippingEnabled = true,
                 ),
             ) {
-                if (showAttachSubmenu) {
-                // 容器样式与 PlusMenu / ModelPickerMenu 完全一致
-                // （shadow 12dp → clip → background → border → 内边距），
-                // 三处菜单是同一套视觉，改一处要同步另两处。
-                androidx.compose.foundation.layout.Column(
-                    modifier = androidx.compose.ui.Modifier
-                        .width(200.56.dp)                                    // 与 PlusMenu 同宽
-                        .shadow(12.dp, androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp))
-                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp))
-                        .background(com.ccm.app.ui.theme.CCMTheme.colors.input)
-                        .border(
-                            1.dp,
-                            com.ccm.app.ui.theme.CCMTheme.colors.border,
-                            androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp),
-                        )
-                        .padding(horizontal = 6.44.dp)
-                        .padding(top = 6.44.dp, bottom = 1.dp),
-                ) {
-                    androidx.compose.material3.Text(
-                        "添加附件",
-                        style = com.ccm.app.ui.theme.CCMText.body14,
-                        color = com.ccm.app.ui.theme.CCMTheme.colors.textSecondary,
-                        modifier = androidx.compose.ui.Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    )
-                    androidx.compose.foundation.layout.Box(
-                        modifier = androidx.compose.ui.Modifier
-                            .fillMaxWidth()
-                            .height(1.dp)
-                            .background(com.ccm.app.ui.theme.CCMTheme.colors.border),
-                    )
-                    androidx.compose.foundation.layout.Column {
-                        listOf(
-                            "拍照" to {
-                                // 【2026-10-06】每次拍照生成新文件名（见 cameraFile 声明处的说明）
-                                val camDir = java.io.File(ctx.cacheDir, "attachments")
-                                // 确保目录存在 —— 相机是**另一个进程**，它不会替我们建目录；
-                                // 目录不存在时写入失败（TakePicture 回 ok=false 或静默失败）。
-                                // AttachmentCache 的 mkdirs() 只在发消息时调，首次拍照可能还没跑过。
-                                camDir.mkdirs()
-                                cameraFile = java.io.File(camDir, "cam_${System.currentTimeMillis()}.jpg")
-                                try {
-                                    cameraFile.parentFile?.mkdirs()
-                                    cameraLauncher.launch(
-                                        androidx.core.content.FileProvider.getUriForFile(
-                                            ctx,
-                                            ctx.packageName + ".fileprovider",
-                                            cameraFile,
-                                        ),
-                                    )
-                                } catch (t: Throwable) {
-                                    // 【2026-10-06 改】原来静默吞掉 —— 用户看到「点了没反应」，
-                                    // 完全不知道是 FileProvider 配置问题、相机不可用还是别的。
-                                    // 至少把原因说出来（这是最容易踩的坑之一）。
-                                    android.widget.Toast.makeText(
+                if (attachMenuLevel == 2) {
+                    // 【2026-10-12 改用共享组件】原来这里是内联的二级菜单 ——
+                    // 与首页（LandingScreen）的实现重复，容易漂移。
+                    // 抽成 AttachSubmenuCard 后两处共用。
+                    com.ccm.app.ui.common.AttachSubmenuCard(
+                        onDismiss = { attachMenuLevel = 0 },
+                        onCamera = {
+                            val camDir = java.io.File(ctx.cacheDir, "attachments")
+                            camDir.mkdirs()
+                            cameraFile = java.io.File(camDir, "cam_${System.currentTimeMillis()}.jpg")
+                            try {
+                                cameraFile.parentFile?.mkdirs()
+                                cameraLauncher.launch(
+                                    androidx.core.content.FileProvider.getUriForFile(
                                         ctx,
-                                        "拍照启动失败：${t.message ?: t.javaClass.simpleName}",
-                                        android.widget.Toast.LENGTH_LONG,
-                                    ).show()
-                                }
-                                showAttachSubmenu = false
-                            },
-                            "图片（可多选，随消息发给模型看）" to { attachLauncher.launch("image/*"); showAttachSubmenu = false },
-                            "文件（以路径附带，模型用 Read 读）" to { fileLauncher.launch("*/*"); showAttachSubmenu = false },
-                        ).forEach { (label, act) ->
-                            androidx.compose.material3.Text(
-                                text = label,
-                                style = com.ccm.app.ui.theme.CCMText.body13,
-                                color = com.ccm.app.ui.theme.CCMTheme.colors.textMain,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-                                    .clickable { act() }
-                                    .padding(vertical = 11.dp, horizontal = 4.dp),
-                            )
-                        }
-                    }
-                }
+                                        ctx.packageName + ".fileprovider",
+                                        cameraFile,
+                                    ),
+                                )
+                            } catch (t: Throwable) {
+                                android.widget.Toast.makeText(
+                                    ctx,
+                                    "拍照启动失败：${t.message ?: t.javaClass.simpleName}",
+                                    android.widget.Toast.LENGTH_LONG,
+                                ).show()
+                            }
+                            attachMenuLevel = 0
+                        },
+                        onImages = {
+                            attachLauncher.launch("image/*")
+                            attachMenuLevel = 0
+                        },
+                        onFiles = {
+                            fileLauncher.launch("*/*")
+                            attachMenuLevel = 0
+                        },
+                    )
                 } else {
                 com.ccm.app.ui.common.PlusMenu(
-                    onDismiss = { showAttachMenu = false },
+                    // 【2026-10-12】onDismiss 关整个菜单；各菜单项自己决定
+                    // 关掉还是切层级（onAttach 会覆盖成 2）。
+                    // 单状态下顺序无关：onDismiss 后 onAttach 覆盖，结果确定。
+                    onDismiss = { attachMenuLevel = 0 },
                     onAttach = {
-                        // 附件二级：沿用原来的三个入口
-                        showAttachMenu = false
-                        showAttachSubmenu = true
+                        // 附件二级：拍照/图片/文件（覆盖 onDismiss 的 0）
+                        attachMenuLevel = 2
                     },
                     onScreenshot = {
                         val cur = session.state.value.draft
@@ -478,7 +450,7 @@ fun ChatScreenConnected(
                             if (cur.isBlank()) "截取当前屏幕并告诉我上面有什么"
                             else "$cur\n截取当前屏幕并告诉我上面有什么"
                         )
-                        showAttachMenu = false
+                        attachMenuLevel = 0
                     },
                     // 【2026-10-06 修】同 LandingScreen：原来在主线程 remember 里
                     // 做磁盘 IO，且无 key 永不刷新。改用异步 state（见上方 LaunchedEffect）。
@@ -494,7 +466,7 @@ fun ChatScreenConnected(
                         val cur = session.state.value.draft
                         session.setDraft(if (cur.isBlank()) "/$id" else "$cur /$id")
                     },
-                    onConnectors = { showAttachMenu = false },
+                    onConnectors = { attachMenuLevel = 0 },
                 )
                 }      // 关 else（showAttachSubmenu 的 else 分支）
             }          // 关 Popup lambda
@@ -701,7 +673,7 @@ fun ChatScreenConnected(
                 if (text.startsWith("/")) session.setDraft("")
             }
         },
-        onAttach = { showAttachMenu = true },   // ★ #2：+ 弹菜单（原直接开选图）
+        onAttach = { attachMenuLevel = 1 },   // ★ #2：+ 弹菜单（原直接开选图）
         // 菜单内容交给 InputBar 渲染 —— 它会把 Popup 锚定在 + 按钮上
         // （之前由本文件直接弹 Popup 且用 Alignment.Center，弹在了屏幕中央）
         plusMenuContent = attachMenuContent,
