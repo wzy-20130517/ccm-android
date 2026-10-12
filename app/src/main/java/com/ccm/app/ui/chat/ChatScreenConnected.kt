@@ -90,6 +90,20 @@ fun ChatScreenConnected(
     // 文件不进多模态 —— 发送时以 `[附件: 名 @ 路径]` 文本随消息走，
     // 模型用 Read 工具读内容（core 的用户消息通道只支持图片）。
     var pendingFiles by remember { mutableStateOf<List<String>>(emptyList()) }
+    // 附件菜单的**层级**：0=关，1=一级（PlusMenu），2=二级（拍照/图片/文件）。
+    //
+    // 【2026-10-12 改用单状态】原来用两个布尔（showAttachMenu +
+    // showAttachSubmenu）在「一级 → 二级」切换时有**时序竞态**：
+    // 点「添加文件或照片」→ onClick 设 showAttachSubmenu=true →
+    // 紧接着 focusable Popup 的 onDismissRequest 触发 → 清成 false
+    // → 二级菜单刚设好就没了。
+    //
+    // 单状态没有这个问题：切换就是赋值，谁后执行谁生效。
+    //
+    // ⚠️ 必须定义在 LaunchedEffect(attachMenuLevel) **之前** ——
+    // Kotlin 不允许先引用后定义（CI 报 Unresolved reference 就是这个）。
+    var attachMenuLevel by remember { mutableStateOf(0) }
+
     // 加号菜单的项目列表（异步加载，同 LandingScreen 的修法）
     var attachMenuProjects by remember { mutableStateOf<List<String>>(emptyList()) }
     androidx.compose.runtime.LaunchedEffect(attachMenuLevel) {
@@ -103,16 +117,6 @@ fun ChatScreenConnected(
         }
     }
     // 附件二级菜单（PlusMenu 的「附件」项 → 拍照/图片/文件）
-    // 附件菜单的**层级**：0=关，1=一级（PlusMenu），2=二级（拍照/图片/文件）。
-    //
-    // 【2026-10-12 改用单状态】原来用两个布尔（showAttachMenu +
-    // showAttachSubmenu）在「一级 → 二级」切换时有**时序竞态**：
-    // 点「添加文件或照片」→ onClick 设 showAttachSubmenu=true →
-    // 紧接着 focusable Popup 的 onDismissRequest 触发 → 清成 false
-    // → 二级菜单刚设好就没了。
-    //
-    // 单状态没有这个问题：切换就是赋值，谁后执行谁生效。
-    var attachMenuLevel by remember { mutableStateOf(0) }
     val ctx = androidx.compose.ui.platform.LocalContext.current
 
     // ── slash 统一 handler 的上下文与结果执行器（2026-09-30）──────────
