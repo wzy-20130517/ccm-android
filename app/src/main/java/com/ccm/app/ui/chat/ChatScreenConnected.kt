@@ -531,7 +531,9 @@ fun ChatScreenConnected(
                 //   SlashCommandHandler.handleSlashCommand（会话/查询/配置/工具
                 //   四大分区），认得的在这里执行副作用；不认的才落到下面的老
                 //   when（/clear /help 等基础命令 + 兜底提示）。
-                if (text.startsWith("/")) {
+                // 【2026-10-12】带附件时不走 slash —— 那是普通消息
+                //（用户可能给文件配一句「/analyze」之类，附件不该丢）。
+                if (text.startsWith("/") && pendingImages.isEmpty() && pendingFiles.isEmpty()) {
                     // 【2026-10-06 用户反馈】slash 命令无用户气泡 ——
                     // 执行前先把命令文本作为用户气泡上屏。
                     session.injectUserEcho(text)
@@ -645,7 +647,7 @@ fun ChatScreenConnected(
                     // ★ 2026-09-29 未支持命令兜底：/config /style /undo 这类
                     //   CLI 命令原来从 else 溜过去**发给模型**（模型回
                     //   「我不是这样用的」，白烧一轮）。
-                    text.startsWith("/") && (
+                    text.startsWith("/") && pendingImages.isEmpty() && pendingFiles.isEmpty() && (
                         // 【2026-10-06 修】原来只判「命令名不在支持集」——
                         // 于是**带参数**的 `/compact force`、`/model 2 x` 从
                         // else 溜过去**发给模型**（模型回「我不是这样用的」，

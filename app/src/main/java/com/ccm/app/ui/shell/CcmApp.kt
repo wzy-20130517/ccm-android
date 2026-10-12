@@ -467,7 +467,9 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
         //   onSend 里，**首页输入斜杠命令直接 session.send 发给模型**
         //   （模型回一句「我不是这样用的」）。提到唯一入口，两端一致。
         val t = text.trim()
-        if (t.startsWith("/") && images.isEmpty()) {
+        // 【2026-10-12】判据要含 files —— 带附件的「/xxx」是普通消息，
+        // 不该被当 slash 命令执行（附件会丢）。
+        if (t.startsWith("/") && images.isEmpty() && files.isEmpty()) {
             // 【2026-10-06 用户反馈】slash 命令无用户气泡 ——
             // 执行前先把命令文本作为用户气泡上屏（让用户看到自己敲了什么）。
             activeSession?.injectUserEcho(t)
