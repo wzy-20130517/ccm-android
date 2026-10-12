@@ -3,10 +3,8 @@ package com.ccm.app.ui.common
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -57,27 +55,22 @@ fun AttachSubmenuCard(
             .padding(horizontal = 6.44.dp)
             .padding(top = 6.44.dp, bottom = 1.dp),
     ) {
-        Text(
-            "添加附件",
-            style = CCMText.body14,
-            color = colors.textSecondary,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-        )
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(colors.border),
-        )
+        // 【2026-10-12 去掉标题行】原来有「添加附件」灰字标题 + 分隔线。
+        // 但菜单项本身（拍照/图片/文件）已经把内容说完了，标题是冗余 ——
+        // 而且 PlusMenu 的所有菜单都没有标题行（结构一致才整齐）。
         listOf(
-            // 【2026-10-12 文案精简】原来带括号说明：
-            //   「图片（可多选，随消息发给模型看）」「文件（文本类直接读内容，其他用 Read）」
-            // —— 菜单项是**动作入口**，不是说明文档。一屏 3 行的菜单里塞
-            // 20 字长句，读起来像段落不像菜单（用户报「文案太详细」）。
-            // 对齐 Web：那边就是短词（添加文件或照片 / 截取屏幕 / 添加到项目）。
+            // 【2026-10-12 文案】只留动作名，不带任何说明。
+            //
+            // 踩过的弯路：一开始写「图片（可多选，随消息发给模型看）」
+            // 这种带括号的长说明 —— 菜单项是**点一下就走的入口**，
+            // 不是功能文档。用户不需要在这里知道「多选会怎样」
+            // 「模型怎么读文件」，那些属于设置页/帮助。
+            //
+            // 也不要「从相册选择」这种补语（虽然短了，但仍是解释）。
+            // 拍照 / 图片 / 文件 —— 三个词，看到就懂。
             "拍照" to onCamera,
-            "从相册选择" to onImages,
-            "选择文件" to onFiles,
+            "图片" to onImages,
+            "文件" to onFiles,
         ).forEach { (label, act) ->
             Text(
                 text = label,
