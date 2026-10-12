@@ -484,7 +484,7 @@ class ChatSession(
         // 过滤掉**已被清理**的图片（Android 系统随时可能清 cacheDir，
         // 7 天清理也在这里跑）。路径不存在的图直接丢弃 —— 传下去只会
         // 在发送时失败，用户看到的是「图又没了」却不知道为什么。
-        val images = (
+        val images: List<String> = (
             _state.value.bubbles.firstOrNull { it.messageId == messageId }?.images
                 ?: _state.value.bubbles.lastOrNull { it.role == Message.ROLE_USER && it.text == target.text }?.images
                 ?: emptyList()
@@ -530,7 +530,7 @@ class ChatSession(
 
         // 取原消息的图片（编辑通常只改文字，图保留）—— 从气泡取，
         // 与 resendFrom 同一策略（Message 结构里不存图，只在 Bubble 上）。
-        val images = (
+        val images: List<String> = (
             _state.value.bubbles.firstOrNull { it.messageId == messageId }?.images
                 ?: emptyList()
             ).filter { java.io.File(it).exists() }
