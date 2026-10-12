@@ -663,11 +663,11 @@ fun ChatScreenConnected(
                         )
                     }
                     else -> {
-                        // 带附件发送：图走多模态通道；文件以路径文本随消息
-                        //（模型拿 Read 读 —— core 用户消息通道只支持图片）
-                        val fileLines = pendingFiles.joinToString("") { p ->
-                            "\n[附件: ${p.substringAfterLast('/')} @ $p]"
-                        }
+                        // 带附件发送：图走多模态通道；文件走 FileAttachment
+                        //（文本类直接读内容，二进制给路径 —— 对齐 Web 的
+                        // buildUserContent。原来只给路径，模型经常忘记 Read）
+                        val fileLines = com.ccm.app.core.image.FileAttachment
+                            .buildMessageText(pendingFiles)
                         session.send(text + fileLines, pendingImages)
                         pendingImages = emptyList()
                         pendingFiles = emptyList()

@@ -255,29 +255,17 @@ fun LandingScreen(
                         .padding(bottom = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(7.36.dp),
                 ) {
-                    // 【2026-10-12】文件也显示（原来只有图片 —— 选了文件看不到，
-                    // 用户不知道有没有选上）。用文字条（文件没有缩略图）。
+                    // 【2026-10-12】文件卡 —— 与图片缩略图**同尺寸同圆角**。
+                    //
+                    // 原来是一行文字条（「📄 文件名 ✕」），与 56dp 的图片
+                    // 方块并排时大小形状都不搭（用户报「标签样式很奇怪」）。
+                    // 现在用 FileChip（对齐 Web 的 MessageAttachments 文档卡）。
                     pendingFiles.forEach { path ->
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(colors.hover)
-                                .clickable { pendingFiles = pendingFiles - path }
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = "📄 " + path.substringAfterLast('/').take(16),
-                                    style = CCMText.body11,
-                                    color = colors.textMain,
-                                )
-                                Text(
-                                    text = " ✕",
-                                    style = CCMText.body11,
-                                    color = colors.textSecondary,
-                                )
-                            }
-                        }
+                        com.ccm.app.ui.common.FileChip(
+                            name = path.substringAfterLast('/'),
+                            sizeBytes = java.io.File(path).length(),
+                            onRemove = { pendingFiles = pendingFiles - path },
+                        )
                     }
                     pendingImages.forEach { path ->
                         Box(
@@ -375,11 +363,13 @@ fun LandingScreen(
                 onSend = { text ->
                     // 【2026-10-12 加文件支持】原来只传 pendingImages ——
                     // 文件路径（pendingFiles）不会随消息发出去。
-                    // 对齐对话页：文件以 `[附件: 名 @ 路径]` 文本随消息走
-                    // （模型用 Read 读，core 的用户消息通道只支持图片）。
-                    val fileLines = pendingFiles.joinToString("") { p ->
-                        "\n[附件: ${p.substringAfterLast('/')} @ $p]"
-                    }
+                    //
+                    // 【同日二次修】原来只拼一行路径（模型必须自己 Read，
+                    // 而且经常忘 —— 用户报「文件形式只是发路径」）。
+                    // 现在走 FileAttachment：文本类文件**直接读内容**塞进
+                    // 消息（对齐 Web 的 buildUserContent），二进制才给路径。
+                    val fileLines = com.ccm.app.core.image.FileAttachment
+                        .buildMessageText(pendingFiles)
                     sendWithImages(onSend, text + fileLines, pendingImages) {
                         pendingImages = emptyList()
                         pendingFiles = emptyList()
