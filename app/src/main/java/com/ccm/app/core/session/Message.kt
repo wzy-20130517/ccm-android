@@ -148,6 +148,18 @@ fun stripMetaTags(text: String): String {
 private val META_TAG_REGEXES = listOf(
     Regex("<image_resize_notice>[\\s\\S]*?</image_resize_notice>"),
     Regex("<vision_unsupported>[\\s\\S]*?</vision_unsupported>"),
+    // 【2026-10-12 加】附件元信息（FileAttachment.buildMessageText 拼的）。
+    //
+    // 格式：
+    //   [附件: 文件名]
+    //   已保存到: /path
+    //   <文件内容>…</文件内容>  或  请在需要时使用 Read 等工具读取该文件。
+    //
+    // 这些是**给模型看的**（告诉它文件在哪、内容是什么），
+    // 不该出现在用户自己的气泡里 —— 用户看到的应该是他发的那句话。
+    // （截图里用户气泡显示一大段「[附件: xxx] 已保存到: … 请用 Read 读取」，
+    //   就是漏了这条。）
+    Regex("\\n*\\[附件: [^\\]]*\\][\\s\\S]*?(?=\\n\\[附件: |$)"),
 )
 
 /**
