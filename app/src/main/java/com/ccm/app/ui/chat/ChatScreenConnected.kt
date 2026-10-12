@@ -87,8 +87,9 @@ fun ChatScreenConnected(
     // ── 图片附件（第18批）───────────────────────────────────────
     var pendingImages by remember { mutableStateOf<List<String>>(emptyList()) }
     // 待发文件（webgap #2：+ 原来直接塌成选图，文件/其他入口全无）。
-    // 文件不进多模态 —— 发送时以 `[附件: 名 @ 路径]` 文本随消息走，
-    // 模型用 Read 工具读内容（core 的用户消息通道只支持图片）。
+    // 文件不进多模态 —— 发送时走 FileAttachment.buildMessageText：
+    // **文本类直接读内容**进消息，二进制给路径（模型用 Read）。
+    // （2026-10-12 改：原来只拼一行路径，模型经常忘记 Read）
     var pendingFiles by remember { mutableStateOf<List<String>>(emptyList()) }
     // 附件菜单的**层级**：0=关，1=一级（PlusMenu），2=二级（拍照/图片/文件）。
     //
