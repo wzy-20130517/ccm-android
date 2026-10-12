@@ -783,7 +783,7 @@ class DevTools(
          * 实际麻烦：`inner class` 的构造函数依赖外部实例，将来想把它提到
          * 类外（如放到 companion 或顶层）就得连带改所有构造点。
          */
-        private class WriteOutcome(
+        class WriteOutcome(
             val files: Int,
             val count: Int,
             val errors: List<String>,
@@ -802,7 +802,7 @@ class DevTools(
          * @property mtimeMs 由 prepare 阶段的 `write` 填上 —— 同目录 rename
          *   保留 mtime，所以它也是最终文件的 mtime（省一次 stat）
          */
-        private class Plan(
+        class Plan(
             val sf: SourceFile,
             val replaced: String,
             val tmp: String,
