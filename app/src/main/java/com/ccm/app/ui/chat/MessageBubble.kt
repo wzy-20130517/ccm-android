@@ -146,6 +146,14 @@ fun UserBubble(
         }
     }
 
+    // 【2026-10-11 编辑模式状态】必须在**最外层** ——
+    // 铅笔按钮在下面的按钮行（Column 的第二个子节点），而气泡内容在
+    // 第一个子节点（Row）里。状态若定义在 Row 内部，按钮行**看不到它**
+    // （CI 报 Unresolved reference 'editText'/'editing' 就是这个）。
+    // text 变化时重置（重发/编辑后是新气泡）。
+    var editing by remember(text) { mutableStateOf(false) }
+    var editText by remember(text) { mutableStateOf(text) }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -159,9 +167,6 @@ fun UserBubble(
         // 超长折叠（webgap #1：Web 有 Show more/less，APK 缺）——
         // 用户长文本（粘贴的日志等）会把页面撑爆，默认收起前 800 字。
         var expanded by remember(text) { mutableStateOf(false) }
-        // 编辑模式状态（2026-10-11）—— text 变化时重置（重发后是新气泡）
-        var editing by remember(text) { mutableStateOf(false) }
-        var editText by remember(text) { mutableStateOf(text) }
         val longText = text.length > 800
         val shownText = if (longText && !expanded) text.take(800) + "…" else text
 
