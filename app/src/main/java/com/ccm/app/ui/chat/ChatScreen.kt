@@ -349,6 +349,85 @@ fun ChatScreen(
                     }
                 }
 
+                // ══════════════════════════════════════════════════════════
+                //  ④ 【2026-10-12 加：脱离跟随时锚定用户正在看的那条】
+                //
+                //  ## 问题（用户原话：「上滑脱离跟随，界面仍随着 Agent 输出
+                //  而被下拉」）
+                //
+                //  **跟随确实关了**（上滑后不再 scrollToItem），但内容**仍在动** ——
+                //  这是 reverseLayout 的固有行为：
+                //
+                //  ```
+                //  上滑前：index 3 = [bubble A]   ← 用户在看
+                //  流式结束、新 bubble 插入到 index 1：
+                //          index 4 = [bubble A]   ← A 的索引 +1 了
+                //  而 LazyColumn 保持 firstVisibleItemIndex = 3 不变
+                //  → index 3 现在是别的消息 → 画面整体往下移一格
+                //  ```
+                //
+                //  **不是"被拽回底部"，是"内容整体位移"** —— 两种现象的修法
+                //  完全不同（前者改滚动时机，后者要主动补偿位移）。
+                //
+                //  ## 修法：记住锚点 key + 位置，变了就补偿
+                //
+                //  · 脱离跟随时，记下第一个可见 item 的 key 和它的屏幕偏移
+                //  · 内容变化后检查：那个 key 还在吗？屏幕位置变了吗？
+                //  · 变了 → `requestScrollToItem(它的新索引, 补偿偏移)`
+                //
+                //  用 `requestScrollToItem`（Compose 1.7+）而非 `scrollToItem`：
+                //  前者非挂起、在下一帧生效，不会与布局过程打架
+                //  （后者挂起 + 立即生效，在 snapshotFlow 里用容易引发循环）。
+                //
+                //  ⚠️ 只在 `!following` 时做 —— 跟随中由 ③ 负责滚到底，
+                //  两者同时跑会互相拉扯。
+                // ══════════════════════════════════════════════════════════
+                var anchorKey by remember { mutableStateOf<Any?>(null) }
+                var anchorOffset by remember { mutableStateOf(0) }
+
+                // 记录锚点（脱离跟随时，持续更新为用户当前看的 item）
+                LaunchedEffect(listState) {
+                    snapshotFlow {
+                        val info = listState.layoutInfo
+                        val first = info.visibleItemsInfo.firstOrNull()
+                        Triple(first?.key, first?.offset ?: 0, listState.isScrollInProgress)
+                    }.collect { (key, off, scrolling) ->
+                        // 只在「用户滚动结束」时更新锚点 —— 滚动中每帧都在变，
+                        // 记下来没意义（而且会覆盖用户真正停下的位置）
+                        if (!following && !scrolling && key != null) {
+                            anchorKey = key
+                            anchorOffset = off
+                        }
+                    }
+                }
+
+                // 补偿位移
+                LaunchedEffect(listState) {
+                    snapshotFlow {
+                        // 监听「列表内容快照」—— item 数量或锚点项的高度变化
+                        // 都会让 LazyColumn 重新布局，需要重新校验锚点位置
+                        listState.layoutInfo.totalItemsCount to
+                            listState.layoutInfo.visibleItemsInfo.size
+                    }.collect {
+                        if (following) return@collect
+                        val target = anchorKey ?: return@collect
+                        val info = listState.layoutInfo
+                        val item = info.visibleItemsInfo.firstOrNull { it.key == target }
+                            ?: return@collect          // 锚点滚出可见范围了，不干预
+                        // 位置变了才补偿（避免每帧都请求滚动 → 抖动）
+                        //
+                        // 符号：`visibleItemsInfo[i].offset` 是「item 相对视口
+                        // 起点的偏移」（负数 = 在起点之前）；`requestScrollToItem`
+                        // 的 scrollOffset 同语义 —— **同号传递**，不要取负。
+                        if (item.offset != anchorOffset) {
+                            listState.requestScrollToItem(
+                                index = item.index,
+                                scrollOffset = anchorOffset,
+                            )
+                        }
+                    }
+                }
+
                 // 键盘弹出时滚到底（只在用户本来就在底部时 —— 别把他从历史里拽回来）
                 LaunchedEffect(imeVisible) {
                     if (imeVisible && isAtBottom) {
