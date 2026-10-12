@@ -112,7 +112,7 @@ fun ChatScreenConnected(
     // → 二级菜单刚设好就没了。
     //
     // 单状态没有这个问题：切换就是赋值，谁后执行谁生效。
-    var attachMenuLevel by remember { mutableIntStateOf(0) }
+    var attachMenuLevel by remember { mutableStateOf(0) }
     val ctx = androidx.compose.ui.platform.LocalContext.current
 
     // ── slash 统一 handler 的上下文与结果执行器（2026-09-30）──────────
