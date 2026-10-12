@@ -70,13 +70,14 @@ fun AttachSubmenuCard(
                 .background(colors.border),
         )
         listOf(
-            // 【2026-10-12 改文案】原来「文件（以路径附带，模型用 Read 读）」——
-            // 但发送逻辑已改成：**文本类文件直接读内容进消息**
-            //（见 FileAttachment.buildMessageText，对齐 Web 的 buildUserContent）。
-            // 描述与实际行为不符，改掉。
+            // 【2026-10-12 文案精简】原来带括号说明：
+            //   「图片（可多选，随消息发给模型看）」「文件（文本类直接读内容，其他用 Read）」
+            // —— 菜单项是**动作入口**，不是说明文档。一屏 3 行的菜单里塞
+            // 20 字长句，读起来像段落不像菜单（用户报「文案太详细」）。
+            // 对齐 Web：那边就是短词（添加文件或照片 / 截取屏幕 / 添加到项目）。
             "拍照" to onCamera,
-            "图片（可多选，随消息发给模型看）" to onImages,
-            "文件（文本类直接读内容，其他用 Read）" to onFiles,
+            "从相册选择" to onImages,
+            "选择文件" to onFiles,
         ).forEach { (label, act) ->
             Text(
                 text = label,
