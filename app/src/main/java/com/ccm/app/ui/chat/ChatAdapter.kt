@@ -37,6 +37,7 @@ object ChatAdapter {
         toolTextEndOffset = bubble.toolTextEndOffset,
         toolCards = bubble.toolCards.map(::toUi),
         images = bubble.images,
+        files = bubble.files,
         documents = bubble.documents,
     )
 

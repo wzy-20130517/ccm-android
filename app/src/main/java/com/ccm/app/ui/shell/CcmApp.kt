@@ -1479,7 +1479,10 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         modelName = modelName,
                         // H1：协作输入发进主对话（APK 无 Web 的协作任务后端 ——
                         // Web 是 onStartTask 开独立任务流，这里是诚实降级）
-                        onSend = { t, imgs, files -> sendAndOpen(t, imgs, files) },
+                        //
+                        // CoworkScreen 的 onSend 是两参数（它只有图片入口，
+                        // 没有文件）—— 别跟 LandingScreen 的三参数混了。
+                        onSend = { t, imgs -> sendAndOpen(t, imgs) },
                     )
 
                     CcmRoute.SCHEDULED -> {

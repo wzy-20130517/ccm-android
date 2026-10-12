@@ -913,6 +913,13 @@ data class ChatBubble(
     /** 附带图片路径（用户消息；渲染缩略图，第20批）。 */
     val images: List<String> = emptyList(),
     /**
+     * 附带文件路径（非图片，用户消息；渲染 FileChip，2026-10-12 加）。
+     *
+     * 与 images 分开：图片走多模态通道（模型直接看图），
+     * 文件走文本通道（文本类读内容塞进消息，二进制给路径）。
+     */
+    val files: List<String> = emptyList(),
+    /**
      * 该消息里被**写过**的文件（从 toolCards 推导）。
      *
      * 【2026-10-11】替代原来的 presentItems。Present 工具下线后，可视内容
