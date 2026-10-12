@@ -918,10 +918,28 @@ internal fun finalTextAfterTools(
     val text = fullText.trim()
     if (text.isEmpty()) return null
     val offset = consumedTextLength(cards)
-    // 与 Web 的 hasOffset 判据同构：(0, len) 开区间。
-    // 等于 0 说明可见工具没产出过正文（工具区不显示任何 textBefore）；
-    // 等于 len 说明工具后无话可说（返回空串）。
-    if (offset <= 0 || offset > text.length) return null
+    // 【2026-10-12 修「助手正文有时消失」】
+    //
+    // 判据必须是**严格开区间** `(0, len)` —— 与 Web 的
+    // `hasOffset = offset > 0 && offset < fullText.length` 完全同构。
+    //
+    // 原来的写法是 `offset > text.length`（**允许相等**），于是
+    // `offset == text.length` 时走到 `substring(offset)` 返回**空串**。
+    // 而调用方是：
+    //   `finalText != null -> if (finalText.isNotBlank()) AssistantBubble(...)`
+    // 空串 → isNotBlank() false → **正文区什么都不渲染**；
+    // 同一时刻工具区只渲染 textBefore 前缀（不含这段）→ **两边都不显示**。
+    // 用户看到的就是「助手正文有时候会消失」。
+    //
+    // 修法：改成 `>=`（等价于 Web 的 `<` 取反）—— 相等时返回 null，
+    // 让调用方走 **fallback 显示全文**（那条分支本来就有，见调用处
+    // 的 `else -> AssistantBubble(text = text)`）。
+    //
+    // 语义上也是对的：offset == len 表示「最后一个可见工具之后没有新正文」，
+    // 此时工具区已经完整渲染了全部内容（各卡的 textBefore 前缀差），
+    // 正文区**不该再重复显示**。返回 null 让上层决定（它选择显示全文，
+    // 因为那是旧数据的兜底路径 —— 宁可重复也不消失）。
+    if (offset <= 0 || offset >= text.length) return null
     return text.substring(offset).trim()
 }
 

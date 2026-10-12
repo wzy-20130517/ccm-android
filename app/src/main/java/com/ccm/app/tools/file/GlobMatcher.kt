@@ -99,8 +99,16 @@ object GlobMatcher {
  */
 object FileWalker {
 
-    /** 默认跳过的目录名 */
-    private val SKIP_DIRS = setOf("node_modules", ".git", "build", ".gradle", "__pycache__")
+    /**
+     * 默认跳过的目录名。
+     *
+     * ⚠️ 公开（不是 private）是因为**通道模式**也要用同一份清单 ——
+     * `ChannelFs.listFiles(excludeDirs = ...)` 靠它剪掉噪音目录。
+     * 两处用同一个常量，才不会出现「本地跳过了 node_modules、
+     * 通道模式没跳」这种不一致（那会让同一个项目在两种环境下
+     * 扫出不同的结果）。
+     */
+    val SKIP_DIRS = setOf("node_modules", ".git", "build", ".gradle", "__pycache__")
 
     /**
      * 遍历目录，对每个文件调用 [onFile]。

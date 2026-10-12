@@ -276,27 +276,74 @@ fun ChatScreen(
                 }
 
                 // ══════════════════════════════════════════════════════════════
-                //  【2026-10-11 加「跟随到底」】
+                //  【2026-10-12 重写「跟随到底」—— 修「上滑脱离不了」】
                 //
-                //  在底部时，内容长高（流式吐字 / 新消息）就滚到 index 0。
+                //  ## 之前的问题
                 //
-                //  ⚠️ 曾试过「锚点协程」（用户上翻时锁定他看的 item、防索引
-                //  漂移），但那个实现有无限循环风险：snapshotFlow 监听
-                //  firstVisibleItemScrollOffset，而 scrollToItem 又会改它 →
-                //  每帧滚动 → 主线程 100% CPU → ANR（已删）。
+                //  旧实现：
+                //    snapshotFlow { totalItemsCount to firstVisibleItemSize }
+                //      .collect { if (isAtBottom) scrollToItem(0) }
                 //
-                //  现在的取舍：**用户上翻时接受轻微漂移**（reverseLayout 下
-                //  LazyColumn 的固有行为，业界通病）；换来的是主线程不做
-                //  额外滚动工作。
+                //  三个缺陷叠加，导致用户上滑后仍被拽回底部：
+                //
+                //  ① **监听源错了**。流式输出时 item 数量/高度**一直在变**，
+                //     所以 collect 一直在触发。而触发时读的 `isAtBottom`
+                //     是**那一刻**的值 —— 用户刚开始上滑（还没超过 50dp
+                //     阈值）时它仍是 true → 立刻被拽回。用户感觉
+                //     「手指刚动就被吸回去」。
+                //
+                //  ② **判据只看位置，不看意图**。`isAtBottom` 是
+                //     「当前是否在底部」，不是「用户是否想跟随」。
+                //     用户手动滚到底部看一眼 ≠ 想一直跟随。
+                //
+                //  ③ **scrollToItem 会自我强化**。拽回后 firstVisibleItemIndex
+                //     回到 0 → isAtBottom 仍 true → 下次内容变化又拽。
+                //
+                //  ## 现在的做法：**显式「跟随模式」状态**
+                //
+                //  · `following` = 是否自动跟随（初始 true）
+                //  · 监听 `listState.isScrollInProgress` —— **用户一动手**
+                //    （滑动开始）就检查：如果不在底部了，就 `following = false`
+                //  · 内容变化时只在 `following == true` 时滚 —— 而
+                //    following 只在用户**手动滚回底部**时恢复
+                //
+                //  这样「用户上滑 → 脱离跟随 → 不会被拽回」是**状态机保证**的，
+                //  不依赖阈值和时序。
+                //
+                //  ⚠️ 不能用 `isScrollInProgress` 直接当判据：程序自己的
+                //  `scrollToItem` 也会让它变 true（自我触发）。
+                //  所以用「滚动进行中 + 不在底部」的组合判断 —— 程序滚到底部时
+                //  一定在底部，不会误关 following。
                 // ══════════════════════════════════════════════════════════════
 
-                // 在底部时跟随到底（内容长高就滚到 index 0）
+                // 跟随模式（用户上滑后关闭，手动滚回底部时恢复）
+                var following by remember { mutableStateOf(true) }
+
+                // ① 监听用户手势：滚动中且不在底部 → 关闭跟随
+                LaunchedEffect(listState) {
+                    snapshotFlow { listState.isScrollInProgress }
+                        .collect { scrolling ->
+                            if (scrolling && !isAtBottom) {
+                                following = false
+                            }
+                        }
+                }
+
+                // ② 滚回底部时恢复跟随（用户手动滑到底 或 点「回到底部」按钮）
+                LaunchedEffect(listState) {
+                    snapshotFlow { isAtBottom }
+                        .collect { atBottom ->
+                            if (atBottom) following = true
+                        }
+                }
+
+                // ③ 内容变化时跟随（只在 following 时）
                 LaunchedEffect(listState) {
                     snapshotFlow {
                         listState.layoutInfo.totalItemsCount to
                             listState.layoutInfo.visibleItemsInfo.firstOrNull()?.size
                     }.collect {
-                        if (isAtBottom) {
+                        if (following) {
                             listState.scrollToItem(0)
                         }
                     }

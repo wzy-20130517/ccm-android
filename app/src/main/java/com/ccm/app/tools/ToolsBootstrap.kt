@@ -334,7 +334,7 @@ class ToolsBootstrap(
         val modeTools = ModeTools(modes)
 
         // 批 3 补全 + P1
-        val devTools = DevTools(primary, trashStore, commandExec)
+        val devTools = DevTools(primary, trashStore, commandExec, fileChannel)
         val hashlineTools = HashlineTools(trashStore, undoStore, fileChannel)
         val cronTools = CronTools(CronStore(File(storage.rootDir, "cron")))
         val qqTools = QqTools(qqPusher, qqRecaller)

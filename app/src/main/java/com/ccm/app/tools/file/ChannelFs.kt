@@ -103,9 +103,54 @@ class ChannelFs(private val channel: BashChannel) {
          */
         const val CHUNK_BYTES = 64 * 1024
 
+        /**
+         * 批量读（[readBatch]）的单文件上限。
+         *
+         * 超过它的文件**不参与批量**（调用方可以退化成逐个 [read]，
+         * 那条路的上限是 [MAX_OUTPUT_BYTES]）。
+         */
+        const val MAX_BATCH_FILE_BYTES = 120 * 1024
+
+        /**
+         * 批量读单批最多几个文件。
+         *
+         * 整条命令是**一个 argv 元素**，受 `MAX_ARG_STRLEN = 128KB` 约束
+         * （见 [CHUNK_BYTES] 的说明）。路径平均 80 字节 → 60 个约 5KB，安全。
+         */
+        const val MAX_BATCH_FILES = 60
+
+        /**
+         * 批量读单批的**累计**原始字节上限。
+         *
+         * 与 [MAX_BATCH_FILE_BYTES] 是两个正交的闸门：前者防「一个巨文件」，
+         * 后者防「六十个中等文件加起来撑爆 Binder」。
+         *
+         * ⚠️ 必须**大于** [MAX_BATCH_FILE_BYTES]，否则一个合法大小的文件
+         * 会既通过单文件检查、又被总预算拒掉（自相矛盾的配置）。
+         * 当前 160KB 原始 → base64 约 213KB，加标记行仍在 [MAX_OUTPUT_BYTES] 之下。
+         */
+        const val MAX_BATCH_TOTAL_BYTES = 160 * 1024
+
         private const val STAT_PREFIX = "CCM_S:"
         private const val OK_PREFIX = "CCM_OK:"
         private const val ERR_PREFIX = "CCM_E:"
+
+        /**
+         * 批量读（[readBatch]）的标记行前缀。
+         *
+         * 选 `CCM_B:` 有个**安全理由**：base64 的字符集是
+         * `A-Za-z0-9+/=`，**不含冒号** —— 所以内容行永远不可能被误认成标记行，
+         * 解析不需要任何转义或长度前缀。这是刻意的设计，不是巧合。
+         */
+        private const val BATCH_PREFIX = "CCM_B:"
+
+        /**
+         * 批量读里**内容行**的前缀。
+         *
+         * 与 [BATCH_PREFIX] 分开是为了解析时能一眼区分「元数据行」和「内容行」，
+         * 不必靠「隔行取」这种脆弱约定（一旦某行缺失就全盘错位）。
+         */
+        private const val CONTENT_PREFIX = "CCM_C:"
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -135,6 +180,37 @@ class ChannelFs(private val channel: BashChannel) {
     data class GrepHit(val path: String, val line: Int, val text: String)
 
     data class GrepResult(val hits: List<GrepHit>, val error: String? = null)
+
+    /** 批量读回来的单个文件。 */
+    data class BatchFile(
+        val path: String,
+        val content: String,
+        val size: Long,
+        val mtimeMs: Long,
+    )
+
+    /**
+     * 批量读的结果。
+     *
+     * @param files 读到的文件（**按输入顺序**，不是路径字典序）
+     * @param skipped 没能读回来的路径。两种原因：超过 [MAX_BATCH_FILE_BYTES]
+     *   （大文件），或**不是普通文件**（读的过程中被删了 / 是目录）。
+     *   ⚠️ 写操作（如 SafeRename）必须把它报给用户 —— 静默跳过会造成
+     *   「以为全改了、其实有文件没改」的半成品。
+     * @param processed 本次实际处理了几个输入路径（含 [skipped] 的）。
+     *   ⚠️ **不是** `files.size` —— 批内因累计预算（[MAX_BATCH_TOTAL_BYTES]）
+     *   提前停下时，两者不等。调用方靠它决定「下一批从哪里开始」，
+     *   用 `files.size` 会重复读或漏读。
+     * @param truncated 因 [readBatch] 的 `maxFiles` 被截断（目录里还有更多）
+     * @param error 致命错误（通道超时 / 不可用）。非 null 时 [files] 可能不完整。
+     */
+    data class BatchReadResult(
+        val files: List<BatchFile> = emptyList(),
+        val skipped: List<String> = emptyList(),
+        val processed: Int = 0,
+        val truncated: Boolean = false,
+        val error: String? = null,
+    )
 
     // ══════════════════════════════════════════════════════════════
     //  shell 基础工具
@@ -393,6 +469,23 @@ class ChannelFs(private val channel: BashChannel) {
         return r.exitCode == 0 && !r.timedOut
     }
 
+    /**
+     * 原子重命名（`mv -f`）。
+     *
+     * ⚠️ **只有当 [from] 与 [to] 在同一个文件系统上时才是原子的**。
+     * 跨文件系统时 `mv` 退化成「复制 + 删除」，中途失败会留下半个文件。
+     * 调用方（[com.ccm.app.tools.dev.DevTools] 的两阶段提交）保证两者同目录。
+     *
+     * 这是 SafeRename 两阶段提交的 **commit 原语** —— 同目录 rename 在
+     * Linux 上是原子的系统调用，不会因为磁盘满而半途而废，所以
+     * 「prepare 全部成功后逐个 commit」能把失败窗口压到最小。
+     */
+    suspend fun rename(from: String, to: String): Boolean {
+        val cmd = "mv -f ${quote(from)} ${quote(to)} 2>/dev/null"
+        val r = run(cmd, TIMEOUT_WRITE)
+        return !r.timedOut && r.exitCode == 0
+    }
+
     // ══════════════════════════════════════════════════════════════
     //  列文件（Glob / 搜索的底座）
     // ══════════════════════════════════════════════════════════════
@@ -403,13 +496,46 @@ class ChannelFs(private val channel: BashChannel) {
      * ⚠️ `find` 的输出路径是**以 root 的字面形式为前缀**的：
      * `find .` → `./a.txt`；`find sub` → `sub/a.txt`。
      * 调用方要算「相对 root 的路径」时用 [relativeTo]。
+     *
+     * @param maxFiles 最多回传多少条路径。
+     *   ⚠️ 这个值同时是**输出体积的闸门** —— 路径平均 80 字节，
+     *   20000 条就是 1.6MB，会撞 Binder 事务限制（结果收不到，表现为超时）。
+     *   需要大目录时靠 [excludeDirs] 砍掉噪音，而不是调大这个值。
+     * @param excludeDirs 要跳过的目录**名**（如 `node_modules`）。
+     *   走 `find -prune`，在被遍历到时就整棵剪掉 —— 而不是列出来再过滤，
+     *   否则 node_modules 会先把 maxFiles 名额占满。
      */
-    suspend fun listFiles(root: String, maxFiles: Int = 50_000): ListResult {
+    suspend fun listFiles(
+        root: String,
+        maxFiles: Int = 50_000,
+        excludeDirs: Set<String> = emptySet(),
+    ): ListResult {
         val r = quote(root)
+        // ⚠️ `-mindepth 1` **不是可选的**，是修 bug 的关键：
+        // `find .` 的起始点就是 `.` 本身，它会匹配 `-name '.*'` → 整棵树
+        // 被 `-prune` 剪掉，**输出为空**。而调用方默认传的就是 `"."`
+        // （模型写 `path: "."` 或省略），于是「列目录」永远返回空列表，
+        // 表现为「项目里一个文件都没有」—— 静默、且看起来很像真的。
+        // 实测确认（Termux 的 GNU findutils）。
+        //
+        // ⚠️ 隐藏项（`.*`）**始终**剪掉 —— 与本地 [FileWalker] 的
+        // `name.startsWith('.')` 保持一致。不剪的话同一个项目在两种环境下
+        // 会列出不同的文件（本地看不到 `.env`、通道看得到），模型会困惑。
+        //
+        // 表达式结构：`\( <排除项> \) -prune -o -type f -print`
+        // —— 括号是 find 的表达式分组，必须转义；`-prune` 命中即不下降子树。
+        // 对隐藏**文件**（非目录）`-prune` 无实际作用，但整个表达式仍为真，
+        // 所以它同样不会走到 `-print` 分支 —— 正是我们要的。
+        val prune = buildString {
+            append("\\( -name '.*'")
+            excludeDirs.forEach { d -> append(" -o -name ").append(quote(d)) }
+            append(" \\) -prune -o ")
+        }
         val cmd = "r=$r; " +
             "if [ -f \"\$r\" ]; then printf '%s\\n' \"\$r\"; exit 0; fi; " +
             "if [ ! -d \"\$r\" ]; then echo '${ERR_PREFIX}nodir'; exit 4; fi; " +
-            "find \"\$r\" -type f 2>/dev/null | head -n ${maxFiles + 1}"
+            "find \"\$r\" -mindepth 1 ${prune}-type f -print 2>/dev/null | head -n ${maxFiles + 1} " +
+            "| head -c ${MAX_OUTPUT_BYTES + 1}"
 
         val res = run(cmd, TIMEOUT_SEARCH)
         if (res.exitCode == 4 || res.stdout.contains("${ERR_PREFIX}nodir")) {
@@ -417,11 +543,26 @@ class ChannelFs(private val channel: BashChannel) {
         }
         if (res.timedOut) return ListResult(emptyList(), error = "列目录超时：$root")
 
-        val all = res.stdout.split("\n").filter { it.isNotEmpty() }
-        return if (all.size > maxFiles) {
-            ListResult(all.take(maxFiles), truncated = true)
-        } else {
-            ListResult(all)
+        // ⚠️ `head -c` 的截断判据：正常输出**每条路径都以换行结尾**（含最后一条），
+        // 所以「末尾没有换行」= 被字节数切断了。丢掉最后那条不完整的路径 ——
+        // 留着它会让调用方拿着一个残缺路径去 read，报出莫名其妙的「文件不存在」。
+        //
+        // 这道保护是必须的：`maxFiles` 只挡条数，不挡体积。路径平均 80 字节时
+        // 50000 条就是 4MB，远超 Binder 事务限制 —— 结果是**什么都收不到**
+        // （表现为超时），而不是「收到前 N 条」。
+        var out = res.stdout
+        var byteTruncated = false
+        if (out.isNotEmpty() && !out.endsWith("\n")) {
+            byteTruncated = true
+            val nl = out.lastIndexOf('\n')
+            out = if (nl >= 0) out.substring(0, nl + 1) else ""
+        }
+
+        val all = out.split("\n").filter { it.isNotEmpty() }
+        return when {
+            all.size > maxFiles -> ListResult(all.take(maxFiles), truncated = true)
+            byteTruncated -> ListResult(all, truncated = true)
+            else -> ListResult(all)
         }
     }
 
@@ -434,6 +575,219 @@ class ChannelFs(private val channel: BashChannel) {
             file.startsWith("./") -> file.substring(2)
             else -> file
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  批量读（RepoMap / Symbols 的底座）
+    // ══════════════════════════════════════════════════════════════
+
+    /**
+     * 批量读多个文件 —— **一次 Binder 往返读一整批**。
+     *
+     * ══════════════════════════════════════════════════════════════
+     *  为什么需要它
+     * ══════════════════════════════════════════════════════════════
+     *
+     * RepoMap / Symbols 要遍历整个仓库、读**每一个**源码文件。若用 [read]
+     * 逐个读，N 个文件就是 N 次 Intent 往返（每次 50~200ms）—— 一个 300 文件
+     * 的项目要 **15~60 秒**，用户会以为卡死了。批量读把往返数降到 N/60。
+     *
+     * ══════════════════════════════════════════════════════════════
+     *  协议（为什么这么设计）
+     * ══════════════════════════════════════════════════════════════
+     *
+     * 每个文件输出**两行**：
+     * ```
+     * CCM_B:F <size> <mtime> <路径的base64>
+     * CCM_C:<内容的base64>
+     * ```
+     * 跳过/缺失的文件只输出一行（没有内容行）：
+     * ```
+     * CCM_B:S <路径的base64>     ← 超过 MAX_BATCH_FILE_BYTES
+     * CCM_B:N <路径的base64>     ← 不是普通文件
+     * ```
+     *
+     * 三点设计理由：
+     *  1. **内容走 base64**：文件内容可能含任意字节（包括换行、`CCM_B:` 字样）。
+     *     base64 的字符集 `A-Za-z0-9+/=` **不含冒号**，所以内容行永远不可能
+     *     被误认成标记行 —— 解析不需要长度前缀或转义，这是刻意的。
+     *  2. **路径也走 base64**：路径可能含空格、引号、非 ASCII。虽然 [quote]
+     *     能保证 shell 侧安全，但回传时按空格 split 会切错 —— base64 一劳永逸。
+     *  3. **先 stat 再读**：一条命令里同时拿到 size/mtime（供 [FileVersionTracker]
+     *     的并发保护用），不必为每个文件再发一次 stat。
+     *
+     * @param paths 要读的路径（顺序会被保留）
+     * @param maxFiles 最多读几个（超出部分丢弃并置 `truncated`）
+     */
+    suspend fun readBatch(
+        paths: List<String>,
+        maxFiles: Int = 50_000,
+    ): BatchReadResult {
+        if (paths.isEmpty()) return BatchReadResult()
+        val wanted = if (paths.size > maxFiles) paths.take(maxFiles) else paths
+        var truncated = wanted.size < paths.size
+
+        val files = mutableListOf<BatchFile>()
+        val skipped = mutableListOf<String>()
+        var error: String? = null
+
+        var i = 0
+        while (i < wanted.size) {
+            // 分批依据是**命令长度**，不是文件个数 —— 单条命令是一个 argv 元素，
+            // 受 MAX_ARG_STRLEN（128KB）约束。留足余量取 8KB 装路径。
+            val batch = mutableListOf<String>()
+            var chars = 0
+            while (i < wanted.size && batch.size < MAX_BATCH_FILES) {
+                val p = wanted[i]
+                val cost = p.length + 3 // 引号 + 空格
+                if (batch.isNotEmpty() && chars + cost > 8_000) break
+                batch += p
+                chars += cost
+                i++
+            }
+
+            val r = readBatchOnce(batch)
+            files += r.files
+            skipped += r.skipped
+            if (r.error != null) {
+                // 一批失败就整体停下并上报 —— 继续读剩下的只会让用户等到超时，
+                // 且「部分结果」比「明确失败」更容易误导（以为扫全了）。
+                error = r.error
+                break
+            }
+            // ⚠️ 批内可能因累计预算提前停下（只处理了前 k 个）。剩下的一定要
+            // 接着读，否则静默漏文件 —— 对只读的 RepoMap 是「少几个符号」，
+            // 对写操作的 SafeRename 就是「以为全改了、其实没改」。
+            val done = r.processed
+            if (done < batch.size) {
+                i = i - batch.size + done
+                if (done == 0) break // 防死循环：一个都没处理说明卡住了
+            }
+        }
+
+        return BatchReadResult(files, skipped, truncated = truncated, error = error)
+    }
+
+    /** 读一批（调用方保证 [paths] 已按长度切好）。 */
+    private suspend fun readBatchOnce(paths: List<String>): BatchReadResult {
+        if (paths.isEmpty()) return BatchReadResult()
+        val list = paths.joinToString(" ") { quote(it) }
+
+        val cmd = buildString {
+            // `base64 -w0` 是 GNU 的（不加会 76 字符换行，多行会把协议打乱）；
+            // busybox 的 base64 本来就不换行、也不认 -w0。探测一次再定。
+            append("B='base64 -w0'; printf x | base64 -w0 >/dev/null 2>&1 || B='base64'; ")
+            // 累计预算：单文件上限挡不住「60 个中等文件加起来撑爆 Binder」。
+            // 超了就发 T 标记并停止 —— 剩下的下一批再读（调用方会重新分批）。
+            append("tot=0; ")
+            append("for p in ").append(list).append("; do ")
+            append("if [ ! -f \"\$p\" ]; then ")
+            append("echo \"").append(BATCH_PREFIX).append("N \$(printf '%s' \"\$p\" | \$B)\"; continue; fi; ")
+            append("sz=\$(wc -c < \"\$p\" 2>/dev/null | tr -d ' '); [ -z \"\$sz\" ] && sz=0; ")
+            append("if [ \"\$sz\" -gt ").append(MAX_BATCH_FILE_BYTES).append(" ]; then ")
+            append("echo \"").append(BATCH_PREFIX).append("S \$(printf '%s' \"\$p\" | \$B)\"; continue; fi; ")
+            append("tot=\$((tot + sz)); ")
+            append("if [ \"\$tot\" -gt ").append(MAX_BATCH_TOTAL_BYTES).append(" ]; then ")
+            append("echo \"").append(BATCH_PREFIX).append("T\"; break; fi; ")
+            append("mt=\$(stat -c '%Y' \"\$p\" 2>/dev/null || echo 0); ")
+            append("echo \"").append(BATCH_PREFIX)
+                .append("F \$sz \$mt \$(printf '%s' \"\$p\" | \$B)\"; ")
+            // 内容行：即使 base64 失败也占一行（`CCM_C:` 空内容），
+            // 否则解析器会把下一个文件的标记行当成这一行的内容，全盘错位。
+            append("c=\$(\$B \"\$p\" 2>/dev/null) || c=''; ")
+            append("echo \"").append(CONTENT_PREFIX).append("\$c\"; ")
+            append("done")
+        }
+
+        val r = run(cmd, TIMEOUT_SEARCH)
+        if (r.timedOut) return BatchReadResult(error = "批量读超时（${TIMEOUT_SEARCH}ms，${paths.size} 个文件）")
+        if (r.stdout.isEmpty()) return BatchReadResult(error = describe(r))
+
+        val lines = r.stdout.split("\n")
+        val files = mutableListOf<BatchFile>()
+        val skipped = mutableListOf<String>()
+
+        var idx = 0
+        var processed = 0
+        while (idx < lines.size) {
+            val line = lines[idx]
+            if (!line.startsWith(BATCH_PREFIX)) {
+                idx++
+                continue
+            }
+            val body = line.substring(BATCH_PREFIX.length)
+
+            when {
+                // 累计预算用尽：本批到此为止，剩下的交给下一批。
+                // 注意这里**不**置 truncated —— 那个字段是给「maxFiles 截断」
+                // 用的；预算停下由 processed < batch.size 表达，调用方会续读。
+                body.startsWith("T") -> break
+
+                body.startsWith("N") -> {
+                    decodePath(body.substring(1))?.let { skipped += it }
+                    processed++
+                    idx++
+                }
+
+                body.startsWith("S") -> {
+                    decodePath(body.substring(1))?.let { skipped += it }
+                    processed++
+                    idx++
+                }
+
+                body.startsWith("F") -> {
+                    // `F <size> <mtime> <pathB64>` —— 路径 base64 里没有空格，
+                    // 所以按空格切三段是安全的（limit=3 让最后一段吃下剩余内容）。
+                    val parts = body.substring(1).trim().split(" ", limit = 3)
+                    val size = parts.getOrNull(0)?.toLongOrNull() ?: 0L
+                    val mtime = parts.getOrNull(1)?.toLongOrNull() ?: 0L
+                    val path = parts.getOrNull(2)?.let { decodePath(" $it") }
+
+                    val contentLine = lines.getOrNull(idx + 1)
+                    if (path == null || contentLine == null || !contentLine.startsWith(CONTENT_PREFIX)) {
+                        // 内容行缺失 = 输出被截断（Binder 上限 / 命令被杀）。
+                        // 不能继续解析：后面的行归属已经不可信了。
+                        return BatchReadResult(
+                            files, skipped, processed,
+                            error = "批量读输出不完整（第 ${idx + 1} 行后缺少内容行）—— " +
+                                "可能是单批体积超过 Binder 限制",
+                        )
+                    }
+                    val text = decodeContent(contentLine.substring(CONTENT_PREFIX.length))
+                    if (text == null) {
+                        return BatchReadResult(
+                            files, skipped, processed,
+                            error = "批量读内容解码失败（第 ${idx + 2} 行）",
+                        )
+                    }
+                    files += BatchFile(path, text, size, mtime * 1000L)
+                    processed++
+                    idx += 2
+                }
+
+                else -> idx++
+            }
+        }
+
+        return BatchReadResult(files, skipped, processed)
+    }
+
+    /** 解析 `F`/`N`/`S` 行尾部的「空格 + 路径 base64」。解不出来返回 null。 */
+    private fun decodePath(raw: String): String? {
+        val b64 = raw.trim()
+        if (b64.isEmpty()) return null
+        return try {
+            String(java.util.Base64.getDecoder().decode(b64), Charsets.UTF_8)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /** 内容 base64 → 文本。空串是合法的（空文件）。 */
+    private fun decodeContent(b64: String): String? = try {
+        String(java.util.Base64.getDecoder().decode(b64.trim()), Charsets.UTF_8)
+    } catch (_: Throwable) {
+        null
     }
 
     // ══════════════════════════════════════════════════════════════

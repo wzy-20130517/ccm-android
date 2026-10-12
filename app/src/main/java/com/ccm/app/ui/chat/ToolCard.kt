@@ -243,13 +243,34 @@ fun ToolCallGroup(
 
                 // 流式中：正在生成、还没关联到工具的正文（Web `MainContent.tsx:1319-1323`）
                 // 13px 灰字 + shimmer 扫光 —— 与组头同款动画（`animate-shimmer-text`）。
-                if (isStreaming && pendingWorkText.isNotBlank()) {
-                    ToolHeaderShimmer(
-                        text = pendingWorkText,
-                        style = CCMText.body13.copy(lineHeight = 19.44.sp),
-                        modifier = Modifier.padding(horizontal = 3.68.dp, vertical = 5.52.dp),
-                        maxLines = Int.MAX_VALUE,
-                    )
+                //
+                // 【2026-10-12 去掉 isStreaming 限制】
+                // 原来是 `isStreaming && pendingWorkText.isNotBlank()` ——
+                // 而 pendingWorkText 在**定型气泡**里也会被传进来（见调用方
+                // MessageBubble 的 `pending = if (streamingClean.length > consumed)`）。
+                // 当 isStreaming 变 false 但 pending 还没被清掉的那个窗口
+                // （Done 到达后、气泡定型前的交接瞬间），两边都不渲染 →
+                // **正文凭空消失**（用户报「助手正文有时候会消失」）。
+                //
+                // 现在只要非空就显示 —— 内容不丢是硬要求，动效（shimmer）
+                // 只在流式中才需要，用 isStreaming 单独控制。
+                if (pendingWorkText.isNotBlank()) {
+                    if (isStreaming) {
+                        ToolHeaderShimmer(
+                            text = pendingWorkText,
+                            style = CCMText.body13.copy(lineHeight = 19.44.sp),
+                            modifier = Modifier.padding(horizontal = 3.68.dp, vertical = 5.52.dp),
+                            maxLines = Int.MAX_VALUE,
+                        )
+                    } else {
+                        // 定型后：普通灰字（无 shimmer 动效，因为已经不再生成）
+                        Text(
+                            text = pendingWorkText,
+                            style = CCMText.body13.copy(lineHeight = 19.44.sp),
+                            color = colors.textSecondary,
+                            modifier = Modifier.padding(horizontal = 3.68.dp, vertical = 5.52.dp),
+                        )
+                    }
                 }
 
                 // 组尾：全跑完且不在流式中 → Check + Done
