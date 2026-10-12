@@ -70,9 +70,13 @@ fun AttachSubmenuCard(
                 .background(colors.border),
         )
         listOf(
+            // 【2026-10-12 改文案】原来「文件（以路径附带，模型用 Read 读）」——
+            // 但发送逻辑已改成：**文本类文件直接读内容进消息**
+            //（见 FileAttachment.buildMessageText，对齐 Web 的 buildUserContent）。
+            // 描述与实际行为不符，改掉。
             "拍照" to onCamera,
             "图片（可多选，随消息发给模型看）" to onImages,
-            "文件（以路径附带，模型用 Read 读）" to onFiles,
+            "文件（文本类直接读内容，其他用 Read）" to onFiles,
         ).forEach { (label, act) ->
             Text(
                 text = label,
