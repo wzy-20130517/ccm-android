@@ -680,10 +680,18 @@ class ChatSession(
         )
         // 对齐 Web 的自动命名：首条用户消息立即作为本地标题兜底，
         // 避免发送后仍显示“新对话”，并交给 SessionAuto 随本轮保存落盘。
+        //
+        // 【2026-10-12 修】原来直接用 text —— 而带附件时 text 里拼了
+        // 「[附件: 名] 已保存到: 路径 …」（给模型看的元信息），
+        // 于是**会话标题变成一串路径**。
+        // 先 stripMetaTags 剥掉附件段，再取标题。
         if (container.sessionAuto?.title.isNullOrBlank()) {
-            container.sessionAuto?.title = text.trim()
+            container.sessionAuto?.title = com.ccm.app.core.session
+                .stripMetaTags(text)
+                .trim()
                 .replace(Regex("\\s+"), " ")
                 .take(48)
+                .ifBlank { "新对话" }
         }
         _state.value = _state.value.copy(
             bubbles = _state.value.bubbles + userBubble,
