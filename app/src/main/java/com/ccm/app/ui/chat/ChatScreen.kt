@@ -320,10 +320,31 @@ fun ChatScreen(
                 var following by remember { mutableStateOf(true) }
 
                 // ① 监听用户手势：滚动中且不在底部 → 关闭跟随
+                //
+                // 【2026-10-12 三修：这里是真正的根因，前几版都改错地方了】
+                //
+                // 原来 `snapshotFlow { listState.isScrollInProgress }` ——
+                // **block 里只读了 isScrollInProgress**，所以只有它变化才触发。
+                // 而 isAtBottom 是在 collect 里读的，它的变化**不会触发**。
+                //
+                // 实际时序（用户上滑）：
+                //   ① 手指按下 → isScrollInProgress false→true → 触发
+                //      → 但此刻 isAtBottom 还是 true（还没滑出 50dp）
+                //      → `scrolling && !atBottom` = false → **不关**
+                //   ② 继续滑动 → isScrollInProgress 保持 true（**值没变**）
+                //      → 即使 isAtBottom 变成了 false，**也不会再触发**
+                //   ③ 手指抬起 → isScrollInProgress true→false → 触发
+                //      → 但 scrolling 已是 false → 条件不满足 → **不关**
+                //
+                // **结论：following 永远不会变成 false** → ③ 一直滚到底
+                // → 用户每次看到输出都被拉回底部（「随着 Agent 输出而被下拉」）。
+                //
+                // 修法：把 `isAtBottom` 也放进 snapshotFlow 的 **block**
+                //（参与依赖追踪）—— 它变 false 时就能触发。
                 LaunchedEffect(listState) {
-                    snapshotFlow { listState.isScrollInProgress }
-                        .collect { scrolling ->
-                            if (scrolling && !isAtBottom) {
+                    snapshotFlow { listState.isScrollInProgress to isAtBottom }
+                        .collect { (scrolling, atBottom) ->
+                            if (scrolling && !atBottom) {
                                 following = false
                             }
                         }
