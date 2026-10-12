@@ -216,16 +216,23 @@ fun ChatScreenConnected(
     ) { ok ->
         if (ok) pendingImages = pendingImages + cameraFile.absolutePath
     }
+    // 【2026-10-12 修】同首页 —— `*/*` 能选到图片，原来全塞进 pendingFiles
+    // （图片被当二进制处理）。按 mime 分流。
     val fileLauncher = rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents(),
     ) { uris ->
         if (!uris.isNullOrEmpty()) {
             ioScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                val paths = uris.mapNotNull {
-                    com.ccm.app.core.image.AttachmentCache.copyToCache(ctx, it)
+                val images = mutableListOf<String>()
+                val files = mutableListOf<String>()
+                for (uri in uris) {
+                    val path = com.ccm.app.core.image.AttachmentCache.copyToCache(ctx, uri) ?: continue
+                    val mime = ctx.contentResolver.getType(uri) ?: ""
+                    if (mime.startsWith("image/")) images += path else files += path
                 }
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    if (paths.isNotEmpty()) pendingFiles = pendingFiles + paths
+                    if (images.isNotEmpty()) pendingImages = pendingImages + images
+                    if (files.isNotEmpty()) pendingFiles = pendingFiles + files
                 }
             }
         }

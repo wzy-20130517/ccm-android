@@ -184,16 +184,25 @@ fun LandingScreen(
     ) { ok ->
         if (ok) pendingImages = pendingImages + cameraFile.absolutePath
     }
+    // 【2026-10-12 修】`*/*` 选择器**也能选到图片** —— 原来全部塞进
+    // pendingFiles，于是图片走了 FileAttachment（当二进制处理，
+    // 拼「已保存到: 路径」让模型 Read —— 而 Read 读不了二进制）。
+    // 现在按 mime 分流：图片进 pendingImages（多模态通道），其余进 pendingFiles。
     val fileLauncher = rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents(),
     ) { uris ->
         if (!uris.isNullOrEmpty()) {
             ioScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                val paths = uris.mapNotNull {
-                    com.ccm.app.core.image.AttachmentCache.copyToCache(ctx, it)
+                val images = mutableListOf<String>()
+                val files = mutableListOf<String>()
+                for (uri in uris) {
+                    val path = com.ccm.app.core.image.AttachmentCache.copyToCache(ctx, uri) ?: continue
+                    val mime = ctx.contentResolver.getType(uri) ?: ""
+                    if (mime.startsWith("image/")) images += path else files += path
                 }
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    if (paths.isNotEmpty()) pendingFiles = pendingFiles + paths
+                    if (images.isNotEmpty()) pendingImages = pendingImages + images
+                    if (files.isNotEmpty()) pendingFiles = pendingFiles + files
                 }
             }
         }
