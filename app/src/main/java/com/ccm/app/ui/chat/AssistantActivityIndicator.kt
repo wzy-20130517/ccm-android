@@ -169,18 +169,28 @@ fun AssistantActivityIndicator(
     // 于是「正在深度思考」旁边的星芒**永远不显示**，用户报
     // 「Agent 输出没有像 web 一样的星芒旋转」。
     //
-    // 现在 STREAMING 也播主循环：sprite 本身就是「旋转形变」序列，
-    // 思考中持续转 = 用户要的效果。DONE 仍不显示（已完成不该抢注意力）。
+    // 【2026-10-12 加 DONE 态】
+    //
+    // 原来 DONE 直接 return（什么都不显示）。但 Web 的 `tailPhase = 'done'`
+    // （回复完成、消息有内容）**会显示星芒**——`typing.lottie` 定格第 3 帧
+    // （`MainContent.tsx:1461` 的 `if (tailPhase === 'done')` 分支）。
+    // 用户报「回复完成后还没显示」就是这个。
+    //
+    // 降级策略：APK 没有 typing.lottie（那要引 lottie 依赖 + 12 张 webp），
+    // 用 **sprite 的第 0 帧**（完整星芒形态）定格代替 —— 视觉上都是
+    // 「一个静止的橙色星芒」，符合「已完成」的语义。
     val active = phase == ActivityPhase.WAITING ||
         phase == ActivityPhase.STREAMING ||
+        phase == ActivityPhase.DONE ||
         dissolving
     if (!active) return
 
     Canvas(modifier = modifier.size(size)) {
-        val frame = if (dissolving) {
-            dissolveFrame.coerceIn(0, SPRITE_FRAME_COUNT - 1)
-        } else {
-            (progress * SPRITE_FRAME_COUNT).toInt().coerceIn(0, SPRITE_FRAME_COUNT - 1)
+        val frame = when {
+            // DONE：定格在第 0 帧（完整星芒），不播动画
+            phase == ActivityPhase.DONE && !dissolving -> 0
+            dissolving -> dissolveFrame.coerceIn(0, SPRITE_FRAME_COUNT - 1)
+            else -> (progress * SPRITE_FRAME_COUNT).toInt().coerceIn(0, SPRITE_FRAME_COUNT - 1)
         }
         val scaleF = this.size.width / SPRITE_FRAME_SIZE   // viewBox 100×100 → 目标尺寸
         clipRect(

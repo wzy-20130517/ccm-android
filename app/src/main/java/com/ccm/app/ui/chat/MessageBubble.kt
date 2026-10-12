@@ -775,6 +775,34 @@ fun MessageList(
                         onOpen = onOpenDocument,
                     )
                 }
+
+                // 【2026-10-12 加「回复完成」的星芒】
+                //
+                // Web 的 `tailPhase = 'done'`（`MainContent.tsx:1444-1462`）：
+                // 回复完成且这条消息有内容时，**在消息末尾**显示一个定格星芒
+                // （`typing.lottie` 第 3 帧 + `interactive` 可点重播）。
+                // 用户报「回复完成后还没显示」就是这个位置。
+                //
+                // 条件对齐 Web：`!loading && msg.content` —— 即
+                //   · 这条是**最后一条**助手消息（`index == 0`，reverseLayout）
+                //   · **不在跑**（`!streamingRunning`）
+                //   · 有正文或工具卡（否则空消息不显示）
+                //
+                // APK 用 sprite 定格帧代替 typing.lottie（降级，见组件注释）。
+                if (index == 0 && !streamingRunning && !bubble.isUser &&
+                    (bubble.text.isNotBlank() || bubble.toolCards.isNotEmpty())
+                ) {
+                    androidx.compose.foundation.layout.Box(
+                        modifier = androidx.compose.ui.Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, top = 6.dp),
+                    ) {
+                        AssistantActivityIndicator(
+                            size = 25.76.dp,
+                            phase = ActivityPhase.DONE,
+                        )
+                    }
+                }
             }   // ← 闭 else（if (bubble.isUser) 的另一半）
             }   // ← 闭 Column（item 内部的垂直布局）
             }   // ← 闭 item(key = bubble.key)
