@@ -676,7 +676,9 @@ fun ChatScreenConnected(
                         // buildUserContent。原来只给路径，模型经常忘记 Read）
                         val fileLines = com.ccm.app.core.image.FileAttachment
                             .buildMessageText(pendingFiles)
-                        session.send(text + fileLines, pendingImages)
+                        // filePaths 传进去 —— UI 用它渲染文件卡
+                        //（text 里的元信息会被 stripMetaTags 剥掉，不靠它显示）
+                        session.send(text + fileLines, pendingImages, pendingFiles)
                         pendingImages = emptyList()
                         pendingFiles = emptyList()
                     }

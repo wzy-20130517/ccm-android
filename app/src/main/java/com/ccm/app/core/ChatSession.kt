@@ -606,7 +606,12 @@ class ChatSession(
      * 已有任务在跑时**直接忽略**（防用户连点发送）。
      * 要打断当前任务用 [stop]。
      */
-    fun send(text: String, imagePaths: List<String> = emptyList()) {
+    fun send(
+        text: String,
+        imagePaths: List<String> = emptyList(),
+        /** 附带文件（非图片）—— 与 [text] 里拼的附件元信息同源，UI 用它显示文件卡。 */
+        filePaths: List<String> = emptyList(),
+    ) {
         // 【2026-10-11 修「仅带一张图无文本无法发送」】
         //
         // 原来只判 `text.isBlank()` 就 return —— 纯图消息被静默丢弃。
@@ -677,6 +682,7 @@ class ChatSession(
             text = text,
             messageId = "user-${System.currentTimeMillis()}",
             images = imagePaths,
+            files = filePaths,
         )
         // 对齐 Web 的自动命名：首条用户消息立即作为本地标题兜底，
         // 避免发送后仍显示“新对话”，并交给 SessionAuto 随本轮保存落盘。
@@ -1648,6 +1654,19 @@ class ChatSession(
          * 显示占位即可，不影响对话）。
          */
         val images: List<String> = emptyList(),
+        val images: List<String> = emptyList(),
+        /**
+         * 用户消息附带的**文件**路径（非图片，2026-10-12 加）。
+         *
+         * 与 [images] 分开是因为两者通道不同：
+         *   · images → 多模态（模型直接看图）
+         *   · files  → 文本随消息（文本类读内容，其他给路径）
+         *
+         * 【为什么需要】原来文件信息只存在于拼进 text 的
+         * 「[附件: 名] 已保存到: 路径」里 —— 渲染时被 stripMetaTags 剥掉，
+         * 于是**用户气泡里完全看不到自己发了什么文件**。
+         */
+        val files: List<String> = emptyList(),
         /**
          * 该消息里被**写过**的文件（从 toolCards 推导，见 [deriveDocuments]）。
          *

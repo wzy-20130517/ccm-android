@@ -106,7 +106,7 @@ import com.ccm.app.ui.theme.CCMTheme
 fun LandingScreen(
     modifier: Modifier = Modifier,
     greeting: String = greetingFor(null),
-    onSend: (String, List<String>) -> Unit = { _, _ -> },
+    onSend: (String, List<String>, List<String>) -> Unit = { _, _, _ -> },
     modelLabel: String = "未配置模型",
     /** 点首页模型 chip → 打开模型选择器（第22批接通，原 TODO 空转）。 */
     onModelClick: () -> Unit = {},
@@ -379,7 +379,7 @@ fun LandingScreen(
                     // 消息（对齐 Web 的 buildUserContent），二进制才给路径。
                     val fileLines = com.ccm.app.core.image.FileAttachment
                         .buildMessageText(pendingFiles)
-                    sendWithImages(onSend, text + fileLines, pendingImages) {
+                    sendWithImages(onSend, text + fileLines, pendingImages, pendingFiles) {
                         pendingImages = emptyList()
                         pendingFiles = emptyList()
                         input = ""
@@ -1116,14 +1116,16 @@ private fun ArrowUpIcon(
  * `(String) -> Unit`，pendingImages 的清空必须在能访问它的外层完成。
  */
 private fun sendWithImages(
-    onSend: (String, List<String>) -> Unit,
+    onSend: (String, List<String>, List<String>) -> Unit,
     text: String,
     images: List<String>,
+    files: List<String> = emptyList(),
     onSent: () -> Unit,
 ) {
     // 【2026-10-11】原来 `if (text.isBlank()) return` —— 纯图消息被拦。
     // 与 ChatSession.send / InputBar 的判据统一：有图也算有效输入。
-    if (text.isBlank() && images.isEmpty()) return
-    onSend(text, images)
+    // 【2026-10-12】加 files —— 纯文件（无文字无图）也要能发。
+    if (text.isBlank() && images.isEmpty() && files.isEmpty()) return
+    onSend(text, images, files)
     onSent()   // 清 pendingImages（input 的清空在 onSend 成功路径由外层做）
 }

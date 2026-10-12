@@ -28,16 +28,49 @@ object AttachmentCache {
     private val MIME_EXT = mapOf(
         "image/png" to "png", "image/gif" to "gif",
         "image/webp" to "webp", "image/bmp" to "bmp",
+        "image/jpeg" to "jpg",
     )
 
-    /** 把 content URI 拷进 cache，返回绝对路径；失败返回 null。 */
+    /**
+     * 把 content URI 拷进 cache，返回绝对路径；失败返回 null。
+     *
+     * 【2026-10-12 保留原文件名 —— 这是个把整个文件功能搞坏的 bug】
+     *
+     * 原来：
+     * ```kotlin
+     * val ext = MIME_EXT[mime] ?: "jpg"                    // 非图片一律 .jpg
+     * val out = File(dir, "img_${时间戳}_${随机}.$ext")     // 硬编码 img_ 前缀
+     * ```
+     *
+     * 后果：**选任何文件都被改名成 `img_xxx.jpg`** —— 用户选 `main.mjs`
+     * 得到 `img_1791808240561_7072.jpg`。连锁反应：
+     *   ① `FileAttachment` 按扩展名判断，`.jpg` 不在文本扩展名里
+     *      → 落到「二进制」分支 → 不读内容、只给路径
+     *   ② 模型看到的是 `.jpg`，以为那是张图片
+     *   ③ 用户气泡/文件卡显示的名字也是 `img_xxx.jpg`
+     *
+     * 现在：查 ContentResolver 的 DISPLAY_NAME 拿**原文件名**，
+     * 存成 `原名.时间戳.扩展名`（前缀防重名，扩展名从原名取）。
+     */
     fun copyToCache(context: Context, uri: Uri): String? {
-        // 块体而非表达式体 —— 中途要 return null（expression body 禁止 return）
         return try {
             val dir = File(context.filesDir, "attachments").apply { mkdirs() }
-            val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
-            val ext = MIME_EXT[mime] ?: "jpg"
-            val out = File(dir, "img_${System.currentTimeMillis()}_${(0..9999).random()}.$ext")
+            val displayName = queryDisplayName(context, uri)
+            val mime = context.contentResolver.getType(uri).orEmpty()
+
+            // 扩展名：优先从原文件名取；取不到用 mime 映射；再取不到用 bin
+            val extFromName = displayName?.substringAfterLast('.', "")?.lowercase().orEmpty()
+            val ext = extFromName.ifBlank { MIME_EXT[mime] ?: "bin" }
+
+            // 保留原名（去掉扩展名部分，避免 `a.md.时间戳.md` 这种怪名）
+            val base = displayName
+                ?.substringBeforeLast('.', displayName)
+                ?.replace(Regex("[^\\w\\u4e00-\\u9fff.-]"), "_")   // 去掉路径分隔符等
+                ?.take(40)
+                ?.takeIf { it.isNotBlank() }
+                ?: "file"
+
+            val out = File(dir, "${base}_${System.currentTimeMillis()}.$ext")
             val input = context.contentResolver.openInputStream(uri) ?: return null
             input.use { inp ->
                 FileOutputStream(out).use { output -> inp.copyTo(output) }
@@ -46,6 +79,16 @@ object AttachmentCache {
         } catch (_: Throwable) {
             null
         }
+    }
+
+    /** 查 ContentResolver 拿原始文件名（拿不到返回 null）。 */
+    private fun queryDisplayName(context: Context, uri: Uri): String? = try {
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
+        }
+    } catch (_: Throwable) {
+        null
     }
 
     /** 清理超过 7 天的附件（发送完的图留在 cache 里会无限涨）。 */

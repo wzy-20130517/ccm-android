@@ -112,6 +112,13 @@ fun UserBubble(
     text: String,
     modifier: Modifier = Modifier,
     images: List<String> = emptyList(),
+    /**
+     * 附带文件（非图片，2026-10-12 加）。
+     *
+     * 【为什么单独传】文件信息在 text 里是「[附件: 名] 已保存到: 路径」，
+     * 渲染时被 stripMetaTags 剥掉 —— 不单独传的话用户看不到自己发了什么。
+     */
+    files: List<String> = emptyList(),
     onResend: (() -> Unit)? = null,
     /** 消息时间戳（ms；0 = 不显示）。 */
     timestampMs: Long = 0L,
@@ -132,7 +139,7 @@ fun UserBubble(
     // 见 stripMetaTags 注释）。正常路径已在 loadHistory / 上面的剥离
     // 双重拦截，但这里再兜一层：无论如何都不该在屏幕上出现一个
     // 纯空白的背景块 —— 用户看到只会困惑「这是什么」。
-    if (text.isBlank() && images.isEmpty()) return
+    if (text.isBlank() && images.isEmpty() && files.isEmpty()) return
 
     val uCtx = androidx.compose.ui.platform.LocalContext.current
     val copyUser: (String) -> Unit = { txt ->
@@ -189,6 +196,21 @@ fun UserBubble(
         ) {
             Column {
                 // 附带图片缩略图（第20批 —— 原来只有 [图片] 文字，用户看不到自己发了啥）
+                // 【2026-10-12】文件卡（非图片附件）—— 与图片缩略图同排同尺寸。
+                // 文件信息在 text 里被 stripMetaTags 剥掉了，必须靠这个字段显示。
+                if (files.isNotEmpty()) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(bottom = if (text.isNotBlank()) 6.dp else 0.dp),
+                    ) {
+                        files.forEach { path ->
+                            com.ccm.app.ui.common.FileChip(
+                                name = path.substringAfterLast('/'),
+                                sizeBytes = java.io.File(path).length(),
+                            )
+                        }
+                    }
+                }
                 if (images.isNotEmpty()) {
                     // 第21批：点缩略图 → 全屏查看（每气泡独立 state，谁点谁显示）
                     var viewing by remember { mutableStateOf<String?>(null) }
@@ -649,6 +671,7 @@ fun MessageList(
                     // 空白气泡」。现在两处共用同一个函数，不会再错位。
                     text = com.ccm.app.core.session.stripMetaTags(bubble.text),
                     images = bubble.images,
+                    files = bubble.files,
                     onResend = onResend?.let { fn -> { fn(bubble.messageId) } },
                     onEdit = onEdit?.let { fn -> { newText: String -> fn(bubble.messageId, newText) } },
                     timestampMs = bubble.timestamp,

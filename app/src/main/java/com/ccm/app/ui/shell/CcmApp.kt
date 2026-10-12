@@ -458,7 +458,11 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
      * 现在改成：session 为空 → 直接跳设置页（配 API 的唯一入口）。
      * 首页顶部同时会显示 [initError] 提示条（见下方 notice）。
      */
-    fun sendAndOpen(text: String, images: List<String> = emptyList()) {
+    fun sendAndOpen(
+        text: String,
+        images: List<String> = emptyList(),
+        files: List<String> = emptyList(),
+    ) {
         // ★ 2026-09-29 slash 全局拦截：原来拦截只在 ChatScreenConnected 的
         //   onSend 里，**首页输入斜杠命令直接 session.send 发给模型**
         //   （模型回一句「我不是这样用的」）。提到唯一入口，两端一致。
@@ -683,7 +687,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
             // 不跳页（跳设置页会让用户觉得「点了乱跳」，见下方旧注释）
             return
         }
-        activeSession?.send(text, images)
+        activeSession?.send(text, images, files)
         // ★ 不管有没有 session 都切到对话页 —— 用户按了发送/点了胶囊，
         //   就该看到「消息已发出」的界面。没配 Provider 时对话页会显示
         //   提示条（由 initError 驱动），而不是把人踢去设置页。
@@ -1023,7 +1027,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                     CcmRoute.HOME -> LandingScreen(
                         greeting = greetingFor(profileName),
                         // ★ 接线：首页输入框真的能发消息了（第18批带图）
-                        onSend = { t, imgs -> sendAndOpen(t, imgs) },
+                        onSend = { t, imgs, files -> sendAndOpen(t, imgs, files) },
                         onModelClick = { showModelPicker = true },
                         // 加号菜单的「管理技能」「添加连接器」→ 定制页
                         onNavigateCustomize = { navigate(CcmRoute.CUSTOMIZE) },
@@ -1475,7 +1479,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
                         modelName = modelName,
                         // H1：协作输入发进主对话（APK 无 Web 的协作任务后端 ——
                         // Web 是 onStartTask 开独立任务流，这里是诚实降级）
-                        onSend = { t, imgs -> sendAndOpen(t, imgs) },
+                        onSend = { t, imgs, files -> sendAndOpen(t, imgs, files) },
                     )
 
                     CcmRoute.SCHEDULED -> {
@@ -1517,7 +1521,7 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
 
                     else -> LandingScreen(
                         greeting = greetingFor(profileName),
-                        onSend = { t, imgs -> sendAndOpen(t, imgs) },
+                        onSend = { t, imgs, files -> sendAndOpen(t, imgs, files) },
                         onNavigateCustomize = { navigate(CcmRoute.CUSTOMIZE) },
                         onModelClick = { showModelPicker = true },
                         modelPickerContent = {
