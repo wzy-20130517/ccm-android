@@ -1654,7 +1654,6 @@ class ChatSession(
          * 显示占位即可，不影响对话）。
          */
         val images: List<String> = emptyList(),
-        val images: List<String> = emptyList(),
         /**
          * 用户消息附带的**文件**路径（非图片，2026-10-12 加）。
          *
