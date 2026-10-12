@@ -493,6 +493,64 @@ class ChatSession(
     }
 
     /**
+     * 编辑用户消息并重发（2026-10-11 加，对齐 Web 的 `handleEditSave`）。
+     *
+     * ## 语义
+     *
+     * 与 [resendFrom] 相同（截断该消息及其之后的所有内容，重新跑），
+     * 唯一区别是**用新的文本**。Web 的实现也是这样：
+     * `deleteMessagesFrom` 截断 → 用 `editingContent` 重发。
+     *
+     * ## 图片
+     *
+     * 保留原消息的图片（用户编辑的通常只是文字）。Web 也一样
+     * （`extractMessageAttachments(msg)` 取出原附件继续用）。
+     *
+     * ## 为什么不复用 resendFrom
+     *
+     * `resendFrom` 从**历史**里取 `target.text` —— 而编辑要用的新文本
+     * 不在历史里。所以单独实现：截断逻辑相同，但文本由调用方给。
+     */
+    fun editAndResend(messageId: String, newText: String) {
+        if (isRunning) return
+        if (newText.isBlank()) return
+
+        val history = container.agentLoop.getHistory()
+        val idx = history.indexOfLast { m ->
+            m.role == Message.ROLE_USER && messageId.endsWith("${m.timestamp}")
+        }
+        val target = if (idx >= 0) history[idx] else {
+            val b = _state.value.bubbles.firstOrNull { it.messageId == messageId }
+            if (b == null) return
+            val i2 = history.indexOfLast { m -> m.role == Message.ROLE_USER && m.text == b.text }
+            if (i2 < 0) return
+            history[i2]
+        }
+        val cut = history.indexOf(target).takeIf { it >= 0 } ?: return
+
+        // 取原消息的图片（编辑通常只改文字，图保留）—— 从气泡取，
+        // 与 resendFrom 同一策略（Message 结构里不存图，只在 Bubble 上）。
+        val images = (
+            _state.value.bubbles.firstOrNull { it.messageId == messageId }?.images
+                ?: emptyList()
+            ).filter { java.io.File(it).exists() }
+
+        // ① 截断历史（含目标本身 —— send 会重新 append）
+        container.agentLoop.setHistory(history.subList(0, cut).toList())
+        // ② UI 气泡同步截断（保留目标之前的）
+        val keep = _state.value.bubbles.indexOfLast { it.messageId == messageId }
+            .takeIf { it >= 0 } ?: _state.value.bubbles.size
+        _state.value = _state.value.copy(
+            bubbles = _state.value.bubbles.take(keep),
+            streaming = "",
+            toolCards = emptyList(),
+            error = null,
+        )
+        // ③ 用新文本重发
+        send(newText, images)
+    }
+
+    /**
      * 重试：重跑最后一条用户消息（错误横幅的「重试」按钮用）。
      *
      * 与 resendFrom 的区别：不截断——错误轮次的用户消息**已经进了历史**

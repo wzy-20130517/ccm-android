@@ -719,6 +719,9 @@ fun ChatScreenConnected(
         onSwitchClick = onSwitchClick,
         onVoice = voiceClick,
         onResend = { messageId -> session.resendFrom(messageId) },
+        // 编辑并重发（2026-10-11）—— 对齐 Web 的 handleEditSave：
+        // 截断该消息及之后的内容，用新文本重跑。
+        onEdit = { messageId, newText -> session.editAndResend(messageId, newText) },
         onRetry = { session.retryLast() },
     )
 }

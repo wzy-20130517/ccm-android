@@ -114,6 +114,14 @@ fun UserBubble(
     onResend: (() -> Unit)? = null,
     /** 消息时间戳（ms；0 = 不显示）。 */
     timestampMs: Long = 0L,
+    /**
+     * 点编辑铅笔 → 进入编辑模式（2026-10-11 加，对齐 Web 的 `onEdit`）。
+     *
+     * 保存后调 [com.ccm.app.core.ChatSession.editAndResend] ——
+     * 截断该消息及其之后的内容，用新文本重跑（与 Web 的
+     * `handleEditSave` 同一语义）。null = 不显示编辑按钮。
+     */
+    onEdit: ((String) -> Unit)? = null,
 ) {
     val colors = CCMTheme.colors
 
@@ -150,6 +158,9 @@ fun UserBubble(
         // 超长折叠（webgap #1：Web 有 Show more/less，APK 缺）——
         // 用户长文本（粘贴的日志等）会把页面撑爆，默认收起前 800 字。
         var expanded by remember(text) { mutableStateOf(false) }
+        // 编辑模式状态（2026-10-11）—— text 变化时重置（重发后是新气泡）
+        var editing by remember(text) { mutableStateOf(false) }
+        var editText by remember(text) { mutableStateOf(text) }
         val longText = text.length > 800
         val shownText = if (longText && !expanded) text.take(800) + "…" else text
 
@@ -211,7 +222,62 @@ fun UserBubble(
                         }
                     }
                 }
-                if (text.isNotBlank()) {
+                // ══════════════════════════════════════════════════════
+                //  编辑模式（2026-10-11 加，对齐 Web 的原地编辑）
+                // ══════════════════════════════════════════════════════
+                //
+                // Web：点铅笔 → 气泡内变成 textarea + Cancel/Save 两个按钮
+                //（`MainContent.tsx:875-915`）。保存 = 截断该消息及之后 +
+                // 用新内容重发（`handleEditSave`）。
+                if (editing) {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = editText,
+                        onValueChange = { editText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = CCMText.body14.copy(color = colors.textMain),
+                        colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = colors.border,
+                            unfocusedBorderColor = colors.border,
+                            focusedContainerColor = colors.input,
+                            unfocusedContainerColor = colors.input,
+                        ),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // Cancel（Web: `text-claude-textSecondary` 纯文字按钮）
+                        Text(
+                            text = "取消",
+                            style = CCMText.body13,
+                            color = colors.textSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable {
+                                    editing = false
+                                    editText = ""
+                                }
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        // Save（Web: 深底白字胶囊；disabled 时透明度 30%）
+                        val canSave = editText.isNotBlank() && editText != text
+                        Text(
+                            text = "保存",
+                            style = CCMText.body13,
+                            color = if (canSave) Color.White else colors.textSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (canSave) colors.textMain else colors.hover)
+                                .clickable(enabled = canSave) {
+                                    onEdit?.invoke(editText.trim())
+                                    editing = false
+                                }
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                        )
+                    }
+                } else if (text.isNotBlank()) {
                     // 与助手气泡同款：原生长按选取（MarkdownRenderer 里对
                     // Text 包的就是 SelectionContainer）。只包正文 Text ——
                     // 「展开」按钮有自己的 clickable，包进去会互相抢。
@@ -271,6 +337,25 @@ fun UserBubble(
                         .padding(3.dp),
                 )
             }
+            // 编辑（Pencil 14px）—— 2026-10-11 加，对齐 Web `MainContent.tsx:991`
+            //
+            // 点它进入原地编辑（气泡内变输入框 + 取消/保存）。
+            // 保存 = 截断该消息及之后 + 用新文本重发（同 Web 的 handleEditSave）。
+            if (onEdit != null) {
+                PainterIcon(
+                    R.drawable.ic_pencil,
+                    size = 14.dp,
+                    tint = colors.textSecondary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .clickable {
+                            // 进入编辑模式（初始文本 = 当前文本）
+                            editText = text
+                            editing = true
+                        }
+                        .padding(3.dp),
+                )
+            }
             // 复制（Copy 14px）
             PainterIcon(
                 R.drawable.ic_copy,
@@ -300,6 +385,11 @@ fun MessageList(
     modifier: Modifier = Modifier,
     /** 重发某条用户消息（webgap #1；null = 不显示重发入口）。 */
     onResend: ((String) -> Unit)? = null,
+    /**
+     * 编辑用户消息并重发（2026-10-11 加）——
+     * 参数：(messageId, 新文本)。null = 不显示编辑按钮。
+     */
+    onEdit: ((String, String) -> Unit)? = null,
     streaming: String = "",
     toolCards: List<ChatToolCard> = emptyList(),
     /** 正在流式生成的思考（State.thinking）。 */
@@ -528,6 +618,7 @@ fun MessageList(
                     text = com.ccm.app.core.session.stripMetaTags(bubble.text),
                     images = bubble.images,
                     onResend = onResend?.let { fn -> { fn(bubble.messageId) } },
+                    onEdit = onEdit?.let { fn -> { newText: String -> fn(bubble.messageId, newText) } },
                     timestampMs = bubble.timestamp,
                 )
             } else {

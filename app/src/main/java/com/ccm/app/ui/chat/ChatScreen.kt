@@ -113,6 +113,8 @@ fun ChatScreen(
     onRemoveImage: (String) -> Unit = {},
     /** 重发某条用户消息（webgap #1）。 */
     onResend: ((String) -> Unit)? = null,
+    /** 编辑用户消息并重发（2026-10-11 加）—— 参数：(messageId, 新文本)。 */
+    onEdit: ((String, String) -> Unit)? = null,
     /** 错误横幅的「重试」（null = 不显示按钮）。 */
     onRetry: (() -> Unit)? = null,
 ) {
@@ -315,6 +317,7 @@ fun ChatScreen(
                 MessageList(
                     bubbles = bubbles,
                     onResend = onResend,
+                    onEdit = onEdit,
                     streaming = streaming,
                     toolCards = toolCards,
                     streamingThinking = streamingThinking,
