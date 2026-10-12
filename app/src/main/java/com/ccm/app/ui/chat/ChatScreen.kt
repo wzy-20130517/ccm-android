@@ -385,16 +385,26 @@ fun ChatScreen(
                 var anchorKey by remember { mutableStateOf<Any?>(null) }
                 var anchorOffset by remember { mutableStateOf(0) }
 
-                // 记录锚点（脱离跟随时，持续更新为用户当前看的 item）
+                // 记录锚点 —— **只在用户滚动结束的那一刻**记录。
+                //
+                // 【2026-10-12 修一个隐蔽 bug】上一版的条件是
+                // `!following && !scrolling` —— 但**内容变化时 scrolling 也是
+                // false**，于是每次新 item 插入导致位移后，这个 collect 又触发、
+                // 把 anchorOffset 更新成**位移后**的值 → 补偿逻辑看到
+                // 「位置没变」→ 不补偿。**锚点被污染，补偿永远不生效。**
+                //
+                // 现在：只在 `scrolling` 从 **true → false** 的边沿记录 ——
+                // 那才是「用户手指离开屏幕」的时刻，之后内容怎么变都不动锚点。
                 LaunchedEffect(listState) {
+                    var wasScrolling = false
                     snapshotFlow {
                         val info = listState.layoutInfo
                         val first = info.visibleItemsInfo.firstOrNull()
                         Triple(first?.key, first?.offset ?: 0, listState.isScrollInProgress)
                     }.collect { (key, off, scrolling) ->
-                        // 只在「用户滚动结束」时更新锚点 —— 滚动中每帧都在变，
-                        // 记下来没意义（而且会覆盖用户真正停下的位置）
-                        if (!following && !scrolling && key != null) {
+                        val justStopped = wasScrolling && !scrolling
+                        wasScrolling = scrolling
+                        if (justStopped && !following && key != null) {
                             anchorKey = key
                             anchorOffset = off
                         }
@@ -402,26 +412,29 @@ fun ChatScreen(
                 }
 
                 // 补偿位移
+                //
+                // 【监听源：锚点项自己的 offset】上一版监听
+                // `totalItemsCount to visibleItemsInfo.size` —— 只能抓到
+                // 「新 item 插入」，抓不到「streaming 高度变化导致的位移」
+                //（那两个值都不变）。改成直接监听**锚点项的位置**。
                 LaunchedEffect(listState) {
                     snapshotFlow {
-                        // 监听「列表内容快照」—— item 数量或锚点项的高度变化
-                        // 都会让 LazyColumn 重新布局，需要重新校验锚点位置
-                        listState.layoutInfo.totalItemsCount to
-                            listState.layoutInfo.visibleItemsInfo.size
-                    }.collect {
-                        if (following) return@collect
-                        val target = anchorKey ?: return@collect
-                        val info = listState.layoutInfo
-                        val item = info.visibleItemsInfo.firstOrNull { it.key == target }
-                            ?: return@collect          // 锚点滚出可见范围了，不干预
+                        if (following) return@snapshotFlow null
+                        val target = anchorKey ?: return@snapshotFlow null
+                        val item = listState.layoutInfo.visibleItemsInfo
+                            .firstOrNull { it.key == target } ?: return@snapshotFlow null
+                        item.index to item.offset
+                    }.collect { pair ->
+                        if (pair == null) return@collect
+                        val (idx, off) = pair
                         // 位置变了才补偿（避免每帧都请求滚动 → 抖动）
                         //
                         // 符号：`visibleItemsInfo[i].offset` 是「item 相对视口
-                        // 起点的偏移」（负数 = 在起点之前）；`requestScrollToItem`
-                        // 的 scrollOffset 同语义 —— **同号传递**，不要取负。
-                        if (item.offset != anchorOffset) {
+                        // 起点的偏移」；`requestScrollToItem` 的 scrollOffset
+                        // 同语义 —— **同号传递**。
+                        if (off != anchorOffset) {
                             listState.requestScrollToItem(
-                                index = item.index,
+                                index = idx,
                                 scrollOffset = anchorOffset,
                             )
                         }
