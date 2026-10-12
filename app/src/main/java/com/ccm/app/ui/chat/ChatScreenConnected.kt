@@ -363,19 +363,108 @@ fun ChatScreenConnected(
     // 实现：菜单内容通过 `plusMenuContent` 参数交给 InputBar，
     // 由它在 `+` 按钮的 Box 里渲染 Popup —— 这样天然拿到按钮锚点。
     // 与 `modelPickerContent` 同一模式（那个也是这么做的）。
-    val attachMenuContent: (@Composable () -> Unit)? = if (showAttachMenu) {
+    // 【2026-10-12 三修：二级菜单也要锚定】
+    //
+    // 前两次修的是**一级菜单**的锚定；二级菜单（添加附件 → 拍照/图片/文件）
+    // 还是老的 `Popup(Alignment.Center)` —— 弹在屏幕正中。
+    //
+    // 现在两级**共用一个 lambda**：都锚定 + 按钮，内部按状态渲染。
+    // （一级/二级互斥，同时只可能有一个为 true。）
+    val attachMenuContent: (@Composable () -> Unit)? =
+        if (showAttachMenu || showAttachSubmenu) {
         {
             androidx.compose.ui.window.Popup(
                 alignment = androidx.compose.ui.Alignment.TopStart,
                 // 从按钮**上方**弹出（对齐 LandingScreen 的做法：
                 // 输入框贴近屏幕底部，向下弹会超出屏幕）
                 offset = androidx.compose.ui.unit.IntOffset(0, -(300 * 2.75f).toInt()),
-                onDismissRequest = { showAttachMenu = false },
+                onDismissRequest = {
+                    showAttachMenu = false
+                    showAttachSubmenu = false
+                },
                 properties = androidx.compose.ui.window.PopupProperties(
                     focusable = true,
                     clippingEnabled = true,
                 ),
             ) {
+                if (showAttachSubmenu) {
+                // 容器样式与 PlusMenu / ModelPickerMenu 完全一致
+                // （shadow 12dp → clip → background → border → 内边距），
+                // 三处菜单是同一套视觉，改一处要同步另两处。
+                androidx.compose.foundation.layout.Column(
+                    modifier = androidx.compose.ui.Modifier
+                        .width(200.56.dp)                                    // 与 PlusMenu 同宽
+                        .shadow(12.dp, androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp))
+                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp))
+                        .background(com.ccm.app.ui.theme.CCMTheme.colors.input)
+                        .border(
+                            1.dp,
+                            com.ccm.app.ui.theme.CCMTheme.colors.border,
+                            androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp),
+                        )
+                        .padding(horizontal = 6.44.dp)
+                        .padding(top = 6.44.dp, bottom = 1.dp),
+                ) {
+                    androidx.compose.material3.Text(
+                        "添加附件",
+                        style = com.ccm.app.ui.theme.CCMText.body14,
+                        color = com.ccm.app.ui.theme.CCMTheme.colors.textSecondary,
+                        modifier = androidx.compose.ui.Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                    androidx.compose.foundation.layout.Box(
+                        modifier = androidx.compose.ui.Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(com.ccm.app.ui.theme.CCMTheme.colors.border),
+                    )
+                    androidx.compose.foundation.layout.Column {
+                        listOf(
+                            "拍照" to {
+                                // 【2026-10-06】每次拍照生成新文件名（见 cameraFile 声明处的说明）
+                                val camDir = java.io.File(ctx.cacheDir, "attachments")
+                                // 确保目录存在 —— 相机是**另一个进程**，它不会替我们建目录；
+                                // 目录不存在时写入失败（TakePicture 回 ok=false 或静默失败）。
+                                // AttachmentCache 的 mkdirs() 只在发消息时调，首次拍照可能还没跑过。
+                                camDir.mkdirs()
+                                cameraFile = java.io.File(camDir, "cam_${System.currentTimeMillis()}.jpg")
+                                try {
+                                    cameraFile.parentFile?.mkdirs()
+                                    cameraLauncher.launch(
+                                        androidx.core.content.FileProvider.getUriForFile(
+                                            ctx,
+                                            ctx.packageName + ".fileprovider",
+                                            cameraFile,
+                                        ),
+                                    )
+                                } catch (t: Throwable) {
+                                    // 【2026-10-06 改】原来静默吞掉 —— 用户看到「点了没反应」，
+                                    // 完全不知道是 FileProvider 配置问题、相机不可用还是别的。
+                                    // 至少把原因说出来（这是最容易踩的坑之一）。
+                                    android.widget.Toast.makeText(
+                                        ctx,
+                                        "拍照启动失败：${t.message ?: t.javaClass.simpleName}",
+                                        android.widget.Toast.LENGTH_LONG,
+                                    ).show()
+                                }
+                                showAttachSubmenu = false
+                            },
+                            "图片（可多选，随消息发给模型看）" to { attachLauncher.launch("image/*"); showAttachSubmenu = false },
+                            "文件（以路径附带，模型用 Read 读）" to { fileLauncher.launch("*/*"); showAttachSubmenu = false },
+                        ).forEach { (label, act) ->
+                            androidx.compose.material3.Text(
+                                text = label,
+                                style = com.ccm.app.ui.theme.CCMText.body13,
+                                color = com.ccm.app.ui.theme.CCMTheme.colors.textMain,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                                    .clickable { act() }
+                                    .padding(vertical = 11.dp, horizontal = 4.dp),
+                            )
+                        }
+                    }
+                }
+                } else {
                 com.ccm.app.ui.common.PlusMenu(
                     onDismiss = { showAttachMenu = false },
                     onAttach = {
@@ -407,102 +496,12 @@ fun ChatScreenConnected(
                     },
                     onConnectors = { showAttachMenu = false },
                 )
-            }
-        }
-    } else null
+                }      // 关 else（showAttachSubmenu 的 else 分支）
+            }          // 关 Popup lambda
+        }              // 关 lambda {
+    } else null        // 关最外层 if
 
 
-    // 附件二级菜单（PlusMenu 的 onAttach 转到这里）
-    // 【2026-10-11 修「菜单 UI 明显不对」】同上一处：AlertDialog 会套 Material3
-    // 的淡紫容器 + 自己的标题栏/按钮区，与项目自绘的视觉体系不符。
-    // 改成裸 Popup + 自绘卡片（与 PlusMenu 同一套圆角/底色/阴影）。
-    if (showAttachSubmenu) {
-        androidx.compose.ui.window.Popup(
-            alignment = androidx.compose.ui.Alignment.Center,
-            onDismissRequest = { showAttachSubmenu = false },
-            properties = androidx.compose.ui.window.PopupProperties(
-                focusable = true,
-                clippingEnabled = true,
-            ),
-        ) {
-            // 容器样式与 PlusMenu / ModelPickerMenu 完全一致
-            // （shadow 12dp → clip → background → border → 内边距），
-            // 三处菜单是同一套视觉，改一处要同步另两处。
-            androidx.compose.foundation.layout.Column(
-                modifier = androidx.compose.ui.Modifier
-                    .width(200.56.dp)                                    // 与 PlusMenu 同宽
-                    .shadow(12.dp, androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp))
-                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp))
-                    .background(com.ccm.app.ui.theme.CCMTheme.colors.input)
-                    .border(
-                        1.dp,
-                        com.ccm.app.ui.theme.CCMTheme.colors.border,
-                        androidx.compose.foundation.shape.RoundedCornerShape(11.04.dp),
-                    )
-                    .padding(horizontal = 6.44.dp)
-                    .padding(top = 6.44.dp, bottom = 1.dp),
-            ) {
-                androidx.compose.material3.Text(
-                    "添加附件",
-                    style = com.ccm.app.ui.theme.CCMText.body14,
-                    color = com.ccm.app.ui.theme.CCMTheme.colors.textSecondary,
-                    modifier = androidx.compose.ui.Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                )
-                androidx.compose.foundation.layout.Box(
-                    modifier = androidx.compose.ui.Modifier
-                        .fillMaxWidth()
-                        .height(1.dp)
-                        .background(com.ccm.app.ui.theme.CCMTheme.colors.border),
-                )
-                androidx.compose.foundation.layout.Column {
-                    listOf(
-                        "拍照" to {
-                            // 【2026-10-06】每次拍照生成新文件名（见 cameraFile 声明处的说明）
-                            val camDir = java.io.File(ctx.cacheDir, "attachments")
-                            // 确保目录存在 —— 相机是**另一个进程**，它不会替我们建目录；
-                            // 目录不存在时写入失败（TakePicture 回 ok=false 或静默失败）。
-                            // AttachmentCache 的 mkdirs() 只在发消息时调，首次拍照可能还没跑过。
-                            camDir.mkdirs()
-                            cameraFile = java.io.File(camDir, "cam_${System.currentTimeMillis()}.jpg")
-                            try {
-                                cameraFile.parentFile?.mkdirs()
-                                cameraLauncher.launch(
-                                    androidx.core.content.FileProvider.getUriForFile(
-                                        ctx,
-                                        ctx.packageName + ".fileprovider",
-                                        cameraFile,
-                                    ),
-                                )
-                            } catch (t: Throwable) {
-                                // 【2026-10-06 改】原来静默吞掉 —— 用户看到「点了没反应」，
-                                // 完全不知道是 FileProvider 配置问题、相机不可用还是别的。
-                                // 至少把原因说出来（这是最容易踩的坑之一）。
-                                android.widget.Toast.makeText(
-                                    ctx,
-                                    "拍照启动失败：${t.message ?: t.javaClass.simpleName}",
-                                    android.widget.Toast.LENGTH_LONG,
-                                ).show()
-                            }
-                            showAttachSubmenu = false
-                        },
-                        "图片（可多选，随消息发给模型看）" to { attachLauncher.launch("image/*"); showAttachSubmenu = false },
-                        "文件（以路径附带，模型用 Read 读）" to { fileLauncher.launch("*/*"); showAttachSubmenu = false },
-                    ).forEach { (label, act) ->
-                        androidx.compose.material3.Text(
-                            text = label,
-                            style = com.ccm.app.ui.theme.CCMText.body13,
-                            color = com.ccm.app.ui.theme.CCMTheme.colors.textMain,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-                                .clickable { act() }
-                                .padding(vertical = 11.dp, horizontal = 4.dp),
-                        )
-                    }
-                }
-            }
-        }
-    }
 
     ChatScreen(
         bubbles = uiState.bubbles,
