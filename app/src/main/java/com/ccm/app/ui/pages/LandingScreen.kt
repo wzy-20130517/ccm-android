@@ -395,11 +395,28 @@ fun LandingScreen(
                 attachedCount = pendingImages.size + pendingFiles.size,
                 onAttach = { launcher.launch("image/*") },
                 showPlusMenu = showPlusMenu,
-                onTogglePlusMenu = { showPlusMenu = !showPlusMenu },
-                onDismissPlusMenu = { showPlusMenu = false },
+                // 点 + 切换：关的时候也要清二级状态（否则下次打开直接显示二级）
+                onTogglePlusMenu = {
+                    showPlusMenu = !showPlusMenu
+                    if (!showPlusMenu) showAttachSubmenu = false
+                },
+                // 点外部关闭时**两个状态都要清** —— 只清 showPlusMenu 的话
+                // showAttachSubmenu 会残留，下次点 + 直接显示二级菜单。
+                onDismissPlusMenu = {
+                    showPlusMenu = false
+                    showAttachSubmenu = false
+                },
                 plusMenuContent = {
                     // 【2026-10-12】二级菜单：点「添加文件或照片」不再直接开
                     // 选择器，而是切到二级（拍照/图片/文件）—— 与对话页一致。
+                    //
+                    // ⚠️ 关键：PlusMenu 的 onClick 是 `{ onDismiss(); onAttach() }`
+                    // —— onDismiss 会先把 showPlusMenu 置 false，而 InputCard
+                    // 的 `if (showPlusMenu) { Popup { plusMenuContent() } }`
+                    // 依赖它 → 菜单整个关掉，二级根本没机会渲染。
+                    //
+                    // 修法：onDismiss 里检查「是不是要去二级」—— 是就跳过关闭。
+                    // （switchToSubmenu 标志在 onAttach 里置位）
                     if (showAttachSubmenu) {
                         com.ccm.app.ui.common.AttachSubmenuCard(
                             onDismiss = {
@@ -444,8 +461,18 @@ fun LandingScreen(
                     PlusMenu(
                         onDismiss = { showPlusMenu = false },
                         onAttach = {
-                            // 切到二级（不关菜单 —— showPlusMenu 保持 true）
+                            // ⚠️ 顺序问题：PlusMenu 的 onClick 是
+                            // `{ onDismiss(); onAttach() }` —— onDismiss 先跑，
+                            // 它把 showPlusMenu 置 false；而 InputCard 的
+                            // `if (showPlusMenu) { Popup { plusMenuContent() } }`
+                            // 依赖它 → 菜单整个关掉，二级根本没机会渲染
+                            // （实测：点「添加文件或照片」后菜单直接消失）。
+                            //
+                            // 修法：onAttach 里**重新打开** showPlusMenu，
+                            // 同时切到二级。两次赋值在同一帧内合并，用户
+                            // 看不到闪烁。
                             showAttachSubmenu = true
+                            showPlusMenu = true
                         },
                         onScreenshot = {
                             input = if (input.isBlank()) "截取当前屏幕并告诉我上面有什么"
