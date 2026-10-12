@@ -774,6 +774,42 @@ class DevTools(
     // ══════════════════════════════════════════════════════════════
 
     inner class SafeRenameTool : Tool() {
+
+        /**
+         * 写操作的结果（两种模式共用）。
+         *
+         * 是普通嵌套类（`class`），**不是** `inner class` —— `inner` 会隐式
+         * 持有外部实例引用，而这里只需要装三个数。用 `inner` 还会带来一个
+         * 实际麻烦：`inner class` 的构造函数依赖外部实例，将来想把它提到
+         * 类外（如放到 companion 或顶层）就得连带改所有构造点。
+         */
+        private class WriteOutcome(
+            val files: Int,
+            val count: Int,
+            val errors: List<String>,
+        )
+
+        /**
+         * 两阶段提交里「一个文件的改动计划」。
+         *
+         * ⚠️ 定义在类级（不是 `writeViaChannel` 里的局部类）—— 局部类在
+         * Kotlin 里限制不少（不能是 `data class`、不能被某些 lambda 捕获），
+         * 而且它被 for 循环里的 lambda 间接引用。类级更省心。
+         *
+         * @property sf 扫描时的快照（含原内容、mtime、size）
+         * @property replaced 替换后的新内容
+         * @property tmp 临时文件路径（**与目标同目录**，保证 rename 原子）
+         * @property mtimeMs 由 prepare 阶段的 `write` 填上 —— 同目录 rename
+         *   保留 mtime，所以它也是最终文件的 mtime（省一次 stat）
+         */
+        private class Plan(
+            val sf: SourceFile,
+            val replaced: String,
+            val tmp: String,
+        ) {
+            var mtimeMs: Long = 0L
+        }
+
         override val name = "SafeRename"
         override val description =
             "安全重命名文件/目录内的标识符。先扫描引用并给出预览（dry_run=true 只预览不改），" +
@@ -904,40 +940,6 @@ class DevTools(
                 }
             }
 
-        /**
-         * 写操作的结果（两种模式共用）。
-         *
-         * 是普通嵌套类（`class`），**不是** `inner class` —— `inner` 会隐式
-         * 持有外部实例引用，而这里只需要装三个数。用 `inner` 还会带来一个
-         * 实际麻烦：`inner class` 的构造函数依赖外部实例，将来想把它提到
-         * 类外（如放到 companion 或顶层）就得连带改所有构造点。
-         */
-        private class WriteOutcome(
-            val files: Int,
-            val count: Int,
-            val errors: List<String>,
-        )
-
-        /**
-         * 两阶段提交里「一个文件的改动计划」。
-         *
-         * ⚠️ 定义在类级（不是 `writeViaChannel` 里的局部类）—— 局部类在
-         * Kotlin 里限制不少（不能是 `data class`、不能被某些 lambda 捕获），
-         * 而且它被 for 循环里的 lambda 间接引用。类级更省心。
-         *
-         * @property sf 扫描时的快照（含原内容、mtime、size）
-         * @property replaced 替换后的新内容
-         * @property tmp 临时文件路径（**与目标同目录**，保证 rename 原子）
-         * @property mtimeMs 由 prepare 阶段的 `write` 填上 —— 同目录 rename
-         *   保留 mtime，所以它也是最终文件的 mtime（省一次 stat）
-         */
-        private class Plan(
-            val sf: SourceFile,
-            val replaced: String,
-            val tmp: String,
-        ) {
-            var mtimeMs: Long = 0L
-        }
 
         /**
          * 通道模式的替换 —— **两阶段提交**（要么全改，要么全不改）。
