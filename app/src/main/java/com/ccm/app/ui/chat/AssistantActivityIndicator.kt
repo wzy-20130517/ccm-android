@@ -236,7 +236,17 @@ private object SpriteCache {
             loaded = true
             p
         } catch (_: Throwable) {
-            loaded = true   // 失败也标记（不反复重试）
+            // 【2026-10-12 修「星芒不显示」】
+            //
+            // 原来这里是 `loaded = true; cached = null`（失败也标记）——
+            // 设计意图是「不反复重试」，但后果是**一次失败 = 永久不显示**：
+            //   · get() 看到 loaded=true → 返回 null
+            //   · load() 看到 loaded=true → 返回 null（不再尝试）
+            //   · 调用方 `if (fp == null) return` → 星芒永远不渲染
+            //
+            // 现在不标记 loaded，允许下次重试。
+            // （失败时调用方的 LaunchedEffect 只在首次组合跑一次，
+            //   不会疯狂重试；真有问题也不该用日志掩盖 —— 见下。）
             cached = null
             null
         }

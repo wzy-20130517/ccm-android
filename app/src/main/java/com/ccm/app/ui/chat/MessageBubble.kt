@@ -480,7 +480,19 @@ fun MessageList(
         //
         // 【reverseLayout】这个块也是列表内容 → 必须包 item{}
         // （它放最后声明 = 视觉最底部，正好是等待态该在的位置）。
-        if (streamingRunning && streaming.isBlank() && streamingThinking.isBlank()) {
+        // 【2026-10-12 修「星芒不显示」】
+        //
+        // 原来是 `streamingRunning && streaming.isBlank() && streamingThinking.isBlank()`
+        // —— 第三个条件（thinking 为空）是多余的，且导致**思考期间星芒消失**：
+        // 模型一开始输出 reasoning，streamingThinking 就不空了 → waiting item
+        // 整个被跳过 → 星芒没了。
+        //
+        // Web 的对应判据（`MainContent.tsx:1444-1446`）：
+        //   `loading && !msg.content && !msg.searchStatus && !hasDocumentDrafts && !hasToolCalls`
+        // **没有 `!isThinking`** —— 思考中但还没正文时仍算 'waiting'，星芒继续转。
+        //
+        // 现在去掉 thinking 条件，与 Web 对齐。
+        if (streamingRunning && streaming.isBlank() && toolCards.isEmpty()) {
             item(key = "waiting") {
             // ★ 2026-10-01 用户报「没有思维链」：原来只放了个裸星芒 ——
             //   Web 的对应物是 AssistantThinkingCompactStatus（星芒 28px +
@@ -517,9 +529,23 @@ fun MessageList(
                 modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
             ) {
             // 流式部分（未定型）：思考 → 工具组 → 正文
-            if (streamingClean.isNotBlank() || streamingThinking.isNotBlank()) {
+            if (streamingClean.isNotBlank() || streamingThinking.isNotBlank() || toolCards.isNotEmpty()) {
             // 流式中：思考在前（先想后说），running 驱动 isThinking 动效
-            if (streamingThinking.isNotBlank()) {
+            //
+            // 【2026-10-12 修「星芒不显示」】
+            // 原来是 `if (streamingThinking.isNotBlank())` —— 而星芒
+            // （AssistantThinkingCompactStatus）挂在这个分支里，
+            // **thinking 为空就整个不渲染** → 星芒永远不显示。
+            //
+            // Web 的条件是 `_usesCompactThoughtChain && compactActiveEvent`，
+            // 其中 `displayEvents` 由 `buildReasoningTimelineEvents(thinking,
+            // { toolCalls })` 合成 —— **工具卡也能产出事件**，不依赖
+            // thinking 文本非空（`MainContent.tsx:1065-1069`）。
+            //
+            // APK 的 AssistantThinkingChain 内部同样支持「无 thinking 也能
+            // 合成工具事件」（见其 buildReasoningTimelineEvents），
+            // 所以外层条件改成「有正文 / 有思考 / 有工具卡」三者任一。
+            if (streamingThinking.isNotBlank() || toolCards.isNotEmpty()) {
                 AssistantThinkingChain(
                     thinking = streamingThinking,
                     isThinking = streamingRunning,
