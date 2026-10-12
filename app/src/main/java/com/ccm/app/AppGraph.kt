@@ -77,9 +77,6 @@ import java.io.File
  */
 object AppGraph {
 
-    /** 默认工作目录名（App 私有，无需运行时权限）。 */
-    private const val WORKSPACE_DIR = "workspace"
-
     /**
      * 解析工作区目录（2026-10-01）。
      *
@@ -92,37 +89,20 @@ object AppGraph {
     private fun resolveWorkspaceDir(st: com.ccm.app.core.AppStorage, cfg: com.ccm.app.core.provider.AppConfig): String {
         val configured = cfg.workspacePath?.trim().orEmpty()
         if (configured.isEmpty()) {
-            // ══════════════════════════════════════════════════════════
-            //  【2026-10-11 学 Operit】没配置 → 用**数据根下的 workspace/**
-            // ══════════════════════════════════════════════════════════
+            // 【2026-10-12 去掉默认工作区】
             //
-            // 三个概念要分清：
-            //   · **数据根** `Download/Claude/` = App 自己用的
-            //     （会话 sessions/、配置 config.json、日志 traces/）
-            //   · **工作区** `Download/Claude/workspace/` = Agent 干活的地方
-            //   · 两者**不混**：Agent 写文件进 workspace/，碰不到 App 的
-            //     会话和配置（路径隔离，比"数据根即工作区"安全）
+            // 这里原来（2026-10-11）加了个兜底：没配置就用
+            // `Download/Claude/workspace/` 并自动创建。
+            // **但那是错的** —— 与上面这段注释本身的语义矛盾
+            //（「配置为空 = 没有工作区，返回空串」），而且：
+            //   · 用户没法表达「我不用工作区」（不配也会被塞一个）
+            //   · App 会在用户没预期的地方建目录写文件
+            //   · `Download/Claude/` 是**数据根**（会话/配置/日志），
+            //     不该混进 Agent 的工作产物
             //
-            // 为什么用 Download 下而不是 App 私有目录：
-            //   · 用户能在文件管理器里看到、能备份
-            //   · proot 容器与 Termux 通道**都能访问**
-            //     （`/sdcard` 是唯一两边都通的空间）
-            //   · 换机/重装 App 数据不丢
-            //
-            // 用 `Environment.getExternalStoragePublicDirectory(DIRECTORY_DOWNLOADS)`
-            // 拿路径，**不硬编码 `/sdcard/...`** —— 不同设备/多用户下路径不同。
-            // （Operit 的 OperitPaths.kt 就是这么做的：
-            //   `File(downloadsDir(), "Operit")` + `File(root, "workspace")`）
-            return try {
-                // ⚠️ 这里是 `st.root` 不是 `st.rootDir` —— `st` 是 **AppStorage**
-                // 接口（成员叫 `root`）；`rootDir` 是 **ToolStorage** 的成员，
-                // 两者不是一回事。写错 CI 报 `Unresolved reference 'rootDir'`。
-                val d = File(st.root, "workspace")
-                if (!d.exists()) d.mkdirs()
-                if (d.isDirectory) d.absolutePath else ""
-            } catch (_: Throwable) {
-                ""
-            }
+            // 现在：没配置 = 真的没有工作区。需要工作区的功能
+            //（文件工具的相对路径基准、/files 等）自行提示用户去配。
+            return ""
         }
         return try {
             val d = File(configured)

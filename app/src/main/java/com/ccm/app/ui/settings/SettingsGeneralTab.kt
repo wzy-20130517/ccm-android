@@ -454,9 +454,9 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                                     if (!dir.isDirectory && !dir.mkdirs()) {
                                         wsError = "目录不存在且无法创建（检查权限）"
                                     } else {
-                                        // 填的就是默认路径 → 存 null，保持「未配置」语义
-                                        val defaultWs = java.io.File(st.root, "workspace").absolutePath
-                                        val toSave = if (v == defaultWs) null else v
+                                        // 【2026-10-12】原来有「默认路径」概念（root/workspace）
+                                        // —— 用户要求不要默认工作区，现在填什么存什么。
+                                        val toSave = v
                                         com.ccm.app.core.provider.AppConfig.save(
                                             loadR.config.copy(workspacePath = toSave), st.configFile,
                                         )
@@ -1112,15 +1112,15 @@ private fun appVersion(): String {
 
 /** 读当前工作区路径（空 = 默认私有目录）。 */
 /**
- * 当前工作区 —— 返回**实际生效**的路径。
+ * 当前工作区 —— 返回**实际生效**的路径（没配置时 = 空串）。
  *
- * 【2026-10-06 问题18 修复】原来返回 config.workspacePath 原始值
- * （没配置时 = 空串），但 Agent 实际用的是 resolveWorkspaceDir()
- * 解析后的路径（空配置时落回 files/workspace）。
- * 用户报「Agent 认为的工作区与用户设置的不同」—— 就是这个：
- * 输入框空着，实际却在 files/workspace 里读写文件。
+ * 【2026-10-06 问题18 修复】原来返回 config.workspacePath 原始值，
+ * 而 Agent 实际用 resolveWorkspaceDir() 解析后的路径 —— 两者可能不同，
+ * 用户报「Agent 认为的工作区与用户设置的不同」。
  *
- * 现在：有配置返回配置值；没配置返回实际默认路径，并在 UI 标注。
+ * 【2026-10-12 更新】resolveWorkspaceDir 的「默认兜底」
+ *（空配置落回 root/workspace）**已删除** —— 用户要求不要默认工作区。
+ * 所以现在：有配置返回配置值；没配置返回空串（UI 显示「未设置」）。
  */
 private fun currentWorkspace(): String =
     try {

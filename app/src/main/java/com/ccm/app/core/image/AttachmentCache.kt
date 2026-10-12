@@ -54,7 +54,24 @@ object AttachmentCache {
      */
     fun copyToCache(context: Context, uri: Uri): String? {
         return try {
-            val dir = File(context.filesDir, "attachments").apply { mkdirs() }
+            // 【2026-10-12 关键修复：存到数据根的 attachments/，不是 App 私有目录】
+            //
+            // 原来存 `context.filesDir/attachments/` —— App 私有目录
+            //（`/data/user/0/com.ccm.app/files/`）：
+            //   · **Termux 读不到**（跨沙箱，实测 `Permission denied`）
+            //   · **proot 容器读不到**
+            //   · 用户在文件管理器里也看不到
+            // 于是模型拿到 `[附件: x.zjs] 已保存到: /data/user/0/...`，
+            // 调 Read 也读不到（Termux 模式走 ChannelFs → 权限拒绝）。
+            //
+            // 现在存 `Download/Claude/attachments/`（AppStorage.attachmentsDir）：
+            //   · `/sdcard` 是 Termux / proot / App 三方都通的空间
+            //   · 用户能看到、能备份、迁移时好处理
+            //   · 模型 Read 直接读得到
+            //   · 与 sessions/undo/trash 同级 —— **不混进工作区**
+            //    （工作区是 Agent 干活的地方，附件是用户数据，两类）
+            val dir = (com.ccm.app.AppGraph.storage?.attachmentsDir
+                ?: File(context.filesDir, "attachments")).apply { mkdirs() }
             val displayName = queryDisplayName(context, uri)
             val mime = context.contentResolver.getType(uri).orEmpty()
 
@@ -94,7 +111,9 @@ object AttachmentCache {
     /** 清理超过 7 天的附件（发送完的图留在 cache 里会无限涨）。 */
     fun pruneOld(context: Context) {
         try {
-            val dir = File(context.filesDir, "attachments")
+            // 与 copyToCache 同一位置（数据根的 attachments/）
+            val dir = com.ccm.app.AppGraph.storage?.attachmentsDir
+                ?: File(context.filesDir, "attachments")
             val cutoff = System.currentTimeMillis() - 7L * 24 * 3600 * 1000
             dir.listFiles()?.forEach { f -> if (f.lastModified() < cutoff) f.delete() }
         } catch (_: Throwable) {

@@ -624,7 +624,15 @@ private fun handleQueryCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                 if (storage == null) {
                     SlashResult.Notice("**工作区文件**\n\n- 读不到存储目录")
                 } else {
-                    val workspace = java.io.File(storage.root, "workspace")
+                    // 【2026-10-12】原来兜底 root/workspace —— 用户要求
+                    // 不要默认工作区。没配时明确提示去设置里配。
+                    val wsPath = com.ccm.app.AppGraph.workspacePath()
+                    if (wsPath.isBlank()) {
+                        return SlashResult.Notice(
+                            "**工作区文件**\n\n- 未配置工作区\n- 去 **设置 → 工作区** 选一个目录"
+                        )
+                    }
+                    val workspace = java.io.File(wsPath)
                     val files = workspace.listFiles()?.sortedBy { it.name }
                     if (files.isNullOrEmpty()) {
                         SlashResult.Notice("**工作区文件**\n\n- 工作区为空：${workspace.absolutePath}")

@@ -34,6 +34,18 @@ interface AppStorage {
     val toolOutputDir: File
     val compactTrashDir: File
 
+    /**
+     * 附件目录（用户发的图片/文件，2026-10-12 加）。
+     *
+     * 【为什么单独一个目录】附件是**用户数据**（用户发的东西），
+     * 与 Agent 的工作产物（workspace）、App 的会话（sessions）
+     * 都不是一类 —— 混在一起既难找也难迁移。
+     *
+     * 位置：数据根下 `attachments/`（`Download/Claude/attachments/`），
+     * 与 sessions/undo/trash 同级。
+     */
+    val attachmentsDir: File
+
     /** 配置文件路径（config.json）。 */
     val configFile: File
 
@@ -52,7 +64,7 @@ interface AppStorage {
     fun ensureDirs() {
         // 先建根（Download/Claude 可能不存在）
         try { if (!root.exists()) root.mkdirs() } catch (_: Throwable) {}
-        listOf(sessionsDir, undoDir, trashDir, tracesDir, toolOutputDir, compactTrashDir)
+        listOf(sessionsDir, undoDir, trashDir, tracesDir, toolOutputDir, compactTrashDir, attachmentsDir)
             .forEach { it.mkdirs() }
     }
 }
@@ -108,6 +120,7 @@ class FileAppStorage(override val root: File) : AppStorage {
     override val trashDir: File get() = File(root, "trash")
     override val tracesDir: File get() = File(root, "traces")
     override val toolOutputDir: File get() = File(root, "tool-output")
+    override val attachmentsDir: File get() = File(root, "attachments")
     override val compactTrashDir: File get() = File(root, "compact-trash")
     override val configFile: File get() = File(root, "config.json")
 }

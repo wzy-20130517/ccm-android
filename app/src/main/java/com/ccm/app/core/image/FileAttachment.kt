@@ -34,15 +34,32 @@ object FileAttachment {
     /** 文本类文件的内容上限（对齐 Web 的 2MB）。 */
     private const val MAX_TEXT_BYTES = 2L * 1024 * 1024
 
-    /** 按扩展名判断是否文本类（对齐 Web 的正则）。 */
-    private val TEXT_EXT = setOf(
-        "txt", "md", "csv", "json", "xml", "yaml", "yml",
-        "js", "jsx", "ts", "tsx", "py", "java", "cpp", "c", "h", "cs",
-        "go", "rs", "rb", "php", "swift", "kt", "kts", "scala",
-        "html", "css", "scss", "less", "sql", "sh", "bash",
-        "vue", "svelte", "lua", "r", "m", "pl", "ex", "exs",
-        "toml", "ini", "conf", "log", "gitignore", "env",
-    )
+    /**
+     * 探测文件是不是文本（读前 8KB，看有没有 NUL 字节 + 能否 UTF-8 解码）。
+     *
+     * 【为什么不用扩展名白名单】现实里扩展名无穷无尽（.zjs / .tmpl /
+     * 无扩展名…），白名单永远补不全 —— 补不全的后果是**用户的文本文件
+     * 读不到内容**。按内容判断才是完备的。
+     *
+     * 判据（宽松，宁可当文本）：
+     *   · 不含 NUL 字节（二进制文件几乎都有）
+     *   · 前 8KB 能按 UTF-8 解码（用 REPLACE 模式，允许少量坏字节）
+     */
+    private fun looksLikeText(f: File): Boolean {
+        val probe = java.io.FileInputStream(f).use { input ->
+            val buf = ByteArray(8192)
+            val n = input.read(buf)
+            if (n <= 0) return true          // 空文件当文本
+            buf.copyOf(n)
+        }
+        if (probe.any { it == 0.toByte() }) return false   // NUL → 二进制
+        // UTF-8 解码（REPLACE 模式不抛异常；坏字节比例过高说明不是文本）
+        val decoded = String(probe, Charsets.UTF_8)
+        val bad = decoded.count { it == '\uFFFD' }
+        return bad * 20 < decoded.length     // 坏字符 < 5% 就当文本
+    }
+
+
 
     /**
      * 把待发文件列表拼成消息文本。
@@ -57,19 +74,32 @@ object FileAttachment {
             val name = f.name
             sb.append("\n\n[附件: ").append(name).append("]\n已保存到: ").append(path)
 
-            val ext = name.substringAfterLast('.', "").lowercase()
-            if (ext in TEXT_EXT) {
-                // 文本类：直接读内容塞进去（模型不用再调 Read）
+            // 【2026-10-12 改成内容探测，不再靠扩展名白名单】
+            //
+            // 原来按扩展名判断（白名单 40 多个）—— 后果是**任何不在名单里的
+            // 文本文件都读不到内容**（用户报「发个 .zjs 过去它压根看不见」）。
+            // 现实里扩展名无穷无尽（.zjs / .foo / 无扩展名 / .tmpl …），
+            // 白名单永远补不全。
+            //
+            // 现在按**内容**判断：读前 8KB 探测是不是合法 UTF-8 文本
+            //（没有 NUL 字节、可解码）。是文本就读全文塞进消息。
+            val isText = try {
+                if (f.length() > MAX_TEXT_BYTES) false
+                else looksLikeText(f)
+            } catch (_: Throwable) {
+                false
+            }
+            if (isText) {
                 val text = try {
-                    if (f.length() <= MAX_TEXT_BYTES) f.readText() else null
+                    f.readText()
                 } catch (_: Throwable) {
                     null
                 }
                 if (text != null) {
                     sb.append("\n<文件内容>\n").append(text).append("\n</文件内容>")
                 }
-                // 读不出来（过大/权限）就不追加内容 —— 只留上面的路径。
-                // 不写「请用 Read」：那是下指令，且对二进制/图片是错的。
+                // 读不出来（权限等）就不追加 —— 只留上面的路径。
+                // 不写「请用 Read」：那是下指令。
             }
             // 【2026-10-12 删掉「请用 Read 读取」这类指令】
             //

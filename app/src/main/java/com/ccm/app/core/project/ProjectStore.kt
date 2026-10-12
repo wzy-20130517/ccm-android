@@ -21,9 +21,20 @@ import java.io.File
  */
 class ProjectStore(private val storage: AppStorage) {
 
-    /** workspace 根目录（不存在则建）。 */
-    val workspaceRoot: File
-        get() = File(storage.root, "workspace").apply { mkdirs() }
+    /**
+     * 项目根目录。
+     *
+     * 【2026-10-12 改名 + 去默认】原来叫 `projectsRoot`，兜底到
+     * `root/workspace` 并自动创建 —— 用户明确要求不要默认工作区。
+     *
+     * 现在用配置的工作区；没配就用数据根下的 `projects/`
+     *（项目是 App 自己的数据，放数据根下合理，与 Agent 的工作区无关）。
+     */
+    val projectsRoot: File
+        get() = com.ccm.app.AppGraph.workspacePath()
+            .takeIf { it.isNotBlank() }
+            ?.let { File(it, "projects") }
+            ?: File(storage.root, "projects").apply { mkdirs() }
 
     data class Project(
         val id: String,
@@ -34,7 +45,7 @@ class ProjectStore(private val storage: AppStorage) {
 
     /** 列出全部项目（workspace 下的可见子目录）。 */
     fun list(): List<Project> = try {
-        workspaceRoot.listFiles()
+        projectsRoot.listFiles()
             ?.filter { it.isDirectory && !it.name.startsWith('.') }
             ?.map { dir ->
                 Project(
@@ -55,7 +66,7 @@ class ProjectStore(private val storage: AppStorage) {
         if (n.contains('/') || n.contains('\\') || n.startsWith('.')) {
             return Result.failure(IllegalArgumentException("名字不能含 / 或 \\，不能以 . 开头"))
         }
-        val dir = File(workspaceRoot, n)
+        val dir = File(projectsRoot, n)
         if (dir.exists()) return Result.failure(IllegalArgumentException("已存在同名项目"))
         return try {
             if (!dir.mkdirs()) return Result.failure(IllegalStateException("创建目录失败"))
@@ -67,7 +78,7 @@ class ProjectStore(private val storage: AppStorage) {
 
     /** 删除项目（仅删空目录 / 或连内容删 —— 这里只删目录本身，非空则拒绝）。 */
     fun delete(name: String): Result<Unit> {
-        val dir = File(workspaceRoot, name)
+        val dir = File(projectsRoot, name)
         if (!dir.exists()) return Result.failure(IllegalArgumentException("项目不存在"))
         val ok = try { dir.delete() } catch (_: Throwable) { false }
         return if (ok) Result.success(Unit)

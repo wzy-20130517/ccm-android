@@ -170,9 +170,22 @@ class ToolsBootstrap(
         val skillTools: com.ccm.app.tools.task.SkillTools? = null,
     )
 
-    /** 默认工作目录（App 私有，无需运行时权限） */
+    /**
+     * 默认工作目录。
+     *
+     * 【2026-10-12 去掉默认 workspace】原来兜底到 `rootDir/workspace`
+     * 并自动创建 —— 但用户明确要求**不要有默认工作区**
+     *（`Download/Claude/` 是数据根，不该混进 Agent 的工作产物）。
+     *
+     * 现在优先用配置的工作区；没配就用**数据根本身**
+     *（工具的相对路径基准总得有个值，数据根是最合理的兜底 ——
+     *  且它已存在，不会额外建目录）。
+     */
     private val defaultCwd: File
-        get() = File(storage.rootDir, "workspace").apply { if (!exists()) mkdirs() }
+        get() = com.ccm.app.AppGraph.workspacePath()
+            .takeIf { it.isNotBlank() }
+            ?.let { File(it) }
+            ?: storage.rootDir
 
     /**
      * 装配全部工具。
