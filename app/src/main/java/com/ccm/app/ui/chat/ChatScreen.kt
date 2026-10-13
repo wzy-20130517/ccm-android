@@ -30,7 +30,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -288,36 +287,15 @@ fun ChatScreen(
                         }
                 }
 
-                // 会话切换时才重置跟随；初次布局和内容增长由上面的常驻
-                // maxValue 观察器追到底，不能直接在这里滚，否则旧会话切换
-                // 或重组时会把正在阅读历史的用户拉走。
+                // 会话切换时只重置「是否跟随」这个意图；初次布局由 maxValue
+                // 观察器处理。这里绝不能直接 scrollTo(0)，否则切换/重组时会
+                // 把正在阅读历史的用户拉走。
                 LaunchedEffect(sessionKey) {
                     followBottom = true
-                    // 新会话可能复用同一份 scrollState；等新列表完成一次布局后
-                    // 再复位，否则旧列表的 maxValue 会把位置夹回错误的中段。
-                    programmaticScroll = true
-                    try {
-                        withFrameNanos { }
-                        scrollState.scrollTo(0)
-                    } finally {
-                        programmaticScroll = false
-                    }
                 }
 
-                // 键盘只在原本跟随时推动到底，不能把阅读历史的用户拉走。
-                LaunchedEffect(imeVisible) {
-                    if (imeVisible && followBottom) {
-                        programmaticScroll = true
-                        try {
-                            repeat(12) {
-                                withFrameNanos { }
-                                scrollState.scrollTo(scrollState.maxValue)
-                            }
-                        } finally {
-                            programmaticScroll = false
-                        }
-                    }
-                }
+                // 键盘会缩短可见高度，但不应改变阅读位置。只有内容增长观察器
+                // 才负责在 followBottom=true 时追到底部。
 
                 Column(
                     modifier = Modifier
