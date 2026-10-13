@@ -275,192 +275,51 @@ fun ChatScreen(
                     }
                 }
 
-                // ══════════════════════════════════════════════════════════════
-                //  【2026-10-12 重写「跟随到底」—— 修「上滑脱离不了」】
+                // Sticky Scroll：离开底部后固定「视觉顶部」的阅读锚点。
                 //
-                //  ## 之前的问题
-                //
-                //  旧实现：
-                //    snapshotFlow { totalItemsCount to firstVisibleItemSize }
-                //      .collect { if (isAtBottom) scrollToItem(0) }
-                //
-                //  三个缺陷叠加，导致用户上滑后仍被拽回底部：
-                //
-                //  ① **监听源错了**。流式输出时 item 数量/高度**一直在变**，
-                //     所以 collect 一直在触发。而触发时读的 `isAtBottom`
-                //     是**那一刻**的值 —— 用户刚开始上滑（还没超过 50dp
-                //     阈值）时它仍是 true → 立刻被拽回。用户感觉
-                //     「手指刚动就被吸回去」。
-                //
-                //  ② **判据只看位置，不看意图**。`isAtBottom` 是
-                //     「当前是否在底部」，不是「用户是否想跟随」。
-                //     用户手动滚到底部看一眼 ≠ 想一直跟随。
-                //
-                //  ③ **scrollToItem 会自我强化**。拽回后 firstVisibleItemIndex
-                //     回到 0 → isAtBottom 仍 true → 下次内容变化又拽。
-                //
-                //  ## 现在的做法：**显式「跟随模式」状态**
-                //
-                //  · `following` = 是否自动跟随（初始 true）
-                //  · 监听 `listState.isScrollInProgress` —— **用户一动手**
-                //    （滑动开始）就检查：如果不在底部了，就 `following = false`
-                //  · 内容变化时只在 `following == true` 时滚 —— 而
-                //    following 只在用户**手动滚回底部**时恢复
-                //
-                //  这样「用户上滑 → 脱离跟随 → 不会被拽回」是**状态机保证**的，
-                //  不依赖阈值和时序。
-                //
-                //  ⚠️ 不能用 `isScrollInProgress` 直接当判据：程序自己的
-                //  `scrollToItem` 也会让它变 true（自我触发）。
-                //  所以用「滚动进行中 + 不在底部」的组合判断 —— 程序滚到底部时
-                //  一定在底部，不会误关 following。
-                // ══════════════════════════════════════════════════════════════
+                // reverseLayout 下 visibleItemsInfo 的第一个 item 靠近视觉底部，
+                // 正是 streaming item 高度变化会影响的一端；lastOrNull 才是
+                // 用户上滑后正在阅读的前缘。之前用 firstOrNull，锚点本身会跟着
+                // Agent 输出变化，所以补偿永远追错对象。
+                var stickyKey by remember { mutableStateOf<Any?>(null) }
+                var stickyOffset by remember { mutableStateOf(0) }
 
-                // 跟随模式（用户上滑后关闭，手动滚回底部时恢复）
-                var following by remember { mutableStateOf(true) }
-
-                // ① 监听用户手势：滚动中且不在底部 → 关闭跟随
-                //
-                // 【2026-10-12 三修：这里是真正的根因，前几版都改错地方了】
-                //
-                // 原来 `snapshotFlow { listState.isScrollInProgress }` ——
-                // **block 里只读了 isScrollInProgress**，所以只有它变化才触发。
-                // 而 isAtBottom 是在 collect 里读的，它的变化**不会触发**。
-                //
-                // 实际时序（用户上滑）：
-                //   ① 手指按下 → isScrollInProgress false→true → 触发
-                //      → 但此刻 isAtBottom 还是 true（还没滑出 50dp）
-                //      → `scrolling && !atBottom` = false → **不关**
-                //   ② 继续滑动 → isScrollInProgress 保持 true（**值没变**）
-                //      → 即使 isAtBottom 变成了 false，**也不会再触发**
-                //   ③ 手指抬起 → isScrollInProgress true→false → 触发
-                //      → 但 scrolling 已是 false → 条件不满足 → **不关**
-                //
-                // **结论：following 永远不会变成 false** → ③ 一直滚到底
-                // → 用户每次看到输出都被拉回底部（「随着 Agent 输出而被下拉」）。
-                //
-                // 修法：把 `isAtBottom` 也放进 snapshotFlow 的 **block**
-                //（参与依赖追踪）—— 它变 false 时就能触发。
-                LaunchedEffect(listState) {
-                    snapshotFlow { listState.isScrollInProgress to isAtBottom }
-                        .collect { (scrolling, atBottom) ->
-                            if (scrolling && !atBottom) {
-                                following = false
-                            }
-                        }
-                }
-
-                // ② 滚回底部时恢复跟随（用户手动滑到底 或 点「回到底部」按钮）
-                LaunchedEffect(listState) {
-                    snapshotFlow { isAtBottom }
-                        .collect { atBottom ->
-                            if (atBottom) following = true
-                        }
-                }
-
-                // ③ 内容变化时跟随（只在 following 时）
-                LaunchedEffect(listState) {
-                    snapshotFlow {
-                        listState.layoutInfo.totalItemsCount to
-                            listState.layoutInfo.visibleItemsInfo.firstOrNull()?.size
-                    }.collect {
-                        if (following) {
-                            listState.scrollToItem(0)
-                        }
-                    }
-                }
-
-                // ══════════════════════════════════════════════════════════
-                //  ④ 【2026-10-12 加：脱离跟随时锚定用户正在看的那条】
-                //
-                //  ## 问题（用户原话：「上滑脱离跟随，界面仍随着 Agent 输出
-                //  而被下拉」）
-                //
-                //  **跟随确实关了**（上滑后不再 scrollToItem），但内容**仍在动** ——
-                //  这是 reverseLayout 的固有行为：
-                //
-                //  ```
-                //  上滑前：index 3 = [bubble A]   ← 用户在看
-                //  流式结束、新 bubble 插入到 index 1：
-                //          index 4 = [bubble A]   ← A 的索引 +1 了
-                //  而 LazyColumn 保持 firstVisibleItemIndex = 3 不变
-                //  → index 3 现在是别的消息 → 画面整体往下移一格
-                //  ```
-                //
-                //  **不是"被拽回底部"，是"内容整体位移"** —— 两种现象的修法
-                //  完全不同（前者改滚动时机，后者要主动补偿位移）。
-                //
-                //  ## 修法：记住锚点 key + 位置，变了就补偿
-                //
-                //  · 脱离跟随时，记下第一个可见 item 的 key 和它的屏幕偏移
-                //  · 内容变化后检查：那个 key 还在吗？屏幕位置变了吗？
-                //  · 变了 → `requestScrollToItem(它的新索引, 补偿偏移)`
-                //
-                //  用 `requestScrollToItem`（Compose 1.7+）而非 `scrollToItem`：
-                //  前者非挂起、在下一帧生效，不会与布局过程打架
-                //  （后者挂起 + 立即生效，在 snapshotFlow 里用容易引发循环）。
-                //
-                //  ⚠️ 只在 `!following` 时做 —— 跟随中由 ③ 负责滚到底，
-                //  两者同时跑会互相拉扯。
-                // ══════════════════════════════════════════════════════════
-                var anchorKey by remember { mutableStateOf<Any?>(null) }
-                var anchorOffset by remember { mutableStateOf(0) }
-
-                // 记录锚点 —— **只在用户滚动结束的那一刻**记录。
-                //
-                // 【2026-10-12 修一个隐蔽 bug】上一版的条件是
-                // `!following && !scrolling` —— 但**内容变化时 scrolling 也是
-                // false**，于是每次新 item 插入导致位移后，这个 collect 又触发、
-                // 把 anchorOffset 更新成**位移后**的值 → 补偿逻辑看到
-                // 「位置没变」→ 不补偿。**锚点被污染，补偿永远不生效。**
-                //
-                // 现在：只在 `scrolling` 从 **true → false** 的边沿记录 ——
-                // 那才是「用户手指离开屏幕」的时刻，之后内容怎么变都不动锚点。
+                // 手指停止滚动时记录视觉顶部锚点。内容更新不会覆盖它。
                 LaunchedEffect(listState) {
                     var wasScrolling = false
                     snapshotFlow {
-                        val info = listState.layoutInfo
-                        val first = info.visibleItemsInfo.firstOrNull()
-                        Triple(first?.key, first?.offset ?: 0, listState.isScrollInProgress)
-                    }.collect { (key, off, scrolling) ->
+                        Triple(
+                            listState.isScrollInProgress,
+                            isAtBottom,
+                            listState.layoutInfo.visibleItemsInfo.lastOrNull()?.let {
+                                it.key to it.offset
+                            },
+                        )
+                    }.collect { (scrolling, atBottom, edge) ->
                         val justStopped = wasScrolling && !scrolling
                         wasScrolling = scrolling
-                        if (justStopped && !following && key != null) {
-                            anchorKey = key
-                            anchorOffset = off
+                        if (justStopped && !atBottom && edge != null) {
+                            stickyKey = edge.first
+                            stickyOffset = edge.second
                         }
                     }
                 }
 
-                // 补偿位移
-                //
-                // 【监听源：锚点项自己的 offset】上一版监听
-                // `totalItemsCount to visibleItemsInfo.size` —— 只能抓到
-                // 「新 item 插入」，抓不到「streaming 高度变化导致的位移」
-                //（那两个值都不变）。改成直接监听**锚点项的位置**。
+                // 输出流变化会改变底部 item 的高度；把视觉顶部锚点拉回原位置。
                 LaunchedEffect(listState) {
                     snapshotFlow {
-                        if (following) return@snapshotFlow null
-                        val target = anchorKey ?: return@snapshotFlow null
-                        val item = listState.layoutInfo.visibleItemsInfo
-                            .firstOrNull { it.key == target } ?: return@snapshotFlow null
-                        item.index to item.offset
-                    }.collect { pair ->
-                        if (pair == null) return@collect
-                        val (idx, off) = pair
-                        // 位置变了才补偿（避免每帧都请求滚动 → 抖动）
-                        //
-                        // 符号：`visibleItemsInfo[i].offset` 是「item 相对视口
-                        // 起点的偏移」；`requestScrollToItem` 的 scrollOffset
-                        // 同语义 —— **同号传递**。
-                        if (off != anchorOffset) {
-                            listState.requestScrollToItem(
-                                index = idx,
-                                scrollOffset = anchorOffset,
-                            )
+                        val key = stickyKey ?: return@snapshotFlow null
+                        if (isAtBottom) return@snapshotFlow null
+                        listState.layoutInfo.visibleItemsInfo
+                            .lastOrNull { it.key == key }
+                            ?.let { it.index to it.offset }
+                    }.collect { position ->
+                        if (position != null && position.second != stickyOffset) {
+                            listState.requestScrollToItem(position.first, stickyOffset)
                         }
                     }
                 }
+
 
                 // 键盘弹出时滚到底（只在用户本来就在底部时 —— 别把他从历史里拽回来）
                 LaunchedEffect(imeVisible) {
