@@ -309,7 +309,10 @@ fun ChatScreen(
                 LaunchedEffect(listState) {
                     snapshotFlow {
                         val key = stickyKey ?: return@snapshotFlow null
-                        if (isAtBottom) return@snapshotFlow null
+                        // 用户拖动时由手势独占滚动；补偿只能处理 Agent 导致的布局变化。
+                        if (listState.isScrollInProgress || isAtBottom) {
+                            return@snapshotFlow null
+                        }
                         listState.layoutInfo.visibleItemsInfo
                             .lastOrNull { it.key == key }
                             ?.let { it.index to it.offset }
