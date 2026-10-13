@@ -306,10 +306,16 @@ fun ChatScreen(
                 }
 
                 // 输出流变化会改变底部 item 的高度；把视觉顶部锚点拉回原位置。
+                //
+                // 不能逐次 `requestScrollToItem(index, offset)`：它先请求一次新的
+                // 列表定位，下一帧才生效；流式文本又会在这期间继续变高，形成
+                // 「位移 → 补偿 → 再位移」的可见抽动。
+                //
+                // 这里改为同一布局帧内按实际偏移量做精确补偿。只要锚点还可见，
+                // 直接消费它与记录位置的差值；下一帧复查一次，处理同帧后续测量。
                 LaunchedEffect(listState) {
                     snapshotFlow {
                         val key = stickyKey ?: return@snapshotFlow null
-                        // 用户拖动时由手势独占滚动；补偿只能处理 Agent 导致的布局变化。
                         if (listState.isScrollInProgress || isAtBottom) {
                             return@snapshotFlow null
                         }
@@ -317,8 +323,12 @@ fun ChatScreen(
                             .lastOrNull { it.key == key }
                             ?.let { it.index to it.offset }
                     }.collect { position ->
-                        if (position != null && position.second != stickyOffset) {
-                            listState.requestScrollToItem(position.first, stickyOffset)
+                        if (position == null) return@collect
+                        val delta = position.second - stickyOffset
+                        if (delta != 0 && !listState.isScrollInProgress) {
+                            listState.scroll {
+                                scrollBy(delta.toFloat())
+                            }
                         }
                     }
                 }
