@@ -239,87 +239,132 @@ fun ChatScreen(
             // 它自己吃 ime padding 上推时，消息区 `weight(1f)` 自动缩，
             // 消息区**不需要**再吃一次 ime padding。
             Box(modifier = Modifier.weight(1f)) {
-                // 正序列表：消息按时间顺序追加到末尾，用户阅读的历史 item
-                // 不会因为 Agent 继续输出而改变索引或位置。
+                // ══════════════════════════════════════════════════════════════
+                //  【2026-10-11 滚动方案重写 —— 照抄官方 Jetchat】
                 //
-                // 自动跟随只在「用户本来就在底部」时发生；一旦用户上滑，后续
-                // streaming 高度变化只扩展视口下方内容，不主动改 scrollState。
-                val scrollState = rememberScrollState()
+                //  旧的 `Column + verticalScroll` + 一整套跟随判定
+                //  （followBottom / scrollRequested / programmaticScroll /
+                //   判定协程 / 跟随协程 / 追底循环）修了 6 版仍有 bug：
+                //  用户报「滑到最低也不跟随」。
+                //
+                //  根因：`verticalScroll` 下**内容长高会改变滚动位置和 maxValue**
+                //  —— 所有「离底部多远」的判定在流式期间都不可靠。
+                //
+                //  Jetchat（官方 compose-samples）的方案：
+                //    · `LazyColumn(reverseLayout = true)` —— 坐标系翻转，
+                //      index 0 = 视觉**底部**（最新消息）
+                //    · 新内容**自动**出现在底部 —— 不需要任何滚动代码
+                //    · 内容长高**不影响**滚动位置（锚点在底部）
+                //    · 「是否在底部」= firstVisibleItemIndex == 0 && offset < 阈值
+                //      —— 精确、无歧义
+                //
+                //  参考：Jetchat/Conversation.kt:455（reverseLayout）、
+                //        :503-505（判定）、:513（滚到底）、
+                //        ConversationUiState.kt:28（数据 add(0, msg) 反序）
+                // ══════════════════════════════════════════════════════════
+                val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+                // 「回到底部」按钮的 animateScrollToItem 需要协程作用域
                 val scope = androidx.compose.runtime.rememberCoroutineScope()
-                var followBottom by remember { mutableStateOf(true) }
-                var programmaticScroll by remember { mutableStateOf(false) }
-                var scrollRequested by remember { mutableStateOf(false) }
-                val bottomThresholdPx = with(androidx.compose.ui.platform.LocalDensity.current) {
-                    50.dp.toPx().toInt()
-                }
 
-                // 只用用户手势改变跟随意图；内容高度变化（maxValue）绝不把
-                // 已上滑的用户重新纳入跟随。
-                LaunchedEffect(scrollState) {
-                    snapshotFlow {
-                        Triple(
-                            scrollState.isScrollInProgress,
-                            scrollState.value,
-                            scrollState.maxValue,
-                        )
-                    }.collect { (scrolling, value, max) ->
-                        if (!scrolling || programmaticScroll || scrollRequested) {
-                            return@collect
-                        }
-                        followBottom = max - value <= bottomThresholdPx
+                // 「是否在底部」判定 —— derivedStateOf 只在值变化时触发重组
+                val jumpThresholdPx = with(androidx.compose.ui.platform.LocalDensity.current) { 50.dp.toPx() }
+                val isAtBottom by remember {
+                    androidx.compose.runtime.derivedStateOf {
+                        listState.firstVisibleItemIndex == 0 &&
+                            listState.firstVisibleItemScrollOffset < jumpThresholdPx
                     }
                 }
 
-                // 内容增长时，仅在用户仍处于底部跟随模式时瞬时追到底。
-                // 常驻 effect 不会因每个流式 chunk 被重启。
-                LaunchedEffect(scrollState) {
-                    snapshotFlow { scrollState.maxValue }
-                        .collect {
-                            if (!followBottom || scrollState.isScrollInProgress) {
-                                return@collect
-                            }
-                            programmaticScroll = true
-                            try {
-                                scrollState.scrollTo(scrollState.maxValue)
-                            } finally {
-                                programmaticScroll = false
-                            }
+                // Sticky Scroll：离开底部后固定「视觉顶部」的阅读锚点。
+                //
+                // reverseLayout 下 visibleItemsInfo 的第一个 item 靠近视觉底部，
+                // 正是 streaming item 高度变化会影响的一端；lastOrNull 才是
+                // 用户上滑后正在阅读的前缘。之前用 firstOrNull，锚点本身会跟着
+                // Agent 输出变化，所以补偿永远追错对象。
+                var stickyKey by remember { mutableStateOf<Any?>(null) }
+                var stickyOffset by remember { mutableStateOf(0) }
+
+                // 手指停止滚动时记录视觉顶部锚点。内容更新不会覆盖它。
+                LaunchedEffect(listState) {
+                    var wasScrolling = false
+                    snapshotFlow {
+                        Triple(
+                            listState.isScrollInProgress,
+                            isAtBottom,
+                            listState.layoutInfo.visibleItemsInfo.lastOrNull()?.let {
+                                it.key to it.offset
+                            },
+                        )
+                    }.collect { (scrolling, atBottom, edge) ->
+                        val justStopped = wasScrolling && !scrolling
+                        wasScrolling = scrolling
+                        if (justStopped && !atBottom && edge != null) {
+                            stickyKey = edge.first
+                            stickyOffset = edge.second
                         }
+                    }
                 }
 
-                // 会话切换时只重置「是否跟随」这个意图；初次布局由 maxValue
-                // 观察器处理。这里绝不能直接 scrollTo(0)，否则切换/重组时会
-                // 把正在阅读历史的用户拉走。
-                LaunchedEffect(sessionKey) {
-                    followBottom = true
+                // 输出流变化会改变底部 item 的高度；把视觉顶部锚点拉回原位置。
+                LaunchedEffect(listState) {
+                    snapshotFlow {
+                        val key = stickyKey ?: return@snapshotFlow null
+                        // 用户拖动时由手势独占滚动；补偿只能处理 Agent 导致的布局变化。
+                        if (listState.isScrollInProgress || isAtBottom) {
+                            return@snapshotFlow null
+                        }
+                        listState.layoutInfo.visibleItemsInfo
+                            .lastOrNull { it.key == key }
+                            ?.let { it.index to it.offset }
+                    }.collect { position ->
+                        if (position != null && position.second != stickyOffset) {
+                            listState.requestScrollToItem(position.first, stickyOffset)
+                        }
+                    }
                 }
 
-                // 键盘会缩短可见高度，但不应改变阅读位置。只有内容增长观察器
-                // 才负责在 followBottom=true 时追到底部。
 
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(scrollState),
-                ) {
-                    MessageList(
-                        bubbles = bubbles,
-                        onResend = onResend,
-                        onEdit = onEdit,
-                        streaming = streaming,
-                        toolCards = toolCards,
-                        streamingThinking = streamingThinking,
-                        streamingRunning = running,
-                        todos = emptyList(),
-                        onOpenDocument = { openDoc = it },
-                    )
-                    Spacer(Modifier.height(12.dp))
+                // 键盘弹出时滚到底（只在用户本来就在底部时 —— 别把他从历史里拽回来）
+                LaunchedEffect(imeVisible) {
+                    if (imeVisible && isAtBottom) {
+                        listState.scrollToItem(0)
+                    }
                 }
 
-                // ── 回到底部按钮（用户上滑后显示）─────────────────────
-                // 这是一条显式的用户意图：先恢复跟随状态，再瞬时滚到当前末尾。
+                // 【reverseLayout 改造】不再需要外层 Column + verticalScroll ——
+                // MessageList 自己就是 LazyColumn（带 reverseLayout），
+                // 滚动状态由 listState 管理（上面已创建）。
+                // 呼吸空间的 Spacer 也移进 MessageList（reverseLayout 下
+                // 它要在**视觉最底部**，即声明顺序的最后）。
+                MessageList(
+                    bubbles = bubbles,
+                    onResend = onResend,
+                    onEdit = onEdit,
+                    streaming = streaming,
+                    toolCards = toolCards,
+                    streamingThinking = streamingThinking,
+                    streamingRunning = running,
+                    todos = emptyList(),
+                    onOpenDocument = { openDoc = it },
+                    listState = listState,
+                    modifier = Modifier.fillMaxSize(),
+                )
+
+                // ── 回到底部按钮（不在跟随时显示）─────────────────────
+                // 【2026-10-07 修两个问题】
+                //  1. 看不清：原来 bgMain@0.95 + textSecondary，与正文对比度
+                //     太低 → 改 accent 实底 + 反色文字（对比度拉满）+ 更明显阴影。
+                //  2. 点了没反应：点击后判定协程会把 followBottom 打回 false ——
+                //     animateScrollTo 动画途中 (max-v)>50，snapshotFlow 判定
+                //     「用户上翻」；流式期间 max 还在涨，动画永远追不上 →
+                //     按钮反复闪、点了像没反应。修：加 scrollRequested 标志，
+                //     判定协程见到它时不打回；滚动用「追底循环」（每帧滚，
+                //     对齐键盘弹出那段的成熟做法），追到后清标志。
+                // 【reverseLayout 改造】显示条件用 isAtBottom（derivedStateOf，
+                // 精确判定）；点击直接 scrollToItem(0) —— index 0 就是视觉底部，
+                // 不再需要追底循环 / 标志位那套（reverseLayout 下滚到底就是滚到底）。
                 androidx.compose.animation.AnimatedVisibility(
-                    visible = !followBottom,
+                    visible = !isAtBottom,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .padding(bottom = 14.dp),
@@ -335,16 +380,9 @@ fun ChatScreen(
                             .background(colors.accent.copy(alpha = 0.85f))
                             .shadow(8.dp, RoundedCornerShape(50))
                             .clickable {
-                                followBottom = true
-                                scrollRequested = true
+                                // 需要一个协程作用域来跑 animateScrollToItem
                                 scope.launch {
-                                    programmaticScroll = true
-                                    try {
-                                        scrollState.scrollTo(scrollState.maxValue)
-                                    } finally {
-                                        programmaticScroll = false
-                                        scrollRequested = false
-                                    }
+                                    listState.animateScrollToItem(0)
                                 }
                             }
                             .padding(horizontal = 18.dp, vertical = 9.dp),
