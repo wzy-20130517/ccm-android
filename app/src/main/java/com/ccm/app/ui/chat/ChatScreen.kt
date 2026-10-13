@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -245,6 +246,7 @@ fun ChatScreen(
                 // 自动跟随只在「用户本来就在底部」时发生；一旦用户上滑，后续
                 // streaming 高度变化只扩展视口下方内容，不主动改 scrollState。
                 val scrollState = rememberScrollState()
+                val scope = androidx.compose.runtime.rememberCoroutineScope()
                 var followBottom by remember { mutableStateOf(true) }
                 var programmaticScroll by remember { mutableStateOf(false) }
                 var scrollRequested by remember { mutableStateOf(false) }
