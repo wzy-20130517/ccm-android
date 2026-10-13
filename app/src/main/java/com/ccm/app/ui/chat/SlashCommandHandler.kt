@@ -2514,11 +2514,13 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                 if (parts.isEmpty()) {
                     val tok = ac?.tokenLimit ?: loadR.config.compactTokenLimit
                     val msg = ac?.messageLimit ?: loadR.config.compactMessageLimit
+                    val keep = ac?.keepLast ?: loadR.config.compactKeepLast
                     val enabled = ac?.isEnabled ?: (tok > 0 || msg > 0)
                     SlashResult.Notice(
                         "**自动压缩阈值**\n\n" +
                             "- 固定 Token 阈值：${if (tok > 0) tok.toString() else "关闭(0)"}\n" +
                             "- 固定消息阈值：${if (msg > 0) msg.toString() else "关闭(0)"}\n" +
+                            "- 自动压缩保留：${keep} 条消息\n" +
                             "- 自动压缩总开关：${if (enabled) "开启" else "关闭"}" +
                             (if (ac?.isTripped == true) "（⚠ 断路器已跳闸，连续失败 ${ac.failures} 次）" else "") + "\n\n" +
                             "说明：\n" +
@@ -2526,21 +2528,31 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                             "- `/compact status` 仅查看建议，不执行\n" +
                             "- `/compact`、`/compact force` 手动压缩\n" +
                             "- `/compact-threshold 0 0` 完全关闭自动压缩\n" +
-                            "- `/compact-threshold <t> <m>` 设固定阈值并按阈值自动压缩\n" +
+                            "- `/compact-threshold <t> <m> [keep]` 设阈值和自动压缩保留数\n" +
+                            "- 例如 `/compact-threshold 270000 0 100`\n" +
                             "_压缩会摘要历史可能丢细节，所以默认关；设了阈值才会自动压。_",
                     )
-                } else if (parts.size > 2) {
-                    SlashResult.Notice("参数过多。用法：`/compact-threshold <tokens> [messages]`")
+                } else if (parts.size > 3) {
+                    SlashResult.Notice("参数过多。用法：`/compact-threshold <tokens> [messages] [keepLast]`")
                 } else {
                     val t = parts[0].toIntOrNull()
-                    val m = if (parts.size == 2) parts[1].toIntOrNull() else null
-                    if (t == null || t < 0 || (parts.size == 2 && m == null) || (m != null && m < 0)) {
-                        SlashResult.Notice("参数无效。用法：`/compact-threshold <tokens> [messages]`（0 0 = 关闭）")
+                    val m = if (parts.size >= 2) parts[1].toIntOrNull() else null
+                    val k = if (parts.size == 3) parts[2].toIntOrNull() else null
+                    if (t == null || t < 0 || (parts.size >= 2 && m == null) || (m != null && m < 0) ||
+                        (parts.size == 3 && (k == null || k < 1))
+                    ) {
+                        SlashResult.Notice("参数无效。用法：`/compact-threshold <tokens> [messages] [keepLast]`（0 0 = 关闭，keepLast ≥ 1）")
                     } else {
                         // messages 缺省 = 不动现有条数阈值（对齐 CLI setMessageLimit 的行为）
                         val effM = m ?: (ac?.messageLimit ?: loadR.config.compactMessageLimit)
+                        // keepLast 缺省 = 不动现有保留数（对齐 CLI setKeepLast 的行为）
+                        val effK = k ?: (ac?.keepLast ?: loadR.config.compactKeepLast)
                         val ok = com.ccm.app.core.provider.AppConfig.save(
-                            loadR.config.copy(compactTokenLimit = t, compactMessageLimit = effM),
+                            loadR.config.copy(
+                                compactTokenLimit = t,
+                                compactMessageLimit = effM,
+                                compactKeepLast = effK,
+                            ),
                             st.configFile,
                         )
                         if (!ok) {
@@ -2550,10 +2562,12 @@ private fun handleToolsCommands(cmd: String, arg: String, ctx: SlashContext): Sl
                             if (ac != null) {
                                 ac.tokenLimit = t
                                 ac.messageLimit = effM
+                                ac.keepLast = effK
                             }
                             val state = buildString {
                                 append("Token 上限已设为: ${if (t == 0) "关闭" else t}\n")
                                 append("消息条数上限已设为: ${if (effM == 0) "关闭" else effM}\n")
+                                if (k != null) append("自动压缩保留: $effK 条消息\n")
                                 if (t > 0 || effM > 0) append("自动压缩: 开启（按固定阈值）")
                                 else append("自动压缩: 已完全关闭（仅手动 /compact）")
                             }

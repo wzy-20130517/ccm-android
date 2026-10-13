@@ -43,6 +43,13 @@ class AutoCompact(
     /** 消息条数阈值（0 = 不按条数触发）。 */
     @Volatile
     var messageLimit: Int = 0,
+    /**
+     * 自动压缩后保留的消息条数（默认 10，对齐 CLI compactKeepLast）。
+     *
+     * 只影响**自动**压缩的摘要分支；手动 `/compact <N>` 的 keepLast 由命令参数决定。
+     */
+    @Volatile
+    var keepLast: Int = Compactor.DEFAULT_KEEP_LAST,
     /** 模型上下文窗口。 */
     @Volatile
     var maxContext: Int = 1_000_000,

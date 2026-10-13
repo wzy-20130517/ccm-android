@@ -867,6 +867,7 @@ class AppContainer private constructor(
                         else -> 0
                     },
                     messageLimit = config.compactMessageLimit,
+                    keepLast = if (config.compactKeepLast > 0) config.compactKeepLast else com.ccm.app.core.compact.Compactor.DEFAULT_KEEP_LAST,
                     maxContext = config.maxContextTokens,
                 ),
                 modes = modes,

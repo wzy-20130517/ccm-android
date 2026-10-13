@@ -152,6 +152,16 @@ data class AppConfig(
     val compactMessageLimit: Int = 0,
 
     /**
+     * 自动压缩后保留的消息条数（默认 10）。
+     *
+     * 对齐 CLI `/compact-threshold <tokens> <messages> [keepLast]` 的第三参数
+     * （config 的 compactKeepLast）。手动 `/compact <N>` / `/compact force <N>`
+     * 仍按用户当次指定的 N，不受本字段影响。
+     */
+    @SerialName("compactKeepLast")
+    val compactKeepLast: Int = 10,
+
+    /**
      * 进会话时是否显示历史正文（问题40：/replay）。
      *
      * 默认 false（2026-10-03 拍板：不想被历史刷屏）。
@@ -220,7 +230,7 @@ data class AppConfig(
             "providers", "current", "greeting", "stream", "temperature",
             "maxContextTokens", "permissionMode", "vision", "visionProviderId",
             "keyRotateEvery", "imageGen", "effort", "tavilyKey", "webSearch", "pexelsKey",
-            "compactThreshold", "compactTokenLimit", "compactMessageLimit",
+            "compactThreshold", "compactTokenLimit", "compactMessageLimit", "compactKeepLast",
             "replayHistory", "promptCache", "promptCacheRetention", "envMode",
             "outputStyle", "workspacePath",
             "_extra",

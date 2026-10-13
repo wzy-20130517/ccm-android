@@ -254,6 +254,9 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                 var msgLimit by remember {
                     mutableStateOf(acState?.messageLimit ?: cfgForAc?.compactMessageLimit ?: 0)
                 }
+                var keepLast by remember {
+                    mutableStateOf(acState?.keepLast ?: cfgForAc?.compactKeepLast ?: 10)
+                }
                 var acSaved by remember { mutableStateOf("") }
 
                 Text(
@@ -281,6 +284,17 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                             acSaved = ""
                         },
                         placeholder = "如 500（超过 500 条消息时压）",
+                    )
+                }
+
+                SettingsField(label = "压缩后保留条数（默认 10）") {
+                    SettingsTextField(
+                        value = keepLast.toString(),
+                        onValueChange = { v ->
+                            keepLast = v.filter { it.isDigit() }.toIntOrNull() ?: 1
+                            acSaved = ""
+                        },
+                        placeholder = "如 100（自动压缩后保留最近 100 条）",
                     )
                 }
 
@@ -320,6 +334,7 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                                         loadR.config.copy(
                                             compactTokenLimit = tokLimit,
                                             compactMessageLimit = msgLimit,
+                                            compactKeepLast = keepLast,
                                         ),
                                         st.configFile,
                                     )
@@ -327,6 +342,7 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
                                     com.ccm.app.AppGraph.container?.autoCompact?.let { ac ->
                                         ac.tokenLimit = tokLimit
                                         ac.messageLimit = msgLimit
+                                        ac.keepLast = keepLast
                                     }
                                     acSaved = if (tokLimit > 0 || msgLimit > 0) {
                                         "✅ 已保存并启用（立即生效）"

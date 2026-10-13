@@ -341,9 +341,11 @@ class ChatSession(
      *
      * @return 给用户看的报告；null = 无可压缩内容（消息太少）
      */
-    suspend fun summarizeAndReplace(): String? {
+    suspend fun summarizeAndReplace(
+        keepLast: Int = com.ccm.app.core.compact.Compactor.DEFAULT_KEEP_LAST,
+    ): String? {
         val history = container.agentLoop.getHistory()
-        val split = container.compactor.splitForSummary(history) ?: return null
+        val split = container.compactor.splitForSummary(history, keepLast) ?: return null
 
         val input = container.compactor.buildSummaryInput(split.toSummarize)
         val prompt = container.compactor.buildSummaryPrompt(input)
@@ -766,7 +768,7 @@ class ChatSession(
         if (!ac.shouldCompact(hist, tokens)) return
 
         val before = hist.size
-        val msg = summarizeAndReplace() ?: return
+        val msg = summarizeAndReplace(ac.keepLast) ?: return
         val after = container.agentLoop.getHistory().size
         if (after < before) {
             ac.reportSuccess()
