@@ -829,7 +829,7 @@ fun MessageList(
                 androidx.compose.ui.Modifier.height(12.dp),
             )
         }
-**推导文档卡片：toolCards 里已能看到
+        // 【2026-10-11】流式期间不推导文档卡片：toolCards 里已能看到
         // Write/Edit 的调用，再叠一张卡片等于同一件事显示两遍；而且流式过程中
         // 文件还在写，卡片内容会反复变。等 Done 定型进 bubble 后一次性渲染。
     }
