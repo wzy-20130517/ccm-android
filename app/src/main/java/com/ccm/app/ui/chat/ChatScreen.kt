@@ -239,103 +239,43 @@ fun ChatScreen(
             // 它自己吃 ime padding 上推时，消息区 `weight(1f)` 自动缩，
             // 消息区**不需要**再吃一次 ime padding。
             Box(modifier = Modifier.weight(1f)) {
-                // ══════════════════════════════════════════════════════════════
-                //  【2026-10-11 滚动方案重写 —— 照抄官方 Jetchat】
-                //
-                //  旧的 `Column + verticalScroll` + 一整套跟随判定
-                //  （followBottom / scrollRequested / programmaticScroll /
-                //   判定协程 / 跟随协程 / 追底循环）修了 6 版仍有 bug：
-                //  用户报「滑到最低也不跟随」。
-                //
-                //  根因：`verticalScroll` 下**内容长高会改变滚动位置和 maxValue**
-                //  —— 所有「离底部多远」的判定在流式期间都不可靠。
-                //
-                //  Jetchat（官方 compose-samples）的方案：
-                //    · `LazyColumn(reverseLayout = true)` —— 坐标系翻转，
-                //      index 0 = 视觉**底部**（最新消息）
-                //    · 新内容**自动**出现在底部 —— 不需要任何滚动代码
-                //    · 内容长高**不影响**滚动位置（锚点在底部）
-                //    · 「是否在底部」= firstVisibleItemIndex == 0 && offset < 阈值
-                //      —— 精确、无歧义
-                //
-                //  参考：Jetchat/Conversation.kt:455（reverseLayout）、
-                //        :503-505（判定）、:513（滚到底）、
-                //        ConversationUiState.kt:28（数据 add(0, msg) 反序）
-                // ══════════════════════════════════════════════════════════
                 val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-                // 「回到底部」按钮的 animateScrollToItem 需要协程作用域
                 val scope = androidx.compose.runtime.rememberCoroutineScope()
+                var followBottom by remember { mutableStateOf(true) }
+                var programmaticScroll by remember { mutableStateOf(false) }
 
-                // 「是否在底部」判定 —— derivedStateOf 只在值变化时触发重组
-                val jumpThresholdPx = with(androidx.compose.ui.platform.LocalDensity.current) { 50.dp.toPx() }
+                // 正序 LazyColumn 的末尾就是最新消息。只在用户仍处于末尾时跟随；
+                // 用户上滑后，任何新消息都不会从历史内容前面插入。
                 val isAtBottom by remember {
-                    androidx.compose.runtime.derivedStateOf {
-                        listState.firstVisibleItemIndex == 0 &&
-                            listState.firstVisibleItemScrollOffset < jumpThresholdPx
-                    }
+                    androidx.compose.runtime.derivedStateOf { !listState.canScrollForward }
                 }
-
-                // Sticky Scroll：离开底部后固定「视觉顶部」的阅读锚点。
-                //
-                // reverseLayout 下 visibleItemsInfo 的第一个 item 靠近视觉底部，
-                // 正是 streaming item 高度变化会影响的一端；lastOrNull 才是
-                // 用户上滑后正在阅读的前缘。之前用 firstOrNull，锚点本身会跟着
-                // Agent 输出变化，所以补偿永远追错对象。
-                var stickyKey by remember { mutableStateOf<Any?>(null) }
-                var stickyOffset by remember { mutableStateOf(0) }
-
-                // 手指停止滚动时记录视觉顶部锚点。内容更新不会覆盖它。
                 LaunchedEffect(listState) {
-                    var wasScrolling = false
-                    snapshotFlow {
-                        Triple(
-                            listState.isScrollInProgress,
-                            isAtBottom,
-                            listState.layoutInfo.visibleItemsInfo.lastOrNull()?.let {
-                                it.key to it.offset
-                            },
-                        )
-                    }.collect { (scrolling, atBottom, edge) ->
-                        val justStopped = wasScrolling && !scrolling
-                        wasScrolling = scrolling
-                        if (justStopped && !atBottom && edge != null) {
-                            stickyKey = edge.first
-                            stickyOffset = edge.second
+                    snapshotFlow { listState.isScrollInProgress to isAtBottom }
+                        .collect { (scrolling, atBottom) ->
+                            if (scrolling && !programmaticScroll) {
+                                followBottom = atBottom
+                            }
                         }
-                    }
                 }
-
-                // 输出流变化会改变底部 item 的高度；把视觉顶部锚点拉回原位置。
                 LaunchedEffect(listState) {
-                    snapshotFlow {
-                        val key = stickyKey ?: return@snapshotFlow null
-                        // 用户拖动时由手势独占滚动；补偿只能处理 Agent 导致的布局变化。
-                        if (listState.isScrollInProgress || isAtBottom) {
-                            return@snapshotFlow null
+                    snapshotFlow { listState.layoutInfo.totalItemsCount }
+                        .collect { count ->
+                            if (count <= 0 || !followBottom || listState.isScrollInProgress) return@collect
+                            programmaticScroll = true
+                            try { listState.scrollToItem(count - 1) }
+                            finally { programmaticScroll = false }
                         }
-                        listState.layoutInfo.visibleItemsInfo
-                            .lastOrNull { it.key == key }
-                            ?.let { it.index to it.offset }
-                    }.collect { position ->
-                        if (position != null && position.second != stickyOffset) {
-                            listState.requestScrollToItem(position.first, stickyOffset)
-                        }
-                    }
                 }
-
-
-                // 键盘弹出时滚到底（只在用户本来就在底部时 —— 别把他从历史里拽回来）
-                LaunchedEffect(imeVisible) {
-                    if (imeVisible && isAtBottom) {
+                LaunchedEffect(sessionKey) {
+                    followBottom = true
+                    programmaticScroll = true
+                    try {
                         listState.scrollToItem(0)
+                    } finally {
+                        programmaticScroll = false
                     }
                 }
 
-                // 【reverseLayout 改造】不再需要外层 Column + verticalScroll ——
-                // MessageList 自己就是 LazyColumn（带 reverseLayout），
-                // 滚动状态由 listState 管理（上面已创建）。
-                // 呼吸空间的 Spacer 也移进 MessageList（reverseLayout 下
-                // 它要在**视觉最底部**，即声明顺序的最后）。
                 MessageList(
                     bubbles = bubbles,
                     onResend = onResend,
@@ -350,39 +290,25 @@ fun ChatScreen(
                     modifier = Modifier.fillMaxSize(),
                 )
 
-                // ── 回到底部按钮（不在跟随时显示）─────────────────────
-                // 【2026-10-07 修两个问题】
-                //  1. 看不清：原来 bgMain@0.95 + textSecondary，与正文对比度
-                //     太低 → 改 accent 实底 + 反色文字（对比度拉满）+ 更明显阴影。
-                //  2. 点了没反应：点击后判定协程会把 followBottom 打回 false ——
-                //     animateScrollTo 动画途中 (max-v)>50，snapshotFlow 判定
-                //     「用户上翻」；流式期间 max 还在涨，动画永远追不上 →
-                //     按钮反复闪、点了像没反应。修：加 scrollRequested 标志，
-                //     判定协程见到它时不打回；滚动用「追底循环」（每帧滚，
-                //     对齐键盘弹出那段的成熟做法），追到后清标志。
-                // 【reverseLayout 改造】显示条件用 isAtBottom（derivedStateOf，
-                // 精确判定）；点击直接 scrollToItem(0) —— index 0 就是视觉底部，
-                // 不再需要追底循环 / 标志位那套（reverseLayout 下滚到底就是滚到底）。
                 androidx.compose.animation.AnimatedVisibility(
                     visible = !isAtBottom,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 14.dp),
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp),
                     enter = androidx.compose.animation.fadeIn(),
                     exit = androidx.compose.animation.fadeOut(),
                 ) {
                     Row(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(50)) // 椭圆胶囊
-                            // 【2026-10-11】加透明度 —— 原来是实底 accent，
-                            // 浮在消息上方时太抢眼（用户报「有点挡了」）。
-                            // 0.85 既能看清、又透出下面的内容。
+                            .clip(RoundedCornerShape(50))
                             .background(colors.accent.copy(alpha = 0.85f))
                             .shadow(8.dp, RoundedCornerShape(50))
                             .clickable {
-                                // 需要一个协程作用域来跑 animateScrollToItem
+                                followBottom = true
                                 scope.launch {
-                                    listState.animateScrollToItem(0)
+                                    programmaticScroll = true
+                                    try {
+                                        val count = listState.layoutInfo.totalItemsCount
+                                        if (count > 0) listState.animateScrollToItem(count - 1)
+                                    } finally { programmaticScroll = false }
                                 }
                             }
                             .padding(horizontal = 18.dp, vertical = 9.dp),
@@ -401,11 +327,6 @@ fun ChatScreen(
                         )
                     }
                 }
-
-                // 【2026-10-06「开不开都挡」】浮动看板已删 —— 它浮在右下角
-                // （bottom 154dp），展开折叠都盖正文。看板改由上面
-                // MessageList 顶部渲染（文档流，不遮挡）。
-                // TodoPanel 默认也改为折叠（TodoPanel.kt），头部一行 + 进度不丢。
             }
             Column(
                 modifier = Modifier
