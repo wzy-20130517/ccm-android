@@ -38,8 +38,12 @@
   }
   #bubble {
     position: relative;
-    width: 96%;
-    max-width: 96%;
+    align-self: stretch;
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    margin-left: 3px;
+    margin-right: 3px;
     box-sizing: border-box;
     flex: 0 0 auto;
     margin-bottom: 7px;
@@ -154,6 +158,12 @@
    */
   var BUBBLE_MAX_CHARS = 90;
   window.setBubble = function (text) {
+    // Android WebView 在悬浮窗首次布局时可能把 flex 子项的百分比宽度
+    // 解析成内容宽度，中文于是被压成一列。直接按 viewport 写入像素宽度，
+    // 绕开这次测量歧义。
+    var viewportWidth = document.documentElement.clientWidth || document.body.clientWidth || 132;
+    bubble.style.width = Math.max(80, viewportWidth - 6) + 'px';
+    bubble.style.maxWidth = Math.max(80, viewportWidth - 6) + 'px';
     if (!text) {
       bubble.classList.remove('show');
       bubbleText.textContent = '';
