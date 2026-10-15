@@ -216,6 +216,10 @@ class ClawdOverlayService : Service() {
                     // 补发订阅期间累积的状态（页面加载通常几百毫秒，
                     // 这期间 Agent 可能已经切了好几次状态）
                     pendingSvg?.let { setSvg(it) }
+                    // 实时更新流可能在页面加载期间已经发完；补读 StateFlow 快照，
+                    // 避免悬浮窗刚创建时错过完整正文，只显示早期首字。
+                    val snapshotBubble = ClawdBus.bubbleText.value
+                    if (snapshotBubble.isNotEmpty()) pendingBubble = snapshotBubble
                     if (pendingBubble.isNotEmpty()) setBubbleText(pendingBubble)
                 }
 
@@ -752,11 +756,22 @@ class ClawdOverlayService : Service() {
             // 延迟清空任务（新气泡到来时取消）
             var clearJob: kotlinx.coroutines.Job? = null
 
-            ClawdBus.bubbleText.collect { text ->
+            // 气泡使用有缓冲的更新流，不能用 StateFlow：StateFlow 会合并高速
+            // TextDelta，最后紧跟的清空可能让 UI 只看到首个字。
+            ClawdBus.bubbleUpdates.collect { text ->
                 if (text.isEmpty()) {
+                    // 正文结束/切换工具状态时，StateFlow 会发空串。若 300ms 节流
+                    // 窗口内还有更新，必须先显示最新 pending；直接取消会把尾部正文
+                    // 丢掉，气泡只剩第一次立即注入的首字（如「第 1 次」只剩「第」）。
+                    val finalPending = pending
                     flushJob?.cancel()
                     flushJob = null
                     pending = null
+                    if (!finalPending.isNullOrEmpty()) {
+                        lastInject = System.currentTimeMillis()
+                        bubbleShownAt = lastInject
+                        setBubbleText(finalPending)
+                    }
                     // 【最短展示时间】刚显示不足 BUBBLE_MIN_SHOW_MS → 延迟清空
                     val shownFor = System.currentTimeMillis() - bubbleShownAt
                     if (bubbleShownAt > 0 && shownFor < BUBBLE_MIN_SHOW_MS) {

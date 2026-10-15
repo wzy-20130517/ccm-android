@@ -6,6 +6,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -27,7 +28,12 @@ import kotlinx.coroutines.flow.asStateFlow
  * 用单例对象而不是依赖注入：进程内只有一个悬浮窗、一个 Agent 循环，
  * 多实例没有意义，反而要处理「谁持有谁」的生命周期问题。
  *
- * ## 为什么用 SharedFlow 而不是 StateFlow
+ * ## 文本快照与更新流
+ *
+ * 状态快照使用 StateFlow，供服务重建时读取当前值；实时气泡另外通过带重放和
+ * 缓冲的 SharedFlow 发布。StateFlow 会合并快速连续的流式更新，UI 可能只看见
+ * 首个增量，而后续文本已被清空。气泡更新流保留顺序，避免末尾正文丢失。
+
  *
  * StateFlow 会重放最后一个值 —— 悬浮窗晚启动时会收到一个陈旧的中间状态
  * （比如已经结束的 THINKING），然后卡在那儿。SharedFlow 无重放：
@@ -48,15 +54,23 @@ object ClawdBus {
     private val _state = MutableStateFlow(ClawdState.IDLE)
     val state: StateFlow<ClawdState> = _state.asStateFlow()
 
-    /**
-     * 消息气泡文本（空串 = 不显示气泡）。
-     *
-     * 只在 SPEAKING 状态有意义 —— 用户要求「气泡里就是它说的话」。
-     * 正文是流式的，所以这个值会被高频更新（每个 TextDelta 一次），
-     * 悬浮窗侧做了节流（见 ClawdOverlayService）。
-     */
+    /** 当前气泡文本快照，用于悬浮窗启动/重建时恢复。 */
     private val _bubbleText = MutableStateFlow("")
     val bubbleText: StateFlow<String> = _bubbleText.asStateFlow()
+
+    /** 实时气泡更新流；丢弃过期中间帧但保留最近更新。 */
+    private val _bubbleUpdates = MutableSharedFlow<String>(
+        replay = 1,
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val bubbleUpdates: SharedFlow<String> = _bubbleUpdates.asSharedFlow()
+
+    private fun publishBubbleText(text: String) {
+        _bubbleText.value = text
+        _bubbleUpdates.tryEmit(text)
+    }
+
 
     /**
      * 任务是否正在跑（决定「用户手动关掉悬浮窗后要不要自动弹回来」）。
@@ -124,9 +138,9 @@ object ClawdBus {
      */
     fun setState(next: ClawdState, bubble: String? = null) {
         _state.value = next
-        if (bubble != null) _bubbleText.value = bubble
-        // 离开 SPEAKING 时清空气泡（气泡只在说话时显示）
-        if (next != ClawdState.SPEAKING) _bubbleText.value = ""
+        if (bubble != null) publishBubbleText(bubble)
+        // 离开 SPEAKING 时发出清空事件；悬浮窗会先刷出节流缓存的最后正文。
+        if (next != ClawdState.SPEAKING) publishBubbleText("")
     }
 
     /** 追加正文到气泡（流式累加，超长自动保留尾部）。 */
@@ -135,7 +149,7 @@ object ClawdBus {
         val merged = _bubbleText.value + delta
         // 悬浮窗气泡只有几行，留太长既看不清也费内存。
         // 保留尾部 300 字符 —— 用户看的是「刚说了什么」。
-        _bubbleText.value = if (merged.length > 300) merged.takeLast(300) else merged
+        publishBubbleText(if (merged.length > 300) merged.takeLast(300) else merged)
         _state.value = ClawdState.SPEAKING
     }
 
@@ -144,7 +158,7 @@ object ClawdBus {
         _running.value = running
         if (running) {
             // 新一轮开始：清掉上一轮的残留（气泡 + 回到思考态）
-            _bubbleText.value = ""
+            publishBubbleText("")
             _state.value = ClawdState.THINKING
         } else {
             // 【2026-10-11 修「Clawd 一直循环播放一个动画」】
@@ -211,7 +225,7 @@ object ClawdBus {
 
     /** 重置到空闲（用户手动停止 / 会话被清空）。 */
     fun reset() {
-        _bubbleText.value = ""
+        publishBubbleText("")
         _state.value = ClawdState.IDLE
         _running.value = false
     }

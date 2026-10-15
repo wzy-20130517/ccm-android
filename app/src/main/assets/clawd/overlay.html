@@ -37,16 +37,16 @@
     padding: 4px 3px 0;
   }
   #bubble {
-    position: relative;
-    align-self: stretch;
+    position: absolute;
+    top: 4px;
+    left: 3px;
+    right: 3px;
     width: auto;
     max-width: none;
     min-width: 0;
-    margin-left: 3px;
-    margin-right: 3px;
     box-sizing: border-box;
-    flex: 0 0 auto;
-    margin-bottom: 7px;
+    margin: 0;
+    z-index: 2;
     background: #20212b;
     border: 1px solid rgba(255, 255, 255, .16);
     border-radius: 14px;
@@ -64,15 +64,14 @@
        ══════════════════════════════════════════════════════════ */
     max-height: 4.35em;              /* 3 行 × 1.45 行高，保险用 */
     overflow: hidden;
-    display: flex;
-    align-items: flex-end;           /* 内层从底部对齐 → 溢出裁顶部 */
+    display: block;                  /* WebView 中避免 flex 子项按最小内容宽度收缩 */
   }
   /* 内层：文本本体（padding 跟着它，底部对齐后 padding-top 被裁无妨） */
   #bubbleText {
     display: block;
-    width: 100%;
+    width: auto;
     box-sizing: border-box;
-    padding: 8px 11px 9px;
+    padding: 8px 11px 9px 17px;
     color: #fbfbff;
     font-size: 11px; line-height: 1.48;
     font-weight: 500;
@@ -94,7 +93,7 @@
   #bubble::before {
     content: "";
     position: absolute;
-    left: 10px; top: 9px;
+    left: 7px; top: 9px;
     width: 3px; height: calc(100% - 18px);
     border-radius: 3px;
     background: #ff9f6e;
@@ -107,6 +106,8 @@
   #pet {
     width: 100%; height: auto;
     display: block;
+    position: relative;
+    z-index: 1;
     pointer-events: none;
     transform-origin: center bottom;
     /* ══════════════════════════════════════════════════════════
@@ -127,7 +128,7 @@
 </head>
 <body>
 <div id="stage">
-  <div id="bubble"><span id="bubbleText"></span></div>
+  <div id="bubble"><div id="bubbleText"></div></div>
   <img id="pet" src="clawd-idle-follow.svg" alt="">
 </div>
 <script>
@@ -158,12 +159,6 @@
    */
   var BUBBLE_MAX_CHARS = 90;
   window.setBubble = function (text) {
-    // Android WebView 在悬浮窗首次布局时可能把 flex 子项的百分比宽度
-    // 解析成内容宽度，中文于是被压成一列。直接按 viewport 写入像素宽度，
-    // 绕开这次测量歧义。
-    var viewportWidth = document.documentElement.clientWidth || document.body.clientWidth || 132;
-    bubble.style.width = Math.max(80, viewportWidth - 6) + 'px';
-    bubble.style.maxWidth = Math.max(80, viewportWidth - 6) + 'px';
     if (!text) {
       bubble.classList.remove('show');
       bubbleText.textContent = '';
