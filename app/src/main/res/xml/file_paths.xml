@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 拍照输出路径（FileProvider 用）—— 只暴露 cache/attachments 子目录 -->
+<!--
+  FileProvider 暴露的路径白名单。
+
+  · attachments/ —— 拍照输出（相机 App 通过 content:// URI 写图）
+  · updates/     —— 自更新下载的 APK（交给系统安装器读取，2026-10-15 加）
+
+  只暴露这两个子目录，不用 <cache-path path="." /> 那种整目录放行 ——
+  白名单越窄越安全（FileProvider 的 authority 是 exported=false +
+  grantUriPermissions=true，只有显式授权的 Intent 才能读）。
+-->
 <paths>
     <cache-path name="attachments" path="attachments/" />
+    <cache-path name="updates" path="updates/" />
 </paths>

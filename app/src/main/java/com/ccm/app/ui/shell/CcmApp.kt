@@ -424,6 +424,29 @@ private fun AppScaffold(session: ChatSession?, initError: String?) {
 
     LaunchedEffect(Unit) { refreshSessions() }   // 启动先灌一次
 
+    // ── 启动时静默检查更新（2026-10-15）────────────────────────────
+    //
+    // 只在「发现新版」时提示，其余情况（已最新/网络失败）完全不打扰 ——
+    // 启动路径上的额外网络请求不该让用户看见失败信息。
+    //
+    // 提示形式用 Toast 而不是注入对话：启动瞬间可能还没有活动会话，
+    // injectNotice 无处可去；而且这是应用级通知，不是对话内容。
+    // 详细操作在「设置 → 关于 → 检查更新」。
+    val appCtxForUpdate = LocalContext.current.applicationContext
+    LaunchedEffect(Unit) {
+        try {
+            when (val r = com.ccm.app.core.update.Updater.check(appCtxForUpdate)) {
+                is com.ccm.app.core.update.Updater.CheckResult.HasUpdate ->
+                    android.widget.Toast.makeText(
+                        appCtxForUpdate,
+                        "发现新版本 build ${r.info.buildNumber}，去「设置 → 关于」更新",
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                else -> {}   // 已最新 / 检查失败：静默
+            }
+        } catch (_: Throwable) { /* 静默：更新检查失败不打扰 */ }
+    }
+
     // 打开指定会话并进对话页；id 空/失败则留在原地
     val openChat: (String) -> Unit = { id ->
         AppGraph.openSession(id)?.let { activeSession = it }

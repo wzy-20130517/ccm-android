@@ -35,6 +35,19 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
     <!-- ══════════════════════════════════════════════════════════════
+         自更新（2026-10-15）
+
+         App 内「检查更新 → 下载 → 安装」需要这个权限，否则系统安装器
+         直接拒绝（抛 ActivityNotFoundException 或静默失败）。
+
+         Android 8+ 除了 Manifest 声明，还需要用户手动打开本应用的
+         「安装未知应用」开关 —— 那是**运行时**判断，代码里走
+         PackageManager.canRequestPackageInstalls() + 跳设置页，
+         不能静默申请。
+         ══════════════════════════════════════════════════════════════ -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- ══════════════════════════════════════════════════════════════
          应用列表权限（2026-10-06）—— 用户指出「你都没要获取应用列表权限」
 
          Android 11+ 默认过滤包可见性，PackageManager 看不到别的 App。

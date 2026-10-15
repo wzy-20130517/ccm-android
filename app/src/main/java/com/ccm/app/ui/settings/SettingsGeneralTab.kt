@@ -21,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,11 +30,13 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ccm.app.ui.theme.CCMText
 import com.ccm.app.ui.theme.CCMTheme
+import kotlinx.coroutines.launch
 
 /** 下拉选项集合（职业 / 发送键）。 */
 private val WORK_FUNCTION_OPTIONS = listOf(
@@ -779,14 +782,192 @@ fun SettingsGeneralTab(modifier: Modifier = Modifier) {
 
         SettingsDivider()
 
-        // ── 7. 关于 ──────────────────────────────────────────────
+        // ── 7. 关于 + 更新 ────────────────────────────────────────
         // 这节的 `<h3>` 用 `mb-3`（不是 mb-5）—— 实测 marginBottom 12 → 屏幕 11.04
         SettingsSection(title = "关于", titleGap = SettingsTitleGapTight) {
-            // 版本号走 PackageManager 真值（APK 是 0.1.x，不是 CLI 的版本号）
+            // 版本号走 PackageManager 真值（APK 是 build 号，不是 CLI 的版本号）
             SettingsInfoRow(label = "当前版本", value = appVersion())
+            SettingsDivider()
+            UpdatePanel()
         }
     }
 }
+
+/**
+ * 「检查更新」面板（2026-10-15）。
+ *
+ * ## 与 CLI 的 /update 的关系
+ *
+ * CLI 是「下载 tar.gz 就地覆盖源码」，APK 是编译产物、没有可覆盖的源码，
+ * 所以走「下载新 APK → 交给系统安装器覆盖安装」。数据不受影响
+ *（会话/配置在应用私有目录，不在 APK 里）。
+ *
+ * ## 状态机
+ *
+ * Idle → Checking → (UpToDate | HasUpdate) → Downloading(progress) → 拉安装器
+ *
+ * 每一步都有明确的用户可见反馈：不搞「点了一下没反应」那种。
+ * 失败时给出可读原因（HTTP 码 / 网络异常），而不是静默。
+ *
+ * ## 为什么要水平进度条而不是转圈
+ *
+ * 89MB 的包走镜像，下载过程以秒计到分钟计。转圈看不出「还在动」，
+ * 百分比进度条能明确告诉用户「在下载、下到哪了」。
+ */
+@Composable
+private fun UpdatePanel() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val colors = CCMTheme.colors
+
+    // 状态
+    var checking by remember { mutableStateOf(false) }
+    var downloading by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(0f) }        // 0f..1f
+    var downloadedMb by remember { mutableStateOf(0L) }
+    var totalMb by remember { mutableStateOf(0L) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(7.36.dp)) {
+
+        // ── 说明文案 ────────────────────────────────────────────
+        Text(
+            text = "从 GitHub Releases 检查新版本，下载后覆盖安装（数据不丢）。",
+            style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+            color = colors.textSecondary,
+        )
+
+        // ── 状态行 ──────────────────────────────────────────────
+        if (message != null) {
+            Text(
+                text = message!!,
+                style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                color = if (error != null) Color(0xFFB45309) else colors.textPrimary,
+            )
+        }
+        if (error != null) {
+            Text(
+                text = error!!,
+                style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                color = Color(0xFFB45309),
+            )
+        }
+
+        // ── 下载进度条 ──────────────────────────────────────────
+        if (downloading) {
+            val pct = (progress * 100).toInt().coerceIn(0, 100)
+            Column(verticalArrangement = Arrangement.spacedBy(3.68.dp)) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(5.dp)
+                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(3.dp))
+                        .background(colors.border),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(progress.coerceIn(0f, 1f))
+                            .height(5.dp)
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(3.dp))
+                            .background(Color(0xFFD97757)),
+                    )
+                }
+                Text(
+                    text = if (totalMb > 0) {
+                        "下载中 $pct%　$downloadedMb / $totalMb MB"
+                    } else {
+                        "下载中 $pct%　$downloadedMb MB"
+                    },
+                    style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
+                    color = colors.textSecondary,
+                )
+            }
+        }
+
+        // ── 按钮 ────────────────────────────────────────────────
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            androidx.compose.material3.TextButton(
+                enabled = !checking && !downloading,
+                onClick = {
+                    checking = true
+                    message = null; error = null
+                    scope.launch {
+                        when (val r = com.ccm.app.core.update.Updater.check(ctx)) {
+                            is com.ccm.app.core.update.Updater.CheckResult.UpToDate -> {
+                                message = "已是最新版本（build ${r.current}）"
+                            }
+                            is com.ccm.app.core.update.Updater.CheckResult.Failed -> {
+                                error = "检查更新失败：${r.message}"
+                            }
+                            is com.ccm.app.core.update.Updater.CheckResult.HasUpdate -> {
+                                val info = r.info
+                                val sizeText = if (info.sizeBytes > 0) {
+                                    "%.1f MB".format(info.sizeBytes / 1024.0 / 1024.0)
+                                } else "未知大小"
+                                message = "发现新版本 build ${info.buildNumber}（$sizeText）"
+                                // 下载 → 安装
+                                downloading = true
+                                progress = 0f
+                                downloadedMb = 0L
+                                totalMb = (info.sizeBytes / 1024 / 1024)
+                                try {
+                                    val apk = com.ccm.app.core.update.Updater.download(ctx, info) { done, total ->
+                                        downloadedMb = done / 1024 / 1024
+                                        if (total > 0) {
+                                            totalMb = total / 1024 / 1024
+                                            progress = (done.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                                        }
+                                    }
+                                    downloading = false
+                                    val launched = com.ccm.app.core.update.Updater.install(ctx, apk)
+                                    message = if (launched) {
+                                        "已下载完成，正在拉起安装器…"
+                                    } else {
+                                        "需要先允许「安装未知应用」，已跳转设置页，开启后回来再点一次"
+                                    }
+                                } catch (t: Throwable) {
+                                    downloading = false
+                                    progress = 0f
+                                    error = "下载失败：${t.message ?: t.javaClass.simpleName}"
+                                }
+                            }
+                        }
+                        checking = false
+                    }
+                },
+            ) {
+                Text(
+                    text = if (checking) "检查中…" else if (downloading) "下载中…" else "检查更新",
+                    style = CCMText.body12.copy(fontSize = 11.sp),
+                )
+            }
+
+            // 下载完成后留一个入口：装完不必再点，但用户取消了安装可以再点
+            if (!checking && !downloading && message?.startsWith("已下载完成") == true) {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        // 重新走一遍检查（缓存里已有包会直接命中，秒装）
+                        scope.launch {
+                            val r = com.ccm.app.core.update.Updater.check(ctx)
+                            if (r is com.ccm.app.core.update.Updater.CheckResult.HasUpdate) {
+                                try {
+                                    val apk = com.ccm.app.core.update.Updater.download(ctx, r.info)
+                                    com.ccm.app.core.update.Updater.install(ctx, apk)
+                                } catch (t: Throwable) {
+                                    error = "安装失败：${t.message ?: t.javaClass.simpleName}"
+                                }
+                            }
+                        }
+                    },
+                ) {
+                    Text("再次安装", style = CCMText.body12.copy(fontSize = 11.sp))
+                }
+            }
+        }
+    }
+}
+
 
 /** 全名左侧的小头像 —— `w-10 h-10 rounded-full bg-claude-avatar text-[16px]`。
  *  实测（2026-10-01）：36.8×36.8 · bg `rgb(51,51,51)` · 文字 12.29 / fw500 / lh18.44。
@@ -1113,12 +1294,23 @@ fun ThinkingRing(color: Color, modifier: Modifier = Modifier, size: androidx.com
 }
 
 /** 当前 APK 版本号（versionName，如 "0.1.199"）。Composable 内读一次 context。 */
+/**
+ * 「关于」区块显示的版本号。
+ *
+ * 【2026-10-15 改】原来只显示 `versionName`（CI 没注入时是默认的 `0.1.0`），
+ * 而更新比较用的是 `versionCode`（= CI build 号，如 252）。
+ * 只显示 `0.1.0` 会让用户对不上「检查更新」报的 build 号 —— 两个都显示。
+ */
 @Composable
 private fun appVersion(): String {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     return remember(ctx) {
         try {
-            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "unknown"
+            val pi = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
+            @Suppress("DEPRECATION")
+            val code = pi.versionCode
+            val name = pi.versionName ?: "unknown"
+            if (code > 1) "$name（build $code）" else name
         } catch (_: Throwable) {
             "unknown"
         }

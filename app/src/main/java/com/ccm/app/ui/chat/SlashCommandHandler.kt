@@ -981,26 +981,61 @@ private fun handleQueryCommands(cmd: String, arg: String, ctx: SlashContext): Sl
             }
         }
 
-        // ── /update —— 检查更新（2026-10-07 对齐 CLI，APK 走 Release 页）──────
+        // ── /update —— 检查更新（2026-10-07 加，2026-10-15 接真实更新）──────
         //
         // CLI 的 /update 从镜像下载 tar.gz 就地覆盖源码；APK 是已编译的安装包，
-        // 没有「就地覆盖」的对象 —— 自更新的正确通道是 GitHub Releases 重新装包。
-        // 这里给用户明确的引导 + 当前版本号（不假装有更新能力）。
+        // 没有「就地覆盖」的对象 —— 走 GitHub Releases 下载新包覆盖安装。
+        //
+        // 【2026-10-15 升级】原来只给引导文案（「去 Release 页下载」），
+        // 现在真的会：查最新 Release → 有新版就后台下载 → 拉起安装器。
+        // 与「设置 → 关于 → 检查更新」走同一套 Updater，行为一致。
         "/update" -> {
-            // 版本号从 PackageManager 读（buildConfig 功能未开启，
-            // 不能引用 BuildConfig.VERSION_NAME —— AGP 8 默认不生成该类）。
-            val ver = try {
-                ctx.appContext?.packageManager
-                    ?.getPackageInfo(ctx.appContext.packageName, 0)?.versionName
-            } catch (_: Throwable) { null } ?: "未知"
-            SlashResult.Notice(
-                "**更新**\n\n" +
-                    "当前版本：`$ver`\n\n" +
-                    "APK 请通过 **Release 页**更新（下载新安装包覆盖安装，数据不丢）：\n" +
-                    "- https://github.com/wzy-20130517/ccm-android/releases\n\n" +
-                    "_CLI 的 `/update` 是镜像下载源码包就地覆盖；APK 是编译产物，没有可覆盖的源码目录，\n" +
-                    "所以走重新安装包的通道（应用私有数据不受影响）。_",
-            )
+            val actx = ctx.appContext
+            if (actx == null) {
+                SlashResult.Notice("无法获取应用上下文，更新不可用。")
+            } else {
+                val scope = com.ccm.app.AppGraph.appScope
+                if (scope == null) {
+                    SlashResult.Notice("应用作用域未就绪，稍后再试。")
+                } else {
+                    val sess = ctx.session
+                    scope.launch {
+                        val text = try {
+                            when (val r = com.ccm.app.core.update.Updater.check(actx)) {
+                                is com.ccm.app.core.update.Updater.CheckResult.UpToDate ->
+                                    "**更新**\n\n已是最新版本（build ${r.current}）。"
+                                is com.ccm.app.core.update.Updater.CheckResult.Failed ->
+                                    "**更新**\n\n检查失败：${r.message}\n\n_网络不通或 GitHub API 限流时会出现，稍后再试。_"
+                                is com.ccm.app.core.update.Updater.CheckResult.HasUpdate -> {
+                                    val info = r.info
+                                    val sizeText = if (info.sizeBytes > 0) {
+                                        "%.1f MB".format(info.sizeBytes / 1024.0 / 1024.0)
+                                    } else "未知大小"
+                                    try {
+                                        val apk = com.ccm.app.core.update.Updater.download(actx, info)
+                                        val launched = com.ccm.app.core.update.Updater.install(actx, apk)
+                                        if (launched) {
+                                            "**更新**\n\n新版本 build ${info.buildNumber}（$sizeText）已下载完成。\n\n" +
+                                                "已拉起安装器，按提示完成安装即可（覆盖安装，会话与配置不丢）。"
+                                        } else {
+                                            "**更新**\n\n新版本 build ${info.buildNumber}（$sizeText）已下载完成。\n\n" +
+                                                "但缺少「安装未知应用」权限，已跳转系统设置 —— 打开本应用的开关后，\n" +
+                                                "再执行一次 `/update` 即可安装（包已在缓存里，不会重复下载）。"
+                                        }
+                                    } catch (t: Throwable) {
+                                        "**更新**\n\n新版本 build ${info.buildNumber}（$sizeText）下载失败：\n" +
+                                            "`${t.message ?: t.javaClass.simpleName}`\n\n_可稍后重试，或从 Release 页手动下载。_"
+                                    }
+                                }
+                            }
+                        } catch (t: Throwable) {
+                            "**更新**\n\n检查失败：${t.message ?: t.javaClass.simpleName}"
+                        }
+                        try { sess?.injectNotice(text) } catch (_: Throwable) {}
+                    }
+                    SlashResult.Notice("_正在检查更新…（结果稍后出现在对话里）_")
+                }
+            }
         }
 
         else -> null
