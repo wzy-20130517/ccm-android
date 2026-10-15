@@ -28,7 +28,7 @@ description: 交互式向导（wizard）的使用说明 —— 那些「敲了�
 
 ```bash
 /qq setup                    # 向导
-/qq owner 3843364195         # 直接设，不向导
+/qq owner 10001              # 直接设，不向导
 
 /config provider add         # 向导
 /config provider add myid name=xxx url=xxx model=xxx key=xxx   # 一行式，不向导

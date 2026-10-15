@@ -152,7 +152,20 @@ def check_file(path):
                     f'用了 `.{prop}` 但缺 import：加 `import {imp_path}`'
                 )
 
-    # ── 4. KDoc 块注释嵌套 ────────────────────────────────────────
+    # ── 5. CCMColors 字段引用校验（2026-10-15 加）─────────────────
+    #
+    # 本轮 CI #253 报 `Unresolved reference 'textPrimary'` —— 我写了
+    # `colors.textPrimary`，而 CCMColors 里的字段叫 `textMain`。
+    #
+    # 这类错误的危险之处：**本地静态检查全绿、CI 才炸**（本来 check_kotlin.py
+    # 只查括号/import/KDoc，查不了符号引用）。而这正是最容易犯的错 ——
+    # 凭记忆写字段名，名字「听起来对」但实际不存在。
+    #
+    # 做法：把 CCMColors 的 val 字段名抽出来做白名单，扫全项目里
+    # `colors.xxx` / `CCMTheme.colors.xxx` 形式的引用，不在名单里就报。
+    errors.extend(check_colors_fields(path, code_only))
+
+    # ── 6. KDoc 块注释嵌套 ────────────────────────────────────────
     nested = []
     for i, l in enumerate(lines, 1):
         m = re.match(r'^\s*\*(.*)$', l)
@@ -163,6 +176,71 @@ def check_file(path):
         errors.append(f'KDoc 内有块注释标记（会导致 Unclosed comment）: {", ".join(nested)}')
 
     return errors, len(lines)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  CCMColors 字段白名单（模块级缓存，只读一次定义文件）
+# ══════════════════════════════════════════════════════════════════
+
+_COLORS_FIELDS = None
+
+
+def _load_colors_fields():
+    """从 CCMColors.kt 抽出所有 `val xxx:` 字段名 + 扩展函数名。
+
+    【为什么要连扩展函数一起收】`colors.toMaterialColorScheme(dark)` 这种
+    调用，接收者是 CCMColors，但它是**扩展函数**不是字段 —— 只要带上
+    函数名，就不会误报（第一版漏了这个，全量检查立刻报假阳性）。
+    """
+    global _COLORS_FIELDS
+    if _COLORS_FIELDS is not None:
+        return _COLORS_FIELDS
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.join(here, '..', 'app', 'src', 'main', 'java',
+                        'com', 'ccm', 'app', 'ui', 'theme')
+    fields = set()
+    for fname in ('CCMColors.kt', 'CCMTheme.kt'):
+        cand = os.path.join(base, fname)
+        try:
+            src = open(cand, encoding='utf-8').read()
+        except Exception:
+            continue
+        for m in re.finditer(r'^\s*val\s+(\w+)\s*:', src, re.M):
+            fields.add(m.group(1))
+        # 扩展函数：`fun CCMColors.xxx(` / `private fun CCMColors.xxx(`
+        for m in re.finditer(r'\bfun\s+CCMColors\.(\w+)\s*\(', src):
+            fields.add(m.group(1))
+        # 伴生对象/顶层里以 CCMColors 为接收者的属性扩展也一并收
+        for m in re.finditer(r'\bval\s+CCMColors\.(\w+)\b', src):
+            fields.add(m.group(1))
+    _COLORS_FIELDS = fields
+    return fields
+
+
+def check_colors_fields(path, code_only):
+    """扫 `colors.xxx` 引用，字段必须存在于 CCMColors。
+
+    只对 `colors.` 这个接收者名生效 —— 项目里 theme 配色统一走
+    `val colors = CCMTheme.colors`，不会误伤别的同名变量。
+    `DirectoryTone.textPrimary` 这类**别的类型**的字段不会被匹配到
+    （接收者名不是 colors）。
+    """
+    ok = _load_colors_fields()
+    if not ok:
+        return []   # 抽不到定义就不检查（宁可漏报也不误报）
+    bad = []
+    seen = set()
+    for m in re.finditer(r'\bcolors\.(\w+)', code_only):
+        f = m.group(1)
+        if f in ok or f in seen:
+            continue
+        seen.add(f)
+        bad.append(f)
+    if not bad:
+        return []
+    return ['CCMColors 里没有字段: ' + ', '.join('colors.' + f for f in bad)
+            + f'（现有字段: {", ".join(sorted(ok))[:200]}）']
+
 
 
 def collect_definitions(files):

@@ -843,7 +843,9 @@ private fun UpdatePanel() {
             Text(
                 text = message!!,
                 style = CCMText.body12.copy(fontSize = 10.48.sp, lineHeight = 15.4.sp),
-                color = if (error != null) Color(0xFFB45309) else colors.textPrimary,
+                // 字段名是 textMain（不是 textPrimary —— CCMColors 里没有后者，
+                // 写错会让整个 APK 编译失败：#253 CI 就是这么挂的）
+                color = if (error != null) Color(0xFFB45309) else colors.textMain,
             )
         }
         if (error != null) {
