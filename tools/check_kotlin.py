@@ -152,6 +152,73 @@ def check_file(path):
                     f'用了 `.{prop}` 但缺 import：加 `import {imp_path}`'
                 )
 
+    # ── 4.5 Compose 组件 import 检查（2026-10-16 加）──────────────
+    #
+    # 本轮 CI #255 报 `Unresolved reference 'Row'` —— 我在 FileChip 里从
+    # Column 改成了 Row 布局，**忘了加 import**。而 check_kotlin.py 当时
+    # 只查 sp/dp/em 三个扩展属性，查不出组件漏 import，所以本地全绿、CI 才炸。
+    #
+    # 这类错误的特点：改动布局（Box→Row/Column）时最容易漏，
+    # 因为新组件的名字「看起来就该在」，不会引起注意。
+    # 做法：把常用 Compose 组件与它们的标准 import 路径做成表，
+    # 代码里出现 `Name(` 调用但文件里没有对应 import（且不是全限定名）就报。
+    #
+    # ⚠️ 只收「几乎不可能自定义重名」的组件。像 `Box`/`Text` 这类，
+    # 项目里可能有同名自定义函数 —— 但 ccm-android 目前的同名自定义
+    # 都会加前缀，且这些名字作为自定义函数也仍需 import 所在包，
+    # 误报风险低。真误报再往 COMPOSE_COMPONENTS 白名单里加。
+    COMPOSE_COMPONENTS = {
+        'Row': 'androidx.compose.foundation.layout.Row',
+        'Column': 'androidx.compose.foundation.layout.Column',
+        'Box': 'androidx.compose.foundation.layout.Box',
+        'Spacer': 'androidx.compose.foundation.layout.Spacer',
+        'Text': 'androidx.compose.material3.Text',
+        'Icon': 'androidx.compose.material3.Icon',
+        'Surface': 'androidx.compose.material3.Surface',
+        'Divider': 'androidx.compose.material3.HorizontalDivider',
+        'Card': 'androidx.compose.material3.Card',
+        'LazyColumn': 'androidx.compose.foundation.lazy.LazyColumn',
+        'LazyRow': 'androidx.compose.foundation.lazy.LazyRow',
+        'Scaffold': 'androidx.compose.material3.Scaffold',
+    }
+    # 本项目自有的同名声明（同包/同类里可免 import）
+    #
+    # ⚠️ 必须把 `class Text` / `data class Text` 也收进来 ——
+    # ApiTypes.kt 里有 `data class Text(val text: String) : StreamEvent()`
+    # （SSE 事件类型），它是**声明**不是调用，检查器一度把它当组件误报。
+    OWN_DECLARED = set()
+    for m in re.finditer(r'^fun\s+([A-Z]\w*)\s*\(', src, re.M):
+        OWN_DECLARED.add(m.group(1))
+    for m in re.finditer(r'^\s*(?:data\s+|sealed\s+|abstract\s+|open\s+|inner\s+)*'
+                         r'class\s+([A-Z]\w*)\b', src, re.M):
+        OWN_DECLARED.add(m.group(1))
+    # 声明行本身不是调用：把 `class Text(` / `object Text` 这类从 code_only 里去掉，
+    # 否则下面的调用形态正则会命中声明。
+    decl_only = re.sub(
+        r'^\s*(?:data\s+|sealed\s+|abstract\s+|open\s+|inner\s+)*'
+        r'(?:class|interface|object)\s+[A-Z]\w*',
+        '', code_only, flags=re.M)
+    for name, imp_path in COMPOSE_COMPONENTS.items():
+        if name in OWN_DECLARED:
+            continue
+        # 只认调用形态 `Name(` 或 `Name {`（后者是 trailing lambda）
+        if not re.search(r'\b' + name + r'\s*[({]', decl_only):
+            continue
+        if f'import {imp_path}' in src:
+            continue
+        # 通配符 import（`import androidx.compose.foundation.layout.*`）
+        # 覆盖该包下全部符号 —— PluginPanel.kt 就是这么写的，
+        # 不认它会误报（实测：CI 一直是过的，是我这个检查太窄）。
+        pkg = imp_path.rsplit('.', 1)[0]
+        if f'import {pkg}.*' in src:
+            continue
+        # 全限定写法（androidx.compose...Row(）不算漏
+        if re.search(r'[\w.]\.' + name + r'\s*[({]', code_only):
+            continue
+        errors.append(
+            f'用了 `{name}(` 但缺 import：加 `import {imp_path}`'
+        )
+
     # ── 5. CCMColors 字段引用校验（2026-10-15 加）─────────────────
     #
     # 本轮 CI #253 报 `Unresolved reference 'textPrimary'` —— 我写了
