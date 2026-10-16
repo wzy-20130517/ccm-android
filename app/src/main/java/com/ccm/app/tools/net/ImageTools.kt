@@ -55,6 +55,35 @@ class ImageTools(
 
         /** ImageGen 超时 300s（生图慢，与工具超时分级一致） */
         private const val IMAGEGEN_TIMEOUT_MS = 300_000
+
+        /**
+         * 从配置的 base URL 推导生图端点（文生图 / 图生图）。
+         *
+         * 【2026-10-16 修：原来不补 /v1，与 Node 版行为不一致】
+         *
+         * 原实现是：
+         * ```
+         * if (baseUrl.endsWith("/images/generations") || ...) baseUrl
+         * else "$base/images/generations"
+         * ```
+         * —— 注释还写着「对齐 Node 版」，但 Node 版早已会补 /v1，这边没跟上。
+         *
+         * 后果：用户填 `https://api.furry.vg`（不带 /v1）时，请求打到
+         * `/images/generations`，而中转站的图像端点在 `/v1` 下 → 404。
+         *
+         * 规则与 Node 版 resolveEndpoint 逐条对齐（两份实现必须同步）：
+         *   1. 已含 /images/(generations|edits) → 换成需要的那个
+         *   2. 已含版本段（/v1、/v2…）→ 直接拼
+         *   3. 其他 → 补 /v1 再拼
+         */
+        private fun resolveImageEndpoint(url: String, isEdit: Boolean): String {
+            val base = url.trimEnd('/')
+            val path = if (isEdit) "/images/edits" else "/images/generations"
+            val full = Regex("/images/(generations|edits)/?$", RegexOption.IGNORE_CASE)
+            if (full.containsMatchIn(base)) return full.replace(base, path)
+            if (Regex("/v\\d+$", RegexOption.IGNORE_CASE).containsMatchIn(base)) return base + path
+            return "$base/v1$path"
+        }
     }
 
     private fun pexelsKey(): String? =
@@ -188,13 +217,8 @@ class ImageTools(
             val n = (input.int("n") ?: 1).coerceIn(1, 10)
             val size = input.str("size") ?: "1024x1024"
 
-            // 端点规范化（对齐 Node 版：base 自动拼，完整端点直接用）
-            val endpoint = if (baseUrl.endsWith("/images/generations") || baseUrl.endsWith("/images/edits")) {
-                baseUrl
-            } else {
-                val base = baseUrl.trimEnd('/')
-                if (refImage != null) "$base/images/edits" else "$base/images/generations"
-            }
+            // 端点规范化（对齐 Node 版 resolveEndpoint：base 自动补 /v1，完整端点直用）
+            val endpoint = resolveImageEndpoint(baseUrl, isEdit = refImage != null)
 
             val body = JSONObject().apply {
                 put("model", model)
