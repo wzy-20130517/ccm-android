@@ -25,7 +25,7 @@ CCM Android 是 [claude-code-mobile](https://github.com/wzy-20130517/Claude-Code
 ## 特性
 
 ### Agent 能力
-- **100+ 工具**：文件读写、搜索、Shell、Git、网络、手机操作、任务管理、子 Agent、团队协作、Goal 自动推进
+- **近百个内置工具**：文件读写、搜索、Shell、Git、网络、手机操作、任务管理、子 Agent、团队协作、Goal 自动推进（另加 MCP 动态工具；FindImage/ImageGen 需配 key 才注册）
 - **多协议支持**：OpenAI / Anthropic / Responses 三种 API 协议，可接任意兼容网关
 - **流式输出**：实时渲染正文与思考过程，工具调用可视化
 - **上下文管理**：自动压缩、会话恢复、跨会话记忆
@@ -60,7 +60,7 @@ CCM Android 是 [claude-code-mobile](https://github.com/wzy-20130517/Claude-Code
 
 或在对话里发送 `/update`。
 
-应用会从 GitHub Releases 拉取最新版，下载后自动拉起系统安装器。**覆盖安装不丢数据**（会话、配置都在应用私有目录，不在 APK 里）。
+应用会从 GitHub Releases 拉取最新版，下载后自动拉起系统安装器。**覆盖安装不丢数据**（会话、配置都在 `Download/Claude/`，不在 APK 里）。
 
 ### 方式二：手动下载
 
@@ -80,16 +80,28 @@ CCM Android 是 [claude-code-mobile](https://github.com/wzy-20130517/Claude-Code
 
 | | CLI（claude-code-mobile） | 本仓库（APK） |
 |---|---|---|
-| 内核 | Node.js（`.mjs`） | **Kotlin 原生** |
+| 内核 | Node.js（`.mjs`） | **Kotlin 原生**（零共享代码） |
 | 界面 | 终端全屏 TUI | **Compose 原生 UI** |
-| 手机操作 | rish + dumpsys 走 shell | **Shizuku 服务 + UiAutomation**（更快更稳） |
+| 手机操作 | 虚拟副屏（`app_process` 起 dex）+ `dumpsys activity top` 解析元素树；通道可选 Shizuku / adb 回环 | **Shizuku + UiAutomation**（元素树带 `text`，能读混淆类名的界面） |
 | Bash 环境 | Termux 原生（开箱即用） | 内置 proot（需装 rootfs）或外接 Termux |
-| 悬浮窗 | 无 | **Clawd 吉祥物** |
+| 悬浮窗 | 无 | **Clawd 吉祥物**（WebView 悬浮窗，含气泡/动画/点击互动） |
+| Slash 命令 | 95 个内置（另有 skill 与自定义命令） | **66 个**（另有 skill 与自定义命令） |
+| 数据目录 | `~/.claude-code-mobile/` | **`Download/Claude/`**（外部存储，用户可见可备份） |
 | 更新方式 | 下载源码包就地覆盖 | **下载 APK 覆盖安装** |
-| 会话数据 | `~/.claude-code-mobile/` | App 私有目录（`files/`） |
 | 部署 | `git clone` 即用 | 下载 APK 安装 |
 
-两边**会话 JSON 格式兼容**，可以把 CLI 的会话搬进 App（反之亦然）。
+两边**会话 JSON 可以互相搬移**：把文件放进对方的 `sessions/` 目录即可。
+
+时间字段两边都写（APK 写 `savedAt` + `createdAt`/`updatedAt`，CLI 写 `savedAt`），读取时互相回填，
+所以搬过去后会话列表的时间显示正确。`tokenUsage` 只有 CLI 写，APK 侧忽略（不影响使用）。
+
+> 搬移方法：把 `sessions/<id>.json` 复制到对方的数据目录 ——
+> CLI 是 `~/.claude-code-mobile/sessions/`，APK 是 `Download/Claude/sessions/`。
+
+> **数据目录说明**：APK 的数据根是 `Download/Claude/`（用系统 API 取 Download 目录，不写死 `/sdcard`）。
+> 会话、配置、回收站、附件都在这里，`Download/Claude/workspace/` 是 Agent 干活的默认目录。
+> 放在外部存储是为了**用户可见可备份**，且 proot 容器与外接 Termux 都能访问（`/sdcard` 是唯一两边都通的空间）。
+> 需要授予「所有文件访问」权限，否则无法工作。
 
 ---
 
@@ -130,22 +142,26 @@ CCM Android 是 [claude-code-mobile](https://github.com/wzy-20130517/Claude-Code
 
 ## 权限说明
 
-| 权限 | 用途 |
-|---|---|
-| `INTERNET` / `ACCESS_NETWORK_STATE` | 调模型 API + 市场下载 + 检查更新 |
-| `SYSTEM_ALERT_WINDOW` | Clawd 悬浮窗（退后台时显示） |
-| `FOREGROUND_SERVICE` + `_DATA_SYNC` + `_SPECIAL_USE` | 常驻服务（Agent 运行时保活 + 悬浮窗） |
-| `POST_NOTIFICATIONS` | 前台服务通知 |
-| `REQUEST_INSTALL_PACKAGES` | **自更新安装新版本 APK** |
-| `MANAGE_EXTERNAL_STORAGE` | 读写工作区文件（可选，不授权也能用） |
-| `CAMERA` / `RECORD_AUDIO` | 拍照/录音（语音输入、相机相关工具） |
-| `ACCESS_COARSE/FINE_LOCATION` | Location 工具（可选） |
-| `RECEIVE_BOOT_COMPLETED` | 开机自启服务（可选） |
-| `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | 申请电池白名单（防后台被杀） |
-| `WAKE_LOCK` / `VIBRATE` | 保活 / 震动反馈 |
-| `QUERY_ALL_PACKAGES` | 列已装应用（phone_app list） |
-| `moe.shizuku.manager.permission.API_V23` | Shizuku 授权（手机操作） |
-| `com.termux.permission.RUN_COMMAND` | 外接 Termux 跑 Bash（可选） |
+| 权限 | 用途 | 必需？ |
+|---|---|---|
+| `INTERNET` / `ACCESS_NETWORK_STATE` | 调模型 API + 市场下载 + 检查更新 | **必需** |
+| `MANAGE_EXTERNAL_STORAGE` | **读写数据根 `Download/Claude/`**（会话、配置、工作区都在这里） | **必需** |
+| `SYSTEM_ALERT_WINDOW` | Clawd 悬浮窗（退后台时显示） | 可选 |
+| `FOREGROUND_SERVICE` + `_DATA_SYNC` + `_SPECIAL_USE` | 常驻服务（Agent 运行时保活 + 悬浮窗） | 自动 |
+| `POST_NOTIFICATIONS` | 前台服务通知 | 可选 |
+| `REQUEST_INSTALL_PACKAGES` | **自更新安装新版本 APK** | 可选 |
+| `CAMERA` / `RECORD_AUDIO` | 拍照/录音（语音输入、相机相关工具） | 可选 |
+| `ACCESS_COARSE/FINE_LOCATION` | Location 工具 | 可选 |
+| `RECEIVE_BOOT_COMPLETED` | 开机自启服务 | 可选 |
+| `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | 申请电池白名单（防后台被杀） | 可选 |
+| `WAKE_LOCK` / `VIBRATE` | 保活 / 震动反馈 | 自动 |
+| `QUERY_ALL_PACKAGES` | 列已装应用（phone_app list） | 可选 |
+| `moe.shizuku.manager.permission.API_V23` | Shizuku 授权（手机操作） | 可选 |
+| `com.termux.permission.RUN_COMMAND` | 外接 Termux 跑 Bash | 可选 |
+
+> ⚠️ **`MANAGE_EXTERNAL_STORAGE`（「所有文件访问」）不是可选的**。
+> 数据根在 `Download/Claude/`，没这个权限时**会话存不了、环境装不了、配置读不了**。
+> 引导页会拦住并要求授权 —— **不做回落**，因为「装作能用、实际到处报错」比直接拦住更糟。
 
 ---
 
@@ -155,21 +171,22 @@ CCM Android 是 [claude-code-mobile](https://github.com/wzy-20130517/Claude-Code
 ccm-android/
 ├── app/src/main/java/com/ccm/app/
 │   ├── core/          Agent 内核
-│   │   ├── agent/     AgentLoop / 子 Agent / 任务 / 团队 / Goal / 自动记忆
+│   │   ├── agent/     AgentLoop / 子 Agent / 事件 / 错误分类 / 模式
 │   │   ├── api/       三协议 API 客户端
 │   │   ├── update/    自更新（Updater）
-│   │   ├── tools/     工具实现
 │   │   ├── session/   会话存储与消息模型
+│   │   ├── compact/   上下文压缩
 │   │   ├── mcp/       MCP 客户端
 │   │   ├── plugin/    DSH 插件对接
 │   │   ├── market/    市场（skill/MCP/插件安装）
-│   │   └── …          记忆/压缩/追踪/提示词/用户资料…
+│   │   ├── clawd/     悬浮吉祥物状态机
+│   │   └── …          记忆/提示词/图片/语音/项目/追踪…
 │   ├── bridge/        Shizuku 桥 + 副屏服务 + 原生能力路由
 │   ├── runtime/       proot 环境（rootfs/PTY/解压）
 │   ├── service/       前台服务 / 开机自启 / Clawd 悬浮窗
-│   ├── tools/         工具宿主（权限/输出/钩子/引导）
+│   ├── tools/         工具实现（bash/dev/file/mcp/net/phone/plugin/system/task）
 │   └── ui/            Compose 界面（对话/设置/市场/协作…）
-└── app/src/main/assets/   系统提示词 / Clawd 素材 / mermaid
+└── app/src/main/assets/   系统提示词 / Clawd 素材 / skills / mermaid / rootfs
 ```
 
 ---

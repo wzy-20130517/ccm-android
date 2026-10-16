@@ -67,21 +67,30 @@ class SessionStore(
     fun save(session: Session) {
         val target = fileFor(session.sessionId)
 
+        // 【2026-10-16 加】补上 CLI 要读的 savedAt（ISO 8601）。
+        // 不写的话，CLI 的 /load 列这个会话时时间列是空的。
+        //
+        // ⚠️ 必须**无条件**用 updatedAt 重算，不能只在 savedAt 为空时补：
+        // 会话是会被反复覆盖保存的（30 秒自动存一次），若沿用旧 savedAt，
+        // 它会永远停在第一次保存的时刻，而 updatedAt 一直在前进 ——
+        // 两个时间字段各说各话，CLI 和 APK 显示的时间对不上。
+        val toWrite = session.copy(savedAt = toIso8601(session.updatedAt))
+
         // 覆盖前差异检查：内容差太多就备份旧的（防误覆盖）
         if (target.exists()) {
             try {
                 val old = json.decodeFromString(Session.serializer(), target.readText())
-                val diff = kotlin.math.abs(old.messages.size - session.messages.size)
+                val diff = kotlin.math.abs(old.messages.size - toWrite.messages.size)
                 if (diff > BACKUP_DIFF_THRESHOLD) {
-                    backup(target, "session-${session.sessionId}-before-overwrite")
+                    backup(target, "session-${toWrite.sessionId}-before-overwrite")
                 }
             } catch (_: Throwable) {
                 // 旧文件坏了不阻塞写入（新内容总比坏文件有价值）
             }
         }
 
-        atomicWrite(target, json.encodeToString(Session.serializer(), session))
-        prune(keepId = session.sessionId)
+        atomicWrite(target, json.encodeToString(Session.serializer(), toWrite))
+        prune(keepId = toWrite.sessionId)
     }
 
     /** 读取会话。文件不存在或损坏返回 null（**不能让启动路径崩溃**）。 */
@@ -89,7 +98,11 @@ class SessionStore(
         val f = fileFor(sessionId)
         if (!f.exists()) return null
         return try {
-            json.decodeFromString(Session.serializer(), f.readText())
+            // 【2026-10-16 改】加 normalized() —— CLI 搬来的会话只有 savedAt
+            // （ISO 字符串），没有 createdAt/updatedAt，kotlinx 会给它们填
+            // 默认值=当前时间，导致旧会话显示成「刚刚保存」。
+            // normalized() 用 savedAt 反解回填，让时间正确。
+            json.decodeFromString(Session.serializer(), f.readText()).normalized()
         } catch (_: Throwable) {
             null
         }
@@ -273,7 +286,22 @@ class SessionStore(
 /**
  * 一个会话的完整数据（落盘格式）。
  *
- * 字段名与 Node 版 `sessions/<id>.json` 一致，用户可跨端搬移。
+ * ## 跨端兼容（2026-10-16 修）
+ *
+ * 原来这里只有 `createdAt` / `updatedAt`（毫秒数），而 CLI 写的是
+ * `savedAt`（ISO 8601 字符串）。后果是**两边互读都丢时间**：
+ *   · APK 读 CLI 会话 → `savedAt` 被 ignoreUnknownKeys 丢弃
+ *     → 会话列表里时间全变成「加载时刻」（`updatedAt` 走了默认值）
+ *   · CLI 读 APK 会话 → 没有 `savedAt` → 时间列显示空白
+ * 两边都不崩，但时间信息都丢 —— 而 README 还写着「格式兼容可互相搬移」。
+ *
+ * 修法：**双向都写、读时回填**。
+ *   · 写：`savedAt` 与 `updatedAt` 同时落盘（`savedAt` 供 CLI 读）
+ *   · 读：`savedAt` 存在但 `updatedAt` 缺失时，从它解析回填
+ *     （这样 CLI 的会话搬进来，时间显示是正确的）
+ *
+ * `createdAt` / `updatedAt` 保留，因为 APK 内部（排序、相对时间显示）
+ * 一直用毫秒数，改成字符串会牵连一大片 UI。
  */
 @Serializable
 data class Session(
@@ -284,17 +312,83 @@ data class Session(
     /** 会话名（`/rename` 设置）。null = 未命名。 */
     val title: String? = null,
 
-    /** 创建时间（毫秒）。 */
+    /** 创建时间（毫秒）。APK 内部用。 */
     @kotlinx.serialization.SerialName("createdAt")
     val createdAt: Long = System.currentTimeMillis(),
 
-    /** 最后更新时间（毫秒）。 */
+    /** 最后更新时间（毫秒）。APK 内部用（排序 / 相对时间显示）。 */
     @kotlinx.serialization.SerialName("updatedAt")
     val updatedAt: Long = System.currentTimeMillis(),
 
+    /**
+     * 最后保存时间（**ISO 8601 字符串**）。
+     *
+     * 这个字段是给 **CLI 读**的 —— Node 版 `session-auto.mjs` 写的就是它，
+     * `/load` 列表按它显示时间。APK 这边不直接用它做 UI（用 updatedAt），
+     * 但**必须写**，否则 CLI 读 APK 的会话时时间列是空的。
+     */
+    @kotlinx.serialization.SerialName("savedAt")
+    val savedAt: String = "",
+
     /** 对话历史。 */
     val messages: List<Message> = emptyList(),
-)
+) {
+    /**
+     * 归一化时间字段（读取后调用）。
+     *
+     * 场景：会话是从 CLI 搬过来的，只有 `savedAt`（ISO 字符串），
+     * 没有 `createdAt` / `updatedAt`。此时 kotlinx 会给它们填
+     * **默认值 = 当前时间**，导致「三天前的会话显示成刚刚保存」。
+     *
+     * 这里直接用 `savedAt` 反解出毫秒数回填。
+     *
+     * 【为什么不用阈值判断「是不是默认值」】
+     * 一开始写的是「drift > 1 天才回填」（想区分 APK 自己写的和 CLI 搬来的）。
+     * 那是错的 —— 判据本身没必要：
+     *   · APK 自己写时，`savedAt` 就是从 `updatedAt` 转出来的，两者**本来就一致**，
+     *     回填等于赋同一个值，无害
+     *   · CLI 搬来的会话，`savedAt` 是唯一权威时间，就该回填
+     *   · 用阈值反而制造边界 bug：23 小时前的 CLI 会话不触发回填，
+     *     显示成「刚刚」（应为「23 小时前」）
+     *
+     * 解析失败就保持原样（宁可时间不准，也不能让加载路径崩）。
+     */
+    fun normalized(): Session {
+        if (savedAt.isBlank()) return this
+        val ms = parseIso8601(savedAt) ?: return this
+        // updatedAt 无条件用 savedAt（它才是权威的「最后保存时刻」）。
+        //
+        // createdAt 要小心：它可能有两个来源 ——
+        //   · APK 自己写的：真实创建时间，通常 < updatedAt，**必须保留**
+        //   · CLI 搬来的：根本没有这个字段，kotlinx 填了默认值=现在，
+        //     于是 createdAt > updatedAt（时间倒挂）
+        // 判据就用这个倒挂：`createdAt > ms` 说明它是默认值污染，才回填。
+        val fixedCreatedAt = if (createdAt > ms) ms else createdAt
+        return copy(createdAt = fixedCreatedAt, updatedAt = ms)
+    }
+}
+
+/**
+ * 解析 ISO 8601 时间串 → 毫秒。失败返回 null。
+ *
+ * 兼容 CLI 写的 `2026-10-16T12:06:56.780Z`（带毫秒、Z 结尾），
+ * 以及没有毫秒的变体。用 `java.time` 而不是 SimpleDateFormat ——
+ * 后者对 `Z` 和毫秒的处理依赖 Locale，在部分设备上会解析失败。
+ */
+internal fun parseIso8601(s: String): Long? = try {
+    java.time.Instant.parse(s).toEpochMilli()
+} catch (_: Throwable) {
+    // 退一步：可能没有 Z 结尾（本地时间），按 UTC 尽力解析
+    try {
+        java.time.LocalDateTime.parse(s).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+    } catch (_: Throwable) {
+        null
+    }
+}
+
+/** 毫秒 → CLI 用的 ISO 8601 字符串。 */
+internal fun toIso8601(ms: Long): String =
+    java.time.Instant.ofEpochMilli(ms).toString()
 
 /** 会话摘要（给列表 UI 用，不含完整消息）。 */
 data class SessionSummary(
