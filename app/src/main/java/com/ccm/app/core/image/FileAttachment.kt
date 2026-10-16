@@ -72,7 +72,7 @@ object FileAttachment {
         for (path in paths) {
             val f = File(path)
             val name = f.name
-            sb.append("\n\n[附件: ").append(name).append("]\n已保存到: ").append(path)
+            sb.append("\n\n用户选择的文件：").append(name).append("\n文件路径：").append(path)
 
             // 【2026-10-12 改成内容探测，不再靠扩展名白名单】
             //

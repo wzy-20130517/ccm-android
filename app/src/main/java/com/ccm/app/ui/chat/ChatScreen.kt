@@ -365,37 +365,40 @@ fun ChatScreen(
                     horizontalArrangement = Arrangement.spacedBy(7.36.dp),
                 ) {
                     attachedPaths.forEach { path ->
-                        // 缩略图 chip（第20批：文件名 → 真缩略图，点 × 删除）
-                        Box(
-                            modifier = Modifier
-                                .size(56.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { onRemoveImage(path) },
-                        ) {
-                            com.ccm.app.ui.common.ThumbImage(
-                                path = path,
-                                modifier = Modifier.fillMaxSize(),
-                                cornerRadius = 8.dp,
-                            )
-                            // 删除角标（右上）
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .size(16.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(colors.textMain),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text("✕", style = CCMText.body10, color = colors.bgMain)
+                        if (isImagePath(path)) {
+                            Box(modifier = Modifier.size(width = 156.dp, height = 112.dp)) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(RoundedCornerShape(8.dp)),
+                                ) {
+                                    com.ccm.app.ui.common.ThumbImage(
+                                        path = path,
+                                        modifier = Modifier.fillMaxSize(),
+                                        cornerRadius = 8.dp,
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(5.dp)
+                                        .size(28.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(colors.bgMain.copy(alpha = 0.9f))
+                                        .clickable { onRemoveImage(path) },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text("✕", style = CCMText.body10, color = colors.textMain)
+                                }
                             }
+                        } else {
+                            com.ccm.app.ui.common.FileChip(
+                                name = path.substringAfterLast('/'),
+                                sizeBytes = java.io.File(path).length(),
+                                onRemove = { onRemoveImage(path) },
+                            )
                         }
                     }
-                    Text(
-                        text = "点标签删除",
-                        style = CCMText.body11,
-                        color = colors.textSecondary,
-                        modifier = Modifier.padding(vertical = 5.dp),
-                    )
                 }
                 }
 
@@ -645,3 +648,10 @@ private fun ErrorBanner(message: String, onRetry: (() -> Unit)? = null) {
  */
 // 2026-09-30：抽到公共 SlashCommands.kt，首页/对话页共用（原来首页没面板）
 private val SLASH_COMMANDS = COMMON_SLASH_COMMANDS
+
+private fun isImagePath(path: String): Boolean {
+    return when (path.substringAfterLast('.', "").lowercase()) {
+        "png", "jpg", "jpeg", "gif", "webp", "bmp" -> true
+        else -> false
+    }
+}

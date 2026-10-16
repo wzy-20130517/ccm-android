@@ -195,14 +195,23 @@ fun LandingScreen(
             ioScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                 val images = mutableListOf<String>()
                 val files = mutableListOf<String>()
+                var skippedFiles = 0
                 for (uri in uris) {
-                    val path = com.ccm.app.core.image.AttachmentCache.copyToCache(ctx, uri) ?: continue
                     val mime = ctx.contentResolver.getType(uri) ?: ""
-                    if (mime.startsWith("image/")) images += path else files += path
+                    if (mime.startsWith("image/")) {
+                        com.ccm.app.core.image.AttachmentCache.copyToCache(ctx, uri)?.let { images += it }
+                    } else {
+                        // 文件直接保留用户选中的真实路径，禁止让 Agent 改 attachments 副本。
+                        val path = com.ccm.app.core.image.AttachmentCache.resolveUserPath(ctx, uri)
+                        if (path != null) files += path else skippedFiles++
+                    }
                 }
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                     if (images.isNotEmpty()) pendingImages = pendingImages + images
                     if (files.isNotEmpty()) pendingFiles = pendingFiles + files
+                    if (skippedFiles > 0) {
+                        android.widget.Toast.makeText(ctx, "有 $skippedFiles 个云端文件无法作为可修改路径交给 Agent", android.widget.Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         }
@@ -264,11 +273,6 @@ fun LandingScreen(
                         .padding(bottom = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(7.36.dp),
                 ) {
-                    // 【2026-10-12】文件卡 —— 与图片缩略图**同尺寸同圆角**。
-                    //
-                    // 原来是一行文字条（「📄 文件名 ✕」），与 56dp 的图片
-                    // 方块并排时大小形状都不搭（用户报「标签样式很奇怪」）。
-                    // 现在用 FileChip（对齐 Web 的 MessageAttachments 文档卡）。
                     pendingFiles.forEach { path ->
                         com.ccm.app.ui.common.FileChip(
                             name = path.substringAfterLast('/'),
@@ -277,35 +281,32 @@ fun LandingScreen(
                         )
                     }
                     pendingImages.forEach { path ->
-                        Box(
-                            modifier = Modifier
-                                .size(56.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { pendingImages = pendingImages - path },
-                        ) {
-                            com.ccm.app.ui.common.ThumbImage(
-                                path = path,
-                                modifier = Modifier.fillMaxSize(),
-                                cornerRadius = 8.dp,
-                            )
+                        Box(modifier = Modifier.size(width = 156.dp, height = 112.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(RoundedCornerShape(8.dp)),
+                            ) {
+                                com.ccm.app.ui.common.ThumbImage(
+                                    path = path,
+                                    modifier = Modifier.fillMaxSize(),
+                                    cornerRadius = 8.dp,
+                                )
+                            }
                             Box(
                                 modifier = Modifier
                                     .align(Alignment.TopEnd)
-                                    .size(16.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(colors.textMain),
+                                    .padding(5.dp)
+                                    .size(28.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(colors.bgMain.copy(alpha = 0.9f))
+                                    .clickable { pendingImages = pendingImages - path },
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Text("✕", style = CCMText.body10, color = colors.bgMain)
+                                Text("✕", style = CCMText.body10, color = colors.textMain)
                             }
                         }
                     }
-                    Text(
-                        text = "点标签删除",
-                        style = CCMText.body11,
-                        color = colors.textSecondary,
-                        modifier = Modifier.padding(vertical = 5.dp),
-                    )
                 }
             }
 

@@ -98,6 +98,49 @@ object AttachmentCache {
         }
     }
 
+    /**
+     * 解析用户选中的真实文件路径。
+     *
+     * 文件附件不能走 copyToCache：那会让 Agent 修改 App 的副本，而不是用户选中的
+     * 文件。只接受 provider 能明确映射到普通文件系统的 URI；云端文档不伪装成路径。
+     */
+    fun resolveUserPath(context: Context, uri: Uri): String? {
+        if (uri.scheme == "file") return uri.path
+        val queried = try {
+            context.contentResolver.query(
+                uri,
+                arrayOf("_data"),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                val index = cursor.getColumnIndex("_data")
+                if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+            }
+        } catch (_: Throwable) {
+            null
+        }
+        if (!queried.isNullOrBlank()) return queried
+
+        // DocumentsUI 对共享存储通常返回 document/primary:...，但不暴露 _data。
+        // 这仍然是用户真实的外部存储路径，可以直接交给 Agent 文件工具。
+        if (android.provider.DocumentsContract.isDocumentUri(context, uri)) {
+            val documentId = try {
+                android.provider.DocumentsContract.getDocumentId(uri)
+            } catch (_: Throwable) {
+                null
+            }
+            if (documentId?.startsWith("primary:") == true) {
+                val relative = documentId.removePrefix("primary:").trimStart('/')
+                return java.io.File(
+                    android.os.Environment.getExternalStorageDirectory(),
+                    relative,
+                ).absolutePath
+            }
+        }
+        return null
+    }
+
     /** 查 ContentResolver 拿原始文件名（拿不到返回 null）。 */
     private fun queryDisplayName(context: Context, uri: Uri): String? = try {
         context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->

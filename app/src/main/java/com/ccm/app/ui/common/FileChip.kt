@@ -62,18 +62,19 @@ fun FileChip(
 
     Box(
         modifier = modifier
-            .size(56.dp)                                   // 与图片缩略图同尺寸
+            .size(width = 224.dp, height = 64.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(colors.input)
             .border(1.dp, colors.border, RoundedCornerShape(8.dp))
-            .padding(5.dp),
+            .padding(start = 9.dp, end = 7.dp, top = 7.dp, bottom = 7.dp),
     ) {
-        Column(
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
             // 文件名 + 大小
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = name,
                     style = CCMText.body11.copy(fontSize = 9.sp, lineHeight = 11.sp),
@@ -90,20 +91,8 @@ fun FileChip(
                     )
                 }
             }
-            // 扩展名徽章
             if (ext.isNotBlank()) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(colors.hover)
-                        .padding(horizontal = 3.dp, vertical = 1.dp),
-                ) {
-                    Text(
-                        text = ext.take(4),
-                        style = CCMText.body11.copy(fontSize = 7.sp, lineHeight = 9.sp),
-                        color = colors.textSecondary,
-                    )
-                }
+                Text(ext.take(5), style = CCMText.body11.copy(fontSize = 8.sp), color = colors.textSecondary)
             }
         }
         // 删除按钮（右上角）
@@ -111,13 +100,13 @@ fun FileChip(
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .size(14.dp)
-                    .clip(RoundedCornerShape(7.dp))
-                    .background(colors.textMain)
+                    .size(26.dp)
+                    .clip(RoundedCornerShape(13.dp))
+                    .background(colors.hover)
                     .clickable(onClick = onRemove),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("✕", style = CCMText.body10.copy(fontSize = 8.sp), color = colors.bgMain)
+                Text("✕", style = CCMText.body10.copy(fontSize = 10.sp), color = colors.textMain)
             }
         }
     }

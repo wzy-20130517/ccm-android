@@ -225,14 +225,24 @@ fun ChatScreenConnected(
             ioScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                 val images = mutableListOf<String>()
                 val files = mutableListOf<String>()
+                var skippedFiles = 0
                 for (uri in uris) {
-                    val path = com.ccm.app.core.image.AttachmentCache.copyToCache(ctx, uri) ?: continue
                     val mime = ctx.contentResolver.getType(uri) ?: ""
-                    if (mime.startsWith("image/")) images += path else files += path
+                    if (mime.startsWith("image/")) {
+                        // 图片由多模态通道读取本地副本；不把它当普通文件交给 Agent。
+                        com.ccm.app.core.image.AttachmentCache.copyToCache(ctx, uri)?.let { images += it }
+                    } else {
+                        // 文件必须传用户实际选中的路径，禁止静默复制到 attachments/。
+                        val path = com.ccm.app.core.image.AttachmentCache.resolveUserPath(ctx, uri)
+                        if (path != null) files += path else skippedFiles++
+                    }
                 }
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                     if (images.isNotEmpty()) pendingImages = pendingImages + images
                     if (files.isNotEmpty()) pendingFiles = pendingFiles + files
+                    if (skippedFiles > 0) {
+                        android.widget.Toast.makeText(ctx, "有 $skippedFiles 个云端文件无法作为可修改路径交给 Agent", android.widget.Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         }
